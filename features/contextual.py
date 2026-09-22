@@ -17,16 +17,23 @@ beyond pure team performance metrics.
 
 import json
 import warnings
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
+import utils.game_lock as lock_rule
 from conf.settings import get_settings
 from data.storage import load_dataframe
+from features.provenance import (
+    DECLARED_GAME_DURATION,
+    PROVENANCE_COLUMNS,
+    InformationBasis,
+)
 from features.schedule_moves import FactsAtLock, facts_at_lock
 from ratings.elo import is_divisional_game
 from utils import DataIngestionError, get_logger
@@ -129,6 +136,24 @@ ELO_SPOT_STEP: float = 100.0
 # Bye-week rest threshold: a bye gives ~13-14 days between games, so
 # off_bye = 1.0 when rest_days >= 13 (the genuinely-new add per D-15).
 OFF_BYE_REST_DAYS: float = 13.0
+
+# THE VALUES A GAME CARRIES WHEN NO PRIOR GAME WAS ADMITTED AT ITS LOCK (Plan 33.2-14): both
+# teams at the standard 7-day rest (the first-game default of calculate_rest_days), so no
+# rest advantage, no short-rest and no bye flag, and no letdown (a letdown reads a prior
+# result, and none was admitted). The information-time gate value-checks exactly these on
+# every ``no_information`` row: the claim "nothing was read" is checked, never believed.
+NO_PRIOR_GAME_SIGNATURE: dict[str, float] = {
+    "home_rest_days": 7.0,
+    "away_rest_days": 7.0,
+    "rest_advantage": 0.0,
+    "both_short_rest": 0.0,
+    "home_short_rest": 0.0,
+    "away_short_rest": 0.0,
+    "home_off_bye": 0.0,
+    "away_off_bye": 0.0,
+    "home_letdown_spot": 0.0,
+    "away_letdown_spot": 0.0,
+}
 
 # Exceptions tolerated when reloading the full-season schedule for the
 # (weak, optional) spot flags -- a failure must degrade to neutral 0.0
@@ -535,6 +560,12 @@ class ContextualFeaturesCalculator:
 
         # Team to venue mapping
         self.team_venues = self._build_team_venue_mapping()
+
+        # game_id -> END instant of the latest prior game build_features ACTUALLY READ for
+        # it (rest days and the letdown flag), or None when it read none. Filled by
+        # build_features and read by information_times, so the provenance reports what the
+        # selection admitted rather than re-deriving a rule (RESEARCH P3).
+        self._prior_game_ends: dict[str, pd.Timestamp | None] = {}
 
     def _load_venues_data(self) -> dict[str, Any]:
         """Load venue data from JSON file."""
@@ -1033,31 +1064,49 @@ class ContextualFeaturesCalculator:
             Number of rest days
         """
         try:
-            if kickoffs is None:
-                kickoffs = games_df["kickoff_et"].map(kickoff_wall_clock_et)
             current = kickoff_wall_clock_et(current_game_date)
-
-            # Find team's previous games before current date
-            team_games = games_df[
-                ((games_df["home_team"] == team) | (games_df["away_team"] == team))
-                & (kickoffs < current)
-            ]
-
-            if len(team_games) == 0:
+            last_game_date = self.latest_prior_kickoff(
+                team, current_game_date, games_df, kickoffs=kickoffs
+            )
+            if last_game_date is None:
                 # First game of season, use standard rest
                 return 7.0
-
-            # Get most recent game
-            last_game_date = kickoffs.loc[team_games.index].max()
-
-            # Calculate rest days
-            rest_days = (current - last_game_date).days
-
-            return float(rest_days)
+            return float((current - last_game_date).days)
 
         except (ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error("Failed to calculate rest days", team=team, error=str(e))
             return 7.0  # Default to standard week
+
+    @staticmethod
+    def latest_prior_kickoff(
+        team: str,
+        current_game_date: datetime,
+        games_df: pd.DataFrame,
+        kickoffs: pd.Series | None = None,
+    ) -> pd.Timestamp | None:
+        """The ET kickoff of *team*'s latest game in *games_df* before *current_game_date*.
+
+        THE ONE SELECTION rest days read, shared by ``calculate_rest_days`` and the builder's
+        provenance, so the information time reported is the game the value was computed
+        from. The caller hands in only the games admitted at the target game's lock.
+
+        Returns:
+            The kickoff, or ``None`` when the team has no earlier game in *games_df*.
+        """
+        clock = cast(
+            "pd.Series",
+            kickoffs
+            if kickoffs is not None
+            else games_df["kickoff_et"].map(kickoff_wall_clock_et),
+        )
+        current = kickoff_wall_clock_et(current_game_date)
+        team_games = games_df[
+            ((games_df["home_team"] == team) | (games_df["away_team"] == team))
+            & (clock < current)
+        ]
+        if len(team_games) == 0:
+            return None
+        return cast("pd.Timestamp", pd.Timestamp(clock.loc[team_games.index].max()))
 
     # ------------------------------------------------------------------
     # Situational spot features (D-15/D-16, SIG-03)
@@ -1138,7 +1187,8 @@ class ContextualFeaturesCalculator:
         self,
         target_games: pd.DataFrame,
         full_schedule: pd.DataFrame,
-        as_of_datetime: datetime,
+        locks: pd.Series,
+        letdown_reads: dict[str, list[pd.Timestamp]] | None = None,
     ) -> dict[str, dict[str, float]]:
         """Derive look-ahead (trap) and letdown spot flags per target game.
 
@@ -1150,10 +1200,10 @@ class ContextualFeaturesCalculator:
         a future (>= current week) game RESULT is future information, and this
         derivation NEVER reads one -- so revealing a future look-ahead result
         leaves the flags byte-unchanged (proven by
-        tests/unit/test_situational_no_leakage.py). The letdown's "beat last
-        week" component only counts a prior game whose kickoff is before
-        ``as_of_datetime`` (the freeze), so a not-yet-played prior game
-        contributes nothing.
+        tests/unit/test_situational_no_leakage.py). The letdown's prior game is
+        the latest same-season game whose RESULT existed at THIS game's lock:
+        its END instant (kickoff plus ``DECLARED_GAME_DURATION``) at or before
+        the lock (Plan 33.2-14, D33.2-01).
 
         Thresholds use the raw silver Elo scale (``ELO_SPOT_STEP`` = 100 Elo,
         ~0.8 std) and reuse ``ratings.elo.is_divisional_game`` (T-28-09).
@@ -1162,8 +1212,9 @@ class ContextualFeaturesCalculator:
             target_games: Games to emit spot flags for.
             full_schedule: FULL-season schedule with raw Elo + results, loaded
                 independently of any target-week filter (review #4).
-            as_of_datetime: Freeze cutoff; a prior RESULT only counts toward a
-                letdown if its kickoff precedes this cutoff.
+            locks: ``game_id`` -> that game's own lock (``utils.game_lock``).
+            letdown_reads: Optional sink, ``game_id`` -> the END instants of the prior
+                games the letdown actually read, for the builder's provenance.
 
         Returns:
             Mapping game_id -> the four home/away look_ahead/letdown spot flags.
@@ -1173,13 +1224,19 @@ class ContextualFeaturesCalculator:
             return flags
 
         sched = full_schedule.copy()
-        # tz-aligned freeze cutoff for prior-result gating (mirrors the rest
-        # fence idiom at build_features :829-833).
+        # WHEN A PRIOR RESULT EXISTED (Plan 33.2-14). The letdown flag reads a RESULT, so
+        # admissibility turns on when the result existed -- the prior game's END, kickoff
+        # plus the declared duration (the one features.provenance.DECLARED_GAME_DURATION the
+        # Elo replay also uses) -- compared to the TARGET game's own lock. The kickoff is when
+        # the game started, not when its result was known. On an ordinary schedule the two
+        # agree (a team's previous game ends days before its next lock); the case they differ
+        # on, and the one this catches, is a rescheduled prior game that finished after the
+        # target's lock.
         kickoff_series = pd.to_datetime(sched["kickoff_et"])
-        cutoff_ts = pd.Timestamp(as_of_datetime)
-        if kickoff_series.dt.tz is not None and cutoff_ts.tz is None:
-            cutoff_ts = cutoff_ts.tz_localize(kickoff_series.dt.tz)
-        sched = sched.assign(_kickoff_ts=kickoff_series)
+        sched = sched.assign(
+            _kickoff_ts=kickoff_series,
+            _end_ts=kickoff_series + DECLARED_GAME_DURATION,
+        )
 
         for _, game in target_games.iterrows():
             game_id = game["game_id"]
@@ -1221,14 +1278,24 @@ class ContextualFeaturesCalculator:
                 ) & (sched["season"] == season)
                 team_sched = sched[team_mask].sort_values("week")
                 next_games = team_sched[team_sched["week"] > week]
-                prev_games = team_sched[team_sched["week"] < week]
+                # The prior games this game's LOCK admits: result known at or before it.
+                prev_games = cast(
+                    "pd.DataFrame",
+                    team_sched[team_sched["_end_ts"] <= locks[str(game_id)]],
+                ).sort_values("_end_ts")
 
                 game_flags[f"{side}_look_ahead_spot"] = self._look_ahead_flag(
                     team, opp_elo, next_games, sched, season, week
                 )
                 game_flags[f"{side}_letdown_spot"] = self._letdown_flag(
-                    team, opp_elo, prev_games, cutoff_ts
+                    team, opp_elo, prev_games
                 )
+                if letdown_reads is not None and len(prev_games) > 0:
+                    letdown_reads.setdefault(str(game_id), []).append(
+                        cast(
+                            "pd.Timestamp", pd.Timestamp(prev_games.iloc[-1]["_end_ts"])
+                        )
+                    )
 
         return flags
 
@@ -1291,23 +1358,20 @@ class ContextualFeaturesCalculator:
         team: str,
         opp_elo: float,
         prev_games: pd.DataFrame,
-        cutoff_ts: pd.Timestamp,
     ) -> float:
         """Letdown: current opp weak AND last week was an emotional game.
 
         "Emotional game" = last week the team BEAT an opponent whose pre-game
         Elo was >= ELO_SPOT_STEP above this week's opponent, OR last week's
         opponent was divisional. The "beat" component reads the prior RESULT, so
-        the prior game must have been PLAYED before the freeze
-        (``_kickoff_ts < cutoff_ts``) -- a not-yet-played prior game contributes
-        nothing (the time-fence, T-28-08).
+        *prev_games* holds ONLY the prior games whose result existed at the
+        target game's lock (their END at or before it, selected by the caller);
+        the latest of them is "last week". A game not yet finished at the lock is
+        simply not there (the time-fence, T-28-08; Plan 33.2-14).
         """
         if len(prev_games) == 0:
             return 0.0
         prow = prev_games.iloc[-1]
-        if not (prow["_kickoff_ts"] < cutoff_ts):
-            # Last week's game has not been played as-of the freeze.
-            return 0.0
         prev_opp = prow["away_team"] if prow["home_team"] == team else prow["home_team"]
         prev_opp_elo = self._team_elo_in_game(prow, prev_opp)
         team_score, opp_score = self._team_result_in_game(prow, team)
@@ -1602,41 +1666,57 @@ class ContextualFeaturesCalculator:
         *,
         target_season: int | None = None,
         target_week: int | None = None,
+        lock_frame: pd.Series | None = None,
     ) -> pd.DataFrame:
         """Build contextual features conforming to FeatureBuilder Protocol.
 
-        Uses only schedule data available before ``as_of_datetime``.
-
-        Delegates to the existing ``build_contextual_features`` logic
-        but adds ``as_of_datetime`` filtering.
+        EACH GAME SEES ONLY WHAT ITS OWN LOCK ADMITS (Plan 33.2-14, D33.2-01). The two
+        selections that read a PRIOR game -- rest days and the letdown flag -- admit a
+        prior game only when its END instant (kickoff plus ``DECLARED_GAME_DURATION``) is at
+        or before THIS game's lock, 18:00 ET on the calendar day before kickoff. The
+        schedule and venue facts themselves are known at the lock (D33.2-04).
 
         Args:
             games_df: DataFrame of games to build features for.
-            as_of_datetime: Time-fence cutoff.
+            as_of_datetime: Carried for the ``FeatureBuilder`` Protocol ONLY. It is NOT a
+                fence and no selection reads it: the frame-wide ``now`` it carries in
+                production admits everything that has already happened.
             target_season: Optional season filter.
             target_week: Optional week filter.
+            lock_frame: The build's ``game_id`` -> lock frame, built ONCE by the caller.
+                When ``None`` it is built here, once, from the target games through
+                ``utils.game_lock.lock_frame``.
 
         Returns:
             DataFrame with contextual features.
+
+        Raises:
+            utils.game_lock.MissingKickoffError: a target game has no kickoff, so no lock.
         """
         logger.info(
             "Building contextual features (Protocol)",
             games=len(games_df),
-            as_of=as_of_datetime.isoformat(),
             target_season=target_season,
             target_week=target_week,
         )
 
         try:
-            # Time-fence: only use games with kickoff before as_of_datetime
-            # for rest-days / schedule context (the target games themselves
-            # may have kickoff after the cutoff, but prior games used for
-            # rest calculations must be before the cutoff).
             if target_season and target_week:
                 games_df = games_df[
                     (games_df["season"] == target_season)
                     & (games_df["week"] == target_week)
                 ].copy()
+
+            locks = (
+                lock_frame
+                if lock_frame is not None
+                else (
+                    lock_rule.lock_frame(games_df)
+                    if len(games_df) > 0
+                    else pd.Series(dtype="datetime64[ns, America/New_York]")
+                )
+            )
+            letdown_reads: dict[str, list[pd.Timestamp]] = {}
 
             # Situational spot flags (D-16, SIG-03): derive look-ahead/letdown
             # from the FULL season schedule reloaded INDEPENDENTLY of the
@@ -1653,7 +1733,7 @@ class ContextualFeaturesCalculator:
                     )
                     full_schedule = self._load_full_season_schedule(target_seasons)
                     spot_flags = self._derive_spot_flags(
-                        games_df, full_schedule, as_of_datetime
+                        games_df, full_schedule, locks, letdown_reads
                     )
                 except _SCHEDULE_LOAD_ERRORS as e:
                     logger.warning(
@@ -1691,6 +1771,12 @@ class ContextualFeaturesCalculator:
                 rest_source_df["kickoff_et"].map(kickoff_wall_clock_et)
                 if len(rest_source_df) > 0
                 else None
+            )
+            # When each rest-source game's result existed: its END (Plan 33.2-14).
+            rest_ends = (
+                None
+                if rest_kickoffs is None
+                else rest_kickoffs + DECLARED_GAME_DURATION
             )
 
             contextual_features = []
@@ -1752,25 +1838,37 @@ class ContextualFeaturesCalculator:
                 venue_features = self.encode_venue_features(venue_id)
                 game_features.update(venue_features)
 
-                # Rest days: use only games with kickoff before as_of_datetime.
-                # Source from rest_source_df (the full schedule in the
-                # target-week build, games_df in the full-batch build) so a
+                # Rest days: only the prior games whose result existed at THIS game's
+                # lock -- END at or before it (Plan 33.2-14, the same end-instant rule
+                # as the letdown flag). Source from rest_source_df (the full schedule
+                # in the target-week build, games_df in the full-batch build) so a
                 # team's prior game is always visible (WR-02).
-                kickoff_series = pd.to_datetime(rest_source_df["kickoff_et"])
-                cutoff_ts = pd.Timestamp(as_of_datetime)
-                if kickoff_series.dt.tz is not None and cutoff_ts.tz is None:
-                    cutoff_ts = cutoff_ts.tz_localize(kickoff_series.dt.tz)
-                prior_games = rest_source_df[kickoff_series < cutoff_ts]
-                prior_kickoffs = (
-                    None
-                    if rest_kickoffs is None
-                    else rest_kickoffs.loc[prior_games.index]
-                )
+                if rest_ends is None:
+                    prior_games = rest_source_df
+                    prior_kickoffs = None
+                else:
+                    admitted = rest_ends <= locks[str(game_id)]
+                    prior_games = rest_source_df[admitted]
+                    prior_kickoffs = cast("pd.Series", rest_kickoffs)[admitted]
                 home_rest = self.calculate_rest_days(
                     home_team, kickoff_dt, prior_games, kickoffs=prior_kickoffs
                 )
                 away_rest = self.calculate_rest_days(
                     away_team, kickoff_dt, prior_games, kickoffs=prior_kickoffs
+                )
+                read_ends = [
+                    kickoff + DECLARED_GAME_DURATION
+                    for team in (home_team, away_team)
+                    if (
+                        kickoff := self.latest_prior_kickoff(
+                            team, kickoff_dt, prior_games, kickoffs=prior_kickoffs
+                        )
+                    )
+                    is not None
+                ]
+                read_ends.extend(letdown_reads.get(str(game_id), []))
+                self._prior_game_ends[str(game_id)] = (
+                    max(read_ends) if read_ends else None
                 )
 
                 game_features.update(
@@ -1853,6 +1951,62 @@ class ContextualFeaturesCalculator:
                 error=str(e),
             )
             raise
+
+    # ------------------------------------------------------------------
+    # InformationTimeProvider (features.protocol, Plan 33.2-01's owned contract)
+    # ------------------------------------------------------------------
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        """A game that admitted no prior game: standard rest, no flags, no letdown."""
+        return dict(NO_PRIOR_GAME_SIGNATURE)
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """One provenance row per game: the END of the latest prior game its values READ.
+
+        What ``build_features`` actually admitted, from the memo it filled -- the latest
+        prior game behind either team's rest count and the letdown flag's prior game --
+        never a re-derivation of the rule. A game that read no prior game (the first games
+        of the corpus) is ``no_information`` with a NULL time, value-checked against
+        :meth:`no_information_signature`. The schedule and venue facts carry no information
+        time: they are known at the lock (D33.2-04).
+
+        Returns:
+            A frame with exactly ``PROVENANCE_COLUMNS``.
+        """
+        target = games_df
+        if target_season and target_week and len(games_df) > 0:
+            target = games_df[
+                (games_df["season"] == target_season)
+                & (games_df["week"] == target_week)
+            ]
+        wanted = [str(g) for g in target["game_id"]] if len(target) > 0 else []
+        if any(game_id not in self._prior_game_ends for game_id in wanted):
+            # Not built yet in this process: build once, which fills the memo.
+            self.build_features(
+                games_df,
+                datetime.now(lock_rule.ET),
+                target_season=target_season,
+                target_week=target_week,
+            )
+        records = [
+            {
+                "game_id": game_id,
+                "basis": (
+                    InformationBasis.PER_ROW.value
+                    if self._prior_game_ends[game_id] is not None
+                    else InformationBasis.NO_INFORMATION.value
+                ),
+                "information_time": self._prior_game_ends[game_id],
+            }
+            for game_id in wanted
+        ]
+        return pd.DataFrame(records, columns=list(PROVENANCE_COLUMNS))
 
     def get_features_for_game(
         self,

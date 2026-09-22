@@ -24,6 +24,34 @@ from features.team_form import TeamFormCalculator as TeamFormBuilder
 # ---------------------------------------------------------------------------
 
 
+def _weekly_schedule(team: str = "BUF", seasons: tuple[int, ...] = (2023, 2024)):
+    """One Sunday game per week (weeks 1-18) for *team*: the schedule the synthetic
+    team-games are TIMED against and each target game LOCKED from (Plan 33.2-14).
+
+    Injected so the calculator never reads the local data lake: since the window is
+    admitted at the target game's lock, a synthetic row needs its game's kickoff. On this
+    ordinary weekly schedule the lock-keyed window selects exactly the prior weeks.
+    """
+    rows = []
+    for season in seasons:
+        first_sunday = pd.Timestamp(f"{season}-09-10 17:00", tz="UTC")
+        for week in range(1, 19):
+            rows.append(
+                {
+                    "game_id": f"SYN_{season}_W{week:02d}_{team}",
+                    "season": season,
+                    "week": week,
+                    "home_team": team,
+                    "away_team": "MIA",
+                    "kickoff_et": first_sunday + pd.Timedelta(weeks=week - 1),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+_SCHEDULE = _weekly_schedule()
+
+
 def _build_synthetic_team_stats(
     team: str = "BUF",
     seasons: list[int] | None = None,
@@ -73,7 +101,7 @@ class TestTeamFormLAMapping:
 
     def test_build_team_mapping_no_lar(self):
         """_build_team_mapping must NOT map any team to 'LAR'."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         mapping = builder._build_team_mapping()
         assert "LAR" not in mapping.values(), (
             "Team mapping should not contain 'LAR' -- LA is canonical for Rams"
@@ -81,7 +109,7 @@ class TestTeamFormLAMapping:
 
     def test_normalize_la_stays_la(self):
         """_normalize_team_name('LA') must return 'LA', not 'LAR'."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         result = builder._normalize_team_name("LA")
         assert result == "LA", f"Expected 'LA', got '{result}'"
 
@@ -91,7 +119,7 @@ class TestTeamFormDynamicWindow:
 
     def test_week1_uses_only_prior_season(self):
         """For Week 1, only prior-season games should be used (current = 0)."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -111,7 +139,7 @@ class TestTeamFormDynamicWindow:
 
     def test_week5_blended_window(self):
         """For Week 5, both prior-season and current-season games are used."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -130,7 +158,7 @@ class TestTeamFormDynamicWindow:
 
     def test_week12_dominated_by_current_season(self):
         """For Week 12, current-season data dominates (prior weight near 0)."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -153,7 +181,7 @@ class TestTeamFormNoLeakage:
 
     def test_week_n_excludes_week_n_data(self):
         """Features for Week N must NOT include data from Week N or later."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats("BUF", [2024], weeks_per_season=18)
 
         # Calculate for week 5 -- should use weeks 1-4 only
@@ -187,7 +215,7 @@ class TestTeamFormRecencyWeighting:
 
     def test_recency_weighting_applied(self):
         """More recent games must have higher weight in the rolling average."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         # Use a single season with increasing EPA values
         stats = _build_synthetic_team_stats("BUF", [2024], weeks_per_season=6)
 
@@ -218,7 +246,7 @@ class TestTeamFormProtocolConformance:
 
     def test_build_features_accepts_as_of_datetime(self):
         """build_features method must accept as_of_datetime parameter."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         assert hasattr(builder, "build_features"), (
             "TeamFormCalculator must have build_features method"
         )
@@ -235,7 +263,7 @@ class TestTeamFormProtocolConformance:
 
     def test_get_features_for_game_accepts_as_of_datetime(self):
         """get_features_for_game method must accept as_of_datetime parameter."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         assert hasattr(builder, "get_features_for_game"), (
             "TeamFormCalculator must have get_features_for_game method"
         )
@@ -251,7 +279,7 @@ class TestTeamFormProtocolConformance:
 
     def test_build_features_filters_by_datetime(self):
         """build_features should filter data by as_of_datetime."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats("BUF", [2023, 2024])
 
         # Create a games_df with game_id and kickoff_et
@@ -308,7 +336,7 @@ class TestTeamFormAllMetricsPreserved:
 
     def test_all_metrics_present_in_output(self):
         """All 9 rolling metrics must appear in rolling averages output."""
-        builder = TeamFormBuilder()
+        builder = TeamFormBuilder(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(

@@ -7,12 +7,15 @@ These test the additions from FEAT-17, FEAT-18, FEAT-19.
 
 from datetime import datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
 
 from features.contextual import GRASS_SURFACES, ContextualFeaturesCalculator
 from features.protocol import FeatureBuilder
+
+_ET = ZoneInfo("America/New_York")
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -146,7 +149,9 @@ def _make_games_df(
                 "away_team": away_team,
                 "venue": venue_name,
                 "stadium_id": stadium_id,
-                "kickoff_et": datetime(2024, 9, 5, 20, 0),
+                # Aware, as every silver kickoff is: each game's lock is derived from
+                # its kickoff (Plan 33.2-14), and a naive kickoff is refused by name.
+                "kickoff_et": datetime(2024, 9, 5, 20, 0, tzinfo=_ET),
             }
         ]
     )

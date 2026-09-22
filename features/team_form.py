@@ -24,24 +24,122 @@ available (nflverse, nfelo). Existing Elo 75/25 season carryover (Phase 3)
 serves as the calibration fallback. Per D-09 decision.
 
 Key constraints:
-- No data leakage: features for Week N use only data from before Week N
+- No data leakage: a target game's window admits a prior team-game only when that
+  game's RESULT existed at the target's OWN lock -- its END (kickoff plus
+  ``features.provenance.DECLARED_GAME_DURATION``) at or before 18:00 ET on the
+  calendar day before the target's kickoff (``utils.game_lock``, Plan 33.2-14). On an
+  ordinary schedule that is exactly "the games before Week N"; the lock-keyed form is
+  the rule itself and also excludes a rescheduled game played after the lock.
 - Recency weighting: linear weights [1, 2, ..., N] where more recent = higher weight
 - Canonical team abbreviations: LA is Rams (not LAR), per Phase 2 decision
 """
 
 import warnings
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
+import utils.game_lock as lock_rule
 from conf.season_partition import SELECTION_WINDOW_FIRST_SEASON
 from conf.settings import get_settings
 from data import upstream_pin
 from data.storage import load_dataframe, save_dataframe
+from features.provenance import (
+    DECLARED_GAME_DURATION,
+    PROVENANCE_COLUMNS,
+    InformationBasis,
+)
+from features.qb_tracking import to_aware_utc
 from utils import get_logger
 
 logger = get_logger(__name__)
+
+#: The twelve rolling metrics one team side carries (the ``rolling_*`` names
+#: ``calculate_rolling_averages`` writes). Gold reads them as
+#: ``{home,away}_{off,def}_rolling_*`` through ``scripts/build_features``.
+ROLLING_COLUMNS: tuple[str, ...] = (
+    "rolling_epa_per_play",
+    "rolling_pass_epa_per_play",
+    "rolling_rush_epa_per_play",
+    "rolling_success_rate",
+    "rolling_pass_success_rate",
+    "rolling_rush_success_rate",
+    "rolling_neutral_pass_rate",
+    "rolling_red_zone_td_rate",
+    "rolling_third_down_conversion_rate",
+    "rolling_cpoe",
+    "rolling_avg_drive_start_yardline",
+    "rolling_neutral_pace",
+)
+
+#: The team-schedule frame's columns (``team_game_schedule``).
+TEAM_SCHEDULE_COLUMNS: tuple[str, ...] = (
+    "season",
+    "week",
+    "team",
+    "schedule_game_id",
+    "_end",
+    "_lock",
+)
+
+
+def team_game_schedule(games_df: pd.DataFrame) -> pd.DataFrame:
+    """One row per (season, week, team): the game's id, when its RESULT existed, its lock.
+
+    THE ONE TIMING of a team-game for every lock-keyed rolling window (team form and
+    snaps, D-12). ``_end`` is kickoff plus ``features.provenance.DECLARED_GAME_DURATION``
+    -- the same four hours the Elo replay declares -- and ``_lock`` is the game's own
+    lock from the one rule, ``utils.game_lock.lock_frame``. A scheduled game with no
+    kickoff has neither and is left out: a team-game that cannot be timed is never
+    admitted. A naive kickoff is refused by name (``to_aware_utc``), never relabelled.
+
+    Args:
+        games_df: Silver ``games`` shape: ``game_id``, ``season``, ``week``,
+            ``home_team``, ``away_team`` (canonical abbreviations) and a tz-aware
+            ``kickoff_et``.
+
+    Returns:
+        A frame with exactly ``TEAM_SCHEDULE_COLUMNS``.
+    """
+    games = games_df.loc[games_df["kickoff_et"].notna()]
+    if len(games) == 0:
+        return pd.DataFrame(columns=list(TEAM_SCHEDULE_COLUMNS))
+    locks = lock_rule.lock_frame(games)
+    ends = (
+        to_aware_utc(pd.Series(games["kickoff_et"]), column="kickoff_et")
+        + DECLARED_GAME_DURATION
+    )
+    sides = []
+    for column in ("home_team", "away_team"):
+        side = pd.DataFrame(
+            {
+                "season": games["season"].astype(int).to_numpy(),
+                "week": games["week"].astype(int).to_numpy(),
+                "team": games[column].astype(str).to_numpy(),
+                "schedule_game_id": games["game_id"].astype(str).to_numpy(),
+                "_end": ends.to_numpy(),
+            }
+        )
+        side["_lock"] = side["schedule_game_id"].map(locks.to_dict())
+        sides.append(side)
+    return pd.concat(sides, ignore_index=True)[list(TEAM_SCHEDULE_COLUMNS)]
+
+
+def week_team_locks(
+    schedule: pd.DataFrame, target_season: int, target_week: int
+) -> dict[str, Any]:
+    """``team -> lock`` of each team's scheduled game in (season, week), from a schedule.
+
+    A team with no game that week (a bye) has no lock and is absent: nothing is admitted
+    for a game that does not exist.
+    """
+    week = schedule.loc[
+        (schedule["season"] == target_season) & (schedule["week"] == target_week)
+    ]
+    return dict(zip(week["team"], week["_lock"], strict=True))
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +218,12 @@ class TeamFormCalculator:
     serves as the calibration fallback. Per D-09 decision.
     """
 
-    def __init__(self, max_prior_games: int = 8):
+    def __init__(
+        self,
+        max_prior_games: int = 8,
+        schedule_df: pd.DataFrame | None = None,
+        form_df: pd.DataFrame | None = None,
+    ):
         """Initialize team form calculator.
 
         Args:
@@ -128,9 +231,18 @@ class TeamFormCalculator:
                 in the window when current-season data is sparse. As current-
                 season games accumulate, prior-season games are shed:
                 prior_count = max(0, max_prior_games - current_season_count).
+            schedule_df: Optional schedule (silver ``games`` shape) team-games are
+                TIMED against and target games LOCKED from. When ``None`` the
+                calculator loads silver ``games``. The test-injection seam.
+            form_df: Optional rolling team-form table (silver
+                ``team_form_features`` shape) the provenance reads. When ``None``
+                the calculator loads silver ``team_form_features``.
         """
         self.max_prior_games = max_prior_games
         self.settings = get_settings()
+        self._schedule_df = schedule_df
+        self._form_df = form_df
+        self._team_schedule_cache: pd.DataFrame | None = None
 
         # Team name mapping for consistency with our game data
         self.team_mapping = self._build_team_mapping()
@@ -478,8 +590,117 @@ class TeamFormCalculator:
         combined = pd.concat([prior_tail, current_season_games])
         return combined.sort_values(["season", "week"])
 
+    def _team_schedule(self) -> pd.DataFrame:
+        """The timing schedule (``team_game_schedule``), built once per calculator."""
+        if self._team_schedule_cache is None:
+            games = (
+                self._schedule_df
+                if self._schedule_df is not None
+                else load_dataframe("games", layer="silver")
+            )
+            self._team_schedule_cache = team_game_schedule(games)
+        return self._team_schedule_cache
+
+    @staticmethod
+    def time_team_games(
+        team_games: pd.DataFrame, schedule: pd.DataFrame
+    ) -> pd.DataFrame:
+        """*team_games* with ``_end``: its scheduled game's end, keyed (season, week, team).
+
+        Play-by-play ids (``2024_01_BUF_KC``) and silver ids never match, so a team-game
+        is keyed to its scheduled game by (season, week, team). One with no scheduled
+        match has no known end (NaT) and is therefore never admitted.
+        """
+        timing = schedule[["season", "week", "team", "_end"]]
+        return team_games.drop(columns=["_end"], errors="ignore").merge(
+            timing, on=["season", "week", "team"], how="left"
+        )
+
+    def admitted_window(
+        self,
+        team_games: pd.DataFrame,
+        target_season: int,
+        target_week: int,
+        lock: Any,
+    ) -> pd.DataFrame:
+        """ONE team's (and side's) rolling window for a target game, at that game's LOCK.
+
+        A team-game is admitted only when its END (``_end``) is at or before *lock*,
+        the target game's own lock (at-lock admissible, the ``<=`` of
+        ``utils.game_lock.is_admissible``); the admitted games then go through the
+        dynamic window. THE ONE SELECTION the rolling averages and the provenance both
+        read.
+
+        WHY LOCK-KEYED AND NOT WEEK-KEYED (Plan 33.2-14). The retired window read the
+        WEEK LABEL: ``season < target_season`` or the same season with ``week <
+        target_week``. The window is per team and a team plays at most once a week, so
+        on an ordinary schedule the two select the same games -- D33.2-01 measured 0
+        games in 2002-2026 whose week-keyed inputs include a result that ended after
+        their lock. The lock-keyed window IS the admissibility rule rather than a proxy
+        that happens to agree with it, and it is the only form that excludes a game
+        whose week label precedes the target week but which was PLAYED after the
+        target's lock -- a rescheduled or postponed game.
+
+        Args:
+            team_games: One team's (and side's) timed team-games (``_end``).
+            target_season: Season being predicted.
+            target_week: Week being predicted.
+            lock: The target game's lock, tz-aware.
+
+        Returns:
+            The window rows (possibly empty), sorted chronologically.
+        """
+        admitted = cast(
+            "pd.DataFrame", team_games[team_games["_end"] <= lock]
+        ).sort_values(["season", "week"])
+        if len(admitted) == 0:
+            return admitted
+        return self._select_dynamic_window(admitted, target_season, target_week)
+
+    def contributing_games(
+        self,
+        team_games: pd.DataFrame,
+        target_season: int,
+        target_week: int,
+        team_locks: Mapping[str, Any],
+    ) -> pd.DataFrame:
+        """Every team-game the rolling window admits for the week's target games.
+
+        The team-form counterpart of ``features.snaps.SnapCountBuilder.
+        contributing_games``: the window each team actually reads at its own target
+        game's lock, concatenated. Grouped by (team, side) when the frame carries a
+        ``side``, by team otherwise.
+
+        Args:
+            team_games: Timed team-games (``_end``) for any number of teams.
+            target_season: Season being predicted.
+            target_week: Week being predicted.
+            team_locks: ``team -> lock`` for the week's target games.
+
+        Returns:
+            The admitted rows. Empty when nothing was admitted.
+        """
+        keys = ["team", "side"] if "side" in team_games.columns else ["team"]
+        windows = [
+            window
+            for group_key, group in team_games.groupby(keys, sort=True)
+            if (lock := team_locks.get(str(cast("tuple", group_key)[0]))) is not None
+            and len(
+                window := self.admitted_window(group, target_season, target_week, lock)
+            )
+            > 0
+        ]
+        if not windows:
+            return team_games.iloc[0:0]
+        return pd.concat(windows, ignore_index=True)
+
     def calculate_rolling_averages(
-        self, team_stats_df: pd.DataFrame, target_season: int, target_week: int
+        self,
+        team_stats_df: pd.DataFrame,
+        target_season: int,
+        target_week: int,
+        *,
+        schedule: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         """Calculate rolling averages using a dynamic expanding window.
 
@@ -490,10 +711,17 @@ class TeamFormCalculator:
         Recency weighting is applied via linear weights [1, 2, ..., N]
         where N = number of games in the window.
 
+        EACH TEAM'S WINDOW IS ADMITTED AT ITS TARGET GAME'S LOCK
+        (:meth:`admitted_window`, Plan 33.2-14), so a team with no game in
+        (target_season, target_week) -- a bye -- has no lock and no row.
+
         Args:
-            team_stats_df: Team-game statistics DataFrame
+            team_stats_df: Team-game statistics DataFrame. Timed against *schedule*
+                unless it already carries ``_end``.
             target_season: Season to calculate rolling averages for
             target_week: Week to calculate rolling averages for
+            schedule: The timing schedule (``team_game_schedule``). When ``None``
+                the calculator's own (injected, else silver ``games``) is used.
 
         Returns:
             DataFrame with rolling averages for each team
@@ -505,30 +733,26 @@ class TeamFormCalculator:
             max_prior_games=self.max_prior_games,
         )
 
-        # Filter to games before target week (no data leakage)
-        historical_games = team_stats_df[
-            (team_stats_df["season"] < target_season)
-            | (
-                (team_stats_df["season"] == target_season)
-                & (team_stats_df["week"] < target_week)
-            )
-        ].copy()
+        schedule = schedule if schedule is not None else self._team_schedule()
+        timed = (
+            team_stats_df
+            if "_end" in team_stats_df.columns
+            else self.time_team_games(team_stats_df, schedule)
+        )
+        team_locks = week_team_locks(schedule, target_season, target_week)
 
-        if len(historical_games) == 0:
+        if len(timed) == 0 or not team_locks:
             logger.warning("No historical games found for rolling averages")
             return pd.DataFrame()
-
-        # Sort chronologically
-        historical_games = historical_games.sort_values(["season", "week"])
 
         rolling_stats = []
 
         # Calculate rolling averages for each team and side
-        for (team, side), group in historical_games.groupby(["team", "side"]):
-            # Use dynamic window instead of fixed tail
-            recent_games = self._select_dynamic_window(
-                group, target_season, target_week
-            )
+        for (team, side), group in timed.groupby(["team", "side"]):
+            lock = team_locks.get(str(team))
+            if lock is None:
+                continue
+            recent_games = self.admitted_window(group, target_season, target_week, lock)
 
             if len(recent_games) == 0:
                 continue
@@ -681,14 +905,13 @@ class TeamFormCalculator:
     ) -> pd.DataFrame:
         """Build team form features using only data available before as_of_datetime.
 
-        Conforms to the FeatureBuilder Protocol. Uses as_of_datetime to
-        enforce the time-fence: only team stats from games with kickoff
-        before as_of_datetime are included.
+        Conforms to the FeatureBuilder Protocol. Each team's window is admitted
+        at its target game's own lock (:meth:`admitted_window`, Plan 33.2-14).
 
         Args:
             games_df: DataFrame of games to build features for.
-            as_of_datetime: Time-fence cutoff. Only data before this
-                timestamp may be used.
+            as_of_datetime: Carried for the ``FeatureBuilder`` Protocol ONLY. It is
+                NOT a fence and no selection reads it.
             target_season: Season to calculate features for.
             target_week: Week to calculate features for.
 
@@ -697,7 +920,6 @@ class TeamFormCalculator:
         """
         logger.info(
             "Building team form features (Protocol)",
-            as_of_datetime=str(as_of_datetime),
             target_season=target_season,
             target_week=target_week,
         )
@@ -712,20 +934,20 @@ class TeamFormCalculator:
                 prior = all_seasons[0] - 1
                 seasons = [prior, *seasons]
 
-        # Fetch play-by-play data and compute team game stats
+        # Fetch play-by-play data and compute team game stats, each team-game TIMED
+        # (its END) against the schedule once; every window below is admitted at its
+        # target game's lock. There is no frame-wide ``as_of_datetime`` fence: the
+        # ``now`` it carries in production admits everything already played.
         pbp_df = self.fetch_pbp_data(seasons)
-        team_stats_df = self.calculate_team_game_stats(pbp_df)
-
-        # Apply as_of_datetime filter: only include stats from games
-        # whose kickoff is before the time-fence. This is an additional
-        # safety layer on top of the week < target_week filter.
-        if "kickoff_et" in team_stats_df.columns:
-            team_stats_df = team_stats_df[team_stats_df["kickoff_et"] < as_of_datetime]
+        schedule = self._team_schedule()
+        team_stats_df = self.time_team_games(
+            self.calculate_team_game_stats(pbp_df), schedule
+        )
 
         # Calculate rolling averages for the target
         if target_season and target_week:
             return self.calculate_rolling_averages(
-                team_stats_df, target_season, target_week
+                team_stats_df, target_season, target_week, schedule=schedule
             )
 
         # Fall back to all weeks in all seasons
@@ -733,7 +955,7 @@ class TeamFormCalculator:
         for season in seasons:
             for week in range(1, 19):
                 rolling_df = self.calculate_rolling_averages(
-                    team_stats_df, season, week
+                    team_stats_df, season, week, schedule=schedule
                 )
                 if len(rolling_df) > 0:
                     all_rolling_stats.append(rolling_df)
@@ -944,6 +1166,93 @@ class TeamFormCalculator:
             return {}
 
     # ------------------------------------------------------------------
+    # InformationTimeProvider (features.protocol, Plan 33.2-01's owned contract)
+    # ------------------------------------------------------------------
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        """A game neither of whose teams carries a rolling row: every column NULL.
+
+        The ``team_form`` source frame is one row per game with the
+        ``{home,away}_{off,def}_rolling_*`` columns ``scripts/build_features`` lays out
+        from silver ``team_form_features``; a game with no rolling row for either team
+        carries NULL in all of them.
+        """
+        return {
+            f"{prefix}_{side}_{column}": None
+            for prefix in ("home", "away")
+            for side in ("off", "def")
+            for column in ROLLING_COLUMNS
+        }
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """One provenance row per game: the END of the latest team-game its window admitted.
+
+        For each team that CARRIES a rolling row for the game's (season, week) in the
+        rolling table, the time is the latest ``_end`` in :meth:`admitted_window` at the
+        game's own lock -- the one selection the rolling averages read -- over the
+        team's scheduled games. A game with no rolling row for either team (the seasons
+        before the table's coverage, the postseason) is ``basis="no_information"`` with
+        a NULL time, value-checked against :meth:`no_information_signature`.
+
+        Returns:
+            A frame with exactly ``PROVENANCE_COLUMNS``.
+        """
+        target = games_df
+        if target_season is not None and target_week is not None:
+            target = games_df[
+                (games_df["season"] == target_season)
+                & (games_df["week"] == target_week)
+            ]
+        records: list[dict[str, Any]] = []
+        if len(target) == 0:
+            return pd.DataFrame(records, columns=list(PROVENANCE_COLUMNS))
+
+        form = (
+            self._form_df
+            if self._form_df is not None
+            else load_dataframe("team_form_features", layer="silver")
+        )
+        carried = {
+            (str(team), int(season), int(week))
+            for team, season, week in zip(
+                form["team"], form["target_season"], form["target_week"], strict=True
+            )
+        }
+        schedule = self._team_schedule()
+        by_team = {str(team): rows for team, rows in schedule.groupby("team")}
+        locks = lock_rule.lock_frame(target)
+        for game in target.to_dict("records"):
+            season, week = int(game["season"]), int(game["week"])
+            lock = locks[str(game["game_id"])]
+            ends = []
+            for column in ("home_team", "away_team"):
+                team = str(game[column])
+                if (team, season, week) not in carried or team not in by_team:
+                    continue
+                window = self.admitted_window(by_team[team], season, week, lock)
+                if len(window) > 0:
+                    ends.append(pd.Timestamp(window["_end"].max()))
+            latest = max(ends) if ends else None
+            records.append(
+                {
+                    "game_id": str(game["game_id"]),
+                    "basis": (
+                        InformationBasis.PER_ROW.value
+                        if latest is not None
+                        else InformationBasis.NO_INFORMATION.value
+                    ),
+                    "information_time": latest,
+                }
+            )
+        return pd.DataFrame(records, columns=list(PROVENANCE_COLUMNS))
+
+    # ------------------------------------------------------------------
     # Deprecated aliases (kept for backward compatibility)
     # ------------------------------------------------------------------
 
@@ -991,8 +1300,11 @@ class TeamFormCalculator:
             # Fetch play-by-play data
             pbp_df = self.fetch_pbp_data(seasons)
 
-            # Calculate team-game statistics
+            # Calculate team-game statistics (persisted UNTIMED below; timed for the
+            # lock-keyed windows, Plan 33.2-14)
             team_stats_df = self.calculate_team_game_stats(pbp_df)
+            schedule = self._team_schedule()
+            timed_stats_df = self.time_team_games(team_stats_df, schedule)
 
             # Persist team statistics to silver layer ONLY on the full-rebuild
             # path. On the full path team_stats_df IS the complete team-game
@@ -1032,7 +1344,7 @@ class TeamFormCalculator:
             # If specific target provided, calculate rolling averages for that point
             if target_season and target_week:
                 rolling_df = self.calculate_rolling_averages(
-                    team_stats_df, target_season, target_week
+                    timed_stats_df, target_season, target_week, schedule=schedule
                 )
                 return rolling_df
 
@@ -1042,7 +1354,7 @@ class TeamFormCalculator:
             for season in seasons:
                 for week in range(1, 19):  # Weeks 1-18
                     rolling_df = self.calculate_rolling_averages(
-                        team_stats_df, season, week
+                        timed_stats_df, season, week, schedule=schedule
                     )
                     if len(rolling_df) > 0:
                         all_rolling_stats.append(rolling_df)

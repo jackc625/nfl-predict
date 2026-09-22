@@ -155,7 +155,9 @@ def _snap_builder() -> SnapCountBuilder:
             "st_pct": [0.0],
         }
     )
-    return SnapCountBuilder(snaps_df=snaps)
+    # The schedule is injected (never the local data lake): the snap window is timed
+    # against it and locked at each target game's lock (Plan 33.2-14).
+    return SnapCountBuilder(snaps_df=snaps, schedule_df=_games(with_sunday=True))
 
 
 def _games(*, with_sunday: bool = False, season: int = 2023) -> pd.DataFrame:

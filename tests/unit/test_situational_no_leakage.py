@@ -11,10 +11,13 @@ test therefore reveals future game RESULTS and asserts the spot flags are
 unchanged.
 
 Parts:
-  1. Time-fence -- the new spots respect the `as_of_datetime` cutoff (a prior
-     game's RESULT only counts once it has been played before the freeze).
-  2. Withhold-future byte-unchanged -- reveal future game RESULTS, assert the
-     look-ahead/letdown flags are byte-identical.
+  1. Time-fence -- the letdown reads a prior game's RESULT only once it existed
+     at the TARGET game's own lock: the prior game's END (kickoff plus the
+     declared duration) at or before that lock (Plan 33.2-14; it used to be a
+     frame-wide `as_of_datetime` compared with the prior KICKOFF).
+  2. Withhold-future byte-unchanged -- reveal the RESULTS of games not finished
+     by each target's lock, assert the look-ahead/letdown flags are
+     byte-identical.
   3. off_bye derivation -- `off_bye = 1.0 if rest_days >= 13 else 0.0`.
   4. Full-schedule sourcing (review #4) -- a target-week (`--current-week`)
      build still derives the spots from the FULL season schedule, NOT the
@@ -22,14 +25,19 @@ Parts:
      context to a degenerate default.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import utils.game_lock as lock_rule
 from features.contextual import ContextualFeaturesCalculator
+from features.provenance import DECLARED_GAME_DURATION
+
+_ET = ZoneInfo("America/New_York")
 
 # Minimal venues so the calculator instantiates without the on-disk JSON; the
 # spot derivation never touches venue data, and build_features only needs the
@@ -114,61 +122,74 @@ def _make_trap_schedule(*, reveal_future: bool = True) -> pd.DataFrame:
                     "2023-09-17T13:00:00",
                     "2023-09-24T13:00:00",
                 ]
-            ),
+            ).tz_localize(_ET),
             "home_score": [27.0, 20.0, w2_home, w3_home],
             "away_score": [13.0, 17.0, w2_away, w3_away],
         }
     )
 
 
-# Freeze cutoffs relative to the trap schedule.
-_AS_OF_AFTER_W1 = datetime(2023, 9, 12, 18, 0)  # before W2 and W3
-_AS_OF_AFTER_W2 = datetime(2023, 9, 20, 18, 0)  # after W2, before W3
+# A frame-wide instant for the build_features calls below: carried for the Protocol
+# only, no selection reads it (each game is fenced at its own lock).
+_AS_OF_AFTER_W1 = datetime(2023, 9, 12, 18, 0, tzinfo=_ET)
+
+
+def _locks(schedule: pd.DataFrame) -> pd.Series:
+    """Each game's own lock, from the one rule."""
+    return lock_rule.lock_frame(schedule)
 
 
 class TestSituationalTimeFence:
-    """Part 1: the new spots respect the `as_of_datetime` cutoff."""
+    """Part 1: the letdown reads a prior result only once it existed at the lock."""
 
-    def test_letdown_respects_as_of_cutoff(self, calc):
+    def test_letdown_respects_the_target_games_lock(self, calc):
         """The letdown's "beat last week" component reads a prior RESULT, so it
-        must only fire once that prior game has been played before the freeze.
+        must only fire once that result existed at the TARGET game's lock.
 
         For W3 (KC vs weak DEN, after beating strong BUF in W2):
-          * freeze AFTER W2 -> the BUF win is known -> letdown fires.
-          * freeze BEFORE W2 -> the BUF result is future -> letdown withheld.
+          * W2 as scheduled ends days before W3's lock -> the BUF win is known ->
+            letdown fires.
+          * W2 rescheduled to END one second after W3's lock -> its result did
+            not exist at the lock -> the last admitted game is W1 (a win over a
+            CAR no stronger than DEN, not divisional) -> letdown withheld.
         """
         schedule = _make_trap_schedule()
         target = schedule[schedule["week"] == 3]
 
-        flags_after = calc._derive_spot_flags(target, schedule, _AS_OF_AFTER_W2)
-        flags_before = calc._derive_spot_flags(target, schedule, _AS_OF_AFTER_W1)
+        flags_known = calc._derive_spot_flags(target, schedule, _locks(schedule))
+        assert flags_known["TRAP_W3"]["home_letdown_spot"] == 1.0
 
-        assert flags_after["TRAP_W3"]["home_letdown_spot"] == 1.0
-        assert flags_before["TRAP_W3"]["home_letdown_spot"] == 0.0
+        late = schedule.copy()
+        w3_lock = _locks(schedule)["TRAP_W3"]
+        late.loc[late["game_id"] == "TRAP_W2", "kickoff_et"] = (
+            w3_lock + timedelta(seconds=1) - DECLARED_GAME_DURATION
+        )
+        flags_late = calc._derive_spot_flags(target, late, _locks(schedule))
+        assert flags_late["TRAP_W3"]["home_letdown_spot"] == 0.0
 
 
 class TestSituationalWithholdFuture:
     """Part 2: revealing future RESULTS must not move the flags."""
 
     def test_revealing_future_results_does_not_change_flags(self, calc):
-        """Build the spot flags with the future (>= freeze) game RESULTS absent
-        and again with them revealed; the flags must be byte-identical.
+        """Build the spot flags with the W2/W3 RESULTS absent and again with them
+        revealed, for the W1 and W2 targets; the flags must be byte-identical.
 
-        Only the future *result* is leakage -- the next-opponent identity and
-        pre-freeze Elo are known at the freeze. With the freeze set just after
-        W1, every flag is independent of the withheld W2/W3 results (look-ahead
-        never reads a result; the W3 letdown is gated off because W2 has not
-        been played yet), so the two builds must match exactly.
+        Only a result not yet in existence at the target's lock is leakage -- the
+        next-opponent identity and pre-lock Elo are known at the lock. At W1's
+        lock neither W2 nor W3 has been played, and at W2's lock neither W2
+        (the target itself) nor W3 has, so every flag is independent of the
+        withheld results (look-ahead never reads a result; the letdown reads only
+        a prior game ENDED by the target's lock).
         """
-        target = _make_trap_schedule()  # emit flags for all 3 games
+        full = _make_trap_schedule()
+        target = full[full["week"] <= 2]
 
         sched_hidden = _make_trap_schedule(reveal_future=False)
         sched_revealed = _make_trap_schedule(reveal_future=True)
 
-        flags_hidden = calc._derive_spot_flags(target, sched_hidden, _AS_OF_AFTER_W1)
-        flags_revealed = calc._derive_spot_flags(
-            target, sched_revealed, _AS_OF_AFTER_W1
-        )
+        flags_hidden = calc._derive_spot_flags(target, sched_hidden, _locks(full))
+        flags_revealed = calc._derive_spot_flags(target, sched_revealed, _locks(full))
 
         assert flags_hidden == flags_revealed
         # And the proof is non-trivial: the W1 look-ahead trap actually fires.
@@ -189,7 +210,7 @@ class TestSituationalFutureEloNoLeak:
         schedule = _make_trap_schedule()
         target = schedule[schedule["week"] == 1]
 
-        baseline = calc._derive_spot_flags(target, schedule, _AS_OF_AFTER_W1)
+        baseline = calc._derive_spot_flags(target, schedule, _locks(schedule))
         assert baseline["TRAP_W1"]["home_look_ahead_spot"] == 1.0
 
         perturbed_sched = schedule.copy()
@@ -197,7 +218,7 @@ class TestSituationalFutureEloNoLeak:
         # Drive BUF's entering-week-2 Elo down to "weak"; the OLD (leaky)
         # implementation read this directly and would flip the flag to 0.0.
         perturbed_sched.loc[w2_mask, "away_elo_pre"] = 1480.0
-        perturbed = calc._derive_spot_flags(target, perturbed_sched, _AS_OF_AFTER_W1)
+        perturbed = calc._derive_spot_flags(target, perturbed_sched, _locks(schedule))
 
         assert (
             perturbed["TRAP_W1"]["home_look_ahead_spot"]
@@ -221,7 +242,7 @@ class TestSituationalOffBye:
                     "away_team": "MIA",
                     "venue": "KC Stadium",
                     "stadium_id": "KAN00",
-                    "kickoff_et": datetime(2024, 9, 10, 13, 0),
+                    "kickoff_et": datetime(2024, 9, 10, 13, 0, tzinfo=_ET),
                 },
                 {
                     "game_id": "BYE_W3",
@@ -231,7 +252,9 @@ class TestSituationalOffBye:
                     "away_team": "DEN",
                     "venue": "KC Stadium",
                     "stadium_id": "KAN00",
-                    "kickoff_et": datetime(2024, 9, 24, 13, 0),  # 14 days -> bye
+                    "kickoff_et": datetime(
+                        2024, 9, 24, 13, 0, tzinfo=_ET
+                    ),  # 14 days -> bye
                 },
             ]
         )
@@ -241,7 +264,9 @@ class TestSituationalOffBye:
         with patch.object(
             calc, "_load_full_season_schedule", return_value=pd.DataFrame()
         ):
-            result = calc.build_features(games, datetime(2024, 9, 25, 18, 0))
+            result = calc.build_features(
+                games, datetime(2024, 9, 25, 18, 0, tzinfo=_ET)
+            )
 
         result = result.set_index("game_id")
 
@@ -274,7 +299,7 @@ class TestSituationalOffBye:
                     "away_team": "MIA",
                     "venue": "KC Stadium",
                     "stadium_id": "KAN00",
-                    "kickoff_et": datetime(2024, 9, 10, 13, 0),
+                    "kickoff_et": datetime(2024, 9, 10, 13, 0, tzinfo=_ET),
                 },
                 {
                     "game_id": "BYE_W3",
@@ -284,7 +309,9 @@ class TestSituationalOffBye:
                     "away_team": "DEN",
                     "venue": "KC Stadium",
                     "stadium_id": "KAN00",
-                    "kickoff_et": datetime(2024, 9, 24, 13, 0),  # 14 days -> bye
+                    "kickoff_et": datetime(
+                        2024, 9, 24, 13, 0, tzinfo=_ET
+                    ),  # 14 days -> bye
                 },
             ]
         )
@@ -301,7 +328,7 @@ class TestSituationalOffBye:
                 "away_elo_pre": [1550.0, 1500.0],
                 "kickoff_et": pd.to_datetime(
                     ["2024-09-10T13:00:00", "2024-09-24T13:00:00"]
-                ),
+                ).tz_localize(_ET),
                 "home_score": [24.0, np.nan],
                 "away_score": [17.0, np.nan],
             }
@@ -312,7 +339,7 @@ class TestSituationalOffBye:
         ):
             result = calc.build_features(
                 games,
-                datetime(2024, 9, 20, 18, 0),  # freeze after W1, before W3
+                datetime(2024, 9, 20, 18, 0, tzinfo=_ET),  # freeze after W1, before W3
                 target_season=2024,
                 target_week=3,
             )
@@ -340,7 +367,7 @@ class TestSituationalFullSchedule:
                     "away_team": "CAR",
                     "venue": "KC Stadium",
                     "stadium_id": "KAN00",
-                    "kickoff_et": datetime(2023, 9, 10, 13, 0),
+                    "kickoff_et": datetime(2023, 9, 10, 13, 0, tzinfo=_ET),
                 }
             ]
         )

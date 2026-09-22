@@ -22,9 +22,14 @@ the FIRST builder in the snaps->injuries dependency chain.
 
 Key constraints:
 
-- No data leakage: snaps are POST-game, so the builder fences by
-  ``week < target_week`` (prior games only) -- exactly the ``team_form`` week
-  idiom. Snaps carry no timestamp column, so ``check_time_fence`` is not used.
+- No data leakage: snaps are POST-game, so a team-game's snaps are known once
+  that game has ENDED (kickoff plus ``features.provenance.DECLARED_GAME_DURATION``,
+  timed against the schedule), and a target game's window admits a prior game only
+  when that end is at or before the target's OWN lock (``utils.game_lock``, Plan
+  33.2-14). The window used to be keyed on the WEEK LABEL (``week < target_week``);
+  on an ordinary schedule the two agree, and the lock-keyed form is the rule itself
+  -- the only one that also excludes a rescheduled prior game played after the
+  target's lock.
 - The rolling window is REUSED from ``team_form`` (D-12): the dynamic expanding
   window + linear recency weights are NOT re-implemented here.
 - Derived feature names use ``snap_continuity`` / ``snap_concentration`` /
@@ -35,13 +40,20 @@ Key constraints:
   to 2013 carry SD / STL / OAK historical codes; hard-fail on unknowns).
 """
 
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
+import utils.game_lock as lock_rule
 from data.storage import load_dataframe
-from features.team_form import TeamFormCalculator
+from features.provenance import (
+    PROVENANCE_COLUMNS,
+    InformationBasis,
+)
+from features.team_form import TeamFormCalculator, team_game_schedule, week_team_locks
 from utils import get_logger
 from utils.team_data import normalize_team_abbreviation
 
@@ -114,6 +126,7 @@ class SnapCountBuilder:
         self,
         snaps_df: pd.DataFrame | None = None,
         max_prior_games: int = MAX_PRIOR_GAMES,
+        schedule_df: pd.DataFrame | None = None,
     ) -> None:
         """Initialize the snap-count builder.
 
@@ -123,8 +136,14 @@ class SnapCountBuilder:
                 builder loads ``snap_counts`` from the silver layer.
             max_prior_games: Maximum prior-season games in the rolling window
                 when current-season data is sparse (matches TeamFormCalculator).
+            schedule_df: Optional schedule (silver ``games`` shape: ``game_id``,
+                ``season``, ``week``, ``home_team``, ``away_team``, a tz-aware
+                ``kickoff_et``) the snap team-games are TIMED against and the
+                target games are LOCKED from -- the same injection seam as
+                *snaps_df*. When ``None`` the builder loads silver ``games``.
         """
         self._snaps_df = snaps_df
+        self._schedule_df = schedule_df
         self.max_prior_games = max_prior_games
 
         # The team_form calculator owns the dynamic window (D-12). We reuse its
@@ -134,6 +153,7 @@ class SnapCountBuilder:
         # Caches keyed by nothing (single load); populated lazily.
         self._team_game_cache: pd.DataFrame | None = None
         self._games_cache: pd.DataFrame | None = None
+        self._team_schedule_cache: pd.DataFrame | None = None
 
     # ------------------------------------------------------------------
     # Silver loading + team-game aggregation
@@ -242,11 +262,44 @@ class SnapCountBuilder:
 
         return team_game
 
+    def _team_schedule(self) -> pd.DataFrame:
+        """The timing schedule, built once: ``features.team_form.team_game_schedule``.
+
+        THE ONE TIMING of a team-game shared with team form (D-12): its END (kickoff
+        plus ``DECLARED_GAME_DURATION``, the Elo replay's duration) and its lock (the
+        one rule). A scheduled game with no kickoff has neither, so its snaps are never
+        admitted and it is never a target; a naive kickoff is refused by name.
+        """
+        if self._team_schedule_cache is None:
+            games = (
+                self._schedule_df
+                if self._schedule_df is not None
+                else load_dataframe("games", layer="silver")
+            )
+            self._team_schedule_cache = team_game_schedule(games)
+        return self._team_schedule_cache
+
     def _get_team_game(self) -> pd.DataFrame:
-        """Return the cached team-game aggregate frame (computed once)."""
+        """Return the cached team-game aggregate frame (computed once), each row TIMED.
+
+        ``_end`` is the scheduled game's end instant, matched by (season, week, team)
+        -- the snap ids (``2023_01_BUF_KC``) and the schedule's never match. A
+        team-game with no scheduled match has no known end (NaT) and is therefore
+        never admitted, which is the conservative answer.
+        """
         if self._team_game_cache is None:
-            self._team_game_cache = self._team_game_aggregates(self._load_snaps())
+            team_game = self._team_game_aggregates(self._load_snaps())
+            if len(team_game) > 0:
+                timing = self._team_schedule()[["season", "week", "team", "_end"]]
+                team_game = team_game.merge(
+                    timing, on=["season", "week", "team"], how="left"
+                )
+            self._team_game_cache = team_game
         return self._team_game_cache
+
+    def _week_team_locks(self, target_season: int, target_week: int) -> dict[str, Any]:
+        """``team -> lock`` of each team's scheduled game in (season, week)."""
+        return week_team_locks(self._team_schedule(), target_season, target_week)
 
     # ------------------------------------------------------------------
     # Backward-rolling feature computation (window REUSED from team_form)
@@ -258,30 +311,36 @@ class SnapCountBuilder:
         team: str,
         target_season: int,
         target_week: int,
+        lock: Any,
     ) -> pd.DataFrame:
-        """Select the prior-games-only rolling window for one team.
+        """Select the rolling window for one team, admitted at the target's LOCK.
 
-        Fences to ``week < target_week`` (prior games only, the team_form week
-        idiom) and then REUSES ``TeamFormCalculator._select_dynamic_window``
-        (D-12) to pick the dynamic expanding window over those prior games.
+        A team-game is admitted only when its END instant (``_end``) is at or before
+        *lock*, the target game's own lock (at-lock admissible, the ``<=`` of
+        ``utils.game_lock.is_admissible``). The admitted games then go through the
+        REUSED ``TeamFormCalculator._select_dynamic_window`` (D-12).
+
+        WHY LOCK-KEYED AND NOT WEEK-KEYED (Plan 33.2-14). The retired fence read the
+        WEEK LABEL (``week < target_week``). The window is per team and a team plays
+        at most once a week, so on an ordinary schedule the two select the same
+        games (D33.2-01 measured 0 games in 2002-2026 whose week-keyed inputs include
+        a result that ended after their lock). The lock-keyed window IS the
+        admissibility rule rather than a proxy that happens to agree with it, and it
+        is the only one that excludes a game whose week label precedes the target
+        week but which was PLAYED after the target's lock -- a rescheduled game.
 
         Args:
-            team_game: Team-game aggregate frame.
+            team_game: Team-game aggregate frame (timed: ``_end``).
             team: Canonical team abbreviation.
             target_season: Season being predicted.
             target_week: Week being predicted.
+            lock: The target game's lock, tz-aware.
 
         Returns:
-            The window subset of prior games for the team (may be empty).
+            The window subset of admitted prior games for the team (may be empty).
         """
         group = team_game[team_game["team"] == team]
-
-        # Prior-games-only fence (snaps are post-game; fence by week, not by a
-        # timestamp). Identical in shape to team_form.py:451-458.
-        fenced = group[
-            (group["season"] < target_season)
-            | ((group["season"] == target_season) & (group["week"] < target_week))
-        ].sort_values(["season", "week"])
+        fenced = group[group["_end"] <= lock].sort_values("_end")
 
         if len(fenced) == 0:
             return fenced
@@ -291,36 +350,57 @@ class SnapCountBuilder:
             fenced, target_season, target_week
         )
 
-    def contributing_games(self, target_season: int, target_week: int) -> pd.DataFrame:
+    def contributing_games(
+        self,
+        target_season: int,
+        target_week: int,
+        team_locks: Mapping[str, Any] | None = None,
+    ) -> pd.DataFrame:
         """Return the snap team-game rows that feed the rolling features.
 
-        Every row here is a PRIOR game (``season < target_season`` or
-        ``week < target_week``); the time-fence proof asserts exactly that.
+        Every row here ENDED at or before its target game's lock (``_end``); the
+        time-fence proof asserts exactly that, and this frame is the honest source of
+        the builder's provenance (the latest ``_end`` a game's two teams admitted).
 
         Args:
             target_season: Season being predicted.
             target_week: Week being predicted.
+            team_locks: ``team -> lock`` for the week's target games. When ``None``
+                each team's own scheduled game in (season, week) supplies it.
 
         Returns:
-            Concatenation of each team's window games (game_id, season, week,
-            team), de-duplicated. Empty when no prior snaps exist.
+            Concatenation of each team's window games (game_id, season, week, team,
+            ``_end``), de-duplicated. Empty when no prior snaps were admitted.
         """
+        columns = ["game_id", "season", "week", "team", "_end"]
         team_game = self._get_team_game()
         if len(team_game) == 0:
-            return pd.DataFrame(columns=["game_id", "season", "week", "team"])
+            return pd.DataFrame(columns=columns)
+        locks = (
+            dict(team_locks)
+            if team_locks is not None
+            else self._week_team_locks(target_season, target_week)
+        )
 
         windows = []
-        for team in team_game["team"].unique():
-            window = self._window_for_team(team_game, team, target_season, target_week)
+        for team, lock in locks.items():
+            window = self._window_for_team(
+                team_game, team, target_season, target_week, lock
+            )
             if len(window) > 0:
-                windows.append(window[["game_id", "season", "week", "team"]])
+                windows.append(window[columns])
 
         if not windows:
-            return pd.DataFrame(columns=["game_id", "season", "week", "team"])
-        return pd.concat(windows, ignore_index=True).drop_duplicates()
+            return pd.DataFrame(columns=columns)
+        return pd.concat(windows, ignore_index=True).drop_duplicates(
+            subset=["game_id", "team"]
+        )
 
     def compute_team_snap_features(
-        self, target_season: int, target_week: int
+        self,
+        target_season: int,
+        target_week: int,
+        team_locks: Mapping[str, Any] | None = None,
     ) -> pd.DataFrame:
         """Compute backward-rolling team snap features for a target week.
 
@@ -329,23 +409,35 @@ class SnapCountBuilder:
         weighted-mean ``snap_continuity`` / ``snap_concentration`` and per
         position-group ``rolling_snap_share_*`` columns.
 
+        Each team's window is admitted at ITS target game's lock, so a team with no
+        scheduled game in (season, week) -- a bye -- has no lock and no row.
+
         Args:
             target_season: Season being predicted.
             target_week: Week being predicted.
+            team_locks: ``team -> lock`` for the week's target games. When ``None``
+                each team's own scheduled game in (season, week) supplies it.
 
         Returns:
             One row per team with the rolling snap feature columns. Empty when
-            no prior snaps exist.
+            no prior snaps were admitted.
         """
         team_game = self._get_team_game()
         if len(team_game) == 0:
             return pd.DataFrame()
+        locks = (
+            dict(team_locks)
+            if team_locks is not None
+            else self._week_team_locks(target_season, target_week)
+        )
 
         share_cols = [f"snap_share_{grp}" for grp in KEY_POSITION_GROUPS]
         rows: list[dict] = []
 
-        for team in sorted(team_game["team"].unique()):
-            window = self._window_for_team(team_game, team, target_season, target_week)
+        for team in sorted(locks):
+            window = self._window_for_team(
+                team_game, team, target_season, target_week, locks[team]
+            )
             if len(window) == 0:
                 continue
 
@@ -441,27 +533,30 @@ class SnapCountBuilder:
         *,
         target_season: int | None = None,
         target_week: int | None = None,
+        lock_frame: pd.Series | None = None,
     ) -> pd.DataFrame:
-        """Build home/away-expanded snap features for games.
+        """Build home/away-expanded snap features, each game at its OWN lock.
 
-        Conforms to the FeatureBuilder Protocol. The ``as_of_datetime``
-        time-fence is honored structurally: snaps have no timestamp, so the
-        builder only ever consumes PRIOR games (``week < target_week``), which
-        are by construction before the as-of cutoff for the target week.
+        Conforms to the FeatureBuilder Protocol. Both teams' windows admit only the
+        team-games that ENDED at or before the target game's lock (Plan 33.2-14).
 
         Args:
             games_df: DataFrame of games to build features for.
-            as_of_datetime: Time-fence cutoff (informational for snaps; the
-                prior-week fence is the binding control).
+            as_of_datetime: Carried for the ``FeatureBuilder`` Protocol ONLY. It is
+                NOT a fence and no selection reads it.
             target_season: Season to calculate features for.
             target_week: Week to calculate features for.
+            lock_frame: The build's ``game_id`` -> lock frame, built ONCE by the
+                caller. When ``None`` it is built here from the target games.
 
         Returns:
             One row per game with home_/away_ snap feature columns.
+
+        Raises:
+            utils.game_lock.MissingKickoffError: a target game has no kickoff.
         """
         logger.info(
             "Building snap-count features",
-            as_of_datetime=str(as_of_datetime),
             target_season=target_season,
             target_week=target_week,
         )
@@ -486,12 +581,16 @@ class SnapCountBuilder:
                 .drop_duplicates()
                 .sort_values(["season", "week"])
             )
+            locks = (
+                lock_frame if lock_frame is not None else lock_rule.lock_frame(games_df)
+            )
             for _, sw in season_weeks.iterrows():
                 chunk = self.build_features(
                     games_df,
                     as_of_datetime,
                     target_season=int(sw["season"]),
                     target_week=int(sw["week"]),
+                    lock_frame=locks,
                 )
                 if len(chunk) > 0:
                     all_results.append(chunk)
@@ -499,15 +598,18 @@ class SnapCountBuilder:
                 return pd.concat(all_results, ignore_index=True)
             return pd.DataFrame(columns=empty_cols)
 
-        team_features = self.compute_team_snap_features(target_season, target_week)
+        target_games = games_df[
+            (games_df["season"] == target_season) & (games_df["week"] == target_week)
+        ]
+        team_features = self.compute_team_snap_features(
+            target_season,
+            target_week,
+            team_locks=self._target_team_locks(target_games, lock_frame),
+        )
         team_lookup: dict[str, dict] = {}
         if len(team_features) > 0:
             for _, row in team_features.iterrows():
                 team_lookup[row["team"]] = {c: row[c] for c in feature_cols}
-
-        target_games = games_df[
-            (games_df["season"] == target_season) & (games_df["week"] == target_week)
-        ]
 
         rows: list[dict] = []
         for _, game in target_games.iterrows():
@@ -522,6 +624,93 @@ class SnapCountBuilder:
         if not rows:
             return pd.DataFrame(columns=empty_cols)
         return pd.DataFrame(rows)
+
+    def _target_team_locks(
+        self, target_games: pd.DataFrame, lock_frame: pd.Series | None
+    ) -> dict[str, Any]:
+        """``team -> its target game's lock`` for one (season, week) of target games.
+
+        The lock comes from the caller's lock frame (per-game lookup by ``game_id``),
+        or from the rule applied to *target_games* when none was handed in.
+        """
+        if len(target_games) == 0:
+            return {}
+        locks = (
+            lock_frame if lock_frame is not None else lock_rule.lock_frame(target_games)
+        )
+        team_locks: dict[str, Any] = {}
+        for game in target_games.to_dict("records"):
+            lock = locks[str(game["game_id"])]
+            for column in ("home_team", "away_team"):
+                team = self._safe_normalize(game[column])
+                if team is not None:
+                    team_locks[team] = lock
+        return team_locks
+
+    # ------------------------------------------------------------------
+    # InformationTimeProvider (features.protocol, Plan 33.2-01's owned contract)
+    # ------------------------------------------------------------------
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        """A game whose two teams admitted no snap team-game: every snap column NULL."""
+        return {
+            f"{prefix}_{column}": None
+            for prefix in ("home", "away")
+            for column in self._feature_columns()
+        }
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """One provenance row per game: the END of the latest snap team-game it admitted.
+
+        DERIVED FROM :meth:`contributing_games` -- the window the features were computed
+        from -- rather than from a second rule: the latest ``_end`` among both teams'
+        admitted team-games at the target game's lock. A game whose teams admitted
+        nothing (before snaps coverage begins in 2013, or a team's first game) is
+        ``basis="no_information"`` with a NULL time, value-checked against
+        :meth:`no_information_signature`.
+
+        Returns:
+            A frame with exactly ``PROVENANCE_COLUMNS``.
+        """
+        target = games_df
+        if target_season is not None and target_week is not None:
+            target = games_df[
+                (games_df["season"] == target_season)
+                & (games_df["week"] == target_week)
+            ]
+        records: list[dict[str, Any]] = []
+        if len(target) > 0:
+            locks = lock_rule.lock_frame(target)
+            for key, week_games in target.groupby(["season", "week"], sort=True):
+                season, week = int(key[0]), int(key[1])
+                contributing = self.contributing_games(
+                    season, week, self._target_team_locks(week_games, locks)
+                )
+                for game in week_games.to_dict("records"):
+                    teams = {
+                        self._safe_normalize(game["home_team"]),
+                        self._safe_normalize(game["away_team"]),
+                    }
+                    ends = contributing.loc[contributing["team"].isin(teams), "_end"]
+                    latest = pd.Timestamp(ends.max()) if len(ends) > 0 else None
+                    records.append(
+                        {
+                            "game_id": str(game["game_id"]),
+                            "basis": (
+                                InformationBasis.PER_ROW.value
+                                if latest is not None
+                                else InformationBasis.NO_INFORMATION.value
+                            ),
+                            "information_time": latest,
+                        }
+                    )
+        return pd.DataFrame(records, columns=list(PROVENANCE_COLUMNS))
 
     def get_features_for_game(
         self,

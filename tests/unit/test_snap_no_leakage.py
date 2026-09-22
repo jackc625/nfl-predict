@@ -10,7 +10,10 @@ Three-part canonical standard (D-18a), following the
   2. Time-fence assertion (LIVE, Plan 28-03) -- SnapCountBuilder only consumes
      prior-week snap rows (week < target_week within target_season, or any
      earlier season); no current/future-week row feeds the backward-rolling
-     features.
+     features. Since Plan 33.2-14 the window is admitted at the target game's
+     LOCK (a team-game counts once it has ENDED at or before it), which on this
+     ordinary weekly schedule selects exactly the prior weeks; the synthetic
+     one-second boundary is proven in tests/unit/test_builder_lock_cutoffs.py.
   3. Withhold-future byte-unchanged (LIVE, Plan 28-03) -- revealing the target
      week's post-game snap row leaves every rolling_snap_* / snap_continuity /
      snap_concentration value byte-identical.
@@ -136,8 +139,20 @@ def _snap_fixture(weeks: list[int], season: int = 2023) -> pd.DataFrame:
     ].to_pandas()
 
 
-def _make_test_games(season: int = 2023, week: int = 3) -> pd.DataFrame:
-    """Minimal games_df for a single KC (home) vs BUF (away) target game."""
+def _kickoff(season: int, week: int) -> pd.Timestamp:
+    """A Sunday 13:00 ET kickoff for *week* (week 1 on the second Sunday of September)."""
+    return pd.Timestamp(f"{season}-09-10 17:00", tz="UTC") + pd.Timedelta(
+        weeks=week - 1
+    )
+
+
+def _schedule(season: int = 2023, weeks: tuple[int, ...] = (1, 2, 3)) -> pd.DataFrame:
+    """The schedule the snap team-games are TIMED against and the targets LOCKED from.
+
+    One KC (home) vs BUF (away) game per week. Injected so the builder never reads the
+    local data lake: since Plan 33.2-14 the window admits a team-game only once it has
+    ENDED at or before the target game's lock, which needs each game's kickoff.
+    """
     return pd.DataFrame(
         [
             {
@@ -146,9 +161,16 @@ def _make_test_games(season: int = 2023, week: int = 3) -> pd.DataFrame:
                 "week": week,
                 "home_team": "KC",
                 "away_team": "BUF",
+                "kickoff_et": _kickoff(season, week),
             }
+            for week in weeks
         ]
     )
+
+
+def _make_test_games(season: int = 2023, week: int = 3) -> pd.DataFrame:
+    """Minimal games_df for a single KC (home) vs BUF (away) target game."""
+    return _schedule(season, (week,))
 
 
 def _make_combined_matrix(extra_columns: dict[str, list] | None = None) -> pd.DataFrame:
@@ -243,7 +265,9 @@ class TestSnapDerivedNamesNoFalsePositive:
         snap name substring-collides with the six raw spellings."""
         gate = LeakageGate()
         as_of = datetime(2023, 10, 26, 18, 0)
-        builder = SnapCountBuilder(snaps_df=_snap_fixture([1, 2]))
+        builder = SnapCountBuilder(
+            snaps_df=_snap_fixture([1, 2]), schedule_df=_schedule()
+        )
         feats = builder.build_features(
             _make_test_games(2023, 3), as_of, target_season=2023, target_week=3
         )
@@ -266,7 +290,9 @@ class TestSnapTimeFence:
         may be from week >= 3 within season 2023 (the prior-games-only fence)."""
         # Fixture carries weeks 1, 2 AND 3; week 3 is the target's own post-game
         # data that must be excluded.
-        builder = SnapCountBuilder(snaps_df=_snap_fixture([1, 2, 3]))
+        builder = SnapCountBuilder(
+            snaps_df=_snap_fixture([1, 2, 3]), schedule_df=_schedule()
+        )
 
         contributing = builder.contributing_games(target_season=2023, target_week=3)
 
@@ -299,11 +325,15 @@ class TestSnapWithholdFuture:
         ]
 
         # WITHOUT the target week's post-game snaps (weeks 1-2 only).
-        withheld = SnapCountBuilder(snaps_df=_snap_fixture([1, 2]))
+        withheld = SnapCountBuilder(
+            snaps_df=_snap_fixture([1, 2]), schedule_df=_schedule()
+        )
         feats_withheld = withheld.compute_team_snap_features(2023, 3)
 
         # WITH the target week's post-game snaps revealed (weeks 1-2-3).
-        revealed = SnapCountBuilder(snaps_df=_snap_fixture([1, 2, 3]))
+        revealed = SnapCountBuilder(
+            snaps_df=_snap_fixture([1, 2, 3]), schedule_df=_schedule()
+        )
         feats_revealed = revealed.compute_team_snap_features(2023, 3)
 
         # Same teams, same ordering.
@@ -327,12 +357,16 @@ class TestSnapWithholdFuture:
         as_of = datetime(2023, 10, 26, 18, 0)
         games = _make_test_games(2023, 3)
 
-        withheld = SnapCountBuilder(snaps_df=_snap_fixture([1, 2]))
+        withheld = SnapCountBuilder(
+            snaps_df=_snap_fixture([1, 2]), schedule_df=_schedule()
+        )
         out_withheld = withheld.build_features(
             games, as_of, target_season=2023, target_week=3
         )
 
-        revealed = SnapCountBuilder(snaps_df=_snap_fixture([1, 2, 3]))
+        revealed = SnapCountBuilder(
+            snaps_df=_snap_fixture([1, 2, 3]), schedule_df=_schedule()
+        )
         out_revealed = revealed.build_features(
             games, as_of, target_season=2023, target_week=3
         )

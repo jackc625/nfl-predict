@@ -9,7 +9,6 @@ Tests for three new metrics added to team_form.py:
 All new metrics use the same dynamic expanding window as existing EPA metrics.
 """
 
-
 import numpy as np
 import pandas as pd
 
@@ -18,6 +17,34 @@ from features.team_form import TeamFormCalculator
 # ---------------------------------------------------------------------------
 # Synthetic PBP data fixture for extension tests
 # ---------------------------------------------------------------------------
+
+
+def _weekly_schedule(team: str = "BUF", seasons: tuple[int, ...] = (2023, 2024)):
+    """One Sunday game per week (weeks 1-18) for *team*: the schedule the synthetic
+    team-games are TIMED against and each target game LOCKED from (Plan 33.2-14).
+
+    Injected so the calculator never reads the local data lake: since the window is
+    admitted at the target game's lock, a synthetic row needs its game's kickoff. On this
+    ordinary weekly schedule the lock-keyed window selects exactly the prior weeks.
+    """
+    rows = []
+    for season in seasons:
+        first_sunday = pd.Timestamp(f"{season}-09-10 17:00", tz="UTC")
+        for week in range(1, 19):
+            rows.append(
+                {
+                    "game_id": f"SYN_{season}_W{week:02d}_{team}",
+                    "season": season,
+                    "week": week,
+                    "home_team": team,
+                    "away_team": "MIA",
+                    "kickoff_et": first_sunday + pd.Timedelta(weeks=week - 1),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+_SCHEDULE = _weekly_schedule()
 
 
 def _build_synthetic_pbp(
@@ -70,7 +97,9 @@ def _build_synthetic_pbp(
         if drive_num == num_drives:
             drive_play_count = total_plays - (num_drives - 1) * plays_per_drive
 
-        yardline = drive_starts_yardline[min(drive_num - 1, len(drive_starts_yardline) - 1)]
+        yardline = drive_starts_yardline[
+            min(drive_num - 1, len(drive_starts_yardline) - 1)
+        ]
 
         for play_in_drive in range(drive_play_count):
             is_first_play = play_in_drive == 0
@@ -80,7 +109,11 @@ def _build_synthetic_pbp(
             # Determine CPOE for pass plays
             cpoe_val = np.nan
             if is_pass and cpoe_idx < len(cpoe_values):
-                cpoe_val = cpoe_values[cpoe_idx] if cpoe_values[cpoe_idx] is not None else np.nan
+                cpoe_val = (
+                    cpoe_values[cpoe_idx]
+                    if cpoe_values[cpoe_idx] is not None
+                    else np.nan
+                )
                 cpoe_idx += 1
 
             # Determine neutral situation: roughly 60% of plays
@@ -101,7 +134,9 @@ def _build_synthetic_pbp(
                     "epa": 0.1 if is_pass else -0.05,
                     "success": 1 if play_id % 2 == 0 else 0,
                     "cpoe": cpoe_val,
-                    "yardline_100": yardline if is_first_play else max(yardline - play_in_drive * 5, 1),
+                    "yardline_100": yardline
+                    if is_first_play
+                    else max(yardline - play_in_drive * 5, 1),
                     "fixed_drive": drive_num,
                     "down": down,
                     "ydstogo": ydstogo,
@@ -157,7 +192,9 @@ def _build_synthetic_team_stats_with_new_metrics(
                         "rush_attempts": 30,
                         # New per-game metrics
                         "team_cpoe": 1.5 + sign * 0.5 if side == "offense" else np.nan,
-                        "avg_drive_start_yardline": 70.0 + week * 0.5 if side == "offense" else np.nan,
+                        "avg_drive_start_yardline": 70.0 + week * 0.5
+                        if side == "offense"
+                        else np.nan,
                         "neutral_pace": 35 + week if side == "offense" else np.nan,
                     }
                 )
@@ -187,7 +224,7 @@ class TestRollingCPOE:
             cpoe_values=cpoe_values,
         )
 
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         # The neutral_situation column needs to exist for calculate_team_game_stats
         stats = builder.calculate_team_game_stats(pbp)
 
@@ -207,7 +244,7 @@ class TestRollingCPOE:
             cpoe_values=cpoe_values,
         )
 
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = builder.calculate_team_game_stats(pbp)
 
         buf_offense = stats[(stats["team"] == "BUF") & (stats["side"] == "offense")]
@@ -218,7 +255,7 @@ class TestRollingCPOE:
 
     def test_rolling_cpoe_uses_same_window_as_epa(self):
         """Rolling CPOE must use the same dynamic expanding window as existing EPA."""
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats_with_new_metrics("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -237,7 +274,7 @@ class TestRollingCPOE:
 
     def test_rolling_cpoe_appears_in_output(self):
         """rolling_cpoe must appear in build_features output DataFrame."""
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats_with_new_metrics("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -267,7 +304,7 @@ class TestDriveStartPosition:
             num_drives=5,
         )
 
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = builder.calculate_team_game_stats(pbp)
 
         buf_offense = stats[(stats["team"] == "BUF") & (stats["side"] == "offense")]
@@ -284,7 +321,7 @@ class TestDriveStartPosition:
             drive_starts_yardline=[80, 70, 60],
         )
 
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = builder.calculate_team_game_stats(pbp)
 
         buf_offense = stats[(stats["team"] == "BUF") & (stats["side"] == "offense")]
@@ -295,7 +332,7 @@ class TestDriveStartPosition:
 
     def test_rolling_avg_drive_start_yardline_in_output(self):
         """rolling_avg_drive_start_yardline must appear in rolling averages output."""
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats_with_new_metrics("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -319,7 +356,7 @@ class TestNeutralPace:
         """
         pbp = _build_synthetic_pbp(num_pass_plays=30, num_rush_plays=30)
 
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = builder.calculate_team_game_stats(pbp)
 
         buf_offense = stats[(stats["team"] == "BUF") & (stats["side"] == "offense")]
@@ -327,7 +364,9 @@ class TestNeutralPace:
         neutral_pace = buf_offense.iloc[0]["neutral_pace"]
 
         # Neutral pace should be a non-negative count
-        assert neutral_pace >= 0, f"Neutral pace should be non-negative, got {neutral_pace}"
+        assert neutral_pace >= 0, (
+            f"Neutral pace should be non-negative, got {neutral_pace}"
+        )
         # With our synthetic data, we should have some neutral plays
         assert neutral_pace > 0, "Expected at least some neutral-situation plays"
 
@@ -339,7 +378,7 @@ class TestNeutralPace:
         pbp["down"] = 3
         # Also need to recalculate neutral_situation since we changed down
 
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = builder.calculate_team_game_stats(pbp)
 
         buf_offense = stats[(stats["team"] == "BUF") & (stats["side"] == "offense")]
@@ -349,7 +388,7 @@ class TestNeutralPace:
 
     def test_rolling_neutral_pace_in_output(self):
         """rolling_neutral_pace must appear in rolling averages output."""
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats_with_new_metrics("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -374,7 +413,7 @@ class TestNewMetricsInOutput:
 
     def test_all_new_metrics_in_rolling_output(self):
         """All three new metrics must appear in calculate_rolling_averages output."""
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats_with_new_metrics("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -399,7 +438,7 @@ class TestNewMetricsInOutput:
             "rolling_third_down_conversion_rate",
         ]
 
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats_with_new_metrics("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -421,7 +460,7 @@ class TestNewMetricsTemporalCorrectness:
 
     def test_rolling_cpoe_uses_only_prior_games(self):
         """Rolling CPOE for target week N must not include week N data."""
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats_with_new_metrics("BUF", [2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -446,7 +485,7 @@ class TestNewMetricsEarlySeason:
 
     def test_week1_new_metrics_use_prior_season(self):
         """When fewer than min_periods games exist, metrics use prior-season bootstrap."""
-        builder = TeamFormCalculator()
+        builder = TeamFormCalculator(schedule_df=_SCHEDULE)
         stats = _build_synthetic_team_stats_with_new_metrics("BUF", [2023, 2024])
 
         rolling = builder.calculate_rolling_averages(
@@ -459,10 +498,16 @@ class TestNewMetricsEarlySeason:
         assert buf_off.iloc[0]["games_used"] == 8
 
         # New metrics should have valid values from prior season
-        for metric in ["rolling_cpoe", "rolling_avg_drive_start_yardline", "rolling_neutral_pace"]:
+        for metric in [
+            "rolling_cpoe",
+            "rolling_avg_drive_start_yardline",
+            "rolling_neutral_pace",
+        ]:
             assert metric in rolling.columns, f"Missing {metric} in Week 1 output"
             value = buf_off.iloc[0][metric]
-            assert not np.isnan(value), f"{metric} should not be NaN at Week 1 (prior-season data exists)"
+            assert not np.isnan(value), (
+                f"{metric} should not be NaN at Week 1 (prior-season data exists)"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +521,7 @@ class TestFeat16SkipDocumented:
     def test_feat16_comment_in_source(self):
         """features/team_form.py must contain FEAT-16 skip documentation."""
         import inspect
+
         source = inspect.getsource(TeamFormCalculator)
         assert "FEAT-16" in source, (
             "TeamFormCalculator source must contain FEAT-16 skip documentation"
