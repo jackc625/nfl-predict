@@ -292,16 +292,35 @@ class TestEveryWindowCameFromTheCommittedRule:
     def test_all_three_windows_equal_the_partition_rule_on_every_target(
         self, committed_verdicts: dict[str, Any]
     ) -> None:
+        """The windows equal the rule AS IT STOOD when the verdict was produced.
+
+        Re-pointed by Plan 33.2-18. The committed verdict is Phase 33's historical record
+        and is never edited; the rule it ran under is recorded, also unedited, in
+        ``tests.phase33_state.SEASON_PARTITION_AFTER`` (selection 2018-2022). The rule's
+        second amendment (D33.2-14) then moved the selection window to 2002, so the verdict
+        is compared with the rule of its own time, and the move is asserted rather than
+        hidden: the LIVE partition's selection now differs from the verdict's train window.
+
+        Was: ``want`` built from ``default_season_partition()``, the LIVE rule.
+        """
         from conf.season_partition import default_season_partition
 
-        partition = default_season_partition()
+        recorded = phase33_state.SEASON_PARTITION_AFTER
         want = {
-            "train": list(partition.selection),
-            "hp_val": list(partition.hp_val),
-            "holdout": list(partition.holdout),
+            "train": list(recorded["selection"]),
+            "hp_val": list(recorded["hp_val"]),
+            "holdout": list(recorded["holdout"]),
         }
         for target, row in committed_verdicts["verdicts"].items():
             assert {k: list(v) for k, v in row["windows"].items()} == want, target
+
+        live = default_season_partition()
+        assert list(live.selection) != want["train"], (
+            "the live selection window equals the Phase-33 verdict's train window, but "
+            "conf/season_partition.py's second amendment moved it to 2002"
+        )
+        assert list(live.hp_val) == want["hp_val"]
+        assert list(live.holdout) == want["holdout"]
 
     def test_no_target_ran_a_hyperparameter_search(
         self, committed_verdicts: dict[str, Any]

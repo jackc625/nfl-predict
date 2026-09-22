@@ -37,17 +37,21 @@ class TestBacktestConfig:
         assert config.holdout_seasons == list(default_season_partition().holdout)
 
     def test_default_first_data_season(self) -> None:
-        """UNCHANGED at 2018, and that is the point: not every number moved.
+        """2002 since Plan 33.2-18 (D33.2-14): the selection floor moved to the corpus start.
 
-        The selection floor stays where it was; what changed is that it is now DERIVED from
-        conf.season_partition.SELECTION_WINDOW_FIRST_SEASON, where its measured justification
-        is readable -- it is the coverage floor of three silver sources, not folklore.
+        The floor is DERIVED from conf.season_partition.SELECTION_WINDOW_FIRST_SEASON, where its
+        justification is readable. It sat at 2018 while that was the coverage floor of three
+        silver sources; all three floors dissolved in Phase 33.2, and the rule's second
+        amendment moved it. The literal is pinned as well as the derivation, so a silent move
+        of the rule still fails here.
+
+        Was: ``assert config.first_data_season == 2018`` (Plan 33.1-09, the 2018 coverage floor).
         """
         from conf.season_partition import SELECTION_WINDOW_FIRST_SEASON
 
         config = BacktestConfig()
         assert config.first_data_season == SELECTION_WINDOW_FIRST_SEASON
-        assert config.first_data_season == 2018
+        assert config.first_data_season == 2002
 
     def test_default_targets(self) -> None:
         config = BacktestConfig()
@@ -79,27 +83,31 @@ class TestCreateSplitConfig:
     def setup_method(self) -> None:
         self.engine = BacktestEngine()
 
+    # Was: every train_seasons list below started at 2018, the selection floor before Plan
+    # 33.2-18 moved it to the corpus start (D33.2-14). The engine trains from
+    # first_data_season, so each expanding window now starts at 2002.
+
     def test_create_split_config_2021(self) -> None:
         config = self.engine._create_split_config(2021)
-        assert config.train_seasons == [2018, 2019]
+        assert config.train_seasons == list(range(2002, 2020))
         assert config.hp_val_seasons == [2020]
         assert config.holdout_seasons == [2021]
 
     def test_create_split_config_2022(self) -> None:
         config = self.engine._create_split_config(2022)
-        assert config.train_seasons == [2018, 2019, 2020]
+        assert config.train_seasons == list(range(2002, 2021))
         assert config.hp_val_seasons == [2021]
         assert config.holdout_seasons == [2022]
 
     def test_create_split_config_2023(self) -> None:
         config = self.engine._create_split_config(2023)
-        assert config.train_seasons == [2018, 2019, 2020, 2021]
+        assert config.train_seasons == list(range(2002, 2022))
         assert config.hp_val_seasons == [2022]
         assert config.holdout_seasons == [2023]
 
     def test_create_split_config_2024(self) -> None:
         config = self.engine._create_split_config(2024)
-        assert config.train_seasons == [2018, 2019, 2020, 2021, 2022]
+        assert config.train_seasons == list(range(2002, 2023))
         assert config.hp_val_seasons == [2023]
         assert config.holdout_seasons == [2024]
 

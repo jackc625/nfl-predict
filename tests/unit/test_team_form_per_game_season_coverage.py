@@ -45,6 +45,12 @@ owns the consolidation of every season literal into ``conf/season_partition.py``
 and is where the floor should be re-decided. ``test_the_floor_is_preserved``
 pins it so the decision cannot drift silently in the meantime.
 
+SUPERSEDED 2026-09-22 BY PLAN 33.2-18 (D33.2-14). The floor WAS re-decided where this
+paragraph said it should be: ``conf/season_partition.py``'s second amendment moved the
+selection window to 2002 once its three coverage floors dissolved, and
+``TEAM_FORM_PER_GAME_FIRST_SEASON`` follows it by identity. The paragraph above is kept as
+the record of why the floor was held; ``test_the_floor_is_preserved`` now pins 2002.
+
 FOUR CONTROLS
 -------------
 1. NON-VACUITY: the resolved list is captured from the REAL ``fetch_pbp_data``
@@ -157,19 +163,22 @@ class TestTheFloorAndTheTargetSeasonBranchAreUnchanged:
     """CONTROL 4: the two behaviours this fix must not disturb."""
 
     def test_the_floor_is_preserved(self, captured_seasons: list[list[int]]) -> None:
-        """Seasons below the floor are dropped, and the floor is still 2018.
+        """Seasons below the floor are dropped, and the floor is 2002.
 
-        Widening it would move roughly ninety gold columns that are a flat
-        imputed constant for 2002-2017 -- outside this rung's declared change
-        set. The floor is an INHERITED literal, not a data-coverage fact: the
-        play-by-play pin reaches back to 2001. Plan 33.1-09 owns re-deciding it.
+        The floor moved from 2018 to 2002 with the selection window (Plan 33.2-18,
+        D33.2-14), by the identity binding in ``features/team_form.py``. 2001 is the
+        play-by-play pin's bootstrap season: it may feed a 2002 window but is never a
+        per-game pool season of its own.
+
+        Was: ``assert TEAM_FORM_PER_GAME_FIRST_SEASON == 2018`` and seasons
+        ``[2002, 2017, 2018, 2019]`` resolving to ``[2018, 2019]`` (Plan 33.1-07).
         """
-        assert TEAM_FORM_PER_GAME_FIRST_SEASON == 2018
+        assert TEAM_FORM_PER_GAME_FIRST_SEASON == 2002
 
         calculator = TeamFormCalculator()
-        calculator.get_per_game_stats(AS_OF, seasons=[2002, 2017, 2018, 2019])
+        calculator.get_per_game_stats(AS_OF, seasons=[2001, 2002, 2017, 2018])
 
-        assert captured_seasons[-1] == [2018, 2019], (
+        assert captured_seasons[-1] == [2002, 2017, 2018], (
             "a season below the floor must be dropped, not silently fetched"
         )
 
@@ -235,13 +244,17 @@ class TestTheFallbackRefusesRatherThanGuessing:
     def test_a_silver_table_with_no_season_above_the_floor_refuses(
         self, monkeypatch, captured_seasons: list[list[int]]
     ) -> None:
-        """An empty pool is the defect, not a smaller answer."""
+        """An empty pool is the defect, not a smaller answer.
+
+        Was: seasons ``[2002, 2010, 2017]``, all below the 2018 floor. The floor is
+        2002 since Plan 33.2-18, so the planted table now carries seasons below 2002.
+        """
         import features.team_form as team_form_module
 
         monkeypatch.setattr(
             team_form_module,
             "load_dataframe",
-            lambda *a, **k: pd.DataFrame({"season": [2002, 2010, 2017]}),
+            lambda *a, **k: pd.DataFrame({"season": [1999, 2000, 2001]}),
         )
 
         calculator = TeamFormCalculator()
