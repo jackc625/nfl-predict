@@ -163,6 +163,30 @@ POST_STAGE1_SOURCES: tuple[str, ...] = ("opponent_adj",)
 # round cap from ``FEATURE_SOURCE_KEYS`` rather than from a literal, because plans
 # 33.2-12 .. 33.2-17 grow this set. Add a source HERE and ``_information_time_suppliers`` and
 # the cap both follow.
+#
+# THE NINE-KEY LEDGER (Plan 33.2-14). ``load_all_feature_sources`` puts exactly NINE keys in
+# the ``feature_sources`` registry: ``games`` plus the eight below. Every one is listed here
+# with the plan that supplies its provenance or with its recorded disposition, because the
+# defect this ledger prevents is the one that produced it -- a comment that enumerated "what
+# remains" from memory left ``team_form`` out, and nobody held the nine keys against the
+# registration ladder end to end:
+#
+#     games       -- disposition recorded by Plan 33.2-20 (it DEFINES the lock)
+#     team_form   -- registered by Plan 33.2-14 (the per-game frame laid out below)
+#     elo         -- registered by Plan 33.2-01
+#     contextual  -- registered by Plan 33.2-14
+#     weather     -- registered by Plan 33.2-12 (rung 4 owns the weather fence AND its supplier)
+#     market      -- Plan 33.2-14, via features/market_anchors.py
+#     qb_tracking -- registered by Plan 33.2-13
+#     snaps       -- registered by Plan 33.2-14
+#     injury      -- registered by Plan 33.2-13
+#
+# plus the opponent-adjusted family, which is NOT a registry key (it is merged after Stage 1,
+# ``POST_STAGE1_SOURCES``) and is registered by Plan 33.2-16. Registration is STRUCTURAL
+# (``isinstance(builder, InformationTimeProvider)``), so this ledger is the RECORD, not the
+# switch. It is documentation; the binding nine-key instrument is Plan 33.2-20 Task 1's
+# ``features.provenance.REGISTRY_KEY_DISPOSITIONS``, a dict the gate reads and asserts equal to
+# the live registry in both directions.
 SUPPLIER_ATTRIBUTES: dict[str, str] = {
     "team_form": "team_form_calc",
     "elo": "elo_calc",
@@ -571,8 +595,9 @@ class FeatureMatrixBuilder:
             target_season: Specific season to load
             target_week: Specific week to load
             as_of_datetime: The cutoff argument the FeatureBuilder Protocol still carries.
-                It is NOT a fence for QBTracker or InjuryBuilder, which select at each
-                game's own lock (Plan 33.2-13); builders not yet moved onto the lock
+                It is NOT a fence for QBTracker or InjuryBuilder (Plan 33.2-13), nor for
+                the contextual, snap and team-form builders (Plan 33.2-14): each selects at
+                every game's own lock. Builders not yet moved onto the lock
                 (OpponentAdjuster, ...) still read it. Defaults to ``datetime.now(ET)``.
             through_season: Last season a FULL rebuild carries (the ladder-rung
                 bound, see ``scope_games_through_season``). ``None`` = every season.
@@ -638,7 +663,12 @@ class FeatureMatrixBuilder:
             # same rule, so the two cannot disagree for any game both contain.
             source_locks = build_lock_frame(games_df)
 
-            # Team form features
+            # Team form features, laid out ONE ROW PER GAME (Plan 33.2-14). Silver
+            # ``team_form_features`` is keyed by (team, side, target week) and carries no
+            # game_id, so the information-time gate could not match it to a lock; the
+            # per-game frame -- exactly the home/away columns ``combine_features`` used
+            # to lay out at merge time, built by the same ``_get_team_features`` -- is what
+            # reaches gold, so it is what the gate checks.
             try:
                 team_form_df = load_dataframe("team_form_features", layer="silver")
                 if target_season and target_week:
@@ -646,6 +676,7 @@ class FeatureMatrixBuilder:
                         (team_form_df["target_season"] == target_season)
                         & (team_form_df["target_week"] == target_week)
                     ]
+                team_form_df = self._team_form_per_game(team_form_df, games_df)
                 feature_sources["team_form"] = team_form_df
                 logger.info("Loaded team form features", records=len(team_form_df))
             except _SOURCE_LOAD_ERRORS as e:
@@ -673,6 +704,7 @@ class FeatureMatrixBuilder:
                     as_of_datetime,
                     target_season=target_season,
                     target_week=target_week,
+                    lock_frame=source_locks,
                 )
                 feature_sources["contextual"] = contextual_df
                 logger.info("Built contextual features", records=len(contextual_df))
@@ -773,6 +805,7 @@ class FeatureMatrixBuilder:
                     as_of_datetime,
                     target_season=target_season,
                     target_week=target_week,
+                    lock_frame=source_locks,
                 )
                 feature_sources["snaps"] = snap_features_df
                 logger.info("Built snap-count features", records=len(snap_features_df))
@@ -847,9 +880,18 @@ class FeatureMatrixBuilder:
         # Merge each feature source
         feature_counts = {}
 
-        # Team form features (need to handle home/away separately)
+        # Team form features. ``load_all_feature_sources`` hands them in already laid
+        # out one row per game (Plan 33.2-14); a team-keyed frame (a caller that built
+        # ``feature_sources`` by hand) is laid out here exactly as before.
         team_form_df = feature_sources.get("team_form", pd.DataFrame())
-        if len(team_form_df) > 0:
+        if len(team_form_df) > 0 and "game_id" in team_form_df.columns:
+            combined_features = combined_features.merge(
+                team_form_df, on="game_id", how="left"
+            )
+            feature_counts["team_form"] = len(
+                [col for col in combined_features.columns if "form_" in col]
+            )
+        elif len(team_form_df) > 0:
             home_form = self._get_team_features(
                 team_form_df, combined_features, "home_team", "home"
             )
@@ -1047,10 +1089,13 @@ class FeatureMatrixBuilder:
           used); ``qb_tracking`` and ``injury`` (Plan 33.2-13 -- both select at each
           game's own lock and report per-row provenance: the depth-chart ``dt`` and the
           latest admitted game end for QB, the latest admitted report time for injury,
-          and ``no_information`` wherever nothing was admitted).
-        * NOT YET REACHED: ``team_form``, ``contextual``, ``market`` and ``snaps`` gain
-          suppliers in the plans that make them lock-honest (33.2-14 .. 33.2-17); Plan
-          33.2-16 brings the post-Stage-1 opponent-adjusted family into the loop.
+          and ``no_information`` wherever nothing was admitted); ``contextual``,
+          ``snaps`` and ``team_form`` (Plan 33.2-14 -- each admits a prior game only once
+          it ENDED at or before the target game's lock, and reports the end of the latest
+          game it actually read).
+        * The full nine-key ledger, with ``market`` and the ``games`` disposition, sits
+          beside ``SUPPLIER_ATTRIBUTES``; Plan 33.2-16 brings the post-Stage-1
+          opponent-adjusted family into the loop.
 
         No source is EXEMPTED, only not yet reached: the unchecked keys are NAMED in the
         CoverageReport, which is logged at every build, and Plan 33.2-20 arms the refusal
@@ -1125,6 +1170,27 @@ class FeatureMatrixBuilder:
     ) -> pd.DataFrame:
         """The builder's seam onto the module-level ``_enforce_groups_dropped`` (ONE body)."""
         return _enforce_groups_dropped(combined_features, groups)
+
+    def _team_form_per_game(
+        self, team_form_df: pd.DataFrame, games_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """Silver team form laid out one row per game: home columns, then away columns.
+
+        The same two ``_get_team_features`` calls and the same two left merges
+        ``combine_features`` made, in the same order, so every gold value and column is
+        unchanged; only WHEN the layout happens moved (to load time, where the
+        information-time gate can match each row to its game's lock).
+        """
+        if len(team_form_df) == 0 or len(games_df) == 0:
+            return pd.DataFrame()
+        base = games_df[["game_id", "season", "week", "home_team", "away_team"]]
+        home = self._get_team_features(team_form_df, base, "home_team", "home")
+        away = self._get_team_features(team_form_df, base, "away_team", "away")
+        return (
+            pd.DataFrame(base[["game_id"]])
+            .merge(home, on="game_id", how="left")
+            .merge(away, on="game_id", how="left")
+        )
 
     def _get_team_features(
         self,

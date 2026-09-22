@@ -457,6 +457,31 @@ def _sandbox_silver_weather(games: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _sandbox_team_form(games: pd.DataFrame) -> pd.DataFrame:
+    """The silver ``team_form_features`` shape: one row per (team, side, target week).
+
+    Only the SECOND sandbox season carries a row. A rolling value exists only once a
+    team has an earlier game whose result was known at the target's lock (Plan 33.2-14's
+    team-form provenance checks exactly that), and the first season's week-1 games have
+    none -- a row there would be a value built from nothing.
+    """
+    later = games[games["season"] == games["season"].max()]
+    return pd.DataFrame(
+        [
+            {
+                "team": team,
+                "target_season": int(row.season),
+                "target_week": int(row.week),
+                "side": side,
+                "rolling_epa_per_play": 0.05 + (idx % 7) / 100,
+            }
+            for idx, row in enumerate(later.itertuples())
+            for team in (row.home_team, row.away_team)
+            for side in ("offense", "defense")
+        ]
+    ).drop_duplicates(subset=["team", "target_season", "target_week", "side"])
+
+
 def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
     """Feature sources in the real shape, with the identity columns on `games`.
 
@@ -473,20 +498,7 @@ def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
         games = games.drop(columns=list(IDENTITY_COLUMNS))
 
     n = len(games)
-    team_form = pd.DataFrame(
-        [
-            {
-                "team": team,
-                "target_season": int(row.season),
-                "target_week": int(row.week),
-                "side": side,
-                "rolling_epa_per_play": 0.05 + (idx % 7) / 100,
-            }
-            for idx, row in enumerate(games.itertuples())
-            for team in (row.home_team, row.away_team)
-            for side in ("offense", "defense")
-        ]
-    ).drop_duplicates(subset=["team", "target_season", "target_week", "side"])
+    team_form = _sandbox_team_form(games)
     weather = pd.DataFrame(
         {
             "game_id": games["game_id"],
@@ -530,8 +542,19 @@ def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
         # carries an identity column through combine_features. It is planted as a
         # SOURCE the generic contextual merge picks up, because that is the shape
         # such an edit would actually take (see the 28-06 snap/injury blocks).
+        #
+        # Since Plan 33.2-14 the contextual source is CHECKED by the information-time
+        # gate, which value-checks every game whose contextual builder read no prior
+        # game against the declared no-information values. The planted frame carries
+        # those values so the gate accepts it and the plant reaches combine_features.
+        from features.contextual import NO_PRIOR_GAME_SIGNATURE
+
         sources["contextual"] = pd.DataFrame(
-            {"game_id": games["game_id"], plant: games[plant].to_numpy()}
+            {
+                "game_id": games["game_id"],
+                plant: games[plant].to_numpy(),
+                **NO_PRIOR_GAME_SIGNATURE,
+            }
         )
 
     return sources
@@ -577,9 +600,19 @@ def _build_into_sandbox(
     storage_mod._parquet_manager.save(
         _sandbox_silver_weather(seeded_games), "silver/weather.parquet"
     )
+    # The team-form supplier reads the silver rolling table to know which teams carry a
+    # row for each game (Plan 33.2-14).
+    storage_mod._parquet_manager.save(
+        _sandbox_team_form(seeded_games), "silver/team_form_features.parquet"
+    )
 
     builder = FeatureMatrixBuilder()
     sources = _sandbox_sources(identity=identity, plant=plant)
+    # load_all_feature_sources lays team form out one row per game (Plan 33.2-14);
+    # the replaced loader hands over the same shape.
+    sources["team_form"] = builder._team_form_per_game(
+        sources["team_form"], sources["games"]
+    )
     monkeypatch.setattr(
         builder, "load_all_feature_sources", lambda *a, **k: sources, raising=False
     )

@@ -340,6 +340,9 @@ class TestTheLineMovementSeamsAreGone:
                 "week": [1],
                 "home_team": ["NYJ"],
                 "away_team": ["MIA"],
+                # Every build now derives each game's lock from its kickoff before any
+                # source loads (Plan 33.2-13), so a kickoff-less fixture is refused.
+                "kickoff_et": [pd.Timestamp("2023-09-10 17:00", tz="UTC")],
             }
         )
         monkeypatch.setattr(

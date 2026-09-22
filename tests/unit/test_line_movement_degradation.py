@@ -45,7 +45,7 @@ def _games(n: int = 3) -> pd.DataFrame:
             "week": list(range(1, n + 1)),
             "home_team": ["NYJ"] * n,
             "away_team": ["MIA"] * n,
-            "kickoff_et": [pd.Timestamp("2023-09-17 13:00")] * n,
+            "kickoff_et": [pd.Timestamp("2023-09-17 13:00", tz="America/New_York")] * n,
         }
     )
 

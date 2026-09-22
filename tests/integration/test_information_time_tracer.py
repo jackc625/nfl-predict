@@ -125,9 +125,12 @@ EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = ("injury", "market", "snaps", "team_
 #: it moved from the unregistered set to ``checked_sources``. Plan 33.2-13 registered
 #: ``qb_tracking`` (and ``injury``, which loads zero rows on this slice and so stays
 #: ``empty_unchecked``), so ``qb_tracking`` moved to ``checked_sources`` too, after
-#: ``weather`` in loop order.
-EXPECTED_UNREGISTERED: tuple[str, ...] = ("contextual",)
-EXPECTED_CHECKED: tuple[str, ...] = ("elo", "weather", "qb_tracking")
+#: ``weather`` in loop order. Plan 33.2-14 registered ``contextual``, ``snaps`` and
+#: ``team_form``: ``contextual`` loads rows on this slice and moved to ``checked_sources``
+#: (between ``elo`` and ``weather`` in loop order); ``snaps`` and ``team_form`` load zero
+#: rows here and stay ``empty_unchecked``. Nothing on this slice is unregistered any more.
+EXPECTED_UNREGISTERED: tuple[str, ...] = ()
+EXPECTED_CHECKED: tuple[str, ...] = ("elo", "contextual", "weather", "qb_tracking")
 
 
 @dataclass
@@ -426,7 +429,8 @@ class TestTheNarrowCoverageReport:
     """``checked_sources`` is exactly the sources registered so far, in loop order.
 
     Plan 33.2-01 registered ``elo``; Plan 33.2-12 registered ``weather``; Plan 33.2-13
-    registered ``qb_tracking`` and ``injury``. Plans 33.2-14 .. 33.2-17 (the remaining suppliers), 33.2-16 (the opponent-adjusted family) and 33.2-20
+    registered ``qb_tracking`` and ``injury``; Plan 33.2-14 registered ``contextual``,
+    ``snaps`` and ``team_form``. Plans 33.2-14 .. 33.2-17 (the remaining suppliers), 33.2-16 (the opponent-adjusted family) and 33.2-20
     (the armed refusal) are the ones that shrink the other three sets to empty.
     """
 
