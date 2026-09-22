@@ -299,16 +299,23 @@ class TestTheLiveGold:
             for name in offense_only_gold_columns():
                 assert name.replace("_def_", "_off_") in columns, (matrix, name)
 
-    def test_the_width_pin_agrees_with_the_built_gold(self) -> None:
+    def test_the_width_pin_still_describes_the_gold_on_disk(self) -> None:
+        """The pin equals the live matrices -- whatever LATER rungs have moved it to.
+
+        THIS NODE DOES NOT PIN 193/194/193. It did, and that was a premise error of
+        exactly the kind this phase keeps correcting: a step's test must not assert a
+        LIVE artifact that a later ladder step legitimately moves, or it goes red for a
+        reason that has nothing to do with the step. Rung 9 ran after this one and took
+        the pin to 188/188/187. This step's OWN width claim -- 201/202/201 -> 193/194/193
+        -- is asserted against its two fingerprint DOCUMENTS in
+        ``test_each_width_fell_by_exactly_eight_and_rows_held``, which no later rung can
+        move, and ``tests/unit/test_data_qa_gold_width.py`` owns the live pin.
+        """
         measured = {
             matrix: pd.read_parquet(GOLD_DIR / f"{matrix}.parquet").shape[1]
             for matrix in GOLD_FEATURE_MATRICES
         }
         assert measured == dict(GOLD_FEATURE_MATRICES)
-        assert (
-            tuple(GOLD_FEATURE_MATRICES[m] for m in fg.GOLD_MATRICES)
-            == PREDICTED_WIDTHS
-        )
 
 
 @pytest.mark.skipif(
