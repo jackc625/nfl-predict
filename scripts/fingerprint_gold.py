@@ -5641,6 +5641,181 @@ PHASE332_RUNG_SIGNATURES[PHASE332_FEED_RUNG] = PHASE332_FEED_RUNG_EXPECTED_SIGNA
 PHASE332_RUNG_ATTRIBUTORS[PHASE332_FEED_RUNG] = _attribute_p332_feed
 
 
+# ---------------------------------------------------------------------------
+# p332_ EXTRA STEP 6b -- POSTSEASON INJURY REPORTS INGESTED AND TIMED (Plan 33.2-15, the
+# question Plan 33.2-13 routed to it and deferred-items.md recorded).
+#
+# NOT A NUMBERED RUNG and NOT inside rung 6. Rung 6 predicted no pre-2025 movement; this step
+# moves 2010-2024 postseason injury values, so folding it into rung 6 would have been a second
+# cause (D33.2-20). It is the EXTRA STEP "6b": a string id following rung 6, judged against
+# p332_rung6.json, and rung 7 (Plan 33.2-16) is judged against p332_rung6b.json.
+#
+# THE GAP. scripts/ingest_injuries.py kept game_type == "REG" only, so silver injuries held no
+# postseason row and every postseason game (11-13 a season) read "no report admitted" -- while
+# upstream publishes the reports. Measured read-only 2026-09-22: 3,544 postseason rows over
+# 2009-2025; a per-row date_modified on every 2010-2024 row; none on 2009's; no column in 2025;
+# 2023 upstream carries the Wild Card round only (DIV/CON/SB genuinely absent upstream, so those
+# games stay the flagged unknown -- never zero-filled).
+#
+# DECLARED BEFORE THE REBUILD:
+#
+# * injury -- ten columns can move: home/away of qb_out_flag, backup_quality_delta,
+#   availability_fraction, injury_coverage and date_modified_coverage. availability_coverage
+#   CANNOT: it reports whether prior snap shares exist, which admitting a report does not touch.
+#   The two coverage flags are level-preserved and exempt from winsorization, so they move ONLY
+#   on the postseason games themselves (2010-2024). The three value columns are z-scored within
+#   each season from earlier rows and bootstrapped from the prior season, and winsorized on
+#   strictly-prior seasons, so they can also move on later seasons' rows (2011-2025) -- never
+#   on a row before 2010.
+# * 2009 cannot move: its postseason rows carry no date_modified, are undatable, and a game
+#   whose reports are all undatable takes exactly the values of a game with none.
+# * 2025 cannot move directly: its postseason rows carry the 2026-09-07 capture stamp, after
+#   every 2025 lock.
+# * snap, QB and every other family -- EMPTY. No column is added, none removed, no row moves.
+# ---------------------------------------------------------------------------
+
+PHASE332_POSTSEASON_INJURY_STEP: str = "6b"
+
+PHASE332_POSTSEASON_INJURY_STEP_FOLLOWS: int = PHASE332_FEED_RUNG
+
+PHASE332_POSTSEASON_INJURY_STEP_CAUSE: str = (
+    "POSTSEASON INJURY REPORTS INGESTED AND TIMED, p332_ extra step 6b of Plan 33.2-15, and "
+    "NOTHING else: scripts/ingest_injuries.py no longer drops non-REG game types, and the "
+    "2009-2025 postseason reports upstream publishes were added to silver injuries (the "
+    "regular-season rows untouched), each admitted for its game only when its own "
+    "date_modified is at or before that game's lock -- the rule a regular-season report "
+    "already meets. Only ten injury columns can move (availability_coverage cannot): the two "
+    "coverage flags on 2010-2024 postseason games alone, the three value columns there and, "
+    "through within-season scaling and strictly-prior fits, on later rows through 2025. No "
+    "column is added, none removed, no row moves"
+)
+
+#: The ten columns the step can move, and the two coverage flags among them.
+PHASE332_POSTSEASON_INJURY_STEP_COLUMNS: tuple[str, ...] = tuple(
+    sorted(
+        f"{side}_{column}"
+        for side in ("home", "away")
+        for column in (
+            "qb_out_flag",
+            "backup_quality_delta",
+            "availability_fraction",
+            "injury_coverage",
+            "date_modified_coverage",
+        )
+    )
+)
+PHASE332_POSTSEASON_INJURY_STEP_FLAGS: tuple[str, ...] = tuple(
+    c for c in PHASE332_POSTSEASON_INJURY_STEP_COLUMNS if c.endswith("_coverage")
+)
+
+#: The seasons each kind of column may move in (declared before the rebuild).
+PHASE332_POSTSEASON_INJURY_STEP_FLAG_SEASONS: tuple[str, ...] = tuple(
+    str(season) for season in range(2010, 2025)
+)
+PHASE332_POSTSEASON_INJURY_STEP_VALUE_SEASONS: tuple[str, ...] = tuple(
+    str(season) for season in range(2010, 2026)
+)
+
+PHASE332_POSTSEASON_INJURY_STEP_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_POSTSEASON_INJURY_STEP,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_POSTSEASON_INJURY_STEP_CAUSE,
+    "follows_rung": PHASE332_POSTSEASON_INJURY_STEP_FOLLOWS,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to the ten injury columns in PHASE332_POSTSEASON_INJURY_STEP_COLUMNS; the "
+        "two coverage flags only in 2010-2024, the three value columns only in 2010-2025; "
+        "availability_coverage, every QB and snap column and every other family EMPTY"
+    ),
+    "rows_changed": (
+        "before normalization only 2010-2024 postseason games whose teams gained an admitted "
+        "report can differ; after it, the three z-scored value columns can also differ on "
+        "later rows of the same season and on later seasons through the prior-season bootstrap "
+        "and the strictly-prior winsorization bounds"
+    ),
+    "declared_families": ("injury",),
+    "family_mechanisms": {
+        "injury": (
+            "features.injury.InjuryBuilder over silver injuries, now carrying postseason "
+            "reports ingested with scripts/ingest_injuries.py --game-types WC DIV CON SB"
+        ),
+    },
+    "upstream_coverage": (
+        "3,544 postseason rows 2009-2025 (measured 2026-09-22); date_modified on every "
+        "2010-2024 row, none on 2009, no column in 2025; 2023 upstream holds the Wild Card "
+        "round only"
+    ),
+    "declared_before_the_rebuild": True,
+}
+
+EXTRA_STEPS_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_POSTSEASON_INJURY_STEP
+] = PHASE332_POSTSEASON_INJURY_STEP_FOLLOWS
+EXTRA_STEP_CAUSES_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_POSTSEASON_INJURY_STEP
+] = PHASE332_POSTSEASON_INJURY_STEP_CAUSE
+
+PHASE332_POSTSEASON_INJURY_STEP_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-22: p332_rung6.json is production gold as rung 6 wrote it minutes "
+    "earlier; the only changes since are this step's own (the injury ingest keeping postseason "
+    "game types, and the postseason backfill into silver injuries). No carry-in, no retake"
+)
+
+
+def _attribute_p332_postseason_injury(
+    detail: dict, diff: dict, verdict: dict, fail
+) -> bool:
+    """Extra step 6b of the `p332_` ladder: the postseason injury reports' OWN judge.
+
+    STRUCTURE unchanged (a surprise BLOCKS). VALUES: a coverage flag is attributed only when
+    every season it moved in is in 2010-2024, a value column only within 2010-2025. Anything
+    else -- availability_coverage, a QB or snap column, a pre-2010 season -- is UNATTRIBUTED.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    label = "p332_ extra step 6b (postseason injury reports ingested and timed)"
+    verdict["changed_by_family"] = {"injury": []}
+    blocking = _phase33_structure(
+        detail, diff, fail, label, "Adding the postseason injury reports"
+    )
+    columns = set(PHASE332_POSTSEASON_INJURY_STEP_COLUMNS)
+    flags = set(PHASE332_POSTSEASON_INJURY_STEP_FLAGS)
+    flag_seasons = set(PHASE332_POSTSEASON_INJURY_STEP_FLAG_SEASONS)
+    value_seasons = set(PHASE332_POSTSEASON_INJURY_STEP_VALUE_SEASONS)
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        allowed = flag_seasons if column in flags else value_seasons
+        if column in columns and seasons and set(seasons) <= allowed:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["injury"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        why = (
+            f"it moved outside its declared seasons ({min(allowed)}-{max(allowed)})"
+            if column in columns
+            else "it is not one of the ten injury columns this step can reach"
+        )
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The step's ONE cause is the "
+            "postseason reports; do NOT widen it to fit this diff"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_EXTRA_STEP_SIGNATURES[PHASE332_POSTSEASON_INJURY_STEP] = (
+    PHASE332_POSTSEASON_INJURY_STEP_EXPECTED_SIGNATURE
+)
+PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_POSTSEASON_INJURY_STEP] = (
+    _attribute_p332_postseason_injury
+)
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -6120,7 +6295,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 6, steps 3b, 3c, 4b).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 6, steps 3b, 3c, 4b, 6b).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -6327,6 +6502,12 @@ def write_phase332_rebuild_diff(
     )
     if feed_document.exists():
         lines.extend(_phase332_feed_rung_lines(fingerprint_dir))
+
+    postseason_document = rung_document_path(
+        fingerprint_dir, PHASE332_POSTSEASON_INJURY_STEP, PHASE332_RUNG_PREFIX
+    )
+    if postseason_document.exists():
+        lines.extend(_phase332_postseason_injury_step_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -6897,6 +7078,60 @@ def _phase332_feed_rung_lines(fingerprint_dir: Path | str) -> list[str]:
         lines.append(f"{builder} = {_toml_array(columns)}")
     lines.extend(["", f"[rung.{rung}.moved_seasons]"])
     for column, seasons in sorted(moved_seasons.items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_postseason_injury_step_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` extra step 6b (Plan 33.2-15), recomputed from the ladder."""
+    step = PHASE332_POSTSEASON_INJURY_STEP
+    require_rung_ladder(fingerprint_dir, step, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, step)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, step, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, step, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_POSTSEASON_INJURY_STEP_EXPECTED_SIGNATURE
+    lines = [
+        "",
+        f'[rung."{step}"]',
+        f'rung = "{step}"',
+        f"follows_rung = {PHASE332_POSTSEASON_INJURY_STEP_FOLLOWS}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_POSTSEASON_INJURY_STEP_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_POSTSEASON_INJURY_STEP_CAUSE)}"',
+        f'upstream_coverage = "{_toml_escape(str(signature["upstream_coverage"]))}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f"declared_columns = {_toml_array(list(PHASE332_POSTSEASON_INJURY_STEP_COLUMNS))}",
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_EXTRA_STEP_ATTRIBUTORS[step].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the step is '
+            'recorded as declared-but-not-run rather than as a step that ran"'
+        )
+    lines.extend(["", f'[rung."{step}".moved_seasons]'])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines
 

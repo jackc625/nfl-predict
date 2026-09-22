@@ -30,6 +30,13 @@ WHAT PLAN 33.2-15 CHANGED (D33.2-16: the dead feed is fixed, not worked around)
   both sides of the download (``data.upstream_asset_stamp.fetch_with_stamp``).
 * Bronze is written with ``exclusive=True`` (a same-second collision raises rather
   than overwrites); silver stays latest-wins by ``game_id``.
+* POSTSEASON REPORTS ARE KEPT (Plan 33.2-15 extra step 6b). The ingest used to keep
+  ``game_type == "REG"`` only, so every postseason game read as "no report admitted"
+  although upstream publishes its reports: measured 2026-09-22, 3,544 postseason rows
+  over 2009-2025, with a per-row ``date_modified`` for 2010-2024 (2009's carry none;
+  2025's schema has no column; 2023 upstream carries the Wild Card round only). They are
+  timed exactly like regular-season reports -- a row counts for a game only when its own
+  time is at or before that game's lock -- so nothing is admitted that was not known.
 
 Injuries carry no game_id; it is derived by joining the season's silver games
 on (season, week, team) so upsert_silver(..., key_column="game_id") is
@@ -40,7 +47,7 @@ Coverage floor: 2009.
 
 import argparse
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -52,6 +59,7 @@ from data.schemas import InjurySchema
 from data.storage import load_dataframe, save_bronze_snapshot, upsert_silver
 from data.upstream_asset_stamp import fetch_with_stamp, season_asset_name
 from utils import get_logger, log_data_operation
+from utils.exceptions import DataValidationError
 from utils.ingestion_args import (
     add_standard_ingestion_args,
     parse_season_week_args,
@@ -70,6 +78,13 @@ INJURY_DATASET = "injuries"
 #: declares (the builder reads it) and ``data.schemas.InjurySchema`` declares (the gate keeps
 #: it); tests/unit/test_injury_capture_time_basis.py asserts the spellings are one.
 CAPTURE_COLUMN = "upstream_captured_at"
+
+#: Every game type upstream files injury reports under: the regular season and the four
+#: postseason rounds. A code outside this set is REFUSED by name rather than silently dropped.
+INJURY_GAME_TYPES: tuple[str, ...] = ("REG", "WC", "DIV", "CON", "SB")
+
+#: The postseason rounds (extra step 6b backfilled exactly these for 2009-2025).
+POSTSEASON_GAME_TYPES: tuple[str, ...] = ("WC", "DIV", "CON", "SB")
 
 # Columns retained in the silver injuries table (alongside the derived game_id).
 # date_modified is kept when present (2009-2024) as each row's per-row information
@@ -131,18 +146,22 @@ def ingest_injuries_season(
     stamp_reader: Callable[..., datetime] | None = None,
     games: pd.DataFrame | None = None,
     base_path: Path | None = None,
+    game_types: Sequence[str] = INJURY_GAME_TYPES,
 ) -> pd.DataFrame:
     """Ingest injury reports for one season into Bronze + Silver.
 
     Args:
         season: NFL season year (>= 2009).
         weeks: Optional list of weeks to restrict to. None ingests the whole
-            (regular) season.
+            season.
         loader: Downloads one season (the test seam; defaults to nflreadpy).
         stamp_reader: ``data.upstream_asset_stamp.asset_published_at``'s shape (the test
             seam).
         games: The silver games frame for the game_id join (the test seam).
         base_path: Data root (the test seam; defaults to the configured root).
+        game_types: The game types to keep (default: all of ``INJURY_GAME_TYPES``). The
+            step-6b backfill passes ``POSTSEASON_GAME_TYPES`` so it adds postseason reports
+            without re-writing a single stored regular-season row.
 
     Returns:
         The VALIDATED game-grain injury DataFrame upserted to silver (may be empty).
@@ -150,9 +169,13 @@ def ingest_injuries_season(
     Raises:
         data.upstream_asset_stamp.UpstreamStampUnavailable: the asset's publication time
             could not be read, or the asset changed during the download. Nothing is written.
-        utils.exceptions.DataValidationError: any row failed ``InjurySchema``; nothing
-            reaches silver.
+        utils.exceptions.DataValidationError: any row failed ``InjurySchema``, or upstream
+            used a game type outside ``INJURY_GAME_TYPES``; nothing reaches silver.
     """
+    unknown_requested = sorted(set(game_types) - set(INJURY_GAME_TYPES))
+    if unknown_requested:
+        msg = f"unknown injury game type(s) requested: {unknown_requested}"
+        raise DataValidationError(msg)
     if season < INJURY_COVERAGE_FLOOR:
         logger.warning(
             "Season below injury coverage floor; skipping",
@@ -170,14 +193,29 @@ def ingest_injuries_season(
         logger.warning("No injury data returned", season=season)
         return pd.DataFrame()
 
-    # Match the regular-season convention used by snaps / team_form.
-    df = raw[raw["game_type"] == "REG"].copy()
+    # EVERY game type upstream files, regular season AND postseason (extra step 6b): a
+    # postseason game's reports are timed per row exactly like a regular-season game's, so
+    # dropping them only turned real, dated reports into "no report admitted". An unknown code
+    # is refused by name -- a vocabulary change upstream must not silently lose rows.
+    unknown = sorted(set(raw["game_type"].dropna()) - set(INJURY_GAME_TYPES))
+    if unknown:
+        msg = (
+            f"injuries {season} carries game type(s) {unknown} outside {INJURY_GAME_TYPES}; "
+            "refusing rather than silently dropping those reports"
+        )
+        raise DataValidationError(msg)
+    df = raw[raw["game_type"].isin(list(game_types))].copy()
 
     if weeks is not None:
         df = df[df["week"].isin(weeks)].copy()
 
     if df.empty:
-        logger.warning("No REG injury rows after filtering", season=season, weeks=weeks)
+        logger.warning(
+            "No injury rows after filtering",
+            season=season,
+            weeks=weeks,
+            game_types=list(game_types),
+        )
         return pd.DataFrame()
 
     # Schema tolerance (Pitfall 4): 2025 dropped date_modified. Carry it as a null column
@@ -199,6 +237,7 @@ def ingest_injuries_season(
 
     # Derive game_id by joining the season's silver games on (season, week, team).
     lookup = _build_game_id_lookup(season, games)
+    pre_join_rows = len(df)
     df = df.merge(lookup, on=["season", "week", "team"], how="inner")
 
     if df.empty:
@@ -207,6 +246,15 @@ def ingest_injuries_season(
             season=season,
         )
         return pd.DataFrame()
+    unmatched = pre_join_rows - len(df)
+    if unmatched:
+        # Reported, not hidden: a report whose (season, week, team) names no silver game
+        # cannot be attached to one and is not stored.
+        logger.warning(
+            "Injury rows matched no silver game and were not stored",
+            season=season,
+            unmatched_rows=unmatched,
+        )
 
     # THE CAPTURE STAMP IS PROVENANCE, AND AN INFORMATION TIME ONLY BEFORE THE LOCK (Plan
     # 33.2-15, reviews round f924749). It is a true fact about the file fetched NOW: upstream
@@ -270,6 +318,16 @@ def main() -> None:
         description="Ingest NFL injury reports (Bronze + Silver)"
     )
     parser = add_standard_ingestion_args(parser)
+    parser.add_argument(
+        "--game-types",
+        nargs="+",
+        choices=INJURY_GAME_TYPES,
+        default=list(INJURY_GAME_TYPES),
+        help=(
+            "Game types to keep (default: all). --game-types WC DIV CON SB adds postseason "
+            "reports without re-writing stored regular-season rows."
+        ),
+    )
     args = parser.parse_args()
 
     from utils import setup_logging
@@ -280,7 +338,7 @@ def main() -> None:
 
     total_rows = 0
     for season in seasons:
-        df = ingest_injuries_season(season, weeks=weeks)
+        df = ingest_injuries_season(season, weeks=weeks, game_types=args.game_types)
         total_rows += len(df)
         stamp = df[CAPTURE_COLUMN].iloc[0].isoformat() if len(df) else None
         print(f"SEASON= {season} ROWS_WRITTEN= {len(df)} STAMP= {stamp}")
