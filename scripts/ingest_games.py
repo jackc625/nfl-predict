@@ -359,6 +359,219 @@ def resolve_venue_override(
     return override.new_stadium_id, override.venue_name, roof
 
 
+# ---------------------------------------------------------------------------
+# GAME-SPECIFIC KICKOFF-HOUR CORRECTIONS (Plan 33.2-12, p332_ extra step 3c).
+#
+# The feed carries `gametime` "09:00" for every 2002-2005 Monday and Thursday NIGHT game
+# (68 games). The ET DATE is right; the clock is a 12-hour AM/PM error: each game's archived
+# Pro-Football-Reference box score, and its official NFL Gamebook where one is archived,
+# records a start between 9:00 and 9:30 PM Eastern. NFL.com's own game pages carry the
+# same wrong "09:00", so the defect is upstream of nflverse and a re-ingest would restore
+# it. The date is unaffected, so no lock moves; the HOUR feeds rest-day counts and the
+# day-before forecast selection.
+#
+# Same two-consumer shape as the venue overrides above: ONE cited record
+# (config/kickoff_hour_corrections.toml), ONE resolver. This ingest calls it for every row
+# and the one-shot store repair (scripts/repair_kickoff_hours.py) calls the same function,
+# so a re-ingest of 2002-2005 writes exactly the kickoffs the repair wrote.
+# ---------------------------------------------------------------------------
+
+KICKOFF_HOUR_CORRECTION_RECORD_PATH = (
+    Path(__file__).resolve().parent.parent / "config" / "kickoff_hour_corrections.toml"
+)
+
+# The fields every [[correction]] entry must carry, all non-empty strings.
+_KICKOFF_CORRECTION_FIELDS: tuple[str, ...] = (
+    "game_id",
+    "gameday",
+    "feed_gametime",
+    "corrected_gametime",
+    "source_url",
+    "source_start_time",
+)
+
+
+class KickoffCorrectionRecordError(ValueError):
+    """The kickoff correction record is malformed, and nothing is loaded from it.
+
+    Raised for an entry with a missing field (a correction with no source is not a
+    correction), a clock that is not ``HH:MM``, a duplicated game, a correction that does
+    not move the clock, or a cited start time that does not fall in the corrected hour.
+    """
+
+
+class KickoffCorrectionDriftError(ValueError):
+    """A recorded game arrived from the feed with a date or clock nobody has looked at.
+
+    The record names the wrong clock the feed carries (``feed_gametime``) and the
+    correction (``corrected_gametime``) for one ``gameday``. Any other value means the feed
+    changed underneath the record; re-raised past the broad skip handler in
+    ``transform_schedule_data`` on the same reasoning as ``VenueOverrideDriftError``.
+    """
+
+
+@dataclass(frozen=True)
+class KickoffHourCorrection:
+    """One cited correction: the game, its date, the feed's wrong clock and the real one."""
+
+    game_id: str
+    gameday: str
+    feed_gametime: str
+    corrected_gametime: str
+    source_url: str
+    source_start_time: str
+
+
+def _clock_minutes(clock: str, *, label: str, path: Path) -> int:
+    """Minutes past midnight of an ``HH:MM`` (24-hour) clock, or refuse by name."""
+    parts = clock.split(":")
+    if len(parts) != 2 or not all(part.isdigit() and len(part) == 2 for part in parts):
+        raise KickoffCorrectionRecordError(
+            f"{path}: {label} is {clock!r}, not a 24-hour HH:MM clock."
+        )
+    hours, minutes = int(parts[0]), int(parts[1])
+    if hours > 23 or minutes > 59:
+        raise KickoffCorrectionRecordError(f"{path}: {label} {clock!r} is not a clock.")
+    return hours * 60 + minutes
+
+
+def _cited_start_minutes(text: str, *, label: str, path: Path) -> int:
+    """Minutes past midnight ET of a cited start such as ``9:08 PM ET``, or refuse."""
+    words = text.split()
+    if len(words) != 3 or words[1] not in ("AM", "PM") or words[2] != "ET":
+        raise KickoffCorrectionRecordError(
+            f"{path}: {label} is {text!r}; write the cited start as 'H:MM AM|PM ET'."
+        )
+    hour_text, _, minute_text = words[0].partition(":")
+    if not (hour_text.isdigit() and minute_text.isdigit() and len(minute_text) == 2):
+        raise KickoffCorrectionRecordError(f"{path}: {label} {text!r} is not a clock.")
+    hours = int(hour_text) % 12 + (12 if words[1] == "PM" else 0)
+    return hours * 60 + int(minute_text)
+
+
+def _parse_kickoff_correction(
+    entry: dict[str, Any], path: Path
+) -> KickoffHourCorrection:
+    """One [[correction]] entry, checked field by field."""
+    label = entry.get("game_id") or "<entry with no game_id>"
+    for field in _KICKOFF_CORRECTION_FIELDS:
+        value = entry.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise KickoffCorrectionRecordError(
+                f"{path}: correction {label!r} has no {field} (got {value!r}). Every "
+                "correction names its game, both clocks and a source; one without is "
+                "not written."
+            )
+    correction = KickoffHourCorrection(
+        **{field: entry[field] for field in _KICKOFF_CORRECTION_FIELDS}
+    )
+    feed = _clock_minutes(
+        correction.feed_gametime, label=f"{label} feed_gametime", path=path
+    )
+    fixed = _clock_minutes(
+        correction.corrected_gametime, label=f"{label} corrected_gametime", path=path
+    )
+    if feed == fixed:
+        raise KickoffCorrectionRecordError(
+            f"{path}: correction {label!r} moves {correction.feed_gametime!r} to itself."
+        )
+    cited = _cited_start_minutes(
+        correction.source_start_time, label=f"{label} source_start_time", path=path
+    )
+    # The corrected clock is the SCHEDULED start (the convention of every other silver
+    # kickoff); the cited source records the ACTUAL start, which follows it by minutes.
+    # A cited start outside [corrected, corrected + 30 min) contradicts the correction.
+    if not fixed <= cited < fixed + 30:
+        raise KickoffCorrectionRecordError(
+            f"{path}: correction {label!r} sets {correction.corrected_gametime} ET but "
+            f"its source records a start of {correction.source_start_time}. The source "
+            "must support the corrected hour; refusing a correction it contradicts."
+        )
+    return correction
+
+
+@functools.cache
+def _load_kickoff_corrections_from(
+    path_text: str,
+) -> Mapping[str, KickoffHourCorrection]:
+    path = Path(path_text)
+    record = tomllib.loads(path.read_text(encoding="utf-8"))
+    corrections: dict[str, KickoffHourCorrection] = {}
+    for entry in record.get("correction", []):
+        correction = _parse_kickoff_correction(entry, path)
+        if correction.game_id in corrections:
+            raise KickoffCorrectionRecordError(
+                f"{path}: game {correction.game_id!r} has more than one correction. The "
+                "resolver would have to pick one, silently; refusing instead."
+            )
+        corrections[correction.game_id] = correction
+    return MappingProxyType(corrections)
+
+
+def load_kickoff_hour_corrections(
+    path: Path | str = KICKOFF_HOUR_CORRECTION_RECORD_PATH,
+) -> Mapping[str, KickoffHourCorrection]:
+    """The committed kickoff-hour corrections, parsed ONCE per process per path.
+
+    Args:
+        path: The correction record. Defaults to ``config/kickoff_hour_corrections.toml``.
+
+    Returns:
+        An immutable mapping ``game_id -> KickoffHourCorrection``.
+
+    Raises:
+        KickoffCorrectionRecordError: an entry is incomplete, a clock is malformed, a game
+            appears twice, or a cited start contradicts the corrected hour.
+        FileNotFoundError: the record is absent. Not defaulted to "no corrections": a
+            missing record would silently restore all 68 wrong hours on the next ingest.
+    """
+    return _load_kickoff_corrections_from(str(Path(path).resolve()))
+
+
+def resolve_kickoff_gametime(
+    game_id: str,
+    gameday: Any,
+    upstream_gametime: Any,
+    *,
+    corrections: Mapping[str, KickoffHourCorrection] | None = None,
+) -> Any:
+    """The ONE decision behind the clock a game's ``kickoff_et`` is built from.
+
+    Called by ``transform_schedule_data`` for every row and by the one-shot store repair
+    for the recorded games, so the store and the next ingest cannot disagree.
+
+    Args:
+        game_id: The project game id (``2003_W08_MIA@LAC``).
+        gameday: The feed's ``gameday`` (``YYYY-MM-DD``).
+        upstream_gametime: The feed's ``gametime`` (``HH:MM`` ET), possibly absent.
+
+    Returns:
+        For an UNRECORDED game, ``upstream_gametime`` unchanged. For a RECORDED game, the
+        corrected clock.
+
+    Raises:
+        KickoffCorrectionDriftError: a recorded game's feed date is not the recorded date,
+            or its feed clock is neither the recorded wrong clock nor the correction.
+    """
+    if corrections is None:
+        corrections = load_kickoff_hour_corrections()
+    correction = corrections.get(game_id)
+    if correction is None:
+        return upstream_gametime
+    if str(gameday) != correction.gameday or upstream_gametime not in (
+        correction.feed_gametime,
+        correction.corrected_gametime,
+    ):
+        raise KickoffCorrectionDriftError(
+            f"game {game_id!r}: the feed carries gameday {gameday!r} gametime "
+            f"{upstream_gametime!r}, but config/kickoff_hour_corrections.toml records "
+            f"{correction.gameday} {correction.feed_gametime!r} corrected to "
+            f"{correction.corrected_gametime!r}. The feed moved underneath the record; "
+            "look at the new value and update the record rather than override it blind."
+        )
+    return correction.corrected_gametime
+
+
 def _load_venue_lookup() -> dict[str, str]:
     """Load venue roof types from data/venues.json.
 
@@ -411,6 +624,7 @@ class GameDataIngester:
         self._venue_lookup = _load_venue_lookup()
         self._stadium_id_roof_lookup = _load_stadium_id_roof_lookup()
         self._venue_overrides = load_venue_overrides()
+        self._kickoff_corrections = load_kickoff_hour_corrections()
 
     def _get_venue_roof_type(
         self,
@@ -612,14 +826,22 @@ class GameDataIngester:
                     overrides=self._venue_overrides,
                 )
 
+                # ONE decision for the kickoff clock: a recorded 2002-2005 night game
+                # whose feed clock is the 12-hour AM/PM error gets its cited evening
+                # hour; every other game gets the feed's clock exactly as before.
+                gametime = resolve_kickoff_gametime(
+                    game_id,
+                    row["gameday"],
+                    row.get("gametime", "13:00"),
+                    corrections=self._kickoff_corrections,
+                )
+
                 # Create game record
                 game_record = {
                     "game_id": game_id,
                     "season": int(row["season"]),
                     "week": int(row["week"]),
-                    "kickoff_et": pd.to_datetime(
-                        row["gameday"] + " " + row.get("gametime", "13:00")
-                    ),
+                    "kickoff_et": pd.to_datetime(row["gameday"] + " " + gametime),
                     "home_team": home_team,
                     "away_team": away_team,
                     "venue": venue,
@@ -660,6 +882,10 @@ class GameDataIngester:
                 # below SKIPS the row with a warning, which would turn "the feed moved
                 # underneath a recorded venue correction" into "this 2025 game silently
                 # does not exist in silver". A drift is surfaced, never swallowed.
+                raise
+            except KickoffCorrectionDriftError:
+                # Same reasoning again: a feed clock that moved underneath a recorded
+                # kickoff correction is surfaced, never turned into a skipped game.
                 raise
             except Exception as e:
                 logger.warning(

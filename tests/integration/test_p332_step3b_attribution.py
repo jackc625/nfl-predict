@@ -89,9 +89,10 @@ def _report(changed: dict[str, list[str]]) -> dict:
 class TestTheStepIsRegisteredAndDispatched:
     def test_the_step_is_an_extra_step_that_follows_rung_three(self) -> None:
         assert PHASE332_SURFACE_STEP == "3b"
-        assert fg.EXTRA_STEPS_BY_PREFIX[PHASE332_RUNG_PREFIX] == {
-            PHASE332_SURFACE_STEP: PHASE332_SCHEDULE_MOVE_RUNG
-        }
+        steps = fg.EXTRA_STEPS_BY_PREFIX[PHASE332_RUNG_PREFIX]
+        assert steps[PHASE332_SURFACE_STEP] == PHASE332_SCHEDULE_MOVE_RUNG
+        # The first extra step registered on this ladder (later ones follow it).
+        assert next(iter(steps)) == PHASE332_SURFACE_STEP
         assert (
             fg.EXTRA_STEP_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX][PHASE332_SURFACE_STEP]
             == fg.PHASE332_SURFACE_STEP_CAUSE
@@ -145,10 +146,16 @@ class TestTheStepIsRegisteredAndDispatched:
         assert signature["declared_before_the_rebuild"] is True
 
     def test_an_unregistered_string_step_is_refused(self) -> None:
+        registered = fg.EXTRA_STEPS_BY_PREFIX[PHASE332_RUNG_PREFIX]
+        unregistered = next(
+            f"3{letter}"
+            for letter in "bcdefghijklmnopqrstuvwxyz"
+            if f"3{letter}" not in registered
+        )
         with pytest.raises(ValueError, match="Unknown"):
             attribute_rung(
                 _report({"surface_mismatch": ["2005"]}),
-                "3c",
+                unregistered,
                 rung_prefix=PHASE332_RUNG_PREFIX,
             )
 
@@ -168,7 +175,11 @@ class TestTheLadderOrder:
         ]
 
     def test_rung_four_needs_step_3b_after_rung_three(self) -> None:
-        assert fg._ladder_predecessors(4, PHASE332_RUNG_PREFIX) == [0, 1, 2, 3, "3b"]
+        """Step 3b sits directly after rung 3; a step registered later (3c, Plan
+        33.2-12) follows it, so rung 4 is judged against the LAST step after rung 3."""
+        predecessors = fg._ladder_predecessors(4, PHASE332_RUNG_PREFIX)
+        assert predecessors[:5] == [0, 1, 2, 3, "3b"]
+        assert all(isinstance(entry, str) for entry in predecessors[5:])
         assert fg._ladder_predecessors(3, PHASE332_RUNG_PREFIX) == [0, 1, 2]
 
     def test_baselines_follow_the_ladder_order(self, tmp_path) -> None:
@@ -176,7 +187,10 @@ class TestTheLadderOrder:
             phase332_baseline_document_path(tmp_path, PHASE332_SURFACE_STEP).name
             == "p332_rung3.json"
         )
-        assert phase332_baseline_document_path(tmp_path, 4).name == "p332_rung3b.json"
+        last = fg._ladder_predecessors(4, PHASE332_RUNG_PREFIX)[-1]
+        assert phase332_baseline_document_path(tmp_path, 4).name == (
+            f"p332_rung{last}.json"
+        )
 
     def test_other_prefixes_have_no_extra_steps(self) -> None:
         assert fg._ladder_predecessors(3, "p331_") == [0, 1, 2]
@@ -243,9 +257,12 @@ class TestTheLiveStep:
     def test_the_ladder_is_complete_through_the_step(self) -> None:
         names = [
             p.name
-            for p in require_rung_ladder(FINGERPRINT_DIR, 4, PHASE332_RUNG_PREFIX)
+            for p in require_rung_ladder(
+                FINGERPRINT_DIR, PHASE332_SURFACE_STEP, PHASE332_RUNG_PREFIX
+            )
         ]
-        assert names[-2:] == [RUNG3.name, STEP3B.name]
+        assert names[-1] == RUNG3.name
+        assert STEP3B.is_file()
 
     def test_the_attribution_is_clean(self) -> None:
         before = json.loads(RUNG3.read_text(encoding="utf-8"))

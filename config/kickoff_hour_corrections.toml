@@ -1,0 +1,631 @@
+# The 2002-2005 Monday and Thursday NIGHT games whose feed clock is a 12-hour AM/PM error
+# (Plan 33.2-12, p332_ extra step 3c, orchestrator-assigned; deferred-items entry found by
+# Plan 33.2-10).
+#
+# THE DEFECT. The nflverse schedule (github.com/nflverse/nfldata data/games.csv, and the
+# pinned feed the ingest reads) carries `gametime = "09:00"` for all 68 of these games, and
+# NFL.com's own game pages carry the same 09:00 (checked 2026-09-21 on
+# nfl.com/games/eagles-at-redskins-2002-reg-2), so the error is upstream of nflverse. The
+# ET DATE is right, so no lock moves; the clock is 12 hours early.
+#
+# READ BY TWO CONSUMERS THROUGH ONE FUNCTION (scripts.ingest_games.resolve_kickoff_gametime):
+#   * scripts/ingest_games.py applies it to every ingested row, so a re-ingest of 2002-2005
+#     cannot restore the wrong hour;
+#   * scripts/repair_kickoff_hours.py applied it ONCE to silver `games`.
+# A feed that later sends any clock other than `feed_gametime` or `corrected_gametime`, or a
+# different `gameday`, raises KickoffCorrectionDriftError rather than being overridden blind.
+#
+# THE CORRECTION. `corrected_gametime` is the SCHEDULED start, 21:00 ET, the same convention
+# as every other silver kickoff (scheduled, never the actual first snap). Every entry cites a
+# per-game source for the ACTUAL start, and the loader refuses an entry whose cited start is
+# not in [corrected_gametime, corrected_gametime + 30 min):
+#   * `source_url` is an Internet Archive capture of the game's Pro-Football-Reference box
+#     score, whose scorebox prints "Start Time" in Eastern time (verified against the
+#     official gamebooks below: e.g. 2002_W05_GB@CHI, PFR "9:08pm", gamebook "8:08 PM CDT").
+#     The live site refuses automated requests; the capture is the same page, frozen.
+#     `source_start_time` restates that start in ET.
+#   * `gamebook_url` / `gamebook_start_time`, where present, are an Internet Archive capture
+#     of the official NFL Gamebook (nflcdns.nfl.com, retired) and its "Start Time" verbatim,
+#     in the stadium's own zone. Where both sources exist they agree to the minute.
+#   * 2002_W01_PIT@NE's only PFR capture predates the Start Time field, so its source is the
+#     gamebook itself.
+#
+# THE STANDING GUARD. tests/unit/test_kickoff_hour_sanity.py refuses any 2002-2025 silver
+# kickoff before noon ET unless it satisfies [international_morning_exception]: the NFL's
+# games abroad kick off at 9:30 AM ET so they air in the European afternoon.
+
+[international_morning_exception]
+rule = "a Sunday game at a venue whose data/venues.json country is not USA, kicking off at 09:30 ET"
+weekday = "Sunday"
+kickoff_et = "09:30"
+source_url = "https://en.wikipedia.org/w/index.php?title=NFL_International_Series&oldid=1375744239"
+source_note = "the International Series results table lists every game abroad; the London games air at 9:30 AM ET (2:30 PM UK)"
+
+[[correction]]
+game_id = "2002_W01_PIT@NE"
+gameday = "2002-09-09"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20221028003816/https://nflcdns.nfl.com/liveupdate/gamecenter/18109/NE_Gamebook.pdf"
+source_start_time = "9:12 PM ET"
+gamebook_url = "http://web.archive.org/web/20221028003816/https://nflcdns.nfl.com/liveupdate/gamecenter/18109/NE_Gamebook.pdf"
+gamebook_start_time = "9:12 PM EDT"
+
+[[correction]]
+game_id = "2002_W02_PHI@WAS"
+gameday = "2002-09-16"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260111141422/https://www.pro-football-reference.com/boxscores/200209160was.htm"
+source_start_time = "9:05 PM ET"
+
+[[correction]]
+game_id = "2002_W03_LA@TB"
+gameday = "2002-09-23"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260610145925/https://www.pro-football-reference.com/boxscores/200209230tam.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2002_W04_DEN@BAL"
+gameday = "2002-09-30"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260111141448/https://www.pro-football-reference.com/boxscores/200209300rav.htm"
+source_start_time = "9:08 PM ET"
+
+[[correction]]
+game_id = "2002_W05_GB@CHI"
+gameday = "2002-10-07"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260224215649/https://www.pro-football-reference.com/boxscores/200210070chi.htm"
+source_start_time = "9:08 PM ET"
+gamebook_url = "http://web.archive.org/web/20190928113209/https://nflcdns.nfl.com/liveupdate/gamecenter/18167/CHI_Gamebook.pdf"
+gamebook_start_time = "8:08 PM CDT"
+
+[[correction]]
+game_id = "2002_W06_SF@SEA"
+gameday = "2002-10-14"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260111141508/https://www.pro-football-reference.com/boxscores/200210140sea.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2002_W07_IND@PIT"
+gameday = "2002-10-21"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260111141519/https://www.pro-football-reference.com/boxscores/200210210pit.htm"
+source_start_time = "9:08 PM ET"
+gamebook_url = "http://web.archive.org/web/20230408055019/http://nflcdns.nfl.com/liveupdate/gamecenter/18195/PIT_Gamebook.pdf"
+gamebook_start_time = "9:08 PM EST"
+
+[[correction]]
+game_id = "2002_W08_NYG@PHI"
+gameday = "2002-10-28"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260111141530/https://www.pro-football-reference.com/boxscores/200210280phi.htm"
+source_start_time = "9:08 PM ET"
+
+[[correction]]
+game_id = "2002_W09_MIA@GB"
+gameday = "2002-11-04"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260308150232/https://www.pro-football-reference.com/boxscores/200211040gnb.htm"
+source_start_time = "9:08 PM ET"
+gamebook_url = "http://web.archive.org/web/20220110084428/https://nflcdns.nfl.com/liveupdate/gamecenter/18223/GB_Gamebook.pdf"
+gamebook_start_time = "8:08 PM CST"
+
+[[correction]]
+game_id = "2002_W10_LV@DEN"
+gameday = "2002-11-11"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260907111155/https://www.pro-football-reference.com/boxscores/200211110den.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2002_W11_CHI@LA"
+gameday = "2002-11-18"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260111141606/https://www.pro-football-reference.com/boxscores/200211180ram.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2002_W12_PHI@SF"
+gameday = "2002-11-25"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260724143124/https://www.pro-football-reference.com/boxscores/200211250sfo.htm"
+source_start_time = "9:00 PM ET"
+
+[[correction]]
+game_id = "2002_W13_NYJ@LV"
+gameday = "2002-12-02"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260726101455/https://www.pro-football-reference.com/boxscores/200212020rai.htm"
+source_start_time = "9:08 PM ET"
+
+[[correction]]
+game_id = "2002_W14_CHI@MIA"
+gameday = "2002-12-09"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260111141636/https://www.pro-football-reference.com/boxscores/200212090mia.htm"
+source_start_time = "9:09 PM ET"
+gamebook_url = "http://web.archive.org/web/20220110090841/https://nflcdns.nfl.com/liveupdate/gamecenter/18301/MIA_Gamebook.pdf"
+gamebook_start_time = "9:09 PM EST"
+
+[[correction]]
+game_id = "2002_W15_NE@TEN"
+gameday = "2002-12-16"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260115065821/https://www.pro-football-reference.com/boxscores/200212160oti.htm"
+source_start_time = "9:08 PM ET"
+
+[[correction]]
+game_id = "2002_W16_PIT@TB"
+gameday = "2002-12-23"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260111141657/https://www.pro-football-reference.com/boxscores/200212230tam.htm"
+source_start_time = "9:05 PM ET"
+gamebook_url = "http://web.archive.org/web/20230408055011/http://nflcdns.nfl.com/liveupdate/gamecenter/18333/TB_Gamebook.pdf"
+gamebook_start_time = "9:05 PM EDT"
+
+[[correction]]
+game_id = "2002_W17_SF@LA"
+gameday = "2002-12-30"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20241207164304/https://www.pro-football-reference.com/boxscores/200212300ram.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2003_W01_NYJ@WAS"
+gameday = "2003-09-04"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20241204161612/https://www.pro-football-reference.com/boxscores/200309040was.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2003_W01_TB@PHI"
+gameday = "2003-09-08"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20241204090801/https://www.pro-football-reference.com/boxscores/200309080phi.htm"
+source_start_time = "9:09 PM ET"
+gamebook_url = "http://web.archive.org/web/20220520100037/https://nflcdns.nfl.com/liveupdate/gamecenter/26509/PHI_Gamebook.pdf"
+gamebook_start_time = "9:09 PM EDT"
+
+[[correction]]
+game_id = "2003_W02_DAL@NYG"
+gameday = "2003-09-15"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20241208063036/https://www.pro-football-reference.com/boxscores/200309150nyg.htm"
+source_start_time = "9:08 PM ET"
+gamebook_url = "http://web.archive.org/web/20220523210021/https://nflcdns.nfl.com/liveupdate/gamecenter/26525/NYG_Gamebook.pdf"
+gamebook_start_time = "9:08 PM EDT"
+
+[[correction]]
+game_id = "2003_W03_LV@DEN"
+gameday = "2003-09-22"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260305125702/https://www.pro-football-reference.com/boxscores/200309220den.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2003_W04_GB@CHI"
+gameday = "2003-09-29"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20241206161514/https://www.pro-football-reference.com/boxscores/200309290chi.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2003_W05_IND@TB"
+gameday = "2003-10-06"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260305125704/https://www.pro-football-reference.com/boxscores/200310060tam.htm"
+source_start_time = "9:15 PM ET"
+gamebook_url = "http://web.archive.org/web/20220531203551/https://nflcdns.nfl.com/liveupdate/gamecenter/26349/TB_Gamebook.pdf"
+gamebook_start_time = "9:15 PM EDT"
+
+[[correction]]
+game_id = "2003_W06_ATL@LA"
+gameday = "2003-10-13"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260724143047/https://www.pro-football-reference.com/boxscores/200310130ram.htm"
+source_start_time = "9:00 PM ET"
+
+[[correction]]
+game_id = "2003_W07_KC@LV"
+gameday = "2003-10-20"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260305125705/https://www.pro-football-reference.com/boxscores/200310200rai.htm"
+source_start_time = "9:05 PM ET"
+gamebook_url = "http://web.archive.org/web/20220602213103/https://nflcdns.nfl.com/liveupdate/gamecenter/26377/OAK_Gamebook.pdf"
+gamebook_start_time = "6:05 PM PDT"
+
+[[correction]]
+game_id = "2003_W08_MIA@LAC"
+gameday = "2003-10-27"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260809103856/https://www.pro-football-reference.com/boxscores/200310270sdg.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2003_W09_NE@DEN"
+gameday = "2003-11-03"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260305125707/https://www.pro-football-reference.com/boxscores/200311030den.htm"
+source_start_time = "9:09 PM ET"
+gamebook_url = "http://web.archive.org/web/20220527073030/https://nflcdns.nfl.com/liveupdate/gamecenter/26405/DEN_Gamebook.pdf"
+gamebook_start_time = "7:09 PM MST"
+
+[[correction]]
+game_id = "2003_W10_PHI@GB"
+gameday = "2003-11-10"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260305125708/https://www.pro-football-reference.com/boxscores/200311100gnb.htm"
+source_start_time = "9:08 PM ET"
+gamebook_url = "http://web.archive.org/web/20220520203359/https://nflcdns.nfl.com/liveupdate/gamecenter/26419/GB_Gamebook.pdf"
+gamebook_start_time = "8:08 PM CST"
+
+[[correction]]
+game_id = "2003_W11_PIT@SF"
+gameday = "2003-11-17"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260305125709/https://www.pro-football-reference.com/boxscores/200311170sfo.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2003_W12_NYG@TB"
+gameday = "2003-11-24"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260724143046/https://www.pro-football-reference.com/boxscores/200311240tam.htm"
+source_start_time = "9:10 PM ET"
+
+[[correction]]
+game_id = "2003_W13_TEN@NYJ"
+gameday = "2003-12-01"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20250119080545/https://www.pro-football-reference.com/boxscores/200312010nyj.htm"
+source_start_time = "9:09 PM ET"
+gamebook_url = "http://web.archive.org/web/20220618073029/https://nflcdns.nfl.com/liveupdate/gamecenter/26467/NYJ_Gamebook.pdf"
+gamebook_start_time = "9:09 PM EST"
+
+[[correction]]
+game_id = "2003_W14_LA@CLE"
+gameday = "2003-12-08"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260719161621/https://www.pro-football-reference.com/boxscores/200312080cle.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2003_W15_PHI@MIA"
+gameday = "2003-12-15"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260305125712/https://www.pro-football-reference.com/boxscores/200312150mia.htm"
+source_start_time = "9:09 PM ET"
+gamebook_url = "http://web.archive.org/web/20220522234523/https://nflcdns.nfl.com/liveupdate/gamecenter/26541/MIA_Gamebook.pdf"
+gamebook_start_time = "9:09 PM EST"
+
+[[correction]]
+game_id = "2003_W16_GB@LV"
+gameday = "2003-12-22"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260305125713/https://www.pro-football-reference.com/boxscores/200312220rai.htm"
+source_start_time = "9:05 PM ET"
+
+[[correction]]
+game_id = "2004_W01_IND@NE"
+gameday = "2004-09-09"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20241207002222/https://www.pro-football-reference.com/boxscores/200409090nwe.htm"
+source_start_time = "9:08 PM ET"
+
+[[correction]]
+game_id = "2004_W01_GB@CAR"
+gameday = "2004-09-13"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260802123751/https://www.pro-football-reference.com/boxscores/200409130car.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2004_W02_MIN@PHI"
+gameday = "2004-09-20"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145054/https://www.pro-football-reference.com/boxscores/200409200phi.htm"
+source_start_time = "9:09 PM ET"
+gamebook_url = "http://web.archive.org/web/20191109160842/https://nflcdns.nfl.com/liveupdate/gamecenter/26940/PHI_Gamebook.pdf"
+gamebook_start_time = "9:09 PM EDT"
+
+[[correction]]
+game_id = "2004_W03_DAL@WAS"
+gameday = "2004-09-27"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145055/https://www.pro-football-reference.com/boxscores/200409270was.htm"
+source_start_time = "9:10 PM ET"
+
+[[correction]]
+game_id = "2004_W04_KC@BAL"
+gameday = "2004-10-04"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145057/https://www.pro-football-reference.com/boxscores/200410040rav.htm"
+source_start_time = "9:08 PM ET"
+gamebook_url = "http://web.archive.org/web/20221004230713/https://nflcdns.nfl.com/liveupdate/gamecenter/26968/BLT_Gamebook.pdf"
+gamebook_start_time = "9:08 PM EST"
+
+[[correction]]
+game_id = "2004_W05_TEN@GB"
+gameday = "2004-10-11"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20250920032536/https://www.pro-football-reference.com/boxscores/200410110gnb.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2004_W06_TB@LA"
+gameday = "2004-10-18"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145058/https://www.pro-football-reference.com/boxscores/200410180ram.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2004_W07_DEN@CIN"
+gameday = "2004-10-25"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145100/https://www.pro-football-reference.com/boxscores/200410250cin.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2004_W08_MIA@NYJ"
+gameday = "2004-11-01"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145101/https://www.pro-football-reference.com/boxscores/200411010nyj.htm"
+source_start_time = "9:08 PM ET"
+
+[[correction]]
+game_id = "2004_W09_MIN@IND"
+gameday = "2004-11-08"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260209195027/https://www.pro-football-reference.com/boxscores/200411080clt.htm"
+source_start_time = "9:00 PM ET"
+gamebook_url = "http://web.archive.org/web/20220720015013/https://nflcdns.nfl.com/liveupdate/gamecenter/27038/IND_Gamebook.pdf"
+gamebook_start_time = "9:00 PM EST"
+
+[[correction]]
+game_id = "2004_W10_PHI@DAL"
+gameday = "2004-11-15"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145103/https://www.pro-football-reference.com/boxscores/200411150dal.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2004_W11_NE@KC"
+gameday = "2004-11-22"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145104/https://www.pro-football-reference.com/boxscores/200411220kan.htm"
+source_start_time = "9:00 PM ET"
+gamebook_url = "http://web.archive.org/web/20221008032337/https://nflcdns.nfl.com/liveupdate/gamecenter/27068/KC_Gamebook.pdf"
+gamebook_start_time = "8:00 PM CST"
+
+[[correction]]
+game_id = "2004_W12_LA@GB"
+gameday = "2004-11-29"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145106/https://www.pro-football-reference.com/boxscores/200411290gnb.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2004_W13_DAL@SEA"
+gameday = "2004-12-06"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145106/https://www.pro-football-reference.com/boxscores/200412060sea.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2004_W14_KC@TEN"
+gameday = "2004-12-13"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20250919005958/https://www.pro-football-reference.com/boxscores/200412130oti.htm"
+source_start_time = "9:08 PM ET"
+gamebook_url = "http://web.archive.org/web/20221008045715/https://nflcdns.nfl.com/liveupdate/gamecenter/27116/TEN_Gamebook.pdf"
+gamebook_start_time = "8:08 PM CST"
+
+[[correction]]
+game_id = "2004_W15_NE@MIA"
+gameday = "2004-12-20"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20241207162937/https://www.pro-football-reference.com/boxscores/200412200mia.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2004_W16_PHI@LA"
+gameday = "2004-12-27"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260102145109/https://www.pro-football-reference.com/boxscores/200412270ram.htm"
+source_start_time = "9:09 PM ET"
+
+[[correction]]
+game_id = "2005_W01_LV@NE"
+gameday = "2005-09-08"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20241206152959/https://www.pro-football-reference.com/boxscores/200509080nwe.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2005_W01_PHI@ATL"
+gameday = "2005-09-12"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171309/https://www.pro-football-reference.com/boxscores/200509120atl.htm"
+source_start_time = "9:05 PM ET"
+
+[[correction]]
+game_id = "2005_W02_WAS@DAL"
+gameday = "2005-09-19"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171310/https://www.pro-football-reference.com/boxscores/200509190dal.htm"
+source_start_time = "9:07 PM ET"
+gamebook_url = "http://web.archive.org/web/20230319231829/https://nflcdns.nfl.com/liveupdate/gamecenter/28556/DAL_Gamebook.pdf"
+gamebook_start_time = "8:07 PM CDT"
+
+[[correction]]
+game_id = "2005_W03_KC@DEN"
+gameday = "2005-09-26"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20241209183242/https://www.pro-football-reference.com/boxscores/200509260den.htm"
+source_start_time = "9:07 PM ET"
+gamebook_url = "http://web.archive.org/web/20221009022525/https://nflcdns.nfl.com/liveupdate/gamecenter/28570/DEN_Gamebook.pdf"
+gamebook_start_time = "7:07 PM MDT"
+
+[[correction]]
+game_id = "2005_W04_GB@CAR"
+gameday = "2005-10-03"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171312/https://www.pro-football-reference.com/boxscores/200510030car.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2005_W05_PIT@LAC"
+gameday = "2005-10-10"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171313/https://www.pro-football-reference.com/boxscores/200510100sdg.htm"
+source_start_time = "9:00 PM ET"
+
+[[correction]]
+game_id = "2005_W06_LA@IND"
+gameday = "2005-10-17"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171318/https://www.pro-football-reference.com/boxscores/200510170clt.htm"
+source_start_time = "9:08 PM ET"
+note = "PFR prints 8:08pm, the Indianapolis wall clock: Indiana did not observe daylight saving time until 2006, so 8:08 PM EST in Indianapolis is 9:08 PM EDT. nflverse play-by-play records the first play at 2005-10-18T01:08:06Z, i.e. 9:08 PM EDT"
+
+[[correction]]
+game_id = "2005_W07_NYJ@ATL"
+gameday = "2005-10-24"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171319/https://www.pro-football-reference.com/boxscores/200510240atl.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2005_W08_BAL@PIT"
+gameday = "2005-10-31"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171320/https://www.pro-football-reference.com/boxscores/200510310pit.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2005_W09_IND@NE"
+gameday = "2005-11-07"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171321/https://www.pro-football-reference.com/boxscores/200511070nwe.htm"
+source_start_time = "9:08 PM ET"
+
+[[correction]]
+game_id = "2005_W10_DAL@PHI"
+gameday = "2005-11-14"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171322/https://www.pro-football-reference.com/boxscores/200511140phi.htm"
+source_start_time = "9:08 PM ET"
+gamebook_url = "http://web.archive.org/web/20220525214015/https://nflcdns.nfl.com/liveupdate/gamecenter/28668/PHI_Gamebook.pdf"
+gamebook_start_time = "9:08 PM EST"
+
+[[correction]]
+game_id = "2005_W11_MIN@GB"
+gameday = "2005-11-21"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171323/https://www.pro-football-reference.com/boxscores/200511210gnb.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2005_W12_PIT@IND"
+gameday = "2005-11-28"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171324/https://www.pro-football-reference.com/boxscores/200511280clt.htm"
+source_start_time = "9:08 PM ET"
+
+[[correction]]
+game_id = "2005_W13_SEA@PHI"
+gameday = "2005-12-05"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260919115959/https://www.pro-football-reference.com/boxscores/200512050phi.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2005_W14_NO@ATL"
+gameday = "2005-12-12"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260724143046/https://www.pro-football-reference.com/boxscores/200512120atl.htm"
+source_start_time = "9:05 PM ET"
+
+[[correction]]
+game_id = "2005_W15_GB@BAL"
+gameday = "2005-12-19"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171328/https://www.pro-football-reference.com/boxscores/200512190rav.htm"
+source_start_time = "9:07 PM ET"
+
+[[correction]]
+game_id = "2005_W16_NE@NYJ"
+gameday = "2005-12-26"
+feed_gametime = "09:00"
+corrected_gametime = "21:00"
+source_url = "http://web.archive.org/web/20260312171329/https://www.pro-football-reference.com/boxscores/200512260nyj.htm"
+source_start_time = "9:09 PM ET"

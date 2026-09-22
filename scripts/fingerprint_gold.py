@@ -1756,13 +1756,16 @@ def _ladder_predecessors(rung: int | str, prefix: str = "") -> list[int | str]:
     """Every ladder entry that must exist before *rung*, in ladder order.
 
     A numbered rung N needs rungs 0 .. N-1 and every extra step following one of them. An
-    extra step following F needs rungs 0 .. F and every extra step following an earlier
-    rung.
+    extra step following F needs rungs 0 .. F, every extra step following an earlier rung,
+    and every extra step that also follows F but was REGISTERED before it: steps sharing a
+    rung run in registration order (step 3c, Plan 33.2-12, follows rung 3 after step 3b,
+    so it is judged against step 3b and rung 4 against step 3c).
 
     Raises:
         ValueError: *rung* is a string that names no registered extra step.
     """
     steps = EXTRA_STEPS_BY_PREFIX.get(prefix, {})
+    registered = list(steps)
     if isinstance(rung, str):
         if rung not in steps:
             msg = (
@@ -1771,11 +1774,19 @@ def _ladder_predecessors(rung: int | str, prefix: str = "") -> list[int | str]:
             )
             raise ValueError(msg)
         numbered = list(range(steps[rung] + 1))
-        earlier = [s for s, follows in steps.items() if follows < steps[rung]]
+        position = registered.index(rung)
+        earlier = [
+            s
+            for s, follows in steps.items()
+            if follows < steps[rung]
+            or (follows == steps[rung] and registered.index(s) < position)
+        ]
     else:
         numbered = list(range(rung))
         earlier = [s for s, follows in steps.items() if follows < rung]
-    order = {k: (k, 0) for k in numbered} | {s: (steps[s], 1) for s in earlier}
+    order = {k: (k, 0, 0) for k in numbered} | {
+        s: (steps[s], 1, registered.index(s)) for s in earlier
+    }
     return sorted(order, key=order.__getitem__)
 
 
@@ -4412,6 +4423,259 @@ PHASE332_EXTRA_STEP_ATTRIBUTORS: dict[str, Callable[..., bool]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# p332_ EXTRA STEP 3c -- KICKOFF HOUR CORRECTION (Plan 33.2-12, orchestrator-assigned; the
+# deferred-items entry "68 silver kickoffs in 2002-2005 are stored at 09:00 ET for Monday
+# and Thursday NIGHT games", found by Plan 33.2-10).
+#
+# NOT A NUMBERED RUNG. It runs BEFORE rung 4 because rung 4's forecast-hour selection reads
+# the kickoff hour. It follows rung 3 and was registered after step 3b, so it is judged
+# against p332_rung3b.json and rung 4 is judged against p332_rung3c.json.
+#
+# DECLARED BEFORE ANY PRODUCTION WRITE. Silver `games.kickoff_et` moves +12 hours (09:00 ->
+# 21:00 ET, same date) for the 68 games of config/kickoff_hour_corrections.toml. The date
+# is unchanged, so no lock and no weekday moves (thursday_game, monday_game, short_week and
+# game_day_of_week cannot move). Silver weather is NOT regenerated here (that is rung 4),
+# and gold weather is read from silver weather_features by game id, so no weather column
+# can move. The one gold reader of the kickoff HOUR is the contextual rest-day count:
+# features.contextual.calculate_rest_days floors (current - previous kickoff).days, so a
+# 12-hour shift can move the rest count of a corrected game itself and of each of its two
+# teams' NEXT game -- and with it the columns derived from rest (rest_advantage, the
+# short-rest flags, off_bye). The games whose rest count moves are DERIVED, not listed:
+# phase332_kickoff_hour_rest_changes calls that same function under both clocks.
+# ---------------------------------------------------------------------------
+
+PHASE332_KICKOFF_HOUR_STEP: str = "3c"
+
+PHASE332_KICKOFF_HOUR_STEP_FOLLOWS: int = PHASE332_SCHEDULE_MOVE_RUNG
+
+# Every gold column computed from the contextual rest-day count (features.contextual,
+# the per-game loop that calls calculate_rest_days). NOT the weekday family: the date
+# does not move.
+PHASE332_KICKOFF_HOUR_STEP_COLUMNS: tuple[str, ...] = (
+    "home_rest_days",
+    "away_rest_days",
+    "rest_advantage",
+    "both_short_rest",
+    "home_short_rest",
+    "away_short_rest",
+    "home_off_bye",
+    "away_off_bye",
+)
+
+PHASE332_KICKOFF_HOUR_STEP_CAUSE: str = (
+    "THE KICKOFF-HOUR CORRECTION of Plan 33.2-12 extra step 3c (orchestrator-assigned, "
+    "deferred-items entry of Plan 33.2-10), and NOTHING else: silver games.kickoff_et of the "
+    "68 2002-2005 Monday and Thursday night games in config/kickoff_hour_corrections.toml "
+    "moves from 09:00 to 21:00 ET on the same date (a 12-hour AM/PM error in the feed, each "
+    "game cited to its archived box score or official gamebook), applied at every ingest by "
+    "scripts.ingest_games.resolve_kickoff_gametime. No lock, weekday or weather value moves. "
+    "Only the rest-day family can move -- home_rest_days, away_rest_days, rest_advantage, "
+    "both_short_rest, home_short_rest, away_short_rest, home_off_bye, away_off_bye -- and "
+    "only in seasons on or after the earliest season holding a game whose rest count "
+    "changes. No column is added, none removed, no row moves"
+)
+
+_PHASE332_KICKOFF_REST_CHANGES_CACHE: dict[str, int] | None = None
+
+
+def phase332_kickoff_hour_rest_changes() -> dict[str, int]:
+    """``game_id -> season`` for every silver game whose home or away rest count moves.
+
+    For each recorded game, its two teams are scored at that game and at each team's next
+    game, with ``features.contextual.ContextualFeaturesCalculator.calculate_rest_days`` --
+    the builder's own function -- once with every recorded game at its feed clock and once
+    at its corrected clock. Both clocks come from the record, so the answer is the same
+    whether silver has been repaired yet or not. No other game's rest can move: a rest
+    count reads only the game's own kickoff and its team's previous one, and a 12-hour shift
+    cannot reorder a team's games. Reads silver ``games`` READ-ONLY; computed once.
+    """
+    global _PHASE332_KICKOFF_REST_CHANGES_CACHE
+    if _PHASE332_KICKOFF_REST_CHANGES_CACHE is None:
+        from zoneinfo import ZoneInfo
+
+        from data.storage import load_dataframe
+        from features.contextual import ContextualFeaturesCalculator
+        from scripts.ingest_games import load_kickoff_hour_corrections
+        from utils.date_utils import kickoff_wall_clock_et
+
+        eastern = ZoneInfo("America/New_York")
+        games = load_dataframe("games", layer="silver").reset_index(drop=True)
+        corrections = load_kickoff_hour_corrections()
+        position_of = {gid: i for i, gid in enumerate(games["game_id"])}
+        base = games["kickoff_et"].map(kickoff_wall_clock_et)
+
+        def clocks(field: str) -> pd.Series:
+            series = base.copy()
+            for game_id, correction in corrections.items():
+                series.at[position_of[game_id]] = datetime.fromisoformat(
+                    f"{correction.gameday} {getattr(correction, field)}"
+                ).replace(tzinfo=eastern)
+            return series
+
+        feed, fixed = clocks("feed_gametime"), clocks("corrected_gametime")
+        calculator = ContextualFeaturesCalculator()
+        changed: dict[str, int] = {}
+        for game_id in corrections:
+            position = position_of[game_id]
+            for team in (
+                games.at[position, "home_team"],
+                games.at[position, "away_team"],
+            ):
+                plays = games.index[
+                    (games["home_team"] == team) | (games["away_team"] == team)
+                ]
+                later = [i for i in plays if fixed[i] > fixed[position]]
+                scored = [position] + (
+                    [min(later, key=fixed.__getitem__)] if later else []
+                )
+                for i in scored:
+                    before = calculator.calculate_rest_days(
+                        team, feed[i], games, kickoffs=feed
+                    )
+                    after = calculator.calculate_rest_days(
+                        team, fixed[i], games, kickoffs=fixed
+                    )
+                    if before != after:
+                        changed[str(games.at[i, "game_id"])] = int(
+                            games.at[i, "season"]
+                        )
+        _PHASE332_KICKOFF_REST_CHANGES_CACHE = changed
+    return dict(_PHASE332_KICKOFF_REST_CHANGES_CACHE)
+
+
+def phase332_kickoff_hour_step_earliest_season(
+    through_season: int = 2025,
+) -> int | None:
+    """The earliest season (at most *through_season*) holding a game whose rest moves."""
+    seasons = [
+        season
+        for season in phase332_kickoff_hour_rest_changes().values()
+        if season <= through_season
+    ]
+    return min(seasons, default=None)
+
+
+PHASE332_KICKOFF_HOUR_STEP_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_KICKOFF_HOUR_STEP,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_KICKOFF_HOUR_STEP_CAUSE,
+    "follows_rung": PHASE332_KICKOFF_HOUR_STEP_FOLLOWS,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to the eight rest-day columns (PHASE332_KICKOFF_HOUR_STEP_COLUMNS), "
+        "and only in seasons ON OR AFTER the earliest season holding a game whose rest count "
+        "moves (derived by phase332_kickoff_hour_rest_changes from silver games and the "
+        "record): a changed value moves its own season and, through the prior-season "
+        "bootstrap and the strictly-prior fits, later seasons, never an earlier one"
+    ),
+    "rows_changed": (
+        "before normalization only the games phase332_kickoff_hour_rest_changes derives "
+        "can differ. The rest columns are continuous or varying flags, so gold z-scores "
+        "them within each season: after normalization they can also move on the other rows "
+        "of an affected game's season sorted at or after that game (the rescaled same-season "
+        "neighbours) and on the next season's early rows. Measured row by row at run time "
+        "against a copy of the before-gold"
+    ),
+    "weather": (
+        "NOT expected to move: silver weather is not regenerated at this step, and gold "
+        "weather is read from silver weather_features by game id"
+    ),
+    "declared_families": ("rest_days",),
+    "family_mechanisms": {
+        "rest_days": (
+            "source-derived: every recorded game's two teams scored at that game and at "
+            "their next game with features.contextual's calculate_rest_days, under the feed "
+            "clock and the corrected clock"
+        ),
+    },
+    "declared_before_the_rebuild": True,
+}
+
+EXTRA_STEPS_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_KICKOFF_HOUR_STEP
+] = PHASE332_KICKOFF_HOUR_STEP_FOLLOWS
+EXTRA_STEP_CAUSES_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_KICKOFF_HOUR_STEP
+] = PHASE332_KICKOFF_HOUR_STEP_CAUSE
+
+# THE BASELINE WAS CONFIRMED, NOT ASSUMED (owner ruling 2026-09-21). Step 3c registers NO
+# retaken baseline: it is judged against step 3b, the entry before it.
+PHASE332_KICKOFF_HOUR_STEP_BASELINE_CONFIRMATION_DOCUMENT: str = (
+    f"{PHASE332_RUNG_PREFIX}step3c_baseline_confirm.json"
+)
+
+PHASE332_KICKOFF_HOUR_STEP_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-21 before step 3c wrote anything. Gold was rebuilt with "
+    "`scripts/build_features.py --through-season 2025` in a SCRATCH data root "
+    "(DATA_ROOT_PATH and DUCKDB_PATH pointed at a copy of today's production data/, the "
+    "code exported from commit 5d7eefd, before the kickoff correction existed) from today's "
+    "inputs minus exactly this step's cause, and its fingerprint equals p332_rung3b.json on "
+    "EVERY non-clock column of all three matrices (only feature_timestamp, the build clock, "
+    "differs). Plan 33.2-11 changed data/ between step 3b and this step only under "
+    "bronze/mos/, which no gold builder reads. The production data/ tree was "
+    "digest-identical (1107 files) before and after that build. No carry-in, no retake"
+)
+
+
+def _attribute_p332_kickoff_hour(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Extra step 3c of the `p332_` ladder: the kickoff-hour correction's OWN judge.
+
+    A changed column is attributed ONLY when it is one of the eight rest-day columns AND
+    every season it moved in is on or after the earliest season holding a game whose rest
+    count moves. Anything else is UNATTRIBUTED and fails; the cause is never widened.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    verdict["changed_by_family"] = {"rest_days": []}
+    blocking = _phase33_structure(
+        detail,
+        diff,
+        fail,
+        "p332_ step 3c (the kickoff-hour correction)",
+        "Correcting the 2002-2005 night-game kickoff hours",
+    )
+    explainable = {_canonical(column) for column in PHASE332_KICKOFF_HOUR_STEP_COLUMNS}
+    floor = phase332_kickoff_hour_step_earliest_season()
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        in_range = (
+            floor is not None
+            and bool(seasons)
+            and all(int(s) >= floor for s in seasons)
+        )
+        if column in explainable and in_range:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["rest_days"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        why = (
+            f"it moved in season(s) before {floor}, the earliest season holding a game "
+            "whose rest count moves"
+            if column in explainable
+            else "the kickoff hour reaches no gold column but the rest-day family"
+        )
+        fail(
+            f"column '{column}' moved at p332_ step 3c in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The step's ONE cause is the "
+            "kickoff-hour correction; do NOT widen it to fit this diff"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_EXTRA_STEP_SIGNATURES[PHASE332_KICKOFF_HOUR_STEP] = (
+    PHASE332_KICKOFF_HOUR_STEP_EXPECTED_SIGNATURE
+)
+PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_KICKOFF_HOUR_STEP] = (
+    _attribute_p332_kickoff_hour
+)
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -4891,7 +5155,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 3, step 3b).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 3, steps 3b, 3c).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -5068,6 +5332,12 @@ def write_phase332_rebuild_diff(
     )
     if surface_document.exists():
         lines.extend(_phase332_surface_step_lines(fingerprint_dir))
+
+    kickoff_document = rung_document_path(
+        fingerprint_dir, PHASE332_KICKOFF_HOUR_STEP, PHASE332_RUNG_PREFIX
+    )
+    if kickoff_document.exists():
+        lines.extend(_phase332_kickoff_hour_step_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -5263,6 +5533,74 @@ def _phase332_surface_step_lines(fingerprint_dir: Path | str) -> list[str]:
         f"declared_columns = {_toml_array(list(PHASE332_SURFACE_STEP_COLUMNS))}",
         f"declared_season_floor = {floor if floor is not None else 0}",
         f"reclassified_games_through_2025 = {_toml_array(reclassified)}",
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_EXTRA_STEP_ATTRIBUTORS[step].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the step is '
+            'recorded as declared-but-not-run rather than as a step that ran"'
+        )
+    lines.extend(["", f'[rung."{step}".moved_seasons]'])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_kickoff_hour_step_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` extra step 3c (Plan 33.2-12), recomputed.
+
+    Judged by the same `attribute_rung` call the CLI makes, against step 3b, the ladder
+    entry before it (PHASE332_KICKOFF_HOUR_STEP_BASELINE_CONFIRMATION records why no retake
+    was needed).
+    """
+    step = PHASE332_KICKOFF_HOUR_STEP
+    require_rung_ladder(fingerprint_dir, step, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, step)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, step, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, step, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_KICKOFF_HOUR_STEP_EXPECTED_SIGNATURE
+    floor = phase332_kickoff_hour_step_earliest_season()
+    rest_moved = sorted(
+        game
+        for game, season in phase332_kickoff_hour_rest_changes().items()
+        if season <= 2025
+    )
+    lines = [
+        "",
+        f'[rung."{step}"]',
+        f'rung = "{step}"',
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        "extra_step = true",
+        f"follows_rung = {PHASE332_KICKOFF_HOUR_STEP_FOLLOWS}",
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_KICKOFF_HOUR_STEP_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_KICKOFF_HOUR_STEP_CAUSE)}"',
+        f"declared_columns = {_toml_array(list(PHASE332_KICKOFF_HOUR_STEP_COLUMNS))}",
+        f"declared_season_floor = {floor if floor is not None else 0}",
+        'correction_record = "config/kickoff_hour_corrections.toml"',
+        f"rest_count_moved_games_through_2025 = {_toml_array(rest_moved)}",
         f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
         f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
         f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
