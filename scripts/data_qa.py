@@ -98,10 +98,20 @@ logger = get_logger(__name__)
 # written here only after the rebuilt matrices MEASURED equal to that prediction; the
 # delta is pinned to those two NAMES by the ``P332_12_GOLD_WIDTH_DELTA`` manifest slot
 # (tests/phase33_state.py), which tests/unit/test_data_qa_gold_width.py discovers.
+# PHASE 33.2 RUNG 7 (Plan 33.2-16 Task 3, rebuilt 2026-09-22) moves each matrix by
+# exactly +4, from 193/194/193 to 197/198/197. The added columns are the four per-side
+# opponent-adjustment coverage flags ``home_off_rolling_opp_adj_coverage``,
+# ``home_def_rolling_opp_adj_coverage``, ``away_off_rolling_opp_adj_coverage`` and
+# ``away_def_rolling_opp_adj_coverage`` (features.opponent_adj.OPP_ADJ_COVERAGE_COLUMN):
+# the opponent adjustment now actually runs, and where it cannot reach, its value is NaN
+# beside a flag at 0.0 instead of raw EPA wearing an adjusted name. The widths below were
+# PREDICTED in tests/integration/test_p332_rung7_attribution.py before the rebuild and
+# written here only after the rebuilt matrices MEASURED equal to that prediction; the
+# delta is pinned to those four NAMES by the ``P332_16_GOLD_WIDTH_DELTA`` manifest slot.
 GOLD_FEATURE_MATRICES = {
-    "features_wp": 193,
-    "features_ats": 194,
-    "features_ou": 193,
+    "features_wp": 197,
+    "features_ats": 198,
+    "features_ou": 197,
 }
 
 # Tables whose DuckDB and parquet copies must agree on row-set MEMBERSHIP (D30-18).

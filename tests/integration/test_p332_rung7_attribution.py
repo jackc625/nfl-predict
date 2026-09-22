@@ -296,8 +296,9 @@ class TestTheLiveRung:
         assert rung["baseline_document"] == STEP6B.name
         assert rung["attribution_ok"] is True
         assert rung["unattributed_columns"] == []
-        assert tuple(rung["widths_before"]) == PREDICTED_WIDTHS_BEFORE
-        assert tuple(rung["widths_after"]) == PREDICTED_WIDTHS_AFTER
+        # The generator writes the widths as TOML strings (``_toml_array``).
+        assert tuple(int(w) for w in rung["widths_before"]) == PREDICTED_WIDTHS_BEFORE
+        assert tuple(int(w) for w in rung["widths_after"]) == PREDICTED_WIDTHS_AFTER
         assert sorted(rung["added_columns"]) == list(PREDICTED_ADDED)
 
 

@@ -10,7 +10,7 @@
 # scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
 # ===========================================================================
 
-generated_at = "2026-09-22T07:02:21.458021+00:00"
+generated_at = "2026-09-22T08:31:35.642046+00:00"
 rung_prefix = "p332_"
 float_tolerance = "none -- EXACT byte comparison"
 
@@ -504,3 +504,40 @@ home_backup_quality_delta = ["2015", "2016", "2017", "2018", "2019", "2020", "20
 home_date_modified_coverage = ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024"]
 home_injury_coverage = ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024"]
 home_qb_out_flag = ["2015", "2016", "2017", "2022", "2023"]
+
+[rung.7]
+rung = 7
+prefix = "p332_"
+rebuilt = true
+baseline_document = "p332_rung6b.json"
+baseline_confirmation = "CONFIRMED 2026-09-22 before rung 7 wrote anything. p332_rung6b.json IS gold rebuilt from today's inputs minus exactly this rung's cause: step 6b's rebuild is the last production gold write, production data/ was digest-identical to outputs/p332_step6b_after.json (verified before outputs/p332_rung7_before.json was taken), and every code change since 7748d57 is rung 7's own (the canonical opponent resolution, the lock-keyed adjustment and per-lock league averages, the coverage flag, the NaN preservation and the merge-site gate). No carry-in, no retake"
+cause = "THE OPPONENT ADJUSTMENT MADE TO RUN, HONESTLY, p332_ rung 7 of Plan 33.2-16 (SPEC R9, D33.2-08 item 1), and NOTHING else: opponents resolved through the canonical game id mapping (utils.game_id_utils.convert_legacy_game_id, an unresolvable id refused by name) so the adjustment actually runs, every input admitted at the lock of the game it informs with per-lock league averages replacing whole-frame means, and an explicit per-side coverage flag (rolling_opp_adj_coverage) with the value left NaN -- never imputed -- replacing the silent fall-through to raw EPA. Only the twelve *_rolling_opp_adj_* columns can move (any season 2002-2025: new values 2018-2025, the 0.0 stand-in becoming NaN before the play-by-play pool), exactly the four *_rolling_opp_adj_coverage flags are added to every matrix, none is removed, and no row moves"
+rows_changed = "2018-2025: every row's opponent-adjusted values (genuinely adjusted, or NaN beside a 0.0 flag where the minimum opponent history is not met); 2002-2017: the neutral 0.0 z-score becomes the preserved NaN, the flag 0.0"
+preplan_measurement = "Read-only, before the fix: 0 of 1,088 rows adjusted for 2023; with ids matched, 832 of 1,088, mean absolute adjustment 0.058 EPA per play"
+predicted_changed_columns = ["away_def_rolling_opp_adj_epa_per_play", "away_def_rolling_opp_adj_pass_epa", "away_def_rolling_opp_adj_rush_epa", "away_off_rolling_opp_adj_epa_per_play", "away_off_rolling_opp_adj_pass_epa", "away_off_rolling_opp_adj_rush_epa", "home_def_rolling_opp_adj_epa_per_play", "home_def_rolling_opp_adj_pass_epa", "home_def_rolling_opp_adj_rush_epa", "home_off_rolling_opp_adj_epa_per_play", "home_off_rolling_opp_adj_pass_epa", "home_off_rolling_opp_adj_rush_epa"]
+predicted_added_columns = ["away_def_rolling_opp_adj_coverage", "away_off_rolling_opp_adj_coverage", "home_def_rolling_opp_adj_coverage", "home_off_rolling_opp_adj_coverage"]
+allowed_seasons = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+moved_season_union = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+widths_before = ["193", "194", "193"]
+widths_after = ["197", "198", "197"]
+added_columns = ["away_def_rolling_opp_adj_coverage", "away_off_rolling_opp_adj_coverage", "home_def_rolling_opp_adj_coverage", "home_off_rolling_opp_adj_coverage"]
+moved_columns = ["away_def_rolling_opp_adj_epa_per_play", "away_def_rolling_opp_adj_pass_epa", "away_def_rolling_opp_adj_rush_epa", "away_off_rolling_opp_adj_epa_per_play", "away_off_rolling_opp_adj_pass_epa", "away_off_rolling_opp_adj_rush_epa", "home_def_rolling_opp_adj_epa_per_play", "home_def_rolling_opp_adj_pass_epa", "home_def_rolling_opp_adj_rush_epa", "home_off_rolling_opp_adj_epa_per_play", "home_off_rolling_opp_adj_pass_epa", "home_off_rolling_opp_adj_rush_epa"]
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_oppadj"
+
+[rung.7.moved_seasons]
+away_def_rolling_opp_adj_epa_per_play = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_def_rolling_opp_adj_pass_epa = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_def_rolling_opp_adj_rush_epa = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_off_rolling_opp_adj_epa_per_play = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_off_rolling_opp_adj_pass_epa = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_off_rolling_opp_adj_rush_epa = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_def_rolling_opp_adj_epa_per_play = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_def_rolling_opp_adj_pass_epa = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_def_rolling_opp_adj_rush_epa = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_off_rolling_opp_adj_epa_per_play = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_off_rolling_opp_adj_pass_epa = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_off_rolling_opp_adj_rush_epa = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]

@@ -15898,3 +15898,121 @@ P332_15_STEP6B_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
     "gold/features_ou.parquet",
     "nfl_predictions.duckdb",
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-16 Task 3 -- p332_ RUNG 7: THE OPPONENT ADJUSTMENT MADE TO RUN, HONESTLY (SPEC R9 /
+# R2, D33.2-08 item 1). APPENDED ONCE on 2026-09-22, in ONE block, by the task that ran the
+# rung. Nothing above this line was edited.
+#
+# THE DEFECT: features.opponent_adj keyed each play-by-play game id (2023_01_ARI_WAS) into
+# silver games (2023_W01_ARI@WAS); nothing matched, every opponent was "", and the RAW value was
+# kept under the adjusted name -- 0 of 1,088 rows adjusted for 2023 -- while the league average
+# subtracted was a mean over the whole loaded frame (games after the adjusted one included).
+#
+# THE CAUSE, declared in commit 3351f90 before any rebuild: opponents resolved through
+# utils.game_id_utils.convert_legacy_game_id (an unresolvable id refused by name, as
+# OpponentResolutionError, a RuntimeError neither swallow tuple catches), every input admitted
+# at the lock of the game it informs with per-lock league averages, and an explicit per-side
+# coverage flag with the value left NaN -- never imputed. PREDICTED: only the twelve
+# *_rolling_opp_adj_* values move (any season 2002-2025), exactly the four
+# *_rolling_opp_adj_coverage flags are added, nothing removed, rows unchanged, widths +4.
+#
+# MEASURED 2026-09-22: a scratch preview (production data/ digest-identical across it, 1128
+# files) and then the production rebuild --through-season 2025, judged against p332_rung6b.json
+# (baseline confirmed: data/ digest-identical to outputs/p332_step6b_after.json, no retake) --
+# attribution_ok true, not blocking, zero unattributed; exactly the twelve value columns moved,
+# in every season 2002-2025 (new values 2018-2025; the 0.0 stand-in became NaN before the
+# play-by-play pool); exactly the four flags added; production identical to the preview on
+# every non-clock column. The gate CHECKED the family at its merge site; all nine sources
+# checked, none empty. Digest bracket outputs/p332_rung7_before.json -> after: the three gold
+# matrices and the DuckDB file; mixed empty, nothing removed.
+#
+# THE SIZE OF THE CORRECTION (per-game pool 2018-2025, read-only): 8,308 of 8,564 team-game
+# rows adjusted -- every row from 2019 on; 2018 784 of 1,040, its first four weeks having no
+# opponent with four games -- mean absolute adjustment 0.0738 EPA per play (pass 0.1071, rush
+# 0.0673); 2023 alone 1,088 of 1,088 at 0.0751. The pre-plan read-only figure (0.058 on 832 of
+# 1,088) was measured on a 2023-only frame with the whole-frame league average.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_OPPADJ_RUNG_CAUSE (UTF-8), declared in 3351f90.
+P332_16_RUNG7_CAUSE_DIGEST: str = (
+    "50e261a099d0034fe65ca0ba310de0f8999ac1bd987bc94bae0f77f268d15ba7"
+)
+
+P332_16_RUNG7_DECLARED_IN_COMMIT: str = "3351f908240f6fbff58e7845c78c2715fd16566c"
+
+P332_16_RUNG7_BASELINE_DOCUMENT: str = "p332_rung6b.json"
+
+P332_16_RUNG7_MOVED_COLUMNS: tuple[str, ...] = (
+    "away_def_rolling_opp_adj_epa_per_play", "away_def_rolling_opp_adj_pass_epa",
+    "away_def_rolling_opp_adj_rush_epa", "away_off_rolling_opp_adj_epa_per_play",
+    "away_off_rolling_opp_adj_pass_epa", "away_off_rolling_opp_adj_rush_epa",
+    "home_def_rolling_opp_adj_epa_per_play", "home_def_rolling_opp_adj_pass_epa",
+    "home_def_rolling_opp_adj_rush_epa", "home_off_rolling_opp_adj_epa_per_play",
+    "home_off_rolling_opp_adj_pass_epa", "home_off_rolling_opp_adj_rush_epa",
+)  # fmt: skip
+
+P332_16_RUNG7_ADDED_COLUMNS: tuple[str, ...] = (
+    "away_def_rolling_opp_adj_coverage", "away_off_rolling_opp_adj_coverage",
+    "home_def_rolling_opp_adj_coverage", "home_off_rolling_opp_adj_coverage",
+)  # fmt: skip
+
+P332_16_RUNG7_FIRST_AND_LAST_MOVED_SEASON: tuple[str, str] = ("2002", "2025")
+
+P332_16_RUNG7_ROWS: int = 6499
+
+# The per-game pool the adjustment runs on, and how much of it the rule reaches.
+P332_16_PER_GAME_POOL_SEASONS: tuple[int, ...] = (
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025,
+)
+P332_16_PER_GAME_ROWS: int = 8564
+P332_16_PER_GAME_ROWS_ADJUSTED: int = 8308
+P332_16_PER_GAME_ROWS_UNADJUSTED_BY_SEASON: dict[int, int] = {2018: 256}
+P332_16_ROWS_ADJUSTED_2023: tuple[int, int] = (1088, 1088)
+P332_16_MEAN_ABS_ADJUSTMENT_EPA: float = 0.0738
+P332_16_MEAN_ABS_ADJUSTMENT_PASS_EPA: float = 0.1071
+P332_16_MEAN_ABS_ADJUSTMENT_RUSH_EPA: float = 0.0673
+P332_16_MEAN_ABS_ADJUSTMENT_EPA_2023: float = 0.0751
+
+# Gold features_wp after the rung: how many games each flag marks as genuinely adjusted (of
+# 6,499; 2002-2017 are all 0.0, and 79 home / 81 away 2018 games are 0.0).
+P332_16_GOLD_WP_FLAG_SET_COUNTS: dict[str, int] = {
+    "home_off_rolling_opp_adj_coverage": 2148,
+    "home_def_rolling_opp_adj_coverage": 2148,
+    "away_off_rolling_opp_adj_coverage": 2146,
+    "away_def_rolling_opp_adj_coverage": 2146,
+}
+
+P332_16_RUNG7_CHECKED_SOURCES: tuple[str, ...] = (
+    "team_form", "elo", "contextual", "weather", "market", "qb_tracking", "snaps", "injury",
+    "opponent_adj",
+)  # fmt: skip
+
+P332_16_RUNG7_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)
+
+P332_16_GOLD_WIDTH_DELTA: dict[str, object] = {
+    "rung": 7,
+    "plan": "33.2-16",
+    "added": (
+        "home_off_rolling_opp_adj_coverage",
+        "home_def_rolling_opp_adj_coverage",
+        "away_off_rolling_opp_adj_coverage",
+        "away_def_rolling_opp_adj_coverage",
+    ),
+    "removed": (),
+    "widths_before": (193, 194, 193),
+    "widths_after": (197, 198, 197),
+    "measured_at": "2026-09-22",
+}
