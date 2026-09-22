@@ -26,6 +26,7 @@ Usage:
 """
 
 import argparse
+import dataclasses
 import sys
 import warnings
 from collections.abc import Sequence
@@ -49,12 +50,17 @@ from features.elo_features import EloFeatureBuilder
 from features.injury import INJURY_FEATURE_COLUMNS, InjuryBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
 from features.normalization import compute_prior_season_stats, expanding_normalize
-from features.opponent_adj import OpponentAdjuster
+from features.opponent_adj import (
+    OPP_ADJ_SOURCE_NAME,
+    OpponentAdjuster,
+    opponent_adjusted_gold_columns,
+)
 from features.protocol import InformationTimeProvider
 from features.provenance import (
     PROVENANCE_COLUMNS,
     CoverageReport,
     InformationTimeGate,
+    SourceCheckState,
     build_lock_frame,
     refuse_provenance_columns,
 )
@@ -148,14 +154,17 @@ GOLD_DROPPED_GROUPS: tuple[str, ...] = (_LINE_MOVEMENT_GROUP, _WEATHER_UNSUPPLIE
 # warning). The others are expected in the combined matrix and dropped as a matter of course.
 _SEAM_REMOVED_GROUPS: frozenset[str] = frozenset({_LINE_MOVEMENT_GROUP})
 
-# Families merged AFTER the Stage-1 information-time loop, so they are not
-# ``feature_sources`` registry keys at all and cannot be reached by registering a
-# provenance supplier. Reported in their OWN set of the CoverageReport rather than
-# folded into the unregistered keys, so a structural gap is not hidden inside a
-# bookkeeping one. The opponent-adjusted family is merged in
-# ``generate_feature_matrices`` after Stage 1; Plan 33.2-16 registers it and
-# removes it from this tuple.
-POST_STAGE1_SOURCES: tuple[str, ...] = ("opponent_adj",)
+# Families merged AFTER the Stage-1 information-time loop and NOT checked by the gate at
+# their merge site: a structural gap, reported in its OWN set of the CoverageReport rather
+# than folded into the unregistered keys, so it is not hidden inside a bookkeeping one.
+#
+# EMPTY SINCE PLAN 33.2-16. The opponent-adjusted family is still merged after Stage 1 (it
+# needs the combined frame's games and the per-game play-by-play pool), but it is now
+# CHECKED by the information-time gate AT THAT MERGE SITE (``_merge_opponent_adjusted``,
+# source name ``features.opponent_adj.OPP_ADJ_SOURCE_NAME``), and reported in the ordinary
+# ``checked_sources`` / ``empty_unchecked_sources`` sets like any registry key. A family
+# added after Stage 1 without that check belongs back in this tuple, by name.
+POST_STAGE1_SOURCES: tuple[str, ...] = ()
 
 # THE FEATURE-SOURCE REGISTRY the Stage-1 information-time loop walks: each
 # ``feature_sources`` key mapped to the ``FeatureMatrixBuilder`` attribute that BUILDS it.
@@ -183,8 +192,14 @@ POST_STAGE1_SOURCES: tuple[str, ...] = ("opponent_adj",)
 #     snaps       -- registered by Plan 33.2-14
 #     injury      -- registered by Plan 33.2-13
 #
-# plus the opponent-adjusted family, which is NOT a registry key (it is merged after Stage 1,
-# ``POST_STAGE1_SOURCES``) and is registered by Plan 33.2-16. Registration is STRUCTURAL
+# plus ONE labelled NON-KEY EXTRA, deliberately not a tenth key:
+#
+#     opponent_adj -- registered by Plan 33.2-16 AT ITS POST-STAGE-1 MERGE SITE
+#                     (``_merge_opponent_adjusted``); merged after Stage 1, so it is never in
+#                     ``feature_sources`` and never walked by the Stage-1 loop
+#
+# After Plan 33.2-16 the only registry key still without a supplier is ``games``, whose
+# disposition Plan 33.2-20 records before it arms the two-way refusal. Registration is STRUCTURAL
 # (``isinstance(builder, InformationTimeProvider)``), so this ledger is the RECORD, not the
 # switch. It is documentation; the binding nine-key instrument is Plan 33.2-20 Task 1's
 # ``features.provenance.REGISTRY_KEY_DISPOSITIONS``, a dict the gate reads and asserts equal to
@@ -329,6 +344,23 @@ LEVEL_PRESERVED_COLUMN_SUFFIX: str = "_coverage"
 # empty, never on a season literal, so on a full-history rebuild (neither frame empty) it moves
 # nothing; it is the LIVE-path property D33.2-16 requires.
 EMPTY_SOURCE_GUARDED_FAMILIES: tuple[str, ...] = ("snaps", "injury")
+
+# THE FLAG-GUARDED NaN COLUMNS (Plan 33.2-16, SPEC R9 / R10).
+#
+# The twelve ``*_rolling_opp_adj_*`` values are NaN exactly where the opponent adjustment could
+# not reach -- below the minimum opponent history, before a team's first covered game, and in
+# the seasons the per-game play-by-play pool does not cover -- and every such row carries its
+# ``*_rolling_opp_adj_coverage`` flag at 0.0. That NaN is the ANSWER, so it is excluded from the
+# generic imputer and survives normalization, like an empty family's (above).
+#
+# WHY IT MUST NOT BE IMPUTED, measured rather than argued: ``_impute_team_features`` fills a gap
+# with the team's WITHIN-SEASON mean, so a 2018 week-3 row the adjustment could not reach would
+# be filled from that team's weeks 4-17 -- a look-ahead the day-before lock forbids, and one the
+# retired raw-EPA fall-through never had. Its last resort, the neutral 0.0 z-score, would state
+# "exactly average" about a value nobody computed. WP's fold-fitted pipeline median-imputes
+# INSIDE the fold and appends a ``_was_missing`` indicator; ATS/O-U XGBoost take NaN natively;
+# and the four flags say the absence out loud to every model.
+FLAG_GUARDED_NAN_COLUMNS: tuple[str, ...] = opponent_adjusted_gold_columns()[0]
 
 
 def source_family_is_empty(frame: pd.DataFrame, value_columns: Sequence[str]) -> bool:
@@ -649,8 +681,8 @@ class FeatureMatrixBuilder:
             as_of_datetime: The cutoff argument the FeatureBuilder Protocol still carries.
                 It is NOT a fence for QBTracker or InjuryBuilder (Plan 33.2-13), nor for
                 the contextual, snap, team-form and market-anchor builders (Plan
-                33.2-14): each selects at every game's own lock. Builders not yet moved onto the lock
-                (OpponentAdjuster, ...) still read it. Defaults to ``datetime.now(ET)``.
+                33.2-14), nor for OpponentAdjuster (Plan 33.2-16): each selects at every game's
+                own lock. Defaults to ``datetime.now(ET)``.
             through_season: Last season a FULL rebuild carries (the ladder-rung
                 bound, see ``scope_games_through_season``). ``None`` = every season.
 
@@ -1222,8 +1254,9 @@ class FeatureMatrixBuilder:
           recorded capture time, ``created_at``, at or before the lock, and reports the
           latest such capture; the ``snapshot_ts`` label is never an information time).
         * The full nine-key ledger, with the ``games`` disposition, sits beside
-          ``SUPPLIER_ATTRIBUTES``; Plan 33.2-16 brings the post-Stage-1 opponent-adjusted
-          family into the loop.
+          ``SUPPLIER_ATTRIBUTES``. The post-Stage-1 opponent-adjusted family is NOT walked
+          here: Plan 33.2-16 checks it at its own merge site
+          (``_merge_opponent_adjusted``), which adds it to this report afterwards.
 
         No source is EXEMPTED, only not yet reached: the unchecked keys are NAMED in the
         CoverageReport, which is logged at every build, and Plan 33.2-20 arms the refusal
@@ -1320,14 +1353,20 @@ class FeatureMatrixBuilder:
             .merge(away, on="game_id", how="left")
         )
 
+    @staticmethod
     def _get_team_features(
-        self,
         team_form_df: pd.DataFrame,
         games_df: pd.DataFrame,
         team_col: str,
         prefix: str,
     ) -> pd.DataFrame:
-        """Get team form features for home or away team."""
+        """Get team form features for home or away team.
+
+        Copies ONLY the ``rolling_*`` columns of the team's (season, week, side) row, renamed
+        ``{prefix}_off_{col}`` / ``{prefix}_def_{col}``. A static method so the
+        opponent-adjusted layout (and its coupling test) runs this exact code without a
+        builder instance.
+        """
         team_features = []
 
         for _, game in games_df.iterrows():
@@ -1373,6 +1412,216 @@ class FeatureMatrixBuilder:
             team_features.append(game_features)
 
         return pd.DataFrame(team_features)
+
+    # ------------------------------------------------------------------
+    # The opponent-adjusted family: merged after Stage 1, CHECKED at its merge site
+    # (Plan 33.2-16)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _lay_out_opponent_adjusted(
+        adjusted_df: pd.DataFrame, games: pd.DataFrame
+    ) -> pd.DataFrame:
+        """The adjuster's (team, side, week) rows laid out per game, through BOTH filters.
+
+        ``_get_team_features`` copies only ``rolling_*`` columns, and only columns containing
+        ``opp_adj`` are kept -- the two filters a family column must pass to reach gold
+        (``features.opponent_adj.OPP_ADJ_COVERAGE_COLUMN`` is named for exactly that). What
+        survives is returned as-is, keyed by ``game_id``; nothing is filled here.
+        """
+        laid_out = pd.DataFrame(games[["game_id"]])
+        for prefix, team_col in (("home", "home_team"), ("away", "away_team")):
+            adj_team = FeatureMatrixBuilder._get_team_features(
+                adjusted_df, games, team_col, prefix
+            )
+            # Only keep the rolling_opp_adj_* columns (not duplicate other rolling cols)
+            opp_adj_cols = [c for c in adj_team.columns if "opp_adj" in c]
+            if opp_adj_cols:
+                laid_out = laid_out.merge(
+                    adj_team[["game_id", *opp_adj_cols]], on="game_id", how="left"
+                )
+        return laid_out
+
+    @staticmethod
+    def opponent_adjusted_per_game(
+        adjusted_df: pd.DataFrame, games: pd.DataFrame
+    ) -> pd.DataFrame:
+        """The family's per-game source frame: ``game_id``, twelve values and four flags.
+
+        :meth:`_lay_out_opponent_adjusted`, then completed to the declared gold columns: a
+        game whose team carried no rolling row is the flagged unknown -- its values NaN and
+        its ``*_rolling_opp_adj_coverage`` flags 0.0 -- which is exactly what
+        ``OpponentAdjuster.no_information_signature`` declares and the gate value-checks.
+        """
+        frame = FeatureMatrixBuilder._lay_out_opponent_adjusted(adjusted_df, games)
+        values, flags = opponent_adjusted_gold_columns()
+        for column in values:
+            if column not in frame.columns:
+                frame[column] = np.nan
+        for column in flags:
+            frame[column] = (
+                frame[column].fillna(0.0).astype(float)
+                if column in frame.columns
+                else 0.0
+            )
+        return frame[["game_id", *values, *flags]]
+
+    def _record_opponent_adjusted_coverage(self, state: SourceCheckState) -> None:
+        """Add the opponent-adjusted family to the build's CoverageReport, BY NAME.
+
+        Stage 1 builds the report before this family exists; the merge site's gate check
+        then files it under ``checked_sources`` or ``empty_unchecked_sources`` like any
+        registry key, so a narrow build still reads as narrow.
+        """
+        report = self.information_time_coverage
+        if report is None:
+            return
+        if state is SourceCheckState.CHECKED:
+            report = dataclasses.replace(
+                report, checked_sources=(*report.checked_sources, OPP_ADJ_SOURCE_NAME)
+            )
+        else:
+            report = dataclasses.replace(
+                report,
+                empty_unchecked_sources=tuple(
+                    sorted({*report.empty_unchecked_sources, OPP_ADJ_SOURCE_NAME})
+                ),
+            )
+        self.information_time_coverage = report
+        logger.info(
+            "Information-time gate coverage after the post-Stage-1 merge",
+            source=OPP_ADJ_SOURCE_NAME,
+            state=state.value,
+            checked_sources=list(report.checked_sources),
+            empty_unchecked_sources=list(report.empty_unchecked_sources),
+        )
+
+    def _merge_opponent_adjusted(
+        self,
+        combined_features: pd.DataFrame,
+        games_df: pd.DataFrame,
+        lock_frame: pd.Series,
+        as_of_datetime: datetime,
+        target_season: int | None,
+        target_week: int | None,
+    ) -> pd.DataFrame:
+        """Replace raw EPA with opponent-adjusted EPA, CHECKED by the information-time gate.
+
+        THE REGISTRATION SITE (Plan 33.2-16, SPEC R2). The family is merged after Stage 1, so
+        it is not a ``feature_sources`` key; it is checked HERE, against the build's one lock
+        frame, before its columns join the matrix. A per-row time after a game's lock stops
+        the build naming the game -- ``InformationTimeViolation`` is not in the handler below
+        -- and so does an unresolvable play-by-play id (``OpponentResolutionError``, a
+        ``RuntimeError`` in neither tuple). The handler keeps only the pre-existing
+        degradation for an ordinary failure, which leaves raw EPA under its RAW names.
+
+        Returns:
+            *combined_features* with the twelve ``*_rolling_opp_adj_*`` values and the four
+            ``*_rolling_opp_adj_coverage`` flags merged in and the six raw EPA columns
+            dropped -- or unchanged when there is no per-game pool to adjust.
+        """
+        gate = InformationTimeGate()
+        signature = self.opponent_adj.no_information_signature()
+        empty_provenance = pd.DataFrame({column: [] for column in PROVENANCE_COLUMNS})
+
+        # OpponentAdjuster needs per-game stats (with game_id, raw EPA),
+        # not the rolling averages from the silver table.
+        try:
+            # THE SEASON POOL COMES FROM THE FRAME ABOVE (Plan 33.1-07
+            # Task 4). It used to come from a hardcoded range(2018, 2025)
+            # inside the calculator, which stopped at 2024 and left season
+            # 2025's twelve opponent-adjusted columns carrying 2 distinct
+            # values across 285 games. The caller already holds the games
+            # frame, so it names the coverage rather than making the
+            # calculator re-derive the same fact from a second store read.
+            per_game_stats = self.team_form_calc.get_per_game_stats(
+                as_of_datetime,
+                target_season=target_season,
+                seasons=None
+                if target_season is not None
+                else games_df["season"].dropna().tolist(),
+            )
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            logger.warning(
+                "Failed to get per-game stats for opponent adjustment",
+                error=str(e),
+            )
+            per_game_stats = pd.DataFrame()
+
+        if len(per_game_stats) == 0:
+            state = gate.check(
+                OPP_ADJ_SOURCE_NAME,
+                pd.DataFrame(),
+                empty_provenance,
+                lock_frame,
+                no_information_signature=signature,
+            )
+            self._record_opponent_adjusted_coverage(state)
+            return combined_features
+
+        try:
+            adjusted_df = self.opponent_adj.build_features(
+                games_df,
+                as_of_datetime,
+                target_season=target_season,
+                target_week=target_week,
+                team_game_stats=per_game_stats,
+            )
+            if len(adjusted_df) == 0:
+                state = gate.check(
+                    OPP_ADJ_SOURCE_NAME,
+                    pd.DataFrame(),
+                    empty_provenance,
+                    lock_frame,
+                    no_information_signature=signature,
+                )
+                self._record_opponent_adjusted_coverage(state)
+                return combined_features
+
+            games = combined_features[
+                ["game_id", "season", "week", "home_team", "away_team"]
+            ]
+            family = self.opponent_adjusted_per_game(adjusted_df, games)
+            state = gate.check(
+                OPP_ADJ_SOURCE_NAME,
+                family,
+                self.opponent_adj.information_times(
+                    games, target_season=target_season, target_week=target_week
+                ),
+                lock_frame,
+                no_information_signature=signature,
+            )
+            self._record_opponent_adjusted_coverage(state)
+            combined_features = combined_features.merge(
+                family, on="game_id", how="left"
+            )
+
+            # Drop old raw EPA columns that are now replaced by opp_adj versions
+            raw_epa_suffixes = [
+                "rolling_epa_per_play",
+                "rolling_pass_epa_per_play",
+                "rolling_rush_epa_per_play",
+            ]
+            cols_to_drop = [
+                f"{pfx}_{side}_{suffix}"
+                for pfx in ("home", "away")
+                for side in ("off", "def")
+                for suffix in raw_epa_suffixes
+                if f"{pfx}_{side}_{suffix}" in combined_features.columns
+            ]
+            if cols_to_drop:
+                combined_features = combined_features.drop(columns=cols_to_drop)
+                logger.info(
+                    "Replaced raw EPA with opponent-adjusted EPA",
+                    dropped_columns=cols_to_drop,
+                    n_dropped=len(cols_to_drop),
+                )
+        except (ValueError, KeyError, TypeError) as e:
+            logger.warning(
+                "Failed to apply opponent adjustment, keeping raw EPA",
+                error=str(e),
+            )
+        return combined_features
 
     def _get_team_elo_features(
         self, elo_df: pd.DataFrame, games_df: pd.DataFrame, team_col: str, prefix: str
@@ -1496,8 +1745,11 @@ class FeatureMatrixBuilder:
         # after silently median-filling the first weather column it meets.
         preserved_weather_columns = set(self._preserved_weather_columns())
         # PLAN 33.2-15: a family whose SOURCE FRAME was empty is excluded from imputation
-        # outright (EMPTY_SOURCE_GUARDED_FAMILIES). Its NaN is the answer.
-        empty_family_columns = set(self._empty_source_value_columns())
+        # outright (EMPTY_SOURCE_GUARDED_FAMILIES). Its NaN is the answer. PLAN 33.2-16: so is
+        # an opponent-adjusted value the adjustment could not reach (FLAG_GUARDED_NAN_COLUMNS).
+        empty_family_columns = set(self._empty_source_value_columns()) | set(
+            FLAG_GUARDED_NAN_COLUMNS
+        )
 
         for col in numeric_cols:
             original_missing = processed_df[col].isna().sum()
@@ -1840,6 +2092,12 @@ class FeatureMatrixBuilder:
             column
             for column in self._empty_source_value_columns()
             if column not in set(preserve_by_builder[active_builder])
+        )
+        # PLAN 33.2-16: the opponent-adjusted values' NaN is the flagged unknown too.
+        preserve_missing = preserve_missing + tuple(
+            column
+            for column in FLAG_GUARDED_NAN_COLUMNS
+            if column not in preserve_missing
         )
 
         # THE COVERAGE FLAG IS NOT A MEASUREMENT, so it is not z-scored
@@ -2433,9 +2691,8 @@ class FeatureMatrixBuilder:
         # per-game lock frame built below; nothing in Stage 1 reads this value. It
         # survives ONLY as the ``as_of_datetime`` argument the builders still take.
         # QBTracker and InjuryBuilder no longer read it (Plan 33.2-13 moved both onto
-        # each game's lock); the builders that still do (OpponentAdjuster, ...) move in
-        # the plans that follow. CR-01 still applies to it: tz-aware ET, never a naive
-        # local clock.
+        # each game's lock), and neither does OpponentAdjuster (Plan 33.2-16). CR-01 still
+        # applies to it: tz-aware ET, never a naive local clock.
         if as_of_datetime is None:
             as_of_datetime = datetime.now(ET)
 
@@ -2488,88 +2745,16 @@ class FeatureMatrixBuilder:
                 combined_features, GOLD_DROPPED_GROUPS
             )
 
-            # -- Replace raw EPA with opponent-adjusted EPA --
-            # OpponentAdjuster needs per-game stats (with game_id, raw EPA),
-            # not the rolling averages from the silver table.
-            games_df = feature_sources["games"]
-            try:
-                # THE SEASON POOL COMES FROM THE FRAME ABOVE (Plan 33.1-07
-                # Task 4). It used to come from a hardcoded range(2018, 2025)
-                # inside the calculator, which stopped at 2024 and left season
-                # 2025's twelve opponent-adjusted columns carrying 2 distinct
-                # values across 285 games. The caller already holds the games
-                # frame, so it names the coverage rather than making the
-                # calculator re-derive the same fact from a second store read.
-                per_game_stats = self.team_form_calc.get_per_game_stats(
-                    as_of_datetime,
-                    target_season=target_season,
-                    seasons=None
-                    if target_season is not None
-                    else games_df["season"].dropna().tolist(),
-                )
-            except (ValueError, KeyError, TypeError, AttributeError) as e:
-                logger.warning(
-                    "Failed to get per-game stats for opponent adjustment",
-                    error=str(e),
-                )
-                per_game_stats = pd.DataFrame()
-            if len(per_game_stats) > 0:
-                try:
-                    adjusted_df = self.opponent_adj.build_features(
-                        games_df,
-                        as_of_datetime,
-                        target_season=target_season,
-                        target_week=target_week,
-                        team_game_stats=per_game_stats,
-                    )
-
-                    if len(adjusted_df) > 0:
-                        # Merge opponent-adjusted features using same _get_team_features pattern
-                        for prefix, team_col in [
-                            ("home", "home_team"),
-                            ("away", "away_team"),
-                        ]:
-                            adj_team = self._get_team_features(
-                                adjusted_df, combined_features, team_col, prefix
-                            )
-                            # Only keep the rolling_opp_adj_* columns (not duplicate other rolling cols)
-                            opp_adj_cols = [
-                                c for c in adj_team.columns if "opp_adj" in c
-                            ]
-                            if opp_adj_cols:
-                                adj_team = adj_team[["game_id", *opp_adj_cols]]
-                                combined_features = combined_features.merge(
-                                    adj_team, on="game_id", how="left"
-                                )
-
-                        # Drop old raw EPA columns that are now replaced by opp_adj versions
-                        raw_epa_suffixes = [
-                            "rolling_epa_per_play",
-                            "rolling_pass_epa_per_play",
-                            "rolling_rush_epa_per_play",
-                        ]
-                        cols_to_drop = []
-                        for pfx in ["home", "away"]:
-                            for side in ["off", "def"]:
-                                for suffix in raw_epa_suffixes:
-                                    col_name = f"{pfx}_{side}_{suffix}"
-                                    if col_name in combined_features.columns:
-                                        cols_to_drop.append(col_name)
-
-                        if cols_to_drop:
-                            combined_features = combined_features.drop(
-                                columns=cols_to_drop
-                            )
-                            logger.info(
-                                "Replaced raw EPA with opponent-adjusted EPA",
-                                dropped_columns=cols_to_drop,
-                                n_dropped=len(cols_to_drop),
-                            )
-                except (ValueError, KeyError, TypeError) as e:
-                    logger.warning(
-                        "Failed to apply opponent adjustment, keeping raw EPA",
-                        error=str(e),
-                    )
+            # -- Replace raw EPA with opponent-adjusted EPA, CHECKED by the gate at this
+            #    post-Stage-1 merge site (Plan 33.2-16) --
+            combined_features = self._merge_opponent_adjusted(
+                combined_features,
+                feature_sources["games"],
+                lock_frame,
+                as_of_datetime,
+                target_season,
+                target_week,
+            )
 
             # -- Stage 2: Combined matrix validation --
             try:

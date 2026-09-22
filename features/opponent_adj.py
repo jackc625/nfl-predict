@@ -201,7 +201,7 @@ class OpponentAdjuster:
                 timed["home_team"],
             )
             self._team_games_cache = timed[
-                ["schedule_game_id", "team", "opponent", "_end", "_lock"]
+                ["schedule_game_id", "season", "team", "opponent", "_end", "_lock"]
             ]
         return self._team_games_cache
 
@@ -221,6 +221,15 @@ class OpponentAdjuster:
         ``2023_W01_ARI@WAS``), which normalizes abbreviations and refuses an unknown team or a
         week past 22; the canonical id must then name a scheduled, timed game that the row's
         team played in. There is no second id parser here.
+
+        A SEASON THE SCHEDULE DOES NOT COVER is a different fact from a mismatch. A scoped
+        build takes the target season AND its predecessor from the play-by-play pin, so a
+        ``--season 2002`` build reads 2001 play-by-play while silver ``games`` begins at 2002:
+        those games have no kickoff anywhere in the schedule, so they cannot be timed, and a
+        team-game that cannot be timed is never admitted (the team-form rule,
+        ``features.team_form.team_game_schedule``). They are dropped by name in a warning and
+        read nothing. A game missing INSIDE a covered season is a genuine id mismatch and
+        refuses, as does an id that does not convert at all, in any season.
 
         Raises:
             OpponentResolutionError: naming every id that fails any of those steps. Nothing
@@ -242,16 +251,31 @@ class OpponentAdjuster:
             )
         }
 
+        covered_seasons = {int(season) for season in scheduled["season"]}
+
         resolved: dict[tuple[str, str], tuple[str, str, Any, Any]] = {}
         unresolvable: set[str] = set()
-        pairs = stats[["game_id", "team"]].astype(str).drop_duplicates()
-        for legacy_id, team in zip(pairs["game_id"], pairs["team"], strict=True):
+        untimed_seasons: set[int] = set()
+        pairs = stats[["game_id", "team", "season"]].drop_duplicates(
+            subset=["game_id", "team"]
+        )
+        for legacy_id, team, season in zip(
+            pairs["game_id"].astype(str),
+            pairs["team"].astype(str),
+            pairs["season"],
+            strict=True,
+        ):
             try:
-                resolved[(legacy_id, team)] = self._get_opponent(
-                    legacy_id, team, lookup
+                entry = self._get_opponent(
+                    legacy_id, team, lookup, int(season) in covered_seasons
                 )
             except OpponentResolutionError:
                 unresolvable.add(legacy_id)
+                continue
+            if entry is None:
+                untimed_seasons.add(int(season))
+            else:
+                resolved[(legacy_id, team)] = entry
         if unresolvable:
             named = sorted(unresolvable)
             msg = (
@@ -261,6 +285,16 @@ class OpponentAdjuster:
                 "refuses rather than adjusting against an unknown opponent."
             )
             raise OpponentResolutionError(msg)
+
+        if untimed_seasons:
+            outside = stats["season"].astype(int).isin(untimed_seasons)
+            logger.warning(
+                "Play-by-play team-games from seasons the schedule does not cover cannot be "
+                "timed at any lock and are never admitted",
+                seasons=sorted(untimed_seasons),
+                rows=int(outside.sum()),
+            )
+            stats = stats.loc[~outside]
 
         keys = list(
             zip(stats["game_id"].astype(str), stats["team"].astype(str), strict=True)
@@ -277,12 +311,17 @@ class OpponentAdjuster:
         legacy_id: str,
         team: str,
         lookup: Mapping[tuple[str, str], tuple[str, Any, Any]],
-    ) -> tuple[str, str, Any, Any]:
+        season_is_covered: bool = True,
+    ) -> tuple[str, str, Any, Any] | None:
         """``(schedule_game_id, opponent, end, lock)`` for one play-by-play team-game.
 
+        ``None`` ONLY for a converted id whose season the schedule does not cover at all
+        (see :meth:`_add_opponent_column`): such a game cannot be timed and is not admitted.
+
         Raises:
-            OpponentResolutionError: the id does not convert, names no scheduled and timed
-                game, or names one *team* did not play in.
+            OpponentResolutionError: the id does not convert (in any season), or -- in a
+                covered season -- names no scheduled and timed game, or one *team* did not
+                play in.
         """
         try:
             canonical = convert_legacy_game_id(legacy_id)
@@ -290,6 +329,8 @@ class OpponentAdjuster:
             msg = f"{legacy_id!r} does not convert to a canonical game id: {exc}"
             raise OpponentResolutionError(msg) from exc
         entry = lookup.get((canonical, team))
+        if entry is None and not season_is_covered:
+            return None
         if entry is None:
             msg = (
                 f"{legacy_id!r} -> {canonical!r} is not a scheduled, timed game that "
@@ -303,7 +344,7 @@ class OpponentAdjuster:
     # Opponent levels and league averages, each as it stood at a lock
     # ------------------------------------------------------------------
 
-    def _side_states(self, timed: pd.DataFrame, side: str) -> pd.DataFrame:
+    def side_states(self, timed: pd.DataFrame, side: str) -> pd.DataFrame:
         """Each team's rolling level on *side* after each of its games.
 
         One row per team-game: the mean of each metric over the team's last ``window`` games
@@ -374,22 +415,50 @@ class OpponentAdjuster:
                 result.loc[hit, metric] = chosen[metric].to_numpy()
         return result
 
+    @staticmethod
     def league_average_at(
-        self, states: pd.DataFrame, locks_ns: np.ndarray
+        states: pd.DataFrame, locks_ns: np.ndarray
     ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         """``metric -> (league average, latest END read)`` at each lock in *locks_ns*.
 
-        The mean over every team's rolling level on the WHOLE loaded frame (the pre-Plan
-        33.2-16 rule, pending Task 2), broadcast to each lock.
+        THE PER-LOCK RULE (Plan 33.2-16, SPEC R2). The league average a game is adjusted
+        against is the mean over every team's rolling level (:meth:`side_states`) that was
+        KNOWN at that game's lock -- the levels whose game ENDED at or before it (at-lock
+        admissible, the ``<=`` of ``utils.game_lock.is_admissible``). It is an EXPANDING mean
+        over time, so a week-1 game reads the prior seasons and never a manufactured zero, and
+        a game played after the lock moves nothing. It replaced one scalar per frame
+        (``def_lagged[...].mean()``), which averaged over every game in the loaded frame --
+        games after the one being adjusted included.
+
+        THE IMPLEMENTATION IS A KEYED LOOKUP BUILT IN ONE PASS, NOT A SECOND RULE: the levels
+        are sorted by END once and cumulatively summed, and each lock reads its prefix with
+        one ``searchsorted``. It is keyed by the lock INSTANT itself rather than by a
+        (season, week) grouping, so there is no grouping that could be mistaken for the
+        definition -- or that could disagree with it for a rescheduled game.
+
+        Returns:
+            Per metric, the average at each lock (NaN where no level was known yet) and the
+            END of the latest level it read (-1 there), both aligned to *locks_ns*.
         """
         averages: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        latest = int(states["_end_ns"].max()) if len(states) else -1
         for metric in _EPA_METRICS:
-            mean = float(states[metric].mean()) if len(states) else np.nan
-            averages[metric] = (
-                np.full(len(locks_ns), mean),
-                np.full(len(locks_ns), latest, dtype="int64"),
-            )
+            known = states.loc[states[metric].notna()]
+            order = np.argsort(known["_end_ns"].to_numpy(), kind="stable")
+            ends = known["_end_ns"].to_numpy()[order]
+            running = np.cumsum(known[metric].to_numpy(dtype=float)[order])
+            if len(ends) == 0:
+                averages[metric] = (
+                    np.full(len(locks_ns), np.nan),
+                    np.full(len(locks_ns), -1, dtype="int64"),
+                )
+                continue
+            # How many levels were known at each lock; the prefix mean is the average.
+            count = np.searchsorted(ends, locks_ns, side="right")
+            last = np.maximum(count - 1, 0)
+            known_any = count > 0
+            mean = np.where(known_any, running[last] / np.maximum(count, 1), np.nan)
+            latest = np.where(known_any, ends[last], -1)
+            averages[metric] = (mean.astype(float), latest.astype("int64"))
         return averages
 
     def per_game_adjusted(self, team_game_stats: pd.DataFrame) -> pd.DataFrame:
@@ -417,7 +486,7 @@ class OpponentAdjuster:
             rows = timed.index[timed["side"] == side]
             if len(rows) == 0:
                 continue
-            states = self._side_states(timed, opposite)
+            states = self.side_states(timed, opposite)
             locks_ns = _utc_ns(timed.loc[rows, "_lock"])
             opponent = self._states_at(
                 states, timed.loc[rows, "opponent"].reset_index(drop=True), locks_ns

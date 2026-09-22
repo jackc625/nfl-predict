@@ -120,16 +120,7 @@ REGISTRY_KEYS: tuple[str, ...] = (
 
 #: MEASURED on this slice (Plan 33.2-01 Task 3): which of the seven non-elo keys loaded
 #: zero rows, and which loaded rows but have no provenance supplier yet.
-#: Plan 33.2-16 brought the opponent-adjusted family into the gate at its post-Stage-1 merge
-#: site. On this slice the per-game play-by-play pool is floored at 2018, so the family has
-#: no rows and is reported ``empty_unchecked`` BY NAME -- never silently skipped.
-EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = (
-    "injury",
-    "market",
-    "opponent_adj",
-    "snaps",
-    "team_form",
-)
+EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = ("injury", "market", "snaps", "team_form")
 #: Plan 33.2-12 registered ``weather`` (it owns the weather fence and its provenance), so
 #: it moved from the unregistered set to ``checked_sources``. Plan 33.2-13 registered
 #: ``qb_tracking`` (and ``injury``, which loads zero rows on this slice and so stays
@@ -139,7 +130,19 @@ EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = (
 #: (between ``elo`` and ``weather`` in loop order); ``snaps`` and ``team_form`` load zero
 #: rows here and stay ``empty_unchecked``. Nothing on this slice is unregistered any more.
 EXPECTED_UNREGISTERED: tuple[str, ...] = ()
-EXPECTED_CHECKED: tuple[str, ...] = ("elo", "contextual", "weather", "qb_tracking")
+#: Plan 33.2-16 brought the opponent-adjusted family into the gate at its post-Stage-1 merge
+#: site, so it is checked AFTER the Stage-1 loop and appended last. MEASURED on this slice: a
+#: --season 2002 build reads 2001-2002 play-by-play (the scoped per-game branch has no 2018
+#: floor); the 2001 games have no kickoff in silver games, cannot be timed and are never
+#: admitted, and the 2002 games are adjusted at their locks -- so the family has rows and is
+#: CHECKED.
+EXPECTED_CHECKED: tuple[str, ...] = (
+    "elo",
+    "contextual",
+    "weather",
+    "qb_tracking",
+    "opponent_adj",
+)
 
 
 @dataclass
@@ -458,7 +461,7 @@ class TestTheNarrowCoverageReport:
     def test_the_post_stage1_family_is_its_own_set(self, tracer: TracerRun) -> None:
         """Was: ``post_stage1_sources == ("opponent_adj",)`` -- the family merged after Stage 1
         and out of the gate's reach. Plan 33.2-16 checks it at its merge site, so the set is
-        empty and the family is reported in the ordinary sets (``empty_unchecked`` here)."""
+        empty and the family is reported in the ordinary sets (``checked_sources`` here)."""
         assert tracer.clean_coverage is not None
         assert tracer.clean_coverage.post_stage1_sources == ()
 

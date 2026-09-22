@@ -195,6 +195,32 @@ class TestOpponentsResolveCanonically:
             adjuster.resolve_team_games(planted)
 
 
+class TestASeasonTheScheduleDoesNotCoverIsNeverAdmitted:
+    """A scoped build reads the target season AND its predecessor from the play-by-play pin,
+    so a --season 2002 build reads 2001 while silver games begins at 2002. Those games have
+    no kickoff anywhere in the schedule: they cannot be timed, so they are never admitted --
+    dropped by name, never refused as if the id were wrong, never resolved to an opponent."""
+
+    def test_the_uncovered_season_is_dropped_and_the_covered_one_resolves(
+        self, adjuster: OpponentAdjuster, stats: pd.DataFrame
+    ) -> None:
+        prior = stats.assign(
+            season=2022,
+            game_id=stats["game_id"].str.replace("2023_", "2022_", regex=False),
+        )
+        resolved = adjuster.resolve_team_games(pd.concat([prior, stats]))
+        assert set(resolved["season"]) == {2023}
+        assert len(resolved) == len(stats)
+
+    def test_a_malformed_id_in_an_uncovered_season_still_refuses(
+        self, adjuster: OpponentAdjuster, stats: pd.DataFrame
+    ) -> None:
+        planted = stats.copy()
+        planted.loc[planted.index[0], ["game_id", "season"]] = ["2022_01_XXX_KC", 2022]
+        with pytest.raises(OpponentResolutionError):
+            adjuster.resolve_team_games(planted)
+
+
 class TestTheRefusalCannotBeSwallowed:
     """Member by member, on the ``tests/unit/test_provisional_training_refusal.py`` pattern."""
 
@@ -632,6 +658,14 @@ class TestThePerLockLeagueAverage:
     ) -> None:
         from features.opponent_adj import _utc_ns
 
+        # One defense that improves week by week, so the levels known at successive locks
+        # differ -- on constant EPA every per-lock mean is the same number and the
+        # non-constancy control below could not tell the two rules apart.
+        stats = stats.copy()
+        kc_defense = (stats["team"] == "KC") & (stats["side"] == "defense")
+        stats.loc[kc_defense, "epa_per_play"] = (
+            0.2 - 0.04 * stats.loc[kc_defense, "week"]
+        )
         timed = adjuster.resolve_team_games(stats)
         states = adjuster.side_states(timed, "defense")
         locks = timed["_lock"].drop_duplicates().sort_values().reset_index(drop=True)
@@ -930,7 +964,12 @@ class TestTheGateIsWiredAtTheMergeSite:
             dated = provenance.loc[provenance["basis"] == "per_row", "game_id"]
             target = str(dated.iloc[0])
             planted["game_id"] = target
-            late = pd.Timestamp(lock_rule.lock_frame(games_df)[target]) + _ONE_SECOND
+            from tests.integration.test_gold_write_scope import _sandbox_games
+
+            # The merge site hands the provenance an id-only games frame; the locks come
+            # from the sandbox schedule the build's own lock frame was built from.
+            locks = lock_rule.lock_frame(_sandbox_games())
+            late = pd.Timestamp(locks[target]) + _ONE_SECOND
             provenance = provenance.copy()
             provenance["information_time"] = provenance["information_time"].astype(
                 object
