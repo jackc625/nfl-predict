@@ -178,3 +178,99 @@ that line, not a literal.
   before the per-game pool's floor since rung 7); its widening to 2002 rides Plan 33.2-18's
   floor move.
 
+## After rung 8
+
+Scanned 2026-09-22 against the gold rung 8 rebuilt (Plan 33.2-18 Task 3, `p332_rung8.json`):
+the coverage floors retired -- the selection window moved to 2002, team form computed back to
+2002, the opponent-adjusted pool widened with the window, and snaps, injury and completion
+probability an honest unknown beside a flag before their coverage. This is the section the
+zero ruling is made in, against the gold it judges; the section above is left as it was.
+
+Machine-readable lines (read by `tests/integration/test_no_precoverage_constants.py`):
+
+CLASSIFIED_AFTER_RUNG8: 519
+UNFLAGGED_AFTER_RUNG8: 0
+UNROUTED_AFTER_RUNG8: 0
+CONSTANT_2002_2017_AFTER_RUNG8: 15
+
+### Counts by class
+
+| Matrix | `varies_from_corpus_start` | `flagged_precoverage` | `unflagged_precoverage` | `never_varies` |
+|---|---|---|---|---|
+| `features_wp` | 130 | 28 | 0 | 15 |
+| `features_ats` | 130 | 28 | 0 | 15 |
+| `features_ou` | 130 | 28 | 0 | 15 |
+
+The UNFLAGGED count is zero in all three matrices. No constant stands in for a family's values
+before its first covered season: every block before a family's coverage is now either a
+computed value or NaN beside a coverage flag that says so. This is where Plan 33.2-17's
+prohibition -- no constant substituted for a family's values before its first covered season --
+is shown resolved.
+
+### What moved between the two sections
+
+- **Team form (26 columns) and the opponent-adjusted family (12 columns)** now vary from the
+  corpus start (2002): team form from Plan 33.2-17's silver corpus, the opponent-adjusted values
+  from the per-game pool the window move widened. Both left the unflagged and flagged lists.
+- **The 20 snap columns** moved from unflagged to flagged: NaN beside `{side}_snap_coverage`
+  0.0 for 2002-2012, first varying in 2013.
+- **`{side}_off_rolling_cpoe`** moved from unflagged to flagged: NaN beside
+  `{side}_off_rolling_cpoe_coverage` 0.0 for 2002-2005 (the pinned play-by-play carries no
+  completion probability before 2006), first varying in 2006.
+- **Injury** (`qb_out_flag`, `backup_quality_delta`) now first varies in 2010, flagged by
+  `{side}_injury_coverage`: almost no 2009 report carries a datable time (p332_ step 6b), so
+  2002-2008 and nearly all of 2009 are NaN beside a false flag. The one admitted 2009 report is
+  an away team's (2009_W17_NO@CAR), so the away side's coverage begins in 2009 and the home
+  side's in 2010. `availability_fraction` first varies in 2013, flagged by
+  `{side}_availability_coverage`.
+
+### Flagged pre-coverage columns (the family's flag states the absence)
+
+- `away_availability_fraction` -- first varies 2013; flag `away_availability_coverage`; in ats, ou, wp
+- `away_backup_quality_delta` -- first varies 2010; flag `away_injury_coverage`; in ats, ou, wp
+- `away_off_rolling_cpoe` -- first varies 2006; flag `away_off_rolling_cpoe_coverage`; in ats, ou, wp
+- `away_qb_out_flag` -- first varies 2010; flag `away_injury_coverage`; in ats, ou, wp
+- `away_rolling_snap_share_db` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `away_rolling_snap_share_dl` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `away_rolling_snap_share_lb` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `away_rolling_snap_share_ol` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `away_rolling_snap_share_qb` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `away_rolling_snap_share_rb` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `away_rolling_snap_share_te` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `away_rolling_snap_share_wr` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `away_snap_concentration` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `away_snap_continuity` -- first varies 2013; flag `away_snap_coverage`; in ats, ou, wp
+- `home_availability_fraction` -- first varies 2013; flag `home_availability_coverage`; in ats, ou, wp
+- `home_backup_quality_delta` -- first varies 2010; flag `home_injury_coverage`; in ats, ou, wp
+- `home_off_rolling_cpoe` -- first varies 2006; flag `home_off_rolling_cpoe_coverage`; in ats, ou, wp
+- `home_qb_out_flag` -- first varies 2010; flag `home_injury_coverage`; in ats, ou, wp
+- `home_rolling_snap_share_db` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+- `home_rolling_snap_share_dl` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+- `home_rolling_snap_share_lb` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+- `home_rolling_snap_share_ol` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+- `home_rolling_snap_share_qb` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+- `home_rolling_snap_share_rb` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+- `home_rolling_snap_share_te` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+- `home_rolling_snap_share_wr` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+- `home_snap_concentration` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+- `home_snap_continuity` -- first varies 2013; flag `home_snap_coverage`; in ats, ou, wp
+
+### Columns that never vary (not a pre-coverage block, and not closed here)
+
+- `away_def_rolling_avg_drive_start_yardline`, `away_def_rolling_cpoe`,
+  `away_def_rolling_neutral_pace`, `away_def_rolling_neutral_pass_rate`,
+  `home_def_rolling_avg_drive_start_yardline`, `home_def_rolling_cpoe`,
+  `home_def_rolling_neutral_pace`, `home_def_rolling_neutral_pass_rate` -- in ats, ou, wp
+- `is_away_game`, `is_home_game` -- in ats, ou, wp
+- `snapshot_ml_prob_home_fair`, `snapshot_spread`, `snapshot_total`, `spread_movement`,
+  `total_movement` -- in ats, ou, wp
+
+The 15 columns constant over 2002-2017 (`CONSTANT_2002_2017_AFTER_RUNG8`) are exactly these,
+constant in EVERY season, not only before 2018. Two of the groups are known and owned: the five
+market columns are the constant 0.0 Plan 33.2-14 left until rung 9 removes them from every model
+input (Plan 33.2-19). The eight defensive team-form copies are a DEFECT this rung does not own:
+the four metrics are offense-only, so their defensive copies are never populated and gold carries
+them as a flat 0.0 that reads as "exactly average" in every season. They are not a coverage floor
+(no season ever covers them), so closing them is a separate cause and is routed as its own step
+(`deferred-items.md`, recorded by Plan 33.2-18); `test_gold_team_form_and_opp_adj_not_constant_within_season`
+fails on exactly these eight until then.

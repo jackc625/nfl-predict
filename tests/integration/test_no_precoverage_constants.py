@@ -210,6 +210,15 @@ def test_gold_snap_boundary_2012_2013() -> None:
     ``snap_coverage`` in ``SnapCountBuilder._feature_columns()``) first reaches gold. A 2013 row
     with no admitted snap game yet (its team's first game) is NaN with the flag false too: the
     flag says whether THIS value was measured.
+
+    CORRECTED BY PLAN 33.2-18 against rung 8's rebuilt gold. ``snap_continuity`` compares a
+    team's two most recent admitted snap games, so on the team's FIRST flagged game -- its window
+    holds a single snap game -- it is undefined: NaN beside a set flag, exactly p332_ step 7b's
+    declared blank cells (32 per continuity column: the 2013 week-1 and week-2 games). Every
+    other snap value is populated wherever the flag is set, continuity is undefined only in that
+    one week, and from 2014 on every flagged row carries every value. Was: ``first.loc[populated,
+    side_values].notna().all().all()`` over every snap value, continuity included -- a premise
+    step 7b's measured blanks contradict.
     """
     for matrix in scan.GOLD_MATRICES:
         frame = _gold(matrix)
@@ -217,15 +226,30 @@ def test_gold_snap_boundary_2012_2013() -> None:
         assert values, "non-vacuity"
         for side in ("home", "away"):
             flag = f"{side}_snap_coverage"
+            continuity = f"{side}_snap_continuity"
             side_values = [c for c in values if c.startswith(f"{side}_")]
+            others = [c for c in side_values if c != continuity]
+            assert continuity in side_values, (matrix, continuity)
             before = frame[frame["season"].between(2002, 2012)]
             assert before[side_values].isna().all().all(), (matrix, side)
             assert (before[flag] == 0.0).all(), (matrix, flag)
             first = frame[frame["season"] == 2013]
             populated = first[flag] == 1.0
             assert populated.any(), (matrix, flag)
-            assert first.loc[populated, side_values].notna().all().all()
+            assert first.loc[populated, others].notna().all().all()
             assert first.loc[~populated, side_values].isna().all().all()
+            undefined_weeks = set(
+                first.loc[populated & first[continuity].isna(), "week"].astype(int)
+            )
+            assert undefined_weeks <= {int(first.loc[populated, "week"].min())}, (
+                matrix,
+                continuity,
+                sorted(undefined_weeks),
+            )
+            later = frame[frame["season"] > 2013]
+            flagged_later = later[later[flag] == 1.0]
+            assert len(flagged_later) > 0, (matrix, flag)
+            assert flagged_later[side_values].notna().all().all(), (matrix, side)
 
 
 @needs_gold
@@ -234,8 +258,20 @@ def test_gold_injury_boundary_2008_2009() -> None:
 
     TRUE ONLY AFTER RUNG 8, where Plan 33.2-17 Task 2's builder first reaches gold: a game that
     admitted no report carries NaN beside ``injury_coverage`` 0.0 rather than "no QB out" and
-    "full availability". 2009 is populated where a report was admitted (a handful of dated
-    rows); every 2009 row without one is NaN with the flag false.
+    "full availability".
+
+    CORRECTED BY PLAN 33.2-18, measured on rung 8's rebuilt gold. 2002-2008 are NaN beside a
+    false flag on both sides, as stated. The first COVERED season is per side, not 2009 for both:
+    almost no 2009 report carries a ``date_modified`` (p332_ step 6b, Plan 33.2-15), and the one
+    2009 game that admitted a report does so for its AWAY team (2009_W17_NO@CAR), so the away
+    side's coverage begins in 2009 and the home side's in 2010. Before a side's first covered
+    season every value is NaN beside a false flag; every covered row, in every season, is
+    populated. A row with the flag false INSIDE a covered season is a within-season gap, which
+    p332_ step 7b's point-in-time rule may fill from reports that ended by its lock (owner ruling
+    2026-09-22) -- e.g. the 2009 postseason away rows after that week-17 report -- so its value
+    is not asserted NaN. The node's name keeps its original spelling so its id is stable. Was:
+    both sides ``covered.any()`` in 2009 and every uncovered 2009 row NaN -- premises the
+    measured per-side boundary and the step-7b fill contradict.
     """
     for matrix in scan.GOLD_MATRICES:
         frame = _gold(matrix)
@@ -245,11 +281,14 @@ def test_gold_injury_boundary_2008_2009() -> None:
             before = frame[frame["season"].between(2002, 2008)]
             assert before[values].isna().all().all(), (matrix, side)
             assert (before[flag] == 0.0).all(), (matrix, flag)
-            first = frame[frame["season"] == 2009]
-            covered = first[flag] == 1.0
+            covered = frame[flag] == 1.0
             assert covered.any(), (matrix, flag)
-            assert first.loc[covered, values].notna().all().all()
-            assert first.loc[~covered, values].isna().all().all()
+            first_covered = int(frame.loc[covered, "season"].min())
+            assert first_covered in (2009, 2010), (matrix, flag, first_covered)
+            ahead = frame[frame["season"] < first_covered]
+            assert ahead[values].isna().all().all(), (matrix, side, first_covered)
+            assert (ahead[flag] == 0.0).all(), (matrix, flag, first_covered)
+            assert frame.loc[covered, values].notna().all().all(), (matrix, side)
 
 
 @needs_gold

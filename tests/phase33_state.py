@@ -16191,3 +16191,297 @@ P332_18_SEASON_PARTITION_RULE_PARTITION_AFTER: dict[str, object] = {
     "before": "selection 2018-2022, hp_val 2023, holdout 2024-2025 (SEASON_PARTITION_AFTER)",
     "measured_on": "2026-09-22, Plan 33.2-18 Task 2",
 }  # fmt: skip
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-18 Task 3 -- p332_ RUNG 8: THE COVERAGE FLOORS ARE RETIRED (D33.2-14, D33.2-08
+# item 2, SPEC R10). APPENDED ONCE on 2026-09-22, in ONE block, by this task. Nothing above this
+# line was edited. (Task 2's P332_18_SEASON_PARTITION_RULE_* block is separate: W4.)
+#
+# THE ONE CAUSE, declared in commit 6d09c80 before any rebuild: the selection window's 2018 was a
+# coverage floor; retiring it moves the window to 2002 and releases every family it floored --
+# team form computed back to 2002, the opponent-adjusted pool widened through the identity
+# binding, snaps / injury / completion probability NaN beside a flag before their coverage. The
+# expected case was determined from the consumers as RUNS. Predicted facet by facet: A team form
+# (28, +2 cpoe flags), B opponent-adjusted (16), C snaps and injury (32, +2 snap flags); the
+# eight never-populated defensive team-form copies UNMOVED; widths +4; rows unchanged.
+#
+# THE SILVER CARRY-IN, predicted in 6d09c80 and measured BEFORE rung 8's production rebuild:
+# silver team form rebuilt from the pin at the old 2020 floor in a scratch root reproduced
+# production's 2020-2026 silver exactly (0 differing rows in both tables), and gold rebuilt
+# there with commit bdaef81's code (p332_rung7b_retaken.json) differs from p332_rung7b.json in
+# exactly the 28 team-form columns, 2020-2025 only (step 7b's 448 blank 2020 week-1 cells now
+# carry real windows). Nothing added or removed; inside the prediction.
+#
+# MEASURED 2026-09-22: a scratch preview, then the production rebuild --through-season 2025,
+# judged against p332_rung7b_retaken.json by _attribute_p332_window -- attribution_ok true, not
+# blocking, zero unattributed, every facet inside its allowed seasons and moving in its required
+# ones; production identical to the preview on every non-clock column. Digest bracket
+# outputs/p332_rung8_before.json -> after: the three gold matrices and the DuckDB file only.
+# The first preview was REFUSED by the information-time gate (team form's provenance could not
+# time 2002 week-1 windows drawn from the 2001 bootstrap season); fixed in 32aac81 (provenance
+# only, no value changed) before any production write.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_WINDOW_RUNG_CAUSE (UTF-8), declared in 6d09c80.
+P332_18_RUNG8_CAUSE_DIGEST: str = (
+    "20e7b99df31a144759c071f2690debfffe0eb9a1b2c3b2e0aa092d12336fa5e5"
+)
+
+P332_18_RUNG8_DECLARED_IN_COMMIT: str = "6d09c804e2990b03eb5a4b92fae140461e3b8c76"
+
+P332_18_RUNG8_BASELINE_DOCUMENT: str = "p332_rung7b_retaken.json"
+
+P332_18_RUNG8_EXPECTED_CASE: str = "runs"
+
+P332_18_RUNG8_MOVED_COLUMNS: tuple[str, ...] = (
+    "away_availability_fraction",
+    "away_backup_quality_delta",
+    "away_def_rolling_opp_adj_coverage",
+    "away_def_rolling_opp_adj_epa_per_play",
+    "away_def_rolling_opp_adj_pass_epa",
+    "away_def_rolling_opp_adj_rush_epa",
+    "away_def_rolling_pass_success_rate",
+    "away_def_rolling_red_zone_td_rate",
+    "away_def_rolling_rush_success_rate",
+    "away_def_rolling_success_rate",
+    "away_def_rolling_third_down_conversion_rate",
+    "away_off_rolling_avg_drive_start_yardline",
+    "away_off_rolling_cpoe",
+    "away_off_rolling_neutral_pace",
+    "away_off_rolling_neutral_pass_rate",
+    "away_off_rolling_opp_adj_coverage",
+    "away_off_rolling_opp_adj_epa_per_play",
+    "away_off_rolling_opp_adj_pass_epa",
+    "away_off_rolling_opp_adj_rush_epa",
+    "away_off_rolling_pass_success_rate",
+    "away_off_rolling_red_zone_td_rate",
+    "away_off_rolling_rush_success_rate",
+    "away_off_rolling_success_rate",
+    "away_off_rolling_third_down_conversion_rate",
+    "away_qb_out_flag",
+    "away_rolling_snap_share_db",
+    "away_rolling_snap_share_dl",
+    "away_rolling_snap_share_lb",
+    "away_rolling_snap_share_ol",
+    "away_rolling_snap_share_qb",
+    "away_rolling_snap_share_rb",
+    "away_rolling_snap_share_te",
+    "away_rolling_snap_share_wr",
+    "away_snap_concentration",
+    "away_snap_continuity",
+    "home_availability_fraction",
+    "home_backup_quality_delta",
+    "home_def_rolling_opp_adj_coverage",
+    "home_def_rolling_opp_adj_epa_per_play",
+    "home_def_rolling_opp_adj_pass_epa",
+    "home_def_rolling_opp_adj_rush_epa",
+    "home_def_rolling_pass_success_rate",
+    "home_def_rolling_red_zone_td_rate",
+    "home_def_rolling_rush_success_rate",
+    "home_def_rolling_success_rate",
+    "home_def_rolling_third_down_conversion_rate",
+    "home_off_rolling_avg_drive_start_yardline",
+    "home_off_rolling_cpoe",
+    "home_off_rolling_neutral_pace",
+    "home_off_rolling_neutral_pass_rate",
+    "home_off_rolling_opp_adj_coverage",
+    "home_off_rolling_opp_adj_epa_per_play",
+    "home_off_rolling_opp_adj_pass_epa",
+    "home_off_rolling_opp_adj_rush_epa",
+    "home_off_rolling_pass_success_rate",
+    "home_off_rolling_red_zone_td_rate",
+    "home_off_rolling_rush_success_rate",
+    "home_off_rolling_success_rate",
+    "home_off_rolling_third_down_conversion_rate",
+    "home_qb_out_flag",
+    "home_rolling_snap_share_db",
+    "home_rolling_snap_share_dl",
+    "home_rolling_snap_share_lb",
+    "home_rolling_snap_share_ol",
+    "home_rolling_snap_share_qb",
+    "home_rolling_snap_share_rb",
+    "home_rolling_snap_share_te",
+    "home_rolling_snap_share_wr",
+    "home_snap_concentration",
+    "home_snap_continuity",
+)
+
+P332_18_RUNG8_MOVED_BY_FACET: dict[str, tuple[str, ...]] = {
+    "A_team_form": (
+        "away_def_rolling_pass_success_rate",
+        "away_def_rolling_red_zone_td_rate",
+        "away_def_rolling_rush_success_rate",
+        "away_def_rolling_success_rate",
+        "away_def_rolling_third_down_conversion_rate",
+        "away_off_rolling_avg_drive_start_yardline",
+        "away_off_rolling_cpoe",
+        "away_off_rolling_neutral_pace",
+        "away_off_rolling_neutral_pass_rate",
+        "away_off_rolling_pass_success_rate",
+        "away_off_rolling_red_zone_td_rate",
+        "away_off_rolling_rush_success_rate",
+        "away_off_rolling_success_rate",
+        "away_off_rolling_third_down_conversion_rate",
+        "home_def_rolling_pass_success_rate",
+        "home_def_rolling_red_zone_td_rate",
+        "home_def_rolling_rush_success_rate",
+        "home_def_rolling_success_rate",
+        "home_def_rolling_third_down_conversion_rate",
+        "home_off_rolling_avg_drive_start_yardline",
+        "home_off_rolling_cpoe",
+        "home_off_rolling_neutral_pace",
+        "home_off_rolling_neutral_pass_rate",
+        "home_off_rolling_pass_success_rate",
+        "home_off_rolling_red_zone_td_rate",
+        "home_off_rolling_rush_success_rate",
+        "home_off_rolling_success_rate",
+        "home_off_rolling_third_down_conversion_rate",
+    ),
+    "B_opponent_adjusted": (
+        "away_def_rolling_opp_adj_coverage",
+        "away_def_rolling_opp_adj_epa_per_play",
+        "away_def_rolling_opp_adj_pass_epa",
+        "away_def_rolling_opp_adj_rush_epa",
+        "away_off_rolling_opp_adj_coverage",
+        "away_off_rolling_opp_adj_epa_per_play",
+        "away_off_rolling_opp_adj_pass_epa",
+        "away_off_rolling_opp_adj_rush_epa",
+        "home_def_rolling_opp_adj_coverage",
+        "home_def_rolling_opp_adj_epa_per_play",
+        "home_def_rolling_opp_adj_pass_epa",
+        "home_def_rolling_opp_adj_rush_epa",
+        "home_off_rolling_opp_adj_coverage",
+        "home_off_rolling_opp_adj_epa_per_play",
+        "home_off_rolling_opp_adj_pass_epa",
+        "home_off_rolling_opp_adj_rush_epa",
+    ),
+    "C_snaps_injury": (
+        "away_availability_fraction",
+        "away_backup_quality_delta",
+        "away_qb_out_flag",
+        "away_rolling_snap_share_db",
+        "away_rolling_snap_share_dl",
+        "away_rolling_snap_share_lb",
+        "away_rolling_snap_share_ol",
+        "away_rolling_snap_share_qb",
+        "away_rolling_snap_share_rb",
+        "away_rolling_snap_share_te",
+        "away_rolling_snap_share_wr",
+        "away_snap_concentration",
+        "away_snap_continuity",
+        "home_availability_fraction",
+        "home_backup_quality_delta",
+        "home_qb_out_flag",
+        "home_rolling_snap_share_db",
+        "home_rolling_snap_share_dl",
+        "home_rolling_snap_share_lb",
+        "home_rolling_snap_share_ol",
+        "home_rolling_snap_share_qb",
+        "home_rolling_snap_share_rb",
+        "home_rolling_snap_share_te",
+        "home_rolling_snap_share_wr",
+        "home_snap_concentration",
+        "home_snap_continuity",
+    ),
+}
+
+P332_18_RUNG8_ADDED_COLUMNS: tuple[str, ...] = (
+    "away_off_rolling_cpoe_coverage",
+    "away_snap_coverage",
+    "home_off_rolling_cpoe_coverage",
+    "home_snap_coverage",
+)
+
+P332_18_RUNG8_CARRY_IN_COLUMNS: tuple[str, ...] = (
+    "away_def_rolling_pass_success_rate",
+    "away_def_rolling_red_zone_td_rate",
+    "away_def_rolling_rush_success_rate",
+    "away_def_rolling_success_rate",
+    "away_def_rolling_third_down_conversion_rate",
+    "away_off_rolling_avg_drive_start_yardline",
+    "away_off_rolling_cpoe",
+    "away_off_rolling_neutral_pace",
+    "away_off_rolling_neutral_pass_rate",
+    "away_off_rolling_pass_success_rate",
+    "away_off_rolling_red_zone_td_rate",
+    "away_off_rolling_rush_success_rate",
+    "away_off_rolling_success_rate",
+    "away_off_rolling_third_down_conversion_rate",
+    "home_def_rolling_pass_success_rate",
+    "home_def_rolling_red_zone_td_rate",
+    "home_def_rolling_rush_success_rate",
+    "home_def_rolling_success_rate",
+    "home_def_rolling_third_down_conversion_rate",
+    "home_off_rolling_avg_drive_start_yardline",
+    "home_off_rolling_cpoe",
+    "home_off_rolling_neutral_pace",
+    "home_off_rolling_neutral_pass_rate",
+    "home_off_rolling_pass_success_rate",
+    "home_off_rolling_red_zone_td_rate",
+    "home_off_rolling_rush_success_rate",
+    "home_off_rolling_success_rate",
+    "home_off_rolling_third_down_conversion_rate",
+)
+
+P332_18_RUNG8_CARRY_IN_SEASONS: tuple[str, ...] = (
+    "2020",
+    "2021",
+    "2022",
+    "2023",
+    "2024",
+    "2025",
+)
+
+P332_18_RUNG8_PER_GAME_POOL_START: int = 2002
+
+P332_18_RUNG8_ROWS: int = 6499
+
+P332_18_RUNG8_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)
+
+# The pre-coverage scan of rung 8's gold (PRECOVERAGE-SCAN.md, "## After rung 8").
+P332_18_RUNG8_CLASSIFIED_AFTER: int = 519
+
+P332_18_RUNG8_UNFLAGGED_AFTER: int = 0
+
+P332_18_RUNG8_CONSTANT_2002_2017_AFTER: int = 15
+
+# The normalizer's LEVEL-PRESERVED family (scripts.fingerprint_gold.phase33_level_preserved_family,
+# the builder's own suffix predicate): every *_coverage flag is kept as a 0.0/1.0 level, never
+# z-scored. Rung 8 adds four such flags. Rung 7 (Plan 33.2-16) added four more and did not record
+# them, so tests/integration/test_gold_rebuild_attribution.py's exact-equality pin had been red
+# since rung 7 -- MEASURED by this plan on the rung-7b-equivalent retaken baseline (unexpected
+# members: exactly the four opp_adj flags). Each rung's additions are recorded under its own
+# name, so neither is attributed to the other.
+P332_18_RUNG8_LEVEL_PRESERVED_COLUMNS_ADDED: tuple[str, ...] = (
+    "away_off_rolling_cpoe_coverage",
+    "away_snap_coverage",
+    "home_off_rolling_cpoe_coverage",
+    "home_snap_coverage",
+)
+
+P332_18_RUNG8_LEVEL_PRESERVED_RUNG7_COLUMNS: tuple[str, ...] = (
+    "away_def_rolling_opp_adj_coverage",
+    "away_off_rolling_opp_adj_coverage",
+    "home_def_rolling_opp_adj_coverage",
+    "home_off_rolling_opp_adj_coverage",
+)
+
+P332_18_RUNG8_GOLD_WIDTH_DELTA: dict[str, object] = {
+    "rung": 8,
+    "plan": "33.2-18",
+    "added": (
+        "away_off_rolling_cpoe_coverage",
+        "away_snap_coverage",
+        "home_off_rolling_cpoe_coverage",
+        "home_snap_coverage",
+    ),
+    "removed": (),
+    "widths_before": (197, 198, 197),
+    "widths_after": (201, 202, 201),
+    "measured_at": "2026-09-22",
+}

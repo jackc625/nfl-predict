@@ -3406,16 +3406,29 @@ class TestThePhase33LadderIsAttributed:
         level. The Phase-33 record stays byte-unchanged (26 members) and the rung's
         addition is its own manifest constant, so the equality is still exact in both
         directions.
+
+        AND BY FOUR NAMED MEMBERS AT EACH OF p332_ RUNGS 7 AND 8 (recorded by Plan 33.2-18).
+        Every ``*_coverage`` flag is level-preserved by the builder's suffix arm. Rung 7 added the
+        four ``*_rolling_opp_adj_coverage`` flags without recording them, which left this
+        equality red from rung 7 on (measured on the rung-7b-equivalent baseline); rung 8 adds the
+        two ``off_rolling_cpoe_coverage`` and two ``snap_coverage`` flags. Each set is its own
+        manifest constant, so the equality stays exact in both directions. Was: the union of
+        ``GOLD_LEVEL_PRESERVED_COLUMNS_33_14`` and ``P332_12_LEVEL_PRESERVED_COLUMNS_ADDED`` only.
         """
         from tests.phase33_state import (
             GOLD_LEVEL_PRESERVED_COLUMNS_33_14,
             P332_12_LEVEL_PRESERVED_COLUMNS_ADDED,
+            P332_18_RUNG8_LEVEL_PRESERVED_COLUMNS_ADDED,
+            P332_18_RUNG8_LEVEL_PRESERVED_RUNG7_COLUMNS,
         )
 
         f = _p331_module()
         resolved = set(f.phase33_level_preserved_family())
-        pinned = set(GOLD_LEVEL_PRESERVED_COLUMNS_33_14) | set(
-            P332_12_LEVEL_PRESERVED_COLUMNS_ADDED
+        pinned = (
+            set(GOLD_LEVEL_PRESERVED_COLUMNS_33_14)
+            | set(P332_12_LEVEL_PRESERVED_COLUMNS_ADDED)
+            | set(P332_18_RUNG8_LEVEL_PRESERVED_RUNG7_COLUMNS)
+            | set(P332_18_RUNG8_LEVEL_PRESERVED_COLUMNS_ADDED)
         )
         assert resolved == pinned, (
             f"unexpected members {sorted(resolved - pinned)}; missing members "

@@ -108,10 +108,21 @@ logger = get_logger(__name__)
 # PREDICTED in tests/integration/test_p332_rung7_attribution.py before the rebuild and
 # written here only after the rebuilt matrices MEASURED equal to that prediction; the
 # delta is pinned to those four NAMES by the ``P332_16_GOLD_WIDTH_DELTA`` manifest slot.
+# PHASE 33.2 RUNG 8 (Plan 33.2-18 Task 3, rebuilt 2026-09-22) moves each matrix by
+# exactly +4, from 197/198/197 to 201/202/201. The added columns are two coverage flags
+# for the source-limited team-form metric, ``home_off_rolling_cpoe_coverage`` and
+# ``away_off_rolling_cpoe_coverage`` (the pinned play-by-play carries no completion
+# probability before 2006), and two snap coverage flags, ``home_snap_coverage`` and
+# ``away_snap_coverage`` (no snap counts before 2013): the coverage floors are retired, so a
+# value before its family's coverage is NaN beside a flag at 0.0 rather than a 0.0 that reads
+# as "exactly average". The widths below were PREDICTED in
+# tests/integration/test_p332_rung8_attribution.py before the rebuild and written here only
+# after the rebuilt matrices MEASURED equal to that prediction; the delta is pinned to those
+# four NAMES by the ``P332_18_RUNG8_GOLD_WIDTH_DELTA`` manifest slot.
 GOLD_FEATURE_MATRICES = {
-    "features_wp": 197,
-    "features_ats": 198,
-    "features_ou": 197,
+    "features_wp": 201,
+    "features_ats": 202,
+    "features_ou": 201,
 }
 
 # Tables whose DuckDB and parquet copies must agree on row-set MEMBERSHIP (D30-18).
