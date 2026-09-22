@@ -18,8 +18,8 @@ has nothing to do with the two surfaces D30-16 names.
 The contract these tests pin:
 
 * For season Y, every fitted statistic comes from seasons strictly before Y.
-* The earliest data-bearing season self-fits, under a machine-readable flag
-  (``FeatureMatrixBuilder.self_fit_seasons``), and so does any season whose
+* The earliest data-bearing season is left UNCLIPPED, under a machine-readable flag
+  (``FeatureMatrixBuilder.unclipped_seasons``), and so is any season whose
   strictly-prior slice holds too few non-null values to support a bound.
 * The CR-02 discrete-indicator exemption is evaluated ONCE PER COLUMN, over the
   whole frame, so a globally-continuous column that happens to be constant within
@@ -30,15 +30,23 @@ The contract these tests pin:
   inverted rather than deleted, because "no name-based interception survives" is
   the fact the next family with a defined neutral state needs to know.
 
-The residual this does NOT close, deliberately: within-season lookahead in the
-WINSORIZATION bound. Season Y's week-1 bound still sees season Y's week 18 whenever Y
-self-fits. D30-16 accepted it; it cannot be moved by adding a LATER season's rows, which
-is what SPEC R2 asserts.
+Was: "the residual this does NOT close, deliberately: within-season lookahead in the
+WINSORIZATION bound -- season Y's week-1 bound still sees season Y's week 18 whenever Y
+self-fits. D30-16 accepted it."
 
-The IMPUTATION half of that residual is gone (p332_ extra step 7b, owner ruling
-2026-09-22): ``_impute_team_features``' team mean and season mean used to be computed
-over the whole season, and now read only games that had ENDED by the gap's own lock
-(``tests/unit/test_point_in_time_imputation.py`` pins the rule).
+BOTH HALVES OF THAT RESIDUAL ARE NOW CLOSED, and neither was closed here:
+
+* the IMPUTATION half by p332_ extra step 7b (owner ruling 2026-09-22):
+  ``_impute_team_features``' team mean and season mean used to be computed over the whole
+  season, and now read only games that had ENDED by the gap's own lock
+  (``tests/unit/test_point_in_time_imputation.py`` pins the rule);
+* the WINSORIZATION half by p332_ extra step 8b (owner ruling 2026-09-22, "Skip trim,
+  first season"): a season with no strictly-prior fit takes no bound at all rather than
+  fitting one on its own rows (``tests/unit/test_winsorization_no_self_fit.py`` pins it).
+
+Nothing in ``handle_missing_data_and_outliers`` now fits a statistic on the season it is
+applied to. This module's own assertions are unaffected except for the four the retired
+self-fit fallback named, each carrying a ``Was:`` line below.
 """
 
 from __future__ import annotations
@@ -90,9 +98,16 @@ def _stack(*blocks: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(blocks, ignore_index=True)
 
 
-def _self_fit_seasons(builder: FeatureMatrixBuilder) -> list[int]:
-    """The distinct seasons recorded in the builder's machine-readable self-fit log."""
-    return sorted({s for seasons in builder.self_fit_seasons.values() for s in seasons})
+def _unclipped_seasons(builder: FeatureMatrixBuilder) -> list[int]:
+    """The distinct seasons the builder recorded as left UNCLIPPED.
+
+    Was: ``_self_fit_seasons``, reading ``builder.self_fit_seasons``. p332_ extra step 8b
+    (owner ruling 2026-09-22) removed self-fitting, so the log now records the seasons
+    that took no bound at all.
+    """
+    return sorted(
+        {s for seasons in builder.unclipped_seasons.values() for s in seasons}
+    )
 
 
 def _method_calls(method, receiver: str, attr: str) -> list[str]:
@@ -273,10 +288,17 @@ class TestANeutralConstantPrehistoryDoesNotEraseTheFeature:
         assert (prehistory == 1.0).all()
 
 
-class TestTheSelfFitLog:
-    """The earliest season self-fits, and the flag that says so is machine-readable."""
+class TestTheUnclippedLog:
+    """The earliest season is left UNCLIPPED, and the flag that says so is machine-readable.
 
-    def test_only_the_earliest_season_self_fits_on_a_fully_populated_frame(
+    Was: ``TestTheSelfFitLog`` -- "the earliest season SELF-FITS". p332_ extra step 8b
+    (owner ruling 2026-09-22, "Skip trim, first season") removed the self-fit fallback: a
+    season with no strictly-prior slice now takes no bound at all. The COVERAGE claim the
+    two tests below make is unchanged -- only the earliest season lacks a prior fit on a
+    fully populated frame -- and it is the claim that makes a later entry a finding.
+    """
+
+    def test_only_the_earliest_season_is_unclipped_on_a_fully_populated_frame(
         self, builder
     ) -> None:
         rng = np.random.default_rng(11)
@@ -294,9 +316,9 @@ class TestTheSelfFitLog:
 
         builder.handle_missing_data_and_outliers(frame)
 
-        assert _self_fit_seasons(builder) == [2001]
+        assert _unclipped_seasons(builder) == [2001]
 
-    def test_over_the_real_gold_season_span_only_the_earliest_season_self_fits(
+    def test_over_the_real_gold_season_span_only_the_earliest_season_is_unclipped(
         self, builder
     ) -> None:
         """The same claim, over the season span the real gold matrices actually carry.
@@ -306,9 +328,9 @@ class TestTheSelfFitLog:
         columns are synthetic and fully populated on purpose: this test is about the
         RULE (only the first season has no prior), not about any particular column's
         upstream coverage floor. A column whose upstream source starts late has an
-        EMPTY prior slice in its first populated season and self-fits there by
-        design -- that behaviour is pinned separately by
-        ``TestALateArrivingColumn`` below.
+        EMPTY prior slice in its first populated season and is left UNCLIPPED there by
+        design (step 8b; it self-fitted there before) -- that behaviour is pinned
+        separately by ``TestALateArrivingColumn`` below.
         """
         seasons = _real_gold_seasons()
         assert len(seasons) > 1, "the fixture must span more than one season"
@@ -328,9 +350,9 @@ class TestTheSelfFitLog:
 
         builder.handle_missing_data_and_outliers(frame)
 
-        assert _self_fit_seasons(builder) == [seasons[0]], (
-            "a season other than the earliest self-fitted its own bounds. On a fully "
-            "populated frame that is a coverage surprise, not a rounding detail"
+        assert _unclipped_seasons(builder) == [seasons[0]], (
+            "a season other than the earliest was left unclipped. On a fully populated "
+            "frame that is a coverage surprise, not a rounding detail"
         )
 
 
@@ -343,8 +365,11 @@ class TestALateArrivingColumn:
     after imputation. But WR-06 fits its bounds on the PRE-IMPUTATION frame, where
     the case is unverified in either direction. A naive prior-only rewrite would
     hand such a column an EMPTY strictly-prior slice in its first populated season
-    and produce NaN bounds, or raise. The insufficient-prior-data fallback covers
-    the case by construction, and nothing else proves the construction is right.
+    and produce NaN bounds, or raise. The insufficient-prior-data path covers the
+    case by construction, and nothing else proves the construction is right.
+
+    p332_ EXTRA STEP 8b changed WHAT that path does, not whether it fires: the first
+    populated season used to fall back to its own rows, and is now left UNCLIPPED.
 
     This frame is deliberately SYNTHETIC, and deliberately distinct from
     ``test_over_the_real_gold_season_span_only_the_earliest_season_self_fits``. The
@@ -373,11 +398,16 @@ class TestALateArrivingColumn:
         out = builder.handle_missing_data_and_outliers(
             self._frame(values_2020, values_2021)
         )
-        return out, dict(builder.self_fit_seasons)
+        return out, dict(builder.unclipped_seasons)
 
-    def test_it_self_fits_in_its_first_populated_season_then_uses_prior_bounds(
+    def test_it_is_left_unclipped_in_its_first_populated_season_then_uses_prior_bounds(
         self, builder
     ) -> None:
+        """Was: ``test_it_self_fits_in_its_first_populated_season_then_uses_prior_bounds``.
+
+        The shape is the same and the second half is untouched; only the treatment of the
+        first populated season changed (step 8b: unclipped, not self-fitted).
+        """
         rng = np.random.default_rng(2055)
         base_2020 = rng.uniform(10.0, 20.0, self._N)
         base_2021 = rng.uniform(10.0, 20.0, self._N)
@@ -385,12 +415,12 @@ class TestALateArrivingColumn:
 
         out, log = self._run(builder, base_2020, base_2021)
 
-        # 2020 -- the first populated season -- has an EMPTY prior slice and self-fits.
+        # 2020 -- the first populated season -- has an EMPTY prior slice and is UNCLIPPED.
         assert 2020 in log.get("late_metric", []), (
             "the first populated season of a late-arriving column must be recorded as "
-            f"self-fitting; log was {log.get('late_metric')}"
+            f"unclipped; log was {log.get('late_metric')}"
         )
-        # 2021 has a usable prior slice and must NOT self-fit.
+        # 2021 has a usable prior slice and must be clipped against it.
         assert 2021 not in log.get("late_metric", [])
 
         # Nothing raised, nothing is a NaN bound: 2021's outlier was actually clipped

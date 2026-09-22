@@ -546,15 +546,18 @@ class FeatureMatrixBuilder:
         self.outlier_percentiles = (1, 99)  # Winsorization bounds
         self.min_games_for_stats = 10  # Minimum games for normalization
 
-        # WR-06: the machine-readable self-fit flag. Maps a column name to the
-        # seasons whose imputation median / winsorization bounds were fitted on
-        # their OWN rows because no usable strictly-prior slice existed. Reset at
-        # the start of every ``handle_missing_data_and_outliers`` call and logged at
-        # its end, so the flag is observable in a build log AND assertable by a
-        # test. A self-fit outside the earliest data-bearing season is a per-column
-        # coverage floor -- a fact worth surfacing, which a log line alone would
-        # never make checkable.
-        self.self_fit_seasons: dict[str, list[int]] = {}
+        # WR-06's machine-readable flag, RENAMED by p332_ extra step 8b for what it
+        # now records: a column name mapped to the seasons whose winsorization was
+        # SKIPPED because no usable strictly-prior slice existed. Until step 8b those
+        # seasons fitted their bounds on their OWN rows instead, and the flag was
+        # called ``self_fit_seasons``; the owner ruled on 2026-09-22 that a bound
+        # fitted on the season it clips is post-lock information (D33.2-01), so the
+        # seasons are now left unclipped and the log says so. Reset at the start of
+        # every ``handle_missing_data_and_outliers`` call and logged at its end, so
+        # it is observable in a build log AND assertable by a test. An entry outside
+        # the earliest data-bearing season is a per-column coverage floor -- a fact
+        # worth surfacing, which a log line alone would never make checkable.
+        self.unclipped_seasons: dict[str, list[int]] = {}
 
         # RULING K1: the per-builder missing-preserving set. `None` until a
         # weather frame is merged, and the weather branch of `combine_features`
@@ -1760,9 +1763,16 @@ class FeatureMatrixBuilder:
         seasons, and where nothing honest exists it stays blank
         (``self.imputation_left_blank``) through normalization too.
 
-        STILL WITHIN-SEASON, and NOT this step's cause: a self-fitting season's
-        winsorization bound still sees that whole season. It is recorded for the owner
-        in the phase's deferred items rather than folded into step 7b.
+        THE WINSORIZATION IS POINT-IN-TIME TOO (p332_ extra step 8b, owner ruling
+        2026-09-22 "Skip trim, first season"). Until that step a season with no
+        strictly-prior fit -- the earliest season, or a column's first populated season --
+        fitted its q01/q99 bounds on its OWN whole season, so a week-1 value was clipped
+        by a bound that had read week 18. That was the residual D30-16 accepted, recorded
+        here as accepted, and routed to the owner by step 7b rather than folded into it.
+        It is gone: bounds come from strictly-prior seasons only, a season with no such
+        fit is left UNCLIPPED (exactly as a degenerate bound already was) and recorded in
+        ``self.unclipped_seasons``, and clipping begins the following season. NOTHING in
+        this method now fits a statistic on the season it is applied to.
 
         Args:
             features_df: Feature matrix
@@ -1813,8 +1823,13 @@ class FeatureMatrixBuilder:
         # target-column exclusion list above, which removes it from ``numeric_cols``
         # but leaves the column in the frame -- so a per-season pass can group on it
         # directly. Each entry is (season, season_mask, strictly_prior_mask).
-        self.self_fit_seasons = {}
+        # P332_ EXTRA STEP 8b: the seasons left UNCLIPPED because no strictly-prior slice
+        # could be fitted. It replaces the self-fit log, which recorded the seasons that
+        # fitted a bound on their own rows -- the behaviour this step removed.
+        self.unclipped_seasons = {}
         season_passes = self._season_passes(processed_df)
+        # Still read by the IMPUTER below, whose earliest-season rule step 7b settled and
+        # step 8b does not touch. The winsorization pass no longer needs it at all.
         earliest_season = season_passes[0][0] if season_passes else None
 
         # The WR-10 neutral-default branch that used to open this loop is GONE with
@@ -1955,12 +1970,22 @@ class FeatureMatrixBuilder:
 
             outliers_count = 0
             for season, season_mask, prior_mask in season_passes:
-                fit_source, self_fit = self._season_fit_source(
-                    fit_values, season, season_mask, prior_mask, earliest_season
+                fit_source, no_prior_fit = self._season_fit_source(
+                    fit_values, prior_mask
                 )
 
+                # P332_ EXTRA STEP 8b: a season with no usable strictly-prior fit is left
+                # UNCLIPPED rather than clipped against its own rows. The season is
+                # RECORDED, because "this column was not winsorized here" is a fact a
+                # reader of the build log needs, and the next season -- whose prior slice
+                # now holds this one -- gets a real bound.
+                if no_prior_fit:
+                    self._record_unclipped(col, season)
+                    continue
+
                 # The pre-WR-06 minimum-data-points condition, now applied to the fit
-                # source rather than to the whole column.
+                # source rather than to the whole column. Unchanged by step 8b: it is the
+                # same threshold the refusal above is decided on.
                 if fit_source.notna().sum() <= self._MIN_FIT_POINTS:
                     continue
 
@@ -1979,11 +2004,12 @@ class FeatureMatrixBuilder:
                 # it removes the feature. A season with no informative prior bound
                 # is left unclipped, and the next season -- whose prior slice now
                 # contains this season's real spread -- gets a real bound.
+                # UNCHANGED by step 8b, including its silence: the degenerate skip was
+                # never recorded in the log above and is not recorded now. That log
+                # answers "which seasons had no strictly-prior fit", and widening it to
+                # every constant-dominated prior slice would bury the answer.
                 if lower_bound >= upper_bound:
                     continue
-
-                if self_fit:
-                    self._record_self_fit(col, season)
 
                 season_values = processed_df.loc[season_mask, col]
                 season_outliers = int(
@@ -2008,15 +2034,16 @@ class FeatureMatrixBuilder:
                 1 for c in numeric_cols if self._is_discrete_indicator(processed_df[c])
             ),
             total_features_processed=len(numeric_cols),
-            # WR-06: the self-fit flag, made observable in a build log. A season
-            # other than the earliest appearing here is a per-column coverage floor
-            # -- the column's upstream source simply starts later -- and is a finding
-            # worth reading, not an error.
-            self_fit_columns=len(self.self_fit_seasons),
-            self_fit_seasons=sorted(
+            # WR-06's observable flag, renamed by p332_ extra step 8b for what it now
+            # records: the seasons left UNCLIPPED because no strictly-prior slice could
+            # be fitted. A season other than the earliest appearing here is a per-column
+            # coverage floor -- the column's upstream source simply starts later -- and is
+            # a finding worth reading, not an error.
+            unclipped_columns=len(self.unclipped_seasons),
+            unclipped_seasons=sorted(
                 {
                     season
-                    for seasons in self.self_fit_seasons.values()
+                    for seasons in self.unclipped_seasons.values()
                     for season in seasons
                 }
             ),
@@ -2052,8 +2079,10 @@ class FeatureMatrixBuilder:
         A frame with no ``season`` column is never the production path -- the column
         is carried through ``combine_features`` and is required by
         ``_impute_team_features`` -- but some unit frames omit it. Such a frame
-        degrades to ONE self-fitting pass over the whole frame, i.e. to the
-        pre-WR-06 whole-frame behaviour, rather than to no processing at all.
+        degrades to ONE pass whose strictly-prior mask is empty. Under p332_ extra
+        step 8b that pass has no bound to fit and the frame is left UNWINSORIZED
+        (it used to self-fit, i.e. degrade to the pre-WR-06 whole-frame behaviour).
+        The imputation half of the pass is unaffected and still runs.
         """
         if "season" not in df.columns:
             everything = pd.Series(True, index=df.index)
@@ -2065,36 +2094,38 @@ class FeatureMatrixBuilder:
             for season in seasons
         ]
 
-    def _record_self_fit(self, col: str, season) -> None:
-        """Record that *col*'s statistic for *season* was fitted on its own rows."""
+    def _record_unclipped(self, col: str, season) -> None:
+        """Record that *col*'s *season* was left UNCLIPPED for want of a prior fit."""
         if season is None:
             return
-        seasons = self.self_fit_seasons.setdefault(col, [])
+        seasons = self.unclipped_seasons.setdefault(col, [])
         if int(season) not in seasons:
             seasons.append(int(season))
 
     def _season_fit_source(
         self,
         values: pd.Series,
-        season,
-        season_mask: pd.Series,
         prior_mask: pd.Series,
-        earliest_season,
     ) -> tuple[pd.Series, bool]:
-        """Return ``(fit_source, self_fit)`` for *season*.
+        """Return ``(fit_source, no_prior_fit)`` for one season's winsorization bound.
 
-        The fit source is the strictly-prior slice. The earliest data-bearing season
-        has none, and a column whose upstream source starts mid-history has an EMPTY
-        prior slice in its first populated season -- a naive prior-only rewrite would
-        hand both of them NaN bounds or raise (T-30-55). Both cases fall back to the
-        season's own rows under the SAME documented flag, so a per-column coverage
-        floor is handled by the general rule rather than by a per-family exception.
+        The fit source is the STRICTLY-PRIOR slice, and nothing else.
+
+        P332_ EXTRA STEP 8b (owner ruling 2026-09-22, "Skip trim, first season"). This
+        used to fall back to the season's OWN rows whenever no strictly-prior slice could
+        be fitted -- the earliest data-bearing season, and a column whose upstream source
+        starts mid-history (T-30-55) -- under a ``self_fit`` flag. That bound saw the whole
+        season, so a week-1 value was clipped by a statistic that had read week 18. Under
+        the day-before lock (D33.2-01) that is post-lock information, and it was the last
+        statistic in this method still reading it.
+
+        There is no fallback now. A season with no strictly-prior fit is reported as such
+        and the caller leaves it UNCLIPPED -- exactly the treatment a degenerate bound
+        already gets -- so clipping begins the FOLLOWING season, from past seasons only.
+        The minimum-fit-points rule is unchanged and is what "usable" means here.
         """
-        if season != earliest_season:
-            prior = values.loc[prior_mask]
-            if prior.notna().sum() > self._MIN_FIT_POINTS:
-                return prior, False
-        return values.loc[season_mask], True
+        prior = values.loc[prior_mask]
+        return prior, prior.notna().sum() <= self._MIN_FIT_POINTS
 
     def _impute_game_level_features(
         self,

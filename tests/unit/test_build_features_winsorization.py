@@ -141,7 +141,15 @@ class TestTheCoverageFlagSurvivesASingleSeasonBuild:
 
 
 class TestContinuousColumnsAreStillWinsorized:
-    """Positive controls: the fix must not amount to disabling winsorization."""
+    """Positive controls: the fix must not amount to disabling winsorization.
+
+    BOTH tests now run over TWO seasons (p332_ extra step 8b, owner ruling 2026-09-22).
+    Was: a single 2023 season. A season with no strictly-prior slice used to fit its
+    bounds on its own rows; step 8b leaves it UNCLIPPED instead, so a one-season frame
+    can no longer show that a continuous outlier IS clipped -- it would assert nothing
+    about winsorization and would pass with winsorization deleted. The prior season is
+    what these controls needed all along; the assertions are unchanged.
+    """
 
     def test_a_continuous_outlier_is_still_clipped(self, builder) -> None:
         """A four-sigma value in a genuine measurement must still be pulled in."""
@@ -149,11 +157,13 @@ class TestContinuousColumnsAreStillWinsorized:
         values = rng.normal(44.0, 2.0, _SEASON_ROWS)
         values[0] = 500.0
 
-        out = builder.handle_missing_data_and_outliers(
-            _single_season_frame(opening_total=values)
+        frame = _with_prior_season(
+            _single_season_frame(opening_total=values),
+            opening_total=rng.normal(44.0, 2.0, _SEASON_ROWS),
         )
+        out = builder.handle_missing_data_and_outliers(frame)
 
-        assert out["opening_total"].max() < 100.0
+        assert out.loc[out["season"] == 2023, "opening_total"].max() < 100.0
 
     def test_the_continuous_line_movement_family_is_not_exempted(self, builder) -> None:
         """``spread_drift`` is a continuous measurement and stays winsorized.
@@ -167,11 +177,13 @@ class TestContinuousColumnsAreStillWinsorized:
         values = rng.normal(0.0, 1.5, _SEASON_ROWS)
         values[0] = 60.0
 
-        out = builder.handle_missing_data_and_outliers(
-            _single_season_frame(spread_drift=values)
+        frame = _with_prior_season(
+            _single_season_frame(spread_drift=values),
+            spread_drift=rng.normal(0.0, 1.5, _SEASON_ROWS),
         )
+        out = builder.handle_missing_data_and_outliers(frame)
 
-        assert out["spread_drift"].max() < 20.0
+        assert out.loc[out["season"] == 2023, "spread_drift"].max() < 20.0
 
 
 def _with_prior_season(frame: pd.DataFrame, **prior_columns) -> pd.DataFrame:
