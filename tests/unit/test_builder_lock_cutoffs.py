@@ -12,10 +12,12 @@ builder registered here is driven through the same three assertions:
 3. when the planted row's information time is reported honestly, the information-time
    gate REFUSES the frame and names the game.
 
-ONE HARNESS, NOT SEVEN. ``REVEAL_CASES`` was seeded by Plan 33.2-13 with ``injury`` and
-``qb``. Plan 33.2-14 adds ``contextual``, ``snaps``, ``team_form`` and ``weather`` to the
-same tuple and raises ``DECLARED_REVEAL_CASE_COUNT``; a builder silently leaving the list
-fails the declared-length control. The ``weather`` case is a REGRESSION CHECK of Plan
+ONE HARNESS, SEVEN BUILDERS. ``REVEAL_CASES`` was seeded by Plan 33.2-13 with ``injury`` and
+``qb``. Plan 33.2-14 adds ``contextual``, ``snaps``, ``team_form``, ``weather`` and
+``market_anchors`` to the same tuple and raises ``DECLARED_REVEAL_CASE_COUNT`` to 7; a builder
+silently leaving the list fails the declared-length control. The ``market_anchors`` plant is
+an odds row whose RECORDED CAPTURE TIME (``created_at``) sits at, or one second after, the
+lock (owner ruling 2026-09-22: the ``snapshot_ts`` label is never an information time). The ``weather`` case is a REGRESSION CHECK of Plan
 33.2-12's fence (rung 4 owns it), not a second owner of it. The contextual, snap and
 team-form plants are a SYNTHETIC boundary: a prior game rescheduled to end exactly at, or
 one second after, the target's lock -- no ordinary schedule puts a team's previous game on
@@ -41,6 +43,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -49,6 +52,7 @@ import pytest
 import utils.game_lock as lock_rule
 from features.contextual import ContextualFeaturesCalculator
 from features.injury import InjuryBuilder
+from features.market_anchors import MarketAnchorFeaturesCalculator
 from features.provenance import (
     DECLARED_GAME_DURATION,
     InformationBasis,
@@ -593,9 +597,60 @@ def _weather_scenario() -> RevealScenario:
 
 
 # ---------------------------------------------------------------------------
+# Case 7: market_anchors -- an odds row CAPTURED at, or one second after, the lock
+# ---------------------------------------------------------------------------
+
+
+def _odds_capture(captured: pd.Timestamp, spread: float) -> dict:
+    """One consensus odds row for the week-3 game, captured at *captured*.
+
+    Its ``snapshot_ts`` is the LOCK, as the live capture path writes it -- a label that
+    would pass any snapshot_ts fence. Only ``created_at`` decides admission.
+    """
+    lock = pd.Timestamp(lock_rule.lock_frame(_W3_GAMES)[_W3_ID])
+    return {
+        "game_id": _W3_ID,
+        "sportsbook": "consensus",
+        "snapshot_ts": str(lock),
+        "created_at": captured,
+        "ml_home": -160.0,
+        "ml_away": 140.0,
+        "spread": spread,
+        "total": 45.5,
+        "spread_ju_home": -110.0,
+        "spread_ju_away": -110.0,
+        "total_over_ju": -110.0,
+        "total_under_ju": -110.0,
+    }
+
+
+def _market_scenario() -> RevealScenario:
+    lock = pd.Timestamp(lock_rule.lock_frame(_W3_GAMES)[_W3_ID])
+
+    def build(planted_at: pd.Timestamp | None):
+        rows = [_odds_capture(lock - timedelta(days=2), -3.0)]
+        if planted_at is not None:
+            rows.append(_odds_capture(planted_at, -6.5))
+        odds = pd.DataFrame(rows)
+        odds["created_at"] = pd.to_datetime(odds["created_at"], utc=True)
+        calculator = MarketAnchorFeaturesCalculator()
+        with patch("features.market_anchors.load_dataframe", return_value=odds):
+            frame = calculator.build_features(_W3_GAMES, _AS_OF)
+            provenance = calculator.information_times(_W3_GAMES)
+        return frame, provenance, dict(calculator.no_information_signature())
+
+    return RevealScenario(
+        source_name="market",
+        games=_W3_GAMES,
+        game_id=_W3_ID,
+        feature_columns=("snapshot_spread", "spread_movement"),
+        build=build,
+    )
+
+
+# ---------------------------------------------------------------------------
 # THE PARAMETER LIST. Plan 33.2-13 seeded it with injury and qb; Plan 33.2-14 appends
-# contextual, snaps, team_form and weather. The market_anchors case joins with the odds
-# selection's owner ruling (see the plan's checkpoint).
+# contextual, snaps, team_form, weather and market_anchors (the registry key is ``market``).
 # ---------------------------------------------------------------------------
 
 REVEAL_CASES: tuple[RevealCase, ...] = (
@@ -605,8 +660,9 @@ REVEAL_CASES: tuple[RevealCase, ...] = (
     RevealCase("snaps", _snaps_scenario, "home_snap_concentration"),
     RevealCase("team_form", _team_form_scenario, "home_off_rolling_epa_per_play"),
     RevealCase("weather", _weather_scenario, "temp_f"),
+    RevealCase("market_anchors", _market_scenario, "snapshot_spread"),
 )
-DECLARED_REVEAL_CASE_COUNT = 6
+DECLARED_REVEAL_CASE_COUNT = 7
 
 
 class TestTheHarnessIsNotVacuous:
@@ -856,6 +912,7 @@ _SOURCE_SEAMS: dict[str, tuple[str, str]] = {
     "snaps": ("snap_builder", "build_features"),
     "team_form": ("", "_team_form_per_game"),
     "weather": ("", "load_dataframe"),
+    "market": ("market_calc", "build_features"),
 }
 
 
@@ -871,8 +928,8 @@ class TestEveryRefusalSurvivesLoadAllFeatureSources:
     def test_every_registry_key_has_a_seam(self) -> None:
         from scripts.build_features import FEATURE_SOURCE_KEYS
 
-        # market's seam joins with its reveal case (see the parameter list above).
-        assert set(_SOURCE_SEAMS) == set(FEATURE_SOURCE_KEYS) - {"elo", "market"}
+        # elo is Plan 33.2-01's supplier and is proven through the tracer instead.
+        assert set(_SOURCE_SEAMS) == set(FEATURE_SOURCE_KEYS) - {"elo"}
 
     @staticmethod
     def _plant(builder, monkeypatch, source: str, raiser) -> None:
