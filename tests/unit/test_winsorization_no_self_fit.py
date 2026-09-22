@@ -149,7 +149,10 @@ class TestALateArrivingColumnIsNotClippedInItsFirstPopulatedSeason:
         first = out.loc[out["season"] == 2004, "late_metric"].to_numpy()
         expected = frame.loc[frame["season"] == 2004, "late_metric"].to_numpy()
         np.testing.assert_array_equal(first, expected)
-        assert builder.unclipped_seasons.get("late_metric") == [2004]
+        # 2002 and 2003 are all-NaN for this column, so they have no prior fit either
+        # and are recorded with 2004. The load-bearing entry is 2004: the column's FIRST
+        # POPULATED season, which used to fit its bound on its own rows.
+        assert builder.unclipped_seasons.get("late_metric") == [2002, 2003, 2004]
 
     def test_the_next_season_still_clips_against_it(self, builder) -> None:
         """2005 has a real strictly-prior slice, so the prior-only rule still bites."""
