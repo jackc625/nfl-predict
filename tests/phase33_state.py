@@ -15701,3 +15701,107 @@ P332_14_RUNG5_MARKET_GOLD_CONSTANT_VALUE: float = 0.0
 P332_14_RUNG5_CHECKED_SOURCES: tuple[str, ...] = (
     "team_form", "elo", "contextual", "weather", "market", "qb_tracking", "snaps", "injury",
 )  # fmt: skip
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-15 Task 4 -- p332_ RUNG 6: THE SNAP AND INJURY FEEDS WIRED AND POPULATED (D33.2-16).
+# APPENDED ONCE on 2026-09-22, in ONE block, by the task that ran the rung. Nothing above this
+# line was edited. (Extra step 6b, the postseason injury reports, appends its own block after
+# this one, as Plan 33.2-14's step 4b and rung 5 each did.)
+#
+# THE CAUSE, declared in commit 5c772b6 before any rebuild result was read: both ingests run for
+# 2025 and 2026, every row validated through a real silver schema (SnapCountSchema /
+# InjurySchema via validate_bronze_to_silver) and stamped with its release asset's publication
+# time as capture provenance (upstream_captured_at), and the median fill for an EMPTY family
+# replaced by NaN. PREDICTED: the 20 snap columns move in 2025 only; injury and QB EMPTY (every
+# 2025 injury row carries the asset's 2026-09-07 stamp, after every 2025 lock); widths unchanged.
+#
+# MEASURED 2026-09-22: a scratch preview (production data/ digest-identical across it, 1111
+# files) and then the production rebuild --through-season 2025, judged against p332_rung5.json
+# -- attribution_ok true, not blocking, zero unattributed; exactly the 20 snap columns moved,
+# every one only in 2025; injury 0, qb 0, unmapped 0; production identical to the preview on
+# every non-clock column. Digest bracket outputs/p332_rung6_before.json -> after: the two silver
+# tables, the three gold matrices, the DuckDB file and two new bronze files per table; mixed
+# empty, nothing removed.
+#
+# THE MEASURED DEFECT, ENDED: over the 2025 regular season, the 8 teams at home in both week 3
+# and week 15 carried IDENTICAL raw snap values in all three probed columns when the builder had
+# no 2025 snaps (the last eight 2024 games stood in for every 2025 window); with 2025 snaps, 0
+# of the 8 do.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_FEED_RUNG_CAUSE (UTF-8), declared in commit 5c772b6.
+P332_15_RUNG6_CAUSE_DIGEST: str = (
+    "fcf36336dbdf4a3e5d932bc1dc93606a819fe84bb305139a54bcc3a71d36f46c"
+)
+
+P332_15_RUNG6_DECLARED_IN_COMMIT: str = "5c772b66278026f8be3fe060a617a28fffa1d838"
+
+P332_15_RUNG6_BASELINE_DOCUMENT: str = "p332_rung5.json"
+
+P332_15_RUNG6_MOVED_COLUMNS: tuple[str, ...] = (
+    "away_rolling_snap_share_db", "away_rolling_snap_share_dl", "away_rolling_snap_share_lb",
+    "away_rolling_snap_share_ol", "away_rolling_snap_share_qb", "away_rolling_snap_share_rb",
+    "away_rolling_snap_share_te", "away_rolling_snap_share_wr", "away_snap_concentration",
+    "away_snap_continuity", "home_rolling_snap_share_db", "home_rolling_snap_share_dl",
+    "home_rolling_snap_share_lb", "home_rolling_snap_share_ol", "home_rolling_snap_share_qb",
+    "home_rolling_snap_share_rb", "home_rolling_snap_share_te", "home_rolling_snap_share_wr",
+    "home_snap_concentration", "home_snap_continuity",
+)  # fmt: skip
+
+P332_15_RUNG6_MOVED_BY_BUILDER_COUNTS: dict[str, int] = {
+    "snaps": 20,
+    "injury": 0,
+    "qb": 0,
+    "unmapped": 0,
+}
+
+P332_15_RUNG6_MOVED_SEASONS: tuple[str, ...] = ("2025",)
+
+P332_15_RUNG6_WIDTHS: tuple[int, int, int] = (193, 194, 193)
+
+P332_15_RUNG6_ROWS: int = 6499
+
+# Silver after the two ingests (2026-09-22). Pre-2025 rows carry no capture stamp (they were
+# captured before the column existed) and were not re-captured.
+P332_15_SILVER_SNAP_ROWS: dict[int, int] = {2025: 25395, 2026: 2901}
+P332_15_SILVER_SNAP_GAMES: dict[int, int] = {2025: 272, 2026: 31}
+P332_15_SILVER_INJURY_ROWS: dict[int, int] = {2025: 5783, 2026: 433}
+P332_15_SILVER_INJURY_GAMES: dict[int, int] = {2025: 272, 2026: 32}
+P332_15_SILVER_SNAP_ROWS_PRE_2025: int = 285080
+P332_15_SILVER_INJURY_ROWS_PRE_2025: int = 81408
+
+# The release assets' updated_at at capture (the stamps written as upstream_captured_at).
+P332_15_UPSTREAM_STAMPS: dict[str, str] = {
+    "snap_counts_2025.parquet": "2026-02-09T13:39:50+00:00",
+    "snap_counts_2026.parquet": "2026-09-21T11:03:43+00:00",
+    "injuries_2025.parquet": "2026-09-07T12:23:41+00:00",
+    "injuries_2026.parquet": "2026-09-21T13:55:51+00:00",
+}
+
+# The measured defect (2025 regular season, raw SnapCountBuilder output, three probed columns).
+P332_15_SNAP_WEEK3_WEEK15_TEAMS: int = 8
+P332_15_SNAP_WEEK3_WEEK15_IDENTICAL_BEFORE: int = 8
+P332_15_SNAP_WEEK3_WEEK15_IDENTICAL_AFTER: int = 0
+
+# The silver-writer defect the first 2025 injury upsert exposed, and its one repair: every
+# stored date_modified was written as TEXT; parsed back and verified row-for-row against the
+# Phase-28 bronze capture (the latest capture per season).
+P332_15_INJURY_DATE_MODIFIED_STRINGIFIED: int = 76767
+P332_15_INJURY_REPAIR_ROWS_VERIFIED_AGAINST_BRONZE: int = 81408
+
+P332_15_RUNG6_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "silver/snap_counts.parquet",
+    "silver/injuries.parquet",
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)
+
+# The bronze snapshots are flat files, not directories (a plan-text correction): the prefixes
+# the rung declares are the names data.storage.save_bronze_snapshot writes.
+P332_15_RUNG6_BRONZE_PREFIXES: tuple[str, ...] = (
+    "bronze/snap_counts_raw_bronze_",
+    "bronze/injuries_raw_bronze_",
+)
+P332_15_RUNG6_BRONZE_FILES_ADDED: dict[str, int] = {"snap_counts": 2, "injuries": 2}
