@@ -11,7 +11,7 @@ day before kickoff, decoded from ``data/bronze/mos/`` (Plan 33.2-11) by the ONE 
 
 THREE KINDS OF ROW, ALL ``weather_source = "historical_forecast"``:
 
-* FORECAST -- a US outdoor or retractable-roof game whose bulletin resolved: the decoded values,
+* FORECAST -- a game at a US outdoor or retractable-roof venue whose bulletin resolved: the decoded values,
   ``weather_coverage`` True, ``forecast_issue_time`` the 12 UTC cycle. ``precip_mm`` stays NULL
   (a bulletin carries no amount); the QPF category is kept as its LEVEL. ``humidity_pct`` comes
   from temperature and dew point by the August-Roche-Magnus identity (the decoder's).
@@ -19,18 +19,25 @@ THREE KINDS OF ROW, ALL ``weather_source = "historical_forecast"``:
   only the US, Puerto Rico and the US Virgin Islands; no stand-in station is ever used) or a US
   game whose bulletin did not resolve (a run confirmed absent from the archive, or one that does
   not reach the kickoff). ``weather_coverage`` False, every measurement NULL, NO issue time.
-* DOME -- an indoor venue, or a retractable roof that was CLOSED for this game:
-  ``is_outdoor`` False, ``weather_coverage`` True (a dome is not missing weather, it has none),
-  every measurement NULL, NO issue time.
+* DOME -- a FIXED-roof (indoor) venue: ``is_outdoor`` False, ``weather_coverage`` True (a dome
+  is not missing weather, it has none), every measurement NULL, NO issue time.
 
-WHETHER WEATHER APPLIES is Phase 33.1's per-game rule (SPEC R4,
-``scripts.backfill_historical_weather.WeatherBackfiller._per_game_roof_is_outdoor``), read at
-the venue in force at the lock: an indoor venue never, an outdoor venue always, and a
-retractable venue by the game's OWN roof in the sealed pinned feed ("closed" means no weather).
-Where the feed's row describes a different stadium than the lock venue (the corrected 2025
-games abroad), its roof says nothing about this venue, so a retractable lock venue counts as
-weather-applies. Plan 33.2-11's bronze corpus fetched bulletins for every retractable-venue
-game; a closed-roof game's bulletin is simply not used.
+WHETHER WEATHER APPLIES is read from the venue's FIXED roof type at the venue in force at the
+lock (``data/venues.json``, through ``scripts.backfill_mos_forecasts.load_corpus``): an indoor
+venue never; an outdoor venue always; and a RETRACTABLE venue ALWAYS, exactly as an outdoor one.
+
+A RETRACTABLE ROOF'S OPEN/CLOSED STATE IS NOT KNOWN AT THE LOCK (owner ruling 2026-09-21, p332_
+extra step 4b, Plan 33.2-14). The decision to close it is made close to kickoff, often BECAUSE
+of the weather, so the realized state is post-lock information: "closed" encodes "the weather
+turned bad". Rung 4 read each game's realized roof from the pinned feed and turned 620 closed-
+roof games at retractable venues into domes with no weather -- a leak. D33.2-04's "roof known at
+the lock" covers the FIXED roof type (dome / open-air / retractable) only. So every game at a
+retractable venue carries the day-before forecast, as an outdoor game does, and the model sees
+the venue's retractability through the fixed-type flag ``venue_retractable``
+(``features.contextual``, read from ``data/venues.json`` at the lock venue, never from the
+game). The realized open/closed state is read by NOTHING in this module. A retractable-venue
+game whose bulletin is absent is an honest ABSENCE (``2019_W18_BUF@HOU``: its KHOU 12 UTC run
+is a confirmed archive gap, Plan 33.2-11), never a stand-in run and never a dome.
 
 An issue time on an absence or a dome would be provenance for a forecast that does not exist.
 
@@ -53,7 +60,6 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import contextlib
-import json
 import re
 import socket
 from collections.abc import Iterator
@@ -70,7 +76,6 @@ from data.schemas import WeatherSchema
 from data.storage import upsert_silver
 from features.schedule_moves import facts_at_lock
 from features.weather import OBSERVATION_WEATHER_SOURCES, WeatherFeaturesCalculator
-from scripts.backfill_historical_weather import load_pinned_game_facts
 from scripts.backfill_mos_forecasts import (
     CORPUS_FIRST_SEASON,
     CORPUS_LAST_SEASON,
@@ -80,7 +85,6 @@ from scripts.backfill_mos_forecasts import (
     load_bronze_run_records,
     load_corpus,
 )
-from scripts.ingest_weather import NFLVERSE_ROOF_MAP
 from scripts.mos_decode import WEATHER_SOURCE_MOS, build_weather_record, run_instant
 
 __all__ = [
@@ -219,43 +223,13 @@ def _derived_flags(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _venue_roof_types() -> dict[str, str]:
-    path = Path(__file__).resolve().parent.parent / "data" / "venues.json"
-    records = json.loads(path.read_text(encoding="utf-8"))["venues"]
-    return {str(r["stadium_id"]): str(r["roof_type"]) for r in records}
-
-
-def closed_roof_game_ids(
-    games: pd.DataFrame, lock_venues: dict[str, str]
-) -> frozenset[str]:
-    """Games at a retractable lock venue whose OWN roof in the pinned feed was closed.
-
-    Args:
-        games: The games (``game_id``, ``season``).
-        lock_venues: ``game_id -> stadium_id`` of the venue in force at the lock.
-
-    Raises:
-        KeyError: a pinned roof value outside ``NFLVERSE_ROOF_MAP`` (never defaulted).
-    """
-    roof_types = _venue_roof_types()
-    pinned = load_pinned_game_facts(sorted({int(s) for s in games["season"]}))
-    pinned = pinned.set_index("game_id")
-    closed: set[str] = set()
-    for game_id, stadium_id in lock_venues.items():
-        if roof_types[stadium_id] != "retractable" or game_id not in pinned.index:
-            continue
-        feed = pinned.loc[game_id]
-        if str(feed["stadium_id"]) != stadium_id:
-            continue  # the feed's roof describes another stadium
-        if NFLVERSE_ROOF_MAP[str(feed["roof"]).lower().strip()] == "indoor":
-            closed.add(game_id)
-    return frozenset(closed)
-
-
 def regenerated_weather_rows(
     games: pd.DataFrame, data_root: Path
 ) -> tuple[pd.DataFrame, RegenerationReport]:
     """One silver weather row per 2002-2025 game in *games*, from bronze. Pure: writes nothing.
+
+    Whether weather applies is the lock venue's FIXED roof type (``load_corpus`` splits covered
+    and uncoverable games by it); a game's realized open/closed roof is never read (step 4b).
 
     Raises:
         scripts.backfill_mos_forecasts.MosBackfillError: a game's venue has no record.
@@ -264,11 +238,6 @@ def regenerated_weather_rows(
     covered, uncoverable = load_corpus(games)
     covered_by_id = {game.game_id: game for game in covered}
     uncoverable_ids = {game.game_id for game in uncoverable}
-    closed_roof = closed_roof_game_ids(
-        games,
-        {g.game_id: g.stadium_id for g in covered}
-        | {g.game_id: g.stadium_id for g in uncoverable},
-    )
     runs = load_bronze_run_records(data_root)
     created_at = bronze_capture_instant(data_root)
 
@@ -277,7 +246,7 @@ def regenerated_weather_rows(
     for game in games.to_dict("records"):
         game_id = str(game["game_id"])
         covered_game = covered_by_id.get(game_id)
-        if covered_game is not None and game_id not in closed_roof:
+        if covered_game is not None:
             records = runs.get(
                 (covered_game.station, run_instant(covered_game.lock_date))
             )
@@ -307,7 +276,7 @@ def regenerated_weather_rows(
         facts = facts_at_lock(game_id, game)
         kickoff_utc = pd.Timestamp(facts.kickoff_et).tz_convert(UTC).to_pydatetime()
         lock_date = lock_rule.game_lock(game["kickoff_et"], game_id=game_id).date()
-        abroad = game_id in uncoverable_ids and game_id not in closed_roof
+        abroad = game_id in uncoverable_ids
         if abroad:
             report.absence_reasons[game_id] = REASON_NON_US_VENUE
             report.absence_rows += 1

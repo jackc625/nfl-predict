@@ -141,12 +141,19 @@ class TestProductionSilverCarriesHonestIssueTimes:
     def test_the_post_lock_game_uses_san_diegos_station(self, silver_weather):
         assert silver_weather.loc["2003_W08_MIA@LAC", "mos_station"] == "KSAN"
 
-    def test_the_game_with_no_archived_bulletin_was_played_under_a_closed_roof(
+    def test_the_game_with_no_archived_bulletin_is_an_honest_absence(
         self, silver_weather
     ):
-        """Its absent 12 UTC run is moot: the roof was closed, so no weather applies."""
+        """NULL plus the coverage flag, never a dome and never a stand-in run (step 4b).
+
+        Rung 4 recorded it as a dome because the feed says NRG Stadium's roof was CLOSED.
+        That state was decided near kickoff, so it is not known at the lock (owner ruling
+        2026-09-21, p332_ extra step 4b): weather applies to a retractable stadium, and its
+        KHOU 12 UTC run is a confirmed archive gap (Plan 33.2-11).
+        """
         row = silver_weather.loc["2019_W18_BUF@HOU"]
-        assert not row["is_outdoor"] and row["weather_coverage"]
+        assert bool(row["is_outdoor"]) and not bool(row["weather_coverage"])
+        assert pd.isna(row["temp_f"]) and pd.isna(row["forecast_issue_time"])
 
 
 # ---------------------------------------------------------------------------

@@ -51,6 +51,16 @@ population are unchanged, with two refinements recorded where they bite:
   and Berlin under Lucas Oil's closed roof. A game whose feed stadium differs from its silver
   venue takes that venue's own roof type instead.
 
+THE ROOF IS THE VENUE'S FIXED TYPE (p332_ extra step 4b, Plan 33.2-14; owner ruling
+2026-09-21). A retractable roof's open/closed state is decided close to kickoff, often BECAUSE
+of the weather, so it is not known at the lock and must not decide whether weather applies:
+"closed" encodes "the weather turned bad". The indoor population is therefore the games at a
+FIXED-roof (indoor) venue, read from ``data/venues.json`` at the game's silver venue, and every
+game at a retractable stadium is weather-applies whatever the feed's ``roof`` says. The feed
+stays the independent instrument for WHICH games the corpus must hold. The paragraph above
+about five stadiums recording ``closed`` on some games and ``open`` on others describes the
+retired per-game rule; that split is exactly the post-lock fact step 4b removes.
+
 READ ONLY. Nothing here writes anything. The module requests
 ``data_boundary_guard`` so that is a proven property rather than an intention.
 
@@ -81,9 +91,10 @@ VENUES_JSON = REPO_ROOT / "data" / "venues.json"
 EXPECTED_CORPUS_ROWS = 6499
 EXPECTED_2025_ROWS = 285
 
-# The roof values that mean weather DOES NOT APPLY, spelled as the nflverse feed
-# spells them. `outdoors` and `open` are the complement; there is no fifth value.
-INDOOR_ROOFS = frozenset({"dome", "closed"})
+# The FIXED roof type that means weather DOES NOT APPLY, spelled as data/venues.json spells
+# it. `outdoor` and `retractable` are the complement (step 4b: a retractable roof MAY close,
+# but whether it did is post-lock information).
+INDOOR_ROOF_TYPE = "indoor"
 
 # The skip says WHICH COMMAND produces the file, so a skipped run is actionable
 # rather than silent -- and it carries the word "absent", which
@@ -122,24 +133,20 @@ def feed() -> pd.DataFrame:
 
 @pytest.fixture(scope="module")
 def indoor_ids(feed) -> set[str]:
-    """Games weather does not apply to: a dome or closed roof, read at the game's venue.
+    """Games weather does not apply to: a FIXED-roof dome, read at the game's silver venue.
 
-    The feed's own ``roof`` decides, except where the feed's row names a different stadium
-    from the game's silver venue (the corrected 2025 games abroad): there the venue's own
-    ``roof_type`` in ``data/venues.json`` decides.
+    The venue's ``roof_type`` in ``data/venues.json`` decides. The feed's per-game ``roof``
+    is deliberately NOT read: for a retractable stadium it records whether the roof was
+    closed on the day, which is not known at the lock (step 4b).
     """
     games = pd.read_parquet(SILVER_GAMES, engine="pyarrow").set_index("game_id")
     venues = json.loads(VENUES_JSON.read_text(encoding="utf-8"))["venues"]
     roof_type = {str(v["stadium_id"]): str(v["roof_type"]) for v in venues}
-    indoor: set[str] = set()
-    for game_id, fact in feed.iterrows():
-        venue = str(games.loc[game_id, "stadium_id"])
-        if str(fact["stadium_id"]) == venue:
-            if str(fact["roof"]).lower().strip() in INDOOR_ROOFS:
-                indoor.add(str(game_id))
-        elif roof_type[venue] == "indoor":
-            indoor.add(str(game_id))
-    return indoor
+    return {
+        str(game_id)
+        for game_id in feed.index
+        if roof_type[str(games.loc[game_id, "stadium_id"])] == INDOOR_ROOF_TYPE
+    }
 
 
 class TestTheCorpusCoversThePinnedFeedExactly:
@@ -244,7 +251,7 @@ class TestTheThreeCoverageStatesStayApart:
 
         indoor = corpus[corpus["game_id"].isin(indoor_ids)]
         assert len(indoor) == len(indoor_ids), (
-            f"{len(indoor_ids)} games read dome/closed in the feed but only "
+            f"{len(indoor_ids)} games are at a fixed-roof venue but only "
             f"{len(indoor)} of them have a weather row."
         )
 

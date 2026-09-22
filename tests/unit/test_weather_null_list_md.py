@@ -14,6 +14,13 @@ is flagged by the group predicate and dropped by the one drop mechanism.
 ``test_forecastless_columns_absent_from_gold`` is AUTHORED at Task 2 and EVALUATED at Task 3:
 see its own docstring.
 
+SINCE p332_ EXTRA STEP 4b (Plan 33.2-14, owner ruling 2026-09-21) a retractable roof's
+open/closed state is not known at the lock, so every game at a retractable stadium carries the
+day-before forecast and only a FIXED-roof dome is indoor. ``2019_W18_BUF@HOU``, whose 12 UTC
+run is a confirmed archive gap, is therefore a LISTED absence under "US venue, no resolved
+bulletin" rather than a closed-roof game named in the prose, and the US list is tied to the
+live table exactly as the list abroad is.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -85,6 +92,12 @@ class TestTheDocument:
         assert "United States, Puerto Rico and the US Virgin Islands" in text
         assert "No stand-in station is ever used" in text
 
+    def test_it_states_the_retractable_roof_ruling(self):
+        """Step 4b: the open/closed state is post-lock information, never an input."""
+        text = _doc()
+        assert "retractable roof" in text
+        assert "not known at the lock" in text
+
     def test_the_over_claim_word_never_appears(self):
         assert "proven" not in _doc().lower()
 
@@ -113,12 +126,23 @@ class TestTheDocumentMatchesTheLiveTable:
         assert listed == set(live.loc[live["abroad"], "game_id"])
         assert len(listed) > 0, "non-vacuity: the games abroad are listed"
 
-    def test_no_indoor_or_closed_roof_game_is_listed(self):
+    def test_the_listed_us_games_are_exactly_the_live_ones(self):
+        """The US absences are tied to the table exactly as the games abroad are."""
+        live = _live_null_plus_flag()
+        section = (
+            _doc()
+            .split("## US games with no resolved bulletin", 1)[1]
+            .split("## ", 1)[0]
+        )
+        listed = set(re.findall(r"^\| (\d{4}_W\d{2}_\w+@\w+) \|", section, flags=re.M))
+        assert listed == set(live.loc[~live["abroad"], "game_id"])
+
+    def test_no_fixed_roof_dome_is_listed(self):
+        """Only a FIXED-roof dome is indoor since step 4b, and none is on the list."""
         weather = pd.read_parquet(SILVER / "weather.parquet").set_index("game_id")
         listed = set(re.findall(r"(\d{4}_W\d{2}_\w+@\w+)", _doc()))
         indoor = set(weather.index[~weather["is_outdoor"].astype(bool)])
-        # 2019_W18_BUF@HOU is NAMED in the prose as the closed-roof game, not listed.
-        assert (listed & indoor) <= {"2019_W18_BUF@HOU"}
+        assert not listed & indoor, sorted(listed & indoor)
 
 
 class TestTheForecastlessInputsLeaveThroughTheRegistry:

@@ -1700,11 +1700,11 @@ PHASE332_RUNG_SIGNATURES: dict[int, dict[str, object]] = {
 # A rung absent from this table is judged against its ladder predecessor as before.
 # ---------------------------------------------------------------------------
 
-PHASE332_RETAKEN_BASELINES: dict[int, str] = {
+PHASE332_RETAKEN_BASELINES: dict[int | str, str] = {
     PHASE332_ODDS_RUNG: f"{PHASE332_RUNG_PREFIX}rung0_retaken.json",
 }
 
-PHASE332_RETAKEN_BASELINE_REASONS: dict[int, str] = {
+PHASE332_RETAKEN_BASELINE_REASONS: dict[int | str, str] = {
     PHASE332_ODDS_RUNG: (
         "RETAKEN 2026-09-21 by owner ruling. Gold rebuilt with `scripts/build_features.py "
         "--through-season 2025` (the rung's own build path and gates) in a SCRATCH data "
@@ -4860,6 +4860,254 @@ PHASE332_RUNG_SIGNATURES[PHASE332_WEATHER_RUNG] = (
     PHASE332_WEATHER_RUNG_EXPECTED_SIGNATURE
 )
 PHASE332_RUNG_ATTRIBUTORS[PHASE332_WEATHER_RUNG] = _attribute_p332_weather
+
+
+# ---------------------------------------------------------------------------
+# p332_ EXTRA STEP 4b -- A RETRACTABLE ROOF IS UNKNOWN AT THE LOCK (Plan 33.2-14,
+# orchestrator-assigned; owner ruling 2026-09-21, "Treat as unknown at lock", recorded in the
+# phase's deferred-items.md).
+#
+# NOT A NUMBERED RUNG. Rungs 5-9 are allocated to later plans, so this fix -- one cause, its
+# own rebuild, its own attribution (D33.2-20) -- is the EXTRA STEP "4b": a string id that
+# follows rung 4 and cannot collide with any numbered rung. It is judged against its RETAKEN
+# baseline (below), and rung 5 is judged against p332_rung4b.json.
+#
+# THE LEAK. Rung 4 applied Phase 33.1's per-game roof rule, so 620 games played with a
+# retractable roof CLOSED became domes with no weather (2019_W18_BUF@HOU among them). Whether a
+# retractable roof closes is decided close to kickoff, often BECAUSE of the weather, so the
+# realized state is post-lock information. D33.2-04's "roof known at the lock" covers the FIXED
+# roof type only.
+#
+# DECLARED BEFORE THE REBUILD. The fix is in the silver regeneration alone
+# (scripts.weather_from_mos no longer reads a game's realized roof), and gold weather is read
+# from silver weather_features by game id, so only the weather family can move: the 620 games'
+# values (619 gain their forecast; 2019_W18_BUF@HOU becomes an honest absence) plus the
+# rescaled same-season neighbours of every season that holds one (every season 2002-2025
+# does) and, through the strictly-prior fits, later seasons. The model-visible "this roof may
+# close" flag is venue_retractable (features.contextual, the venue's FIXED type at the lock
+# venue), which this step does not move. No column is added, none removed, no row moves.
+# ---------------------------------------------------------------------------
+
+PHASE332_RETRACTABLE_ROOF_STEP: str = "4b"
+
+PHASE332_RETRACTABLE_ROOF_STEP_FOLLOWS: int = PHASE332_WEATHER_RUNG
+
+#: Games whose rung-4 silver row the realized roof decided, measured read-only 2026-09-21
+#: (scripts.weather_from_mos at commit fda8727: closed_roof_game_ids over 2002-2025).
+PHASE332_RETRACTABLE_ROOF_STEP_REDECIDED_GAMES: int = 620
+
+#: The one redecided game whose bulletin is absent from the archive (Plan 33.2-11): it becomes
+#: an absence (NULL plus the coverage flag), never a stand-in run.
+PHASE332_RETRACTABLE_ROOF_STEP_ARCHIVE_GAP: str = "2019_W18_BUF@HOU"
+
+PHASE332_RETRACTABLE_ROOF_STEP_CAUSE: str = (
+    "A RETRACTABLE ROOF IS UNKNOWN AT THE LOCK, p332_ extra step 4b of Plan 33.2-14 "
+    "(orchestrator-assigned; owner ruling 2026-09-21), and NOTHING else: the 2002-2025 silver "
+    "weather regeneration (scripts.weather_from_mos) no longer reads any game's realized "
+    "open/closed roof, so every game at a retractable-roof stadium carries the day-before "
+    "forecast exactly as an outdoor game does -- 620 games rung 4 had turned into domes, 619 "
+    "gaining their bulletin and 2019_W18_BUF@HOU (a confirmed archive gap) becoming an honest "
+    "absence -- while fixed-roof domes stay domes and the venue's retractability stays "
+    "model-visible through venue_retractable. Only the weather-builder columns and "
+    "raw_weather_severity can move, in any season 2002-2025. No column is added, none removed, "
+    "no row moves"
+)
+
+PHASE332_RETRACTABLE_ROOF_STEP_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_RETRACTABLE_ROOF_STEP,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_RETRACTABLE_ROOF_STEP_CAUSE,
+    "follows_rung": PHASE332_RETRACTABLE_ROOF_STEP_FOLLOWS,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to the weather family (phase332_weather_columns: the full weather "
+        "builder's declared columns and raw_weather_severity), in any season 2002-2025: every "
+        "season holds at least one redecided game"
+    ),
+    "rows_changed": (
+        "before normalization only the 620 redecided games can differ. The rescaled weather "
+        "columns are z-scored within each season from that season's earlier rows and fitted "
+        "on prior seasons, so after normalization they also move on the rows of a redecided "
+        "game's season sorted after it (the rescaled same-season neighbours) and on later "
+        "seasons. Measured row by row at run time against a copy of the before-gold"
+    ),
+    "weather": "EXPECTED to move: this step re-decides which games weather applies to",
+    "declared_families": ("weather",),
+    "family_mechanisms": {
+        "weather": (
+            "source-derived: features.weather.WEATHER_FEATURE_COLUMNS_BY_BUILDER['full'] plus "
+            "the build's raw_weather_severity copy"
+        ),
+    },
+    "model_visible_roof_flag": (
+        "venue_retractable (features.contextual.encode_venue_features, the lock venue's FIXED "
+        "roof type in data/venues.json); NOT expected to move"
+    ),
+    "declared_before_the_rebuild": True,
+}
+
+EXTRA_STEPS_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_RETRACTABLE_ROOF_STEP
+] = PHASE332_RETRACTABLE_ROOF_STEP_FOLLOWS
+EXTRA_STEP_CAUSES_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_RETRACTABLE_ROOF_STEP
+] = PHASE332_RETRACTABLE_ROOF_STEP_CAUSE
+
+# THE BASELINE IS RETAKEN, NOT ASSUMED (owner ruling 2026-09-21: "retake a stale baseline,
+# never widen a rung's cause"). Plan 33.2-13 changed the injury and QB builders (code only,
+# no gold rebuild) after rung 4 was built, so gold rebuilt from TODAY's inputs differs from
+# p332_rung4.json by that plan's effect whatever step 4b does. Step 4b is therefore judged
+# against gold rebuilt in a SCRATCH data root from today's inputs minus only its own cause,
+# and the difference between p332_rung4.json and that baseline is recorded as Plan 33.2-13's
+# measured effect -- never inside step 4b.
+PHASE332_RETRACTABLE_ROOF_STEP_BASELINE_DOCUMENT: str = (
+    f"{PHASE332_RUNG_PREFIX}rung4_retaken.json"
+)
+
+PHASE332_RETAKEN_BASELINES[PHASE332_RETRACTABLE_ROOF_STEP] = (
+    PHASE332_RETRACTABLE_ROOF_STEP_BASELINE_DOCUMENT
+)
+PHASE332_RETAKEN_BASELINE_REASONS[PHASE332_RETRACTABLE_ROOF_STEP] = (
+    "RETAKEN 2026-09-21 by the standing ruling. Gold rebuilt with `scripts/build_features.py "
+    "--through-season 2025` in a SCRATCH data root (DATA_ROOT_PATH and DUCKDB_PATH pointed at "
+    "a copy of today's production data/, the code exported from commit fda8727 -- Plan "
+    "33.2-13's last commit, before step 4b existed), i.e. today's inputs minus exactly step "
+    "4b's cause. The production data/ tree was digest-identical (1107 files) before and after "
+    "that build. p332_rung4.json is kept unchanged"
+)
+
+#: THE CARRY-IN'S CAUSE: Plan 33.2-13's builder changes, measured between p332_rung4.json and
+#: the retaken baseline. Recorded here, NOT inside step 4b (and not inside rung 5, whose
+#: baseline is step 4b's gold): it is the injury and QB half of the builder-cutoff move, and
+#: it lands in production gold at step 4b's rebuild.
+PHASE332_STEP4B_CARRY_IN_CAUSE: str = (
+    "PRE-STEP-4b CARRY-IN: Plan 33.2-13's injury and QB builders moved onto each game's own "
+    "lock (commits dfe241e, 2c36173, 501e47c -- code only, no gold rebuild, made after rung 4 "
+    "was built): injury reports admitted only when timed at or before the lock, 2025+ injury "
+    "rows the honest unknown (upstream dropped date_modified), the latest admitted report per "
+    "player, exact neutral availability for a team that admitted nothing; 2025 starting QBs "
+    "from the depth chart published at or before the lock; play-by-play admitted per game "
+    "when that game ended by the lock; the per-(season, week, lock) rolling cache. It is the "
+    "injury and starting-QB / QB-play-by-play half of rung 5's declared builder-cutoff cause, "
+    "measured before step 4b rather than folded into it"
+)
+
+#: DECLARED BEFORE THE CARRY-IN WAS MEASURED (2026-09-21; this commit precedes the first read
+#: of the scratch fingerprint): the columns the injury and QB builders emit into gold.
+#: Canonical names. A carry-in column outside this set halts the ladder for investigation.
+PHASE332_STEP4B_CARRY_IN_PREDICTED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "injury": (
+        "away_availability_coverage",
+        "away_availability_fraction",
+        "away_backup_quality_delta",
+        "away_date_modified_coverage",
+        "away_injury_coverage",
+        "away_qb_out_flag",
+        "home_availability_coverage",
+        "home_availability_fraction",
+        "home_backup_quality_delta",
+        "home_date_modified_coverage",
+        "home_injury_coverage",
+        "home_qb_out_flag",
+    ),
+    "qb": ("away_qb_adjustment", "home_qb_adjustment"),
+}
+
+
+def phase332_step4b_carry_in(
+    fingerprint_dir: Path | str = FINGERPRINT_DIR,
+) -> dict[str, object]:
+    """The measured pre-step-4b carry-in: p332_rung4.json against the retaken baseline.
+
+    Returns the non-clock columns that moved (unioned over the three matrices, with their
+    seasons), the per-builder split against ``PHASE332_STEP4B_CARRY_IN_PREDICTED_COLUMNS``,
+    every moved column OUTSIDE the prediction (which must be empty) and the per-matrix
+    structure (added / removed columns and rows before and after).
+    """
+    directory = Path(fingerprint_dir)
+    original = json.loads(
+        rung_document_path(
+            directory, PHASE332_WEATHER_RUNG, PHASE332_RUNG_PREFIX
+        ).read_text(encoding="utf-8")
+    )
+    retaken = json.loads(
+        (directory / PHASE332_RETRACTABLE_ROOF_STEP_BASELINE_DOCUMENT).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(original, retaken)
+    moved = _phase332_moved_seasons(report)
+    predicted = {
+        builder: {_canonical(c) for c in columns}
+        for builder, columns in PHASE332_STEP4B_CARRY_IN_PREDICTED_COLUMNS.items()
+    }
+    union: set[str] = set().union(*predicted.values())
+    structure = {
+        matrix: {
+            "added": list(report[matrix]["columns_added"]),
+            "removed": list(report[matrix]["columns_removed"]),
+            "rows": [report[matrix]["rows_before"], report[matrix]["rows_after"]],
+        }
+        for matrix in GOLD_MATRICES
+    }
+    return {
+        "moved_seasons": moved,
+        "by_builder": {
+            builder: sorted(c for c in moved if c in columns)
+            for builder, columns in predicted.items()
+        },
+        "outside_prediction": sorted(c for c in moved if c not in union),
+        "structure": structure,
+    }
+
+
+def _attribute_p332_retractable_roof(
+    detail: dict, diff: dict, verdict: dict, fail
+) -> bool:
+    """Extra step 4b of the `p332_` ladder: the retractable-roof fix's OWN judge.
+
+    STRUCTURE: nothing added, nothing removed, width and rows unchanged (a surprise BLOCKS).
+    VALUES: a changed column is attributed only when it is in the derived weather family.
+    Anything else is UNATTRIBUTED and fails; the cause is never widened to fit it.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    verdict["changed_by_family"] = {"weather": []}
+    label = "p332_ step 4b (a retractable roof is unknown at the lock)"
+    blocking = _phase33_structure(
+        detail,
+        diff,
+        fail,
+        label,
+        "Giving the retractable-roof games their day-before forecast",
+    )
+    explainable = phase332_weather_columns()
+    for column in sorted(diff["changed"]):
+        if column in explainable:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["weather"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(sorted(diff['changed'][column])) or '(none)'}, but it is not a "
+            "weather-family column. The step's ONE cause is the retractable-roof rule; do "
+            "NOT widen it to fit this diff"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_EXTRA_STEP_SIGNATURES[PHASE332_RETRACTABLE_ROOF_STEP] = (
+    PHASE332_RETRACTABLE_ROOF_STEP_EXPECTED_SIGNATURE
+)
+PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_RETRACTABLE_ROOF_STEP] = (
+    _attribute_p332_retractable_roof
+)
 
 
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:

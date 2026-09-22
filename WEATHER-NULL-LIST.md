@@ -1,24 +1,26 @@
 # Games With No Day-Before Forecast (2002-2025)
 
-Since Plan 33.2-12 (the p332_ gold ladder's rung 4), the weather every past game is trained on is the forecast as it stood at the game's lock: the 12 UTC National Weather Service MOS bulletin of the day before kickoff. Where weather applies to a game but no such forecast exists, the game carries NULL weather and a coverage flag (`weather_coverage` false) -- nothing observed afterwards is put in its place. This document lists those games and why each has no forecast. Games played indoors or under a closed roof are not on it: weather does not apply to them, so nothing is missing.
+Since Plan 33.2-12 (the p332_ gold ladder's rung 4), the weather every past game is trained on is the forecast as it stood at the game's lock: the 12 UTC National Weather Service MOS bulletin of the day before kickoff. Where weather applies to a game but no such forecast exists, the game carries NULL weather and a coverage flag (`weather_coverage` false) -- nothing observed afterwards is put in its place. This document lists those games and why each has no forecast. Games played in a fixed-roof dome are not on it: weather does not apply to them, so nothing is missing.
+
+A retractable roof is treated as unknown at the lock (owner ruling 2026-09-21, the gold ladder's extra step 4b, Plan 33.2-14). Whether a retractable roof is open or closed is decided close to kickoff, often because of the weather, so the state it ended up in is not known at the lock -- a "closed" roof partly records that the weather turned bad. Every game at a retractable-roof stadium therefore carries the day-before forecast exactly as an outdoor game does, and the model is told only that the stadium's roof may close (the `venue_retractable` flag, read from the stadium, never from the game). Before step 4b, 620 games played with a retractable roof closed were treated as domes with no weather; they now carry their forecast, or NULL plus the flag where the forecast is missing.
 
 ## Current count
 
-NULL-plus-flag games, 2002-2025: 56
+NULL-plus-flag games, 2002-2025: 57
 
-For scale: 4793 games carry a forecast and 1650 were played indoors or under a closed roof.
+For scale: 5412 games carry a forecast and 1030 were played in a fixed-roof dome.
 
 ## By reason
 
 | Reason | Games |
 |---|---|
 | Venue outside the United States | 56 |
-| US venue, no resolved bulletin | 0 |
+| US venue, no resolved bulletin | 1 |
 | Any other reason | 0 |
 
 **Venue outside the United States.** The MOS bulletins are issued only for stations in the United States, Puerto Rico and the US Virgin Islands, so a game played abroad has no bulletin at all. No stand-in station is ever used. The venue is the one in force at the lock, so the seven 2025 games abroad are here at their real venues (Plan 33.2-09).
 
-**US venue, no resolved bulletin.** None. The one 12 UTC run confirmed absent from the archive, KHOU on 2020-01-03, served `2019_W18_BUF@HOU`, which was played with NRG Stadium's roof closed: weather does not apply to it, so it is recorded as a closed-roof game rather than as a missing forecast.
+**US venue, no resolved bulletin.** One game. The one 12 UTC run confirmed absent from the archive, KHOU on 2020-01-03 (checked twice by Plan 33.2-11: the date-range endpoint omits it and the single-run endpoint answers "no results"), served `2019_W18_BUF@HOU` at NRG Stadium, a retractable-roof stadium. Until step 4b it was recorded as a closed-roof game because its roof was closed on the day; that state was not known at the lock, so weather applies to it and its forecast is honestly missing. No other model run is substituted.
 
 ## By season
 
@@ -37,7 +39,7 @@ For scale: 4793 games carry a forecast and 1650 were played indoors or under a c
 | 2016 | 4 |
 | 2017 | 5 |
 | 2018 | 3 |
-| 2019 | 5 |
+| 2019 | 6 |
 | 2021 | 2 |
 | 2022 | 5 |
 | 2023 | 5 |
@@ -107,7 +109,9 @@ For scale: 4793 games carry a forecast and 1650 were played indoors or under a c
 
 ## US games with no resolved bulletin
 
-None.
+| Game | Venue | Why |
+|---|---|---|
+| 2019_W18_BUF@HOU | NRG Stadium | The KHOU 12 UTC run of 2020-01-03 is absent from the archive |
 
 ## How this list is kept honest
 

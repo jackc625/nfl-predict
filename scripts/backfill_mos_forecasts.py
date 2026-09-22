@@ -318,7 +318,9 @@ def load_corpus(
     The venue is the one in force AT THE LOCK (``features.schedule_moves.facts_at_lock``), so a
     game moved by an emergency announced after its lock uses its PRE-MOVE venue's station. The
     lock is the one rule (``utils.game_lock.game_lock``) applied to the recorded kickoff. Indoor
-    games are neither: weather does not apply under a closed roof and nothing is fetched.
+    games (a FIXED roof) are neither: weather does not apply under a dome and nothing is fetched.
+    A RETRACTABLE venue is always covered: its open/closed state is decided near kickoff, so it
+    is not known at the lock and never decides coverage (p332_ extra step 4b).
 
     Raises:
         MosBackfillError: a game's venue has no record in ``data/venues.json``.
