@@ -570,8 +570,10 @@ class FeatureMatrixBuilder:
         Args:
             target_season: Specific season to load
             target_week: Specific week to load
-            as_of_datetime: Time-fence cutoff for builders that need it
-                (QBTracker, OpponentAdjuster). Defaults to ``datetime.now(ET)``.
+            as_of_datetime: The cutoff argument the FeatureBuilder Protocol still carries.
+                It is NOT a fence for QBTracker or InjuryBuilder, which select at each
+                game's own lock (Plan 33.2-13); builders not yet moved onto the lock
+                (OpponentAdjuster, ...) still read it. Defaults to ``datetime.now(ET)``.
             through_season: Last season a FULL rebuild carries (the ladder-rung
                 bound, see ``scope_games_through_season``). ``None`` = every season.
 
@@ -626,6 +628,15 @@ class FeatureMatrixBuilder:
             )
             feature_sources["games"] = games_df
             logger.info("Loaded games data", records=len(games_df))
+
+            # ONE lock per game for the builders that select at their game's own lock
+            # (Plan 33.2-13: QBTracker, InjuryBuilder), built ONCE here and handed in,
+            # never derived per row. A game with no kickoff has no lock: that refusal
+            # (MissingKickoffError) is re-raised by the outer handler below rather than
+            # turning any source into an empty frame. generate_feature_matrices builds
+            # the gate's own lock frame again AFTER a live run's exclusions, from the
+            # same rule, so the two cannot disagree for any game both contain.
+            source_locks = build_lock_frame(games_df)
 
             # Team form features
             try:
@@ -745,6 +756,7 @@ class FeatureMatrixBuilder:
                     as_of_datetime,
                     target_season=target_season,
                     target_week=target_week,
+                    lock_frame=source_locks,
                 )
                 feature_sources["qb_tracking"] = qb_features_df
                 logger.info("Loaded QB tracking features", records=len(qb_features_df))
@@ -777,6 +789,7 @@ class FeatureMatrixBuilder:
                     as_of_datetime,
                     target_season=target_season,
                     target_week=target_week,
+                    lock_frame=source_locks,
                 )
                 feature_sources["injury"] = injury_features_df
                 logger.info("Built injury features", records=len(injury_features_df))
@@ -1025,17 +1038,25 @@ class FeatureMatrixBuilder:
     ) -> CoverageReport:
         """Stage 1: every registered source's per-game information time vs its lock.
 
-        A STAGED ROLLOUT, NEVER AN EXEMPTION. At Plan 33.2-01 only ``elo`` satisfies
-        ``InformationTimeProvider``. ``weather`` is registered HERE by Plan 33.2-12 (at
-        Plan 33.2-14's ledger line for it): ``WeatherFeaturesCalculator`` supplies both
-        provenance members because rung 4 owns the weather fence and only the selector
-        knows which bulletin a game used. The remaining keys gain suppliers in the plans
-        that make them lock-honest (33.2-13 .. 33.2-17); Plan 33.2-16 brings the
-        opponent-adjusted family into the loop; and Plan 33.2-20 arms the refusal of any
-        key with no provenance once every source has one. Until then the unchecked keys
-        are NAMED in the CoverageReport, which is logged at every build -- no source is
-        allow-listed, excepted or run in a report-only mode, and nothing here downgrades
-        a refusal to a warning.
+        A STAGED ROLLOUT, NEVER AN EXEMPTION. Admission is structural
+        (``isinstance(builder, InformationTimeProvider)``), so this docstring is the
+        RECORD of which keys have a supplier, not a switch:
+
+        * REGISTERED: ``elo`` (Plan 33.2-01); ``weather`` (Plan 33.2-12 -- the selector
+          owns the weather fence and is the only thing that knows which bulletin a game
+          used); ``qb_tracking`` and ``injury`` (Plan 33.2-13 -- both select at each
+          game's own lock and report per-row provenance: the depth-chart ``dt`` and the
+          latest admitted game end for QB, the latest admitted report time for injury,
+          and ``no_information`` wherever nothing was admitted).
+        * NOT YET REACHED: ``team_form``, ``contextual``, ``market`` and ``snaps`` gain
+          suppliers in the plans that make them lock-honest (33.2-14 .. 33.2-17); Plan
+          33.2-16 brings the post-Stage-1 opponent-adjusted family into the loop.
+
+        No source is EXEMPTED, only not yet reached: the unchecked keys are NAMED in the
+        CoverageReport, which is logged at every build, and Plan 33.2-20 arms the refusal
+        of any key with no provenance once the list is complete. Nothing is allow-listed,
+        excepted or run in a report-only mode, and nothing here downgrades a refusal to a
+        warning.
 
         Returns:
             The four-set CoverageReport, also stored on
@@ -2203,10 +2224,11 @@ class FeatureMatrixBuilder:
         """
         # THIS DEFAULT IS NO LONGER A FENCE (Phase 33.2, D33.2-01). The fence is the
         # per-game lock frame built below; nothing in Stage 1 reads this value. It
-        # survives ONLY as the ``as_of_datetime`` argument the builders still take
-        # (QBTracker, OpponentAdjuster, ...), whose cutoffs move onto the lock in
-        # Plans 33.2-12 / 33.2-13. CR-01 still applies to it: tz-aware ET, never a
-        # naive local clock.
+        # survives ONLY as the ``as_of_datetime`` argument the builders still take.
+        # QBTracker and InjuryBuilder no longer read it (Plan 33.2-13 moved both onto
+        # each game's lock); the builders that still do (OpponentAdjuster, ...) move in
+        # the plans that follow. CR-01 still applies to it: tz-aware ET, never a naive
+        # local clock.
         if as_of_datetime is None:
             as_of_datetime = datetime.now(ET)
 

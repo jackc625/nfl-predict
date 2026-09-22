@@ -122,9 +122,12 @@ REGISTRY_KEYS: tuple[str, ...] = (
 #: zero rows, and which loaded rows but have no provenance supplier yet.
 EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = ("injury", "market", "snaps", "team_form")
 #: Plan 33.2-12 registered ``weather`` (it owns the weather fence and its provenance), so
-#: it moved from the unregistered set to ``checked_sources``.
-EXPECTED_UNREGISTERED: tuple[str, ...] = ("contextual", "qb_tracking")
-EXPECTED_CHECKED: tuple[str, ...] = ("elo", "weather")
+#: it moved from the unregistered set to ``checked_sources``. Plan 33.2-13 registered
+#: ``qb_tracking`` (and ``injury``, which loads zero rows on this slice and so stays
+#: ``empty_unchecked``), so ``qb_tracking`` moved to ``checked_sources`` too, after
+#: ``weather`` in loop order.
+EXPECTED_UNREGISTERED: tuple[str, ...] = ("contextual",)
+EXPECTED_CHECKED: tuple[str, ...] = ("elo", "weather", "qb_tracking")
 
 
 @dataclass
@@ -422,8 +425,8 @@ class TestTheCleanPass:
 class TestTheNarrowCoverageReport:
     """``checked_sources`` is exactly the sources registered so far, in loop order.
 
-    Plan 33.2-01 registered ``elo``; Plan 33.2-12 registered ``weather``. Plans 33.2-13 ..
-    33.2-17 (the remaining suppliers), 33.2-16 (the opponent-adjusted family) and 33.2-20
+    Plan 33.2-01 registered ``elo``; Plan 33.2-12 registered ``weather``; Plan 33.2-13
+    registered ``qb_tracking`` and ``injury``. Plans 33.2-14 .. 33.2-17 (the remaining suppliers), 33.2-16 (the opponent-adjusted family) and 33.2-20
     (the armed refusal) are the ones that shrink the other three sets to empty.
     """
 

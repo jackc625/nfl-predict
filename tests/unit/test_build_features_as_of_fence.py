@@ -63,7 +63,10 @@ def _capture_default_as_of(monkeypatch: pytest.MonkeyPatch) -> datetime:
     """Run ``generate_feature_matrices()`` with NO as_of and return the default."""
     builder = FeatureMatrixBuilder()
 
-    def _stub(_self, _season=None, _week=None, *, as_of_datetime=None):
+    # ``through_season`` joined the signature at Plan 33.2-08 (the ladder-rung bound);
+    # the stub accepts it -- and any later keyword -- so it keeps capturing the one
+    # argument this module is about instead of failing on a keyword it never reads.
+    def _stub(_self, _season=None, _week=None, *, as_of_datetime=None, **_kwargs):
         raise _AsOfCaptured(as_of_datetime)
 
     monkeypatch.setattr(FeatureMatrixBuilder, "load_all_feature_sources", _stub)
@@ -124,7 +127,10 @@ class TestDefaultsAreTimezoneAware:
                     "week": 2,
                     "home_team": "KC",
                     "away_team": "DET",
-                    "kickoff_et": datetime(2026, 9, 13, 13, 0),
+                    # Tz-aware, as silver ``games.kickoff_et`` is: since Plan 33.2-13
+                    # the method builds each game's lock from its kickoff BEFORE any
+                    # builder runs, and a naive kickoff is refused by the lock rule.
+                    "kickoff_et": datetime(2026, 9, 13, 13, 0, tzinfo=ET),
                 }
             ]
         )
