@@ -66,7 +66,15 @@ from utils import game_lock
 HISTORY_SEASON = 2002
 
 #: The real silver tables the 2002 build needs, copied read-only (the tracer's slice).
-SEEDED_TABLES: tuple[str, ...] = ("games", "elo_game_snapshots", "weather_features")
+#: Plan 33.2-12 added silver ``weather``: the weather builder is now an information-time
+#: supplier and dates each game from the silver row its one fence selected. That table
+#: carries no ``season`` column, so it is sliced by the season in its ``game_id``.
+SEEDED_TABLES: tuple[str, ...] = (
+    "games",
+    "elo_game_snapshots",
+    "weather_features",
+    "weather",
+)
 
 #: The REAL supplier, captured before any test wraps it.
 _REAL_INFORMATION_TIMES = EloFeatureBuilder.information_times
@@ -111,7 +119,12 @@ def _seed(sandbox: Path) -> pd.DataFrame:
     games = pd.DataFrame()
     for table in SEEDED_TABLES:
         frame = pd.read_parquet(PRODUCTION_DATA_ROOT / "silver" / f"{table}.parquet")
-        frame = frame.loc[frame["season"] == HISTORY_SEASON].reset_index(drop=True)
+        season = (
+            frame["season"]
+            if "season" in frame.columns
+            else frame["game_id"].str[:4].astype(int)
+        )
+        frame = frame.loc[season == HISTORY_SEASON].reset_index(drop=True)
         assert len(frame) > 0, f"production silver {table} has no {HISTORY_SEASON} rows"
         save_dataframe(frame, table, layer="silver", replace_mode=True)
         if table == "games":

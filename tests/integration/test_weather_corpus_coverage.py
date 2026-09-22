@@ -35,6 +35,22 @@ feed is the independent instrument. That is also what catches a regression of th
 per-game roof rule: five stadiums record ``closed`` on some games and ``open`` on
 others, and a venue-level rule would put all of them on one side.
 
+THE CORPUS IS NOW THE ARCHIVED DAY-BEFORE FORECAST (Plan 33.2-12, p332_ rung 4). Rung 4
+replaced every 2002-2025 ERA5 observation with the 12 UTC NWS MOS bulletin of the day before
+kickoff (``scripts/weather_from_mos.py``), so each row now reads ``historical_forecast`` and a
+covered outdoor row is a FORECAST, not a reading. The three states and the feed-derived indoor
+population are unchanged, with two refinements recorded where they bite:
+
+* THE CORPUS IS THE 2002-2025 SLICE. The table also holds the LIVE path's 2026 rows (Open-Meteo,
+  ``weather_source = "forecast"``), which were never part of this corpus; before rung 4 they
+  already made the "only these games" and "only archive" checks read red. The corpus fixture is
+  the history slice, which is what these assertions were always about.
+* THE ROOF IS READ AT THE GAME'S VENUE. For the seven 2025 games played abroad, the feed's row
+  still names the US stadium (Plan 33.2-09 corrected the venue in silver ``games``), so its
+  ``roof`` describes a stadium the game was not played in -- it put Sao Paulo under SoFi's dome
+  and Berlin under Lucas Oil's closed roof. A game whose feed stadium differs from its silver
+  venue takes that venue's own roof type instead.
+
 READ ONLY. Nothing here writes anything. The module requests
 ``data_boundary_guard`` so that is a proven property rather than an intention.
 
@@ -43,6 +59,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -57,6 +74,8 @@ from scripts.ingest_weather import WEATHER_SOURCE_VOCABULARY
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SILVER_WEATHER = REPO_ROOT / "data" / "silver" / "weather.parquet"
+SILVER_GAMES = REPO_ROOT / "data" / "silver" / "games.parquet"
+VENUES_JSON = REPO_ROOT / "data" / "venues.json"
 
 # The whole corpus, and the 2025 slice the promotion's acceptance names explicitly.
 EXPECTED_CORPUS_ROWS = 6499
@@ -83,8 +102,10 @@ pytestmark = pytest.mark.skipif(not SILVER_WEATHER.is_file(), reason=_SKIP_REASO
 
 @pytest.fixture(scope="module")
 def corpus() -> pd.DataFrame:
-    """The promoted silver weather table, read once for the whole module."""
-    return pd.read_parquet(SILVER_WEATHER, engine="pyarrow")
+    """The 2002-2025 history slice of silver weather, read once for the whole module."""
+    frame = pd.read_parquet(SILVER_WEATHER, engine="pyarrow")
+    seasons = frame["game_id"].str.slice(0, 4).astype(int)
+    return frame[seasons.between(CORPUS_FIRST_SEASON, CORPUS_LAST_SEASON)]
 
 
 @pytest.fixture(scope="module")
@@ -97,6 +118,28 @@ def feed() -> pd.DataFrame:
     """
     seasons = list(range(CORPUS_FIRST_SEASON, CORPUS_LAST_SEASON + 1))
     return load_pinned_game_facts(seasons).set_index("game_id")
+
+
+@pytest.fixture(scope="module")
+def indoor_ids(feed) -> set[str]:
+    """Games weather does not apply to: a dome or closed roof, read at the game's venue.
+
+    The feed's own ``roof`` decides, except where the feed's row names a different stadium
+    from the game's silver venue (the corrected 2025 games abroad): there the venue's own
+    ``roof_type`` in ``data/venues.json`` decides.
+    """
+    games = pd.read_parquet(SILVER_GAMES, engine="pyarrow").set_index("game_id")
+    venues = json.loads(VENUES_JSON.read_text(encoding="utf-8"))["venues"]
+    roof_type = {str(v["stadium_id"]): str(v["roof_type"]) for v in venues}
+    indoor: set[str] = set()
+    for game_id, fact in feed.iterrows():
+        venue = str(games.loc[game_id, "stadium_id"])
+        if str(fact["stadium_id"]) == venue:
+            if str(fact["roof"]).lower().strip() in INDOOR_ROOFS:
+                indoor.add(str(game_id))
+        elif roof_type[venue] == "indoor":
+            indoor.add(str(game_id))
+    return indoor
 
 
 class TestTheCorpusCoversThePinnedFeedExactly:
@@ -170,14 +213,15 @@ class TestEveryRowIsProvenanced:
         )
 
     def test_the_whole_corpus_came_from_the_archive(self, corpus, data_boundary_guard):
-        """Every row in a 2002-2025 backfill is an ERA5 archive reading.
+        """Every 2002-2025 row is the ARCHIVED DAY-BEFORE FORECAST (since rung 4).
 
-        Not a tautology: `forecast` and `historical_forecast` are both in the
-        vocabulary and both reachable through other code paths. A row here that
-        carried one of them would mean the promotion mixed a live-path row into
-        the historical corpus.
+        Not a tautology: `archive` and `forecast` are both in the vocabulary and both
+        reachable through other code paths. An `archive` row here would be an ERA5
+        observation surviving under a forecast's name; a `forecast` row would be a
+        live-path row mixed into the historical corpus. (The test keeps its name: the
+        corpus still comes from an archive -- IEM's archive of the bulletins.)
         """
-        assert set(corpus["weather_source"].unique()) == {"archive"}, (
+        assert set(corpus["weather_source"].unique()) == {"historical_forecast"}, (
             "the promoted historical corpus carries a non-archive provenance: "
             f"{sorted(set(corpus['weather_source'].unique()))}"
         )
@@ -195,10 +239,8 @@ class TestTheThreeCoverageStatesStayApart:
         )
 
     def test_every_indoor_game_is_covered_and_carries_no_temperature(
-        self, corpus, feed, data_boundary_guard
+        self, corpus, indoor_ids, data_boundary_guard
     ):
-        roofs = feed["roof"].astype(str).str.lower().str.strip()
-        indoor_ids = set(roofs[roofs.isin(INDOOR_ROOFS)].index)
 
         indoor = corpus[corpus["game_id"].isin(indoor_ids)]
         assert len(indoor) == len(indoor_ids), (
@@ -224,10 +266,9 @@ class TestTheThreeCoverageStatesStayApart:
         )
 
     def test_every_observed_outdoor_game_is_covered_and_carries_a_temperature(
-        self, corpus, feed, data_boundary_guard
+        self, corpus, feed, indoor_ids, data_boundary_guard
     ):
-        roofs = feed["roof"].astype(str).str.lower().str.strip()
-        outdoor_ids = set(roofs[~roofs.isin(INDOOR_ROOFS)].index)
+        outdoor_ids = set(feed.index) - indoor_ids
 
         outdoor = corpus[corpus["game_id"].isin(outdoor_ids)]
         observed = outdoor[outdoor["weather_coverage"].astype(bool)]
@@ -241,7 +282,7 @@ class TestTheThreeCoverageStatesStayApart:
         )
 
     def test_an_absent_observation_is_outdoor_covered_false_and_entirely_null(
-        self, corpus, feed, data_boundary_guard
+        self, corpus, indoor_ids, data_boundary_guard
     ):
         absent = corpus[~corpus["weather_coverage"].astype(bool)]
         if absent.empty:
@@ -250,9 +291,6 @@ class TestTheThreeCoverageStatesStayApart:
                 "the uncovered_outdoor_absent state to check. This is a complete "
                 "result, not a gap: the archive answered for every outdoor game."
             )
-
-        roofs = feed["roof"].astype(str).str.lower().str.strip()
-        indoor_ids = set(roofs[roofs.isin(INDOOR_ROOFS)].index)
 
         wrongly_indoor = sorted(set(absent["game_id"]) & indoor_ids)
         assert not wrongly_indoor, (
@@ -276,7 +314,7 @@ class TestTheThreeCoverageStatesStayApart:
         )
 
     def test_the_three_states_partition_the_corpus(
-        self, corpus, feed, data_boundary_guard
+        self, corpus, indoor_ids, data_boundary_guard
     ):
         """The three populations are disjoint and sum to the whole corpus.
 
@@ -284,8 +322,6 @@ class TestTheThreeCoverageStatesStayApart:
         FOURTH state nobody named -- which is how the 65.0 default survived for
         as long as it did.
         """
-        roofs = feed["roof"].astype(str).str.lower().str.strip()
-        indoor_ids = set(roofs[roofs.isin(INDOOR_ROOFS)].index)
 
         covered = corpus["weather_coverage"].astype(bool)
         is_indoor = corpus["game_id"].isin(indoor_ids)

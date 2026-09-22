@@ -95,7 +95,15 @@ TRACER_SEASON = 2002
 SANDBOX_ENV = "TRACER_SANDBOX"
 
 #: The real silver tables copied read-only into the sandbox, each filtered to the season.
-SEEDED_TABLES: tuple[str, ...] = ("games", "elo_game_snapshots", "weather_features")
+#: Plan 33.2-12 added silver ``weather``: the weather builder is now an information-time
+#: supplier and dates each game from the silver row its one fence selected. That table
+#: carries no ``season`` column, so it is sliced by the season in its ``game_id``.
+SEEDED_TABLES: tuple[str, ...] = (
+    "games",
+    "elo_game_snapshots",
+    "weather_features",
+    "weather",
+)
 
 #: The nine keys ``load_all_feature_sources`` populates (scripts/build_features.py).
 REGISTRY_KEYS: tuple[str, ...] = (
@@ -113,7 +121,10 @@ REGISTRY_KEYS: tuple[str, ...] = (
 #: MEASURED on this slice (Plan 33.2-01 Task 3): which of the seven non-elo keys loaded
 #: zero rows, and which loaded rows but have no provenance supplier yet.
 EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = ("injury", "market", "snaps", "team_form")
-EXPECTED_UNREGISTERED: tuple[str, ...] = ("contextual", "qb_tracking", "weather")
+#: Plan 33.2-12 registered ``weather`` (it owns the weather fence and its provenance), so
+#: it moved from the unregistered set to ``checked_sources``.
+EXPECTED_UNREGISTERED: tuple[str, ...] = ("contextual", "qb_tracking")
+EXPECTED_CHECKED: tuple[str, ...] = ("elo", "weather")
 
 
 @dataclass
@@ -145,7 +156,12 @@ def _seed(sandbox: Path) -> pd.DataFrame:
     games = pd.DataFrame()
     for table in SEEDED_TABLES:
         frame = pd.read_parquet(PRODUCTION_DATA_ROOT / "silver" / f"{table}.parquet")
-        frame = frame.loc[frame["season"] == TRACER_SEASON].reset_index(drop=True)
+        season = (
+            frame["season"]
+            if "season" in frame.columns
+            else frame["game_id"].str[:4].astype(int)
+        )
+        frame = frame.loc[season == TRACER_SEASON].reset_index(drop=True)
         assert len(frame) > 0, f"production silver {table} has no {TRACER_SEASON} rows"
         save_dataframe(frame, table, layer="silver", replace_mode=True)
         if table == "games":
@@ -404,15 +420,18 @@ class TestTheCleanPass:
 
 
 class TestTheNarrowCoverageReport:
-    """``checked_sources == ("elo",)`` is the CORRECT result for this wave.
+    """``checked_sources`` is exactly the sources registered so far, in loop order.
 
-    Plans 33.2-12 .. 33.2-17 (the suppliers), 33.2-16 (the opponent-adjusted family) and
-    33.2-20 (the armed refusal) are the ones that shrink the other three sets to empty.
+    Plan 33.2-01 registered ``elo``; Plan 33.2-12 registered ``weather``. Plans 33.2-13 ..
+    33.2-17 (the remaining suppliers), 33.2-16 (the opponent-adjusted family) and 33.2-20
+    (the armed refusal) are the ones that shrink the other three sets to empty.
     """
 
-    def test_exactly_elo_was_checked(self, tracer: TracerRun) -> None:
+    def test_exactly_the_registered_sources_were_checked(
+        self, tracer: TracerRun
+    ) -> None:
         assert tracer.clean_coverage is not None
-        assert tracer.clean_coverage.checked_sources == ("elo",)
+        assert tracer.clean_coverage.checked_sources == EXPECTED_CHECKED
 
     def test_the_empty_and_unregistered_sets_are_named(self, tracer: TracerRun) -> None:
         report = tracer.clean_coverage

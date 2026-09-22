@@ -9,7 +9,7 @@ Validates that:
 - All builders conform to FeatureBuilder Protocol (as_of_datetime)
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pandas as pd
@@ -73,6 +73,14 @@ DROPPED_WEATHER_COLUMNS = [
 ANTI_FEATURE_PATTERNS = ["turnover", "penalty", "streak", "rushing_yards"]
 
 
+# THE ONE WEATHER FENCE (Plan 33.2-12) admits a live forecast row when its fetch instant is at
+# or before min(the game's lock, the build instant), so the synthetic rows are LIVE forecast
+# rows fetched on the Friday, the games kick off on Sunday 13:00 ET, and every instant is
+# timezone-aware (a naive instant is refused, never relabelled).
+LIVE_FETCH_UTC = pd.Timestamp("2024-09-06 12:00", tz="UTC")
+KICKOFF_UTC = pd.Timestamp("2024-09-08 17:00", tz="UTC")
+
+
 def _make_games_df():
     """Create synthetic games DataFrame for weather tests."""
     return pd.DataFrame(
@@ -81,6 +89,7 @@ def _make_games_df():
                 "game_id": "TEST_INDOOR",
                 "season": 2024,
                 "week": 1,
+                "kickoff_et": KICKOFF_UTC,
                 "home_team": "DAL",
                 "away_team": "NYG",
             },
@@ -88,6 +97,7 @@ def _make_games_df():
                 "game_id": "TEST_OUTDOOR_DRY",
                 "season": 2024,
                 "week": 1,
+                "kickoff_et": KICKOFF_UTC,
                 "home_team": "GB",
                 "away_team": "CHI",
             },
@@ -95,6 +105,7 @@ def _make_games_df():
                 "game_id": "TEST_OUTDOOR_RAIN",
                 "season": 2024,
                 "week": 1,
+                "kickoff_et": KICKOFF_UTC,
                 "home_team": "CLE",
                 "away_team": "PIT",
             },
@@ -102,6 +113,7 @@ def _make_games_df():
                 "game_id": "TEST_OUTDOOR_WIND",
                 "season": 2024,
                 "week": 1,
+                "kickoff_et": KICKOFF_UTC,
                 "home_team": "BUF",
                 "away_team": "MIA",
             },
@@ -115,7 +127,8 @@ def _make_weather_df():
         [
             {
                 "game_id": "TEST_INDOOR",
-                "forecast_time": datetime(2024, 9, 6, 12, 0),
+                "forecast_time": LIVE_FETCH_UTC,
+                "weather_source": "forecast",
                 "is_outdoor": False,
                 "temp_f": 72.0,
                 "wind_mph": 0.0,
@@ -126,7 +139,8 @@ def _make_weather_df():
             },
             {
                 "game_id": "TEST_OUTDOOR_DRY",
-                "forecast_time": datetime(2024, 9, 6, 12, 0),
+                "forecast_time": LIVE_FETCH_UTC,
+                "weather_source": "forecast",
                 "is_outdoor": True,
                 "temp_f": 65.0,
                 "wind_mph": 8.0,
@@ -137,7 +151,8 @@ def _make_weather_df():
             },
             {
                 "game_id": "TEST_OUTDOOR_RAIN",
-                "forecast_time": datetime(2024, 9, 6, 12, 0),
+                "forecast_time": LIVE_FETCH_UTC,
+                "weather_source": "forecast",
                 "is_outdoor": True,
                 "temp_f": 55.0,
                 "wind_mph": 10.0,
@@ -148,7 +163,8 @@ def _make_weather_df():
             },
             {
                 "game_id": "TEST_OUTDOOR_WIND",
-                "forecast_time": datetime(2024, 9, 6, 12, 0),
+                "forecast_time": LIVE_FETCH_UTC,
+                "weather_source": "forecast",
                 "is_outdoor": True,
                 "temp_f": 40.0,
                 "wind_mph": 25.0,
@@ -170,7 +186,7 @@ class TestWeatherCompression:
         self.calc = WeatherFeaturesCalculator()
         games_df = _make_games_df()
         weather_df = _make_weather_df()
-        as_of = datetime(2024, 9, 7, 18, 0)  # Friday 6 PM ET
+        as_of = datetime(2024, 9, 7, 22, 0, tzinfo=UTC)  # 18:00 ET, the lock
 
         with patch("features.weather.load_dataframe", return_value=weather_df):
             self.result = self.calc.build_features(games_df, as_of)

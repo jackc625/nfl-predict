@@ -16,7 +16,7 @@ back to the on-disk weather_features parquet when offline (RESEARCH Environment
 Availability).
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -223,6 +223,15 @@ class TestArea2QbAdjAndCpoe:
 # ===========================================================================
 
 
+# THE ONE WEATHER FENCE (Plan 33.2-12): a live forecast row is admitted only when its fetch
+# instant is at or before min(the game's lock, the build instant), and every instant is aware.
+# The Thursday-night opener's lock is 18:00 ET on the Wednesday, so the synthetic forecasts are
+# fetched on the Wednesday morning.
+WEATHER_KICKOFF_UTC = pd.Timestamp("2024-09-06 00:20", tz="UTC")
+WEATHER_FETCH_UTC = pd.Timestamp("2024-09-04 12:00", tz="UTC")
+WEATHER_AS_OF = datetime(2024, 9, 6, 0, 0, tzinfo=UTC)
+
+
 def _weather_games():
     return pd.DataFrame(
         [
@@ -230,6 +239,7 @@ def _weather_games():
                 "game_id": "2024_W01_OUT@KC",
                 "season": 2024,
                 "week": 1,
+                "kickoff_et": WEATHER_KICKOFF_UTC,
                 "home_team": "KC",
                 "away_team": "BAL",
             },
@@ -237,6 +247,7 @@ def _weather_games():
                 "game_id": "2024_W01_IN@DET",
                 "season": 2024,
                 "week": 1,
+                "kickoff_et": WEATHER_KICKOFF_UTC,
                 "home_team": "DET",
                 "away_team": "LA",
             },
@@ -250,7 +261,8 @@ def _weather_forecast_fixture():
         [
             {
                 "game_id": "2024_W01_OUT@KC",
-                "forecast_time": datetime(2024, 9, 5, 12, 0),
+                "forecast_time": WEATHER_FETCH_UTC,
+                "weather_source": "forecast",
                 "is_outdoor": True,
                 "temp_f": 75.0,
                 "wind_mph": 12.0,
@@ -261,7 +273,8 @@ def _weather_forecast_fixture():
             },
             {
                 "game_id": "2024_W01_IN@DET",
-                "forecast_time": datetime(2024, 9, 5, 12, 0),
+                "forecast_time": WEATHER_FETCH_UTC,
+                "weather_source": "forecast",
                 "is_outdoor": False,
                 "temp_f": 70.0,
                 "wind_mph": 8.0,
@@ -287,7 +300,7 @@ class TestArea3WeatherBuilder:
         calc = WeatherFeaturesCalculator()
         result = calc.build_features(
             _weather_games(),
-            as_of_datetime=datetime(2024, 9, 6, 0, 0),
+            as_of_datetime=WEATHER_AS_OF,
         )
 
         out = result[result["game_id"] == "2024_W01_OUT@KC"].iloc[0]
@@ -311,9 +324,7 @@ class TestArea3WeatherBuilder:
             weather_mod, "load_dataframe", lambda *a, **k: forecast.copy()
         )
         calc = WeatherFeaturesCalculator()
-        result = calc.build_features(
-            _weather_games(), as_of_datetime=datetime(2024, 9, 6, 0, 0)
-        )
+        result = calc.build_features(_weather_games(), as_of_datetime=WEATHER_AS_OF)
         sev = result["weather_severity_score"]
         assert (sev >= 0.0).all() and (sev <= 1.0).all(), (
             f"weather_severity_score out of [0,1]: min={sev.min()}, max={sev.max()}"

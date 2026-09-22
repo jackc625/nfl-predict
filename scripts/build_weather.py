@@ -32,6 +32,20 @@ from utils import get_logger
 logger = get_logger(__name__)
 
 
+def _regenerate_from_bronze() -> None:
+    """The --from-bronze history path, under the network guard. Prints the output contract."""
+    from conf.settings import get_settings
+    from scripts.weather_from_mos import deny_network, regenerate_history
+
+    data_root = Path(get_settings().config.data.root_path)
+    calls = [0]
+    with deny_network(calls):
+        report = regenerate_history(data_root)
+    report.network_calls = calls[0]
+    for line in report.lines():
+        print(line)
+
+
 def main():
     """Build weather features."""
     parser = argparse.ArgumentParser(description="Build weather features")
@@ -59,6 +73,19 @@ def main():
         ),
     )
     parser.add_argument("--week", type=int, help="Target week (1-18)")
+    # --from-bronze is the HISTORY path (Plan 33.2-12, p332_ rung 4): 2002-2025 silver
+    # `weather` and `weather_features` regenerated from the archived day-before NWS MOS
+    # bulletins in data/bronze/mos/, replacing the ERA5 reanalysis observations, with the
+    # network DENIED and the attempted-connection count printed. The live 2026 path
+    # (scripts/ingest_weather.py, Open-Meteo) is unchanged and its rows are kept.
+    parser.add_argument(
+        "--from-bronze",
+        action="store_true",
+        help=(
+            "Regenerate 2002-2025 silver weather and weather_features from the bronze "
+            "MOS bulletins, offline. Requires --all-seasons."
+        ),
+    )
     parser.add_argument(
         "--save",
         action="store_true",
@@ -73,6 +100,13 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.from_bronze:
+        if not args.all_seasons or args.week is not None:
+            parser.error(
+                "--from-bronze regenerates the whole history: use --all-seasons"
+            )
+        return _regenerate_from_bronze()
 
     logger.info("Building weather features", season=args.season, week=args.week)
 
@@ -91,7 +125,7 @@ def main():
 
         if len(features_df) == 0:
             logger.warning("No weather features generated")
-            return
+            return None
 
         logger.info(
             "Generated weather features",
@@ -105,7 +139,7 @@ def main():
             is_valid = calculator.validate_weather_features(features_df)
             if not is_valid:
                 logger.error("Weather features validation failed")
-                return
+                return None
             logger.info("Weather features validation passed")
 
         # Display sample weather features

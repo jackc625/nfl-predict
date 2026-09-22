@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -545,6 +545,15 @@ OBSERVED_GAME_ID = "2016_W01_OBS@OBS"
 
 FORECAST_TIME = datetime(2016, 9, 11, 13, 0)
 
+# THE OBSERVED STATE IS NOW A FORECAST KNOWN BEFORE THE LOCK (Plan 33.2-12). The one weather
+# fence admits a row only when its forecast time is at or before min(the game's lock, the
+# build instant), and an ERA5 observation carries no forecast time at all. So the covered
+# outdoor row below is an archived day-before bulletin: issued at the 12 UTC cycle of the day
+# before a 13:00 ET Sunday kickoff, well before the 18:00 ET Saturday lock.
+KICKOFF_UTC = pd.Timestamp("2016-09-11 17:00", tz="UTC")
+ISSUE_TIME_UTC = pd.Timestamp("2016-09-10 12:00", tz="UTC")
+BUILD_INSTANT = datetime(2016, 9, 12, 0, 0, tzinfo=UTC)
+
 # Ruling J's row groups, as data. The committed copy lives in
 # tests.phase33_state.WEATHER_NULL_STATE_MATRIX; these are the names the
 # assertions below iterate, and the matrix is cross-checked against them.
@@ -606,9 +615,8 @@ COMPOSITE_GROUP: tuple[str, ...] = (
 def _ruling_j_games() -> pd.DataFrame:
     return pd.DataFrame(
         [
-            {"game_id": DOME_GAME_ID, "season": 2016, "week": 1},
-            {"game_id": ABSENT_GAME_ID, "season": 2016, "week": 1},
-            {"game_id": OBSERVED_GAME_ID, "season": 2016, "week": 1},
+            {"game_id": g, "season": 2016, "week": 1, "kickoff_et": KICKOFF_UTC}
+            for g in (DOME_GAME_ID, ABSENT_GAME_ID, OBSERVED_GAME_ID)
         ]
     )
 
@@ -644,6 +652,8 @@ def _ruling_j_weather() -> pd.DataFrame:
             {
                 "game_id": OBSERVED_GAME_ID,
                 "forecast_time": FORECAST_TIME,
+                "weather_source": "historical_forecast",
+                "forecast_issue_time": ISSUE_TIME_UTC,
                 "is_outdoor": True,
                 "weather_coverage": True,
                 "temp_f": 41.0,
@@ -911,7 +921,7 @@ class TestAMissingWeatherRowIsAnAnomalyRatherThanADefault:
         with pytest.raises(WeatherObservationError) as excinfo:
             calculator.build_features(
                 games,
-                datetime(2016, 9, 12, 0, 0),
+                BUILD_INSTANT,
                 weather_df=_ruling_j_weather(),
             )
         assert "2016_W01_GAP@GAP" in str(excinfo.value)
@@ -927,7 +937,7 @@ class TestTheColumnDeclarationCannotDriftFromEitherBuilder:
         calculator = WeatherFeaturesCalculator()
         frame = calculator.build_features(
             _ruling_j_games(),
-            datetime(2016, 9, 12, 0, 0),
+            BUILD_INSTANT,
             weather_df=_ruling_j_weather(),
         )
         emitted = set(frame.columns) - {"game_id"}
@@ -951,7 +961,7 @@ class TestTheCompressedBuilderFollowsTheSameRuling:
         calculator = WeatherFeaturesCalculator()
         frame = calculator.build_features(
             _ruling_j_games(),
-            datetime(2016, 9, 12, 0, 0),
+            BUILD_INSTANT,
             weather_df=_ruling_j_weather(),
         )
 

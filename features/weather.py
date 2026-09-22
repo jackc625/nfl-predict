@@ -16,14 +16,17 @@ Weather has the most impact on:
 """
 
 import warnings
-from datetime import datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+import utils.game_lock as lock_rule
 from conf.settings import get_settings
 from data.storage import load_dataframe
+from features.provenance import PROVENANCE_COLUMNS, InformationBasis
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -616,6 +619,176 @@ def _assert_builder_columns(features_df: pd.DataFrame, builder: str) -> None:
         raise ValueError(msg)
 
 
+# ---------------------------------------------------------------------------
+# THE ONE WEATHER LOCK FENCE AND THE WEATHER SOURCE'S PROVENANCE (Plan 33.2-12, rung 4;
+# SOLE OWNER per 33.2-REPLAN-RULINGS.md -- Plan 33.2-14 tests this fence and does not
+# mutate it).
+#
+# WHAT IT REPLACED. The full builder took `game_weather.sort_values("forecast_time")
+# .iloc[-1]` with no fence at all, and the compressed builder filtered the whole frame
+# on `forecast_time <= as_of_datetime` -- two different rules, one of them no rule. Both
+# now call `select_weather_row`, so there is ONE fence:
+#
+#     a row is admitted iff its forecast time is at or before the EARLIER of this
+#     game's lock and the build instant.
+#
+# THE `min` IS NOT DECORATION. The lock is the ceiling on what the GAME may see; the build
+# instant is the ceiling on what EXISTS. A build run before a game's lock (an ad-hoc
+# mid-week rebuild, the scoped nightly build of D33.2-19) must not admit a bulletin issued
+# after the build instant and before the lock -- a forecast that does not exist yet.
+#
+# THIS IS NOT THE FRAME-WIDE SCALAR CUTOFF D33.2-01 RETIRES. The right operand is derived
+# from the PER-GAME lock lookup (`utils.game_lock.game_lock` of that game's kickoff) and is
+# merely bounded above by the build instant, so it varies game by game.
+#
+# THE HISTORY IS FORECASTS, NEVER OBSERVATIONS. Until this plan every 2002-2025 silver row
+# was an ERA5 reanalysis OBSERVATION of the game itself (weather_source "archive"). Those
+# rows are replaced, not blended: an observation-kind row has NO forecast time, so it is
+# never admitted by the fence, and a game whose only rows are observations is built
+# NULL-plus-flag exactly like a game with no forecast.
+# ---------------------------------------------------------------------------
+
+#: The weather_source members that are OBSERVATIONS -- measured after the fact. A row of
+#: this kind is never a forecast and is never admitted by the fence.
+OBSERVATION_WEATHER_SOURCES: frozenset[str] = frozenset({"archive"})
+
+#: The LIVE forecast source (scripts.ingest_weather.WEATHER_SOURCE_FORECAST). A live row
+#: carries no model-cycle time; the instant its forecast was fetched is when it was known.
+LIVE_FORECAST_WEATHER_SOURCE: str = "forecast"
+
+#: What a forecast-less weather_features row must carry, checked by the information-time
+#: gate rather than believed (RESEARCH P2). A dome and an absence differ on every other
+#: column -- indoors the wind is a genuine 0.0 and the air is genuinely dry, an absence is
+#: NULL throughout -- but in BOTH states no forecast temperature or humidity exists, so
+#: these three columns are null in every forecast-less row, and non-null on every row that
+#: carries a forecast (a bulletin missing either is not resolved).
+WEATHER_NO_INFORMATION_SIGNATURE: dict[str, float | None] = {
+    "temp_f": None,
+    "raw_temp_f": None,
+    "raw_humidity_pct": None,
+}
+
+
+def _to_utc_instant(value: Any) -> pd.Timestamp | None:
+    """An aware instant as a UTC ``Timestamp``, or ``None`` when absent.
+
+    A naive value is refused, never relabelled: the fence compares instants, and a naive
+    stamp has no instant.
+    """
+    if _is_missing(value):
+        return None
+    instant = pd.Timestamp(value)
+    if instant.tzinfo is None:
+        msg = f"weather time {value!r} carries no timezone; a naive instant is refused"
+        raise ValueError(msg)
+    return instant.tz_convert(UTC)
+
+
+def forecast_known_at(row: Mapping[str, Any]) -> pd.Timestamp | None:
+    """When this silver row's FORECAST was known, or ``None`` when it carries none.
+
+    * An archived bulletin (``forecast_issue_time`` set): the model-cycle instant.
+    * A live forecast row (``weather_source == "forecast"``): the fetch instant it records
+      in ``forecast_time``.
+    * Anything else -- an observation, a dome record, an absence record -- carries no
+      forecast, so it has no time and is never admitted by the fence.
+    """
+    issued = _to_utc_instant(row.get("forecast_issue_time"))
+    if issued is not None:
+        return issued
+    source = row.get("weather_source")
+    if source in OBSERVATION_WEATHER_SOURCES:
+        return None
+    if source == LIVE_FORECAST_WEATHER_SOURCE:
+        return _to_utc_instant(row.get("forecast_time"))
+    return None
+
+
+def _no_forecast_the_game_may_see(
+    selected: Mapping[str, Any] | None, known_at: pd.Timestamp | None
+) -> bool:
+    """True when the selected row gives the game no forecast to be built from.
+
+    Nothing was admitted; or the row is an OBSERVATION (refused even if a caller claims a
+    time for it -- an observation is never a forecast, whatever it is labelled); or the row
+    is an outdoor, covered record that carries no forecast time. A dome record and an
+    absence record carry no forecast either, but they are built from their flags instead.
+    """
+    if selected is None:
+        return True
+    if selected.get("weather_source") in OBSERVATION_WEATHER_SOURCES:
+        return True
+    return (
+        known_at is None
+        and _row_is_covered(selected)
+        and bool(selected.get("is_outdoor", False))
+    )
+
+
+def weather_fence_instant(
+    kickoff: Any, build_instant: Any, *, game_id: str | None = None
+) -> pd.Timestamp:
+    """``min(game_lock(game), build_instant)`` -- the ONE weather fence's right operand."""
+    lock = pd.Timestamp(lock_rule.game_lock(kickoff, game_id=game_id)).tz_convert(UTC)
+    built = _to_utc_instant(build_instant)
+    if built is None:
+        msg = "the weather fence needs the build instant; none was given"
+        raise ValueError(msg)
+    return min(lock, built)
+
+
+def select_weather_row(
+    game_weather: pd.DataFrame,
+    kickoff: Any,
+    build_instant: Any,
+    *,
+    game_id: str | None = None,
+) -> tuple[dict[str, Any] | None, pd.Timestamp | None]:
+    """The ONE weather selection: the latest row whose forecast was known by the fence.
+
+    Returns ``(row, known_at)``:
+
+    * the latest forecast row with ``forecast_known_at(row) <= min(lock, build_instant)``
+      and that time -- the forecast the game may see;
+    * when the game has NO forecast row at all, its one forecast-less record (a dome or an
+      absence) and ``None`` -- it is built from its flags;
+    * ``(None, None)`` when forecast rows exist but none is admissible -- the game has no
+      forecast it may see and is built NULL-plus-flag.
+
+    Under D33.2-13 exactly one bulletin exists per past game, so the selection usually has
+    one candidate. It still runs, because a selection that cannot fail is not a selection.
+
+    Raises:
+        ValueError: a game has more than one forecast-less record, or a naive time.
+    """
+    rows = game_weather.to_dict("records")
+    dated = [(forecast_known_at(row), row) for row in rows]
+    forecasts = [(known, row) for known, row in dated if known is not None]
+    if not forecasts:
+        forecast_less = [
+            row
+            for row in rows
+            if row.get("weather_source") not in OBSERVATION_WEATHER_SOURCES
+        ]
+        if len(forecast_less) > 1:
+            msg = (
+                f"game {game_id!r} has {len(forecast_less)} forecast-less weather records; "
+                "exactly one dome or absence record is expected"
+            )
+            raise ValueError(msg)
+        return (forecast_less[0] if forecast_less else None), None
+    fence = weather_fence_instant(kickoff, build_instant, game_id=game_id)
+    admitted = [
+        (known, row)
+        for known, row in forecasts
+        if lock_rule.is_admissible(known.to_pydatetime(), fence.to_pydatetime())
+    ]
+    if not admitted:
+        return None, None
+    known, row = max(admitted, key=lambda pair: pair[0])
+    return row, known
+
+
 class WeatherFeaturesCalculator:
     """
     Calculate weather features for NFL games.
@@ -1052,10 +1225,20 @@ class WeatherFeaturesCalculator:
         try:
             raw_prob = weather_data.get("precip_prob")
             raw_mm = weather_data.get("precip_mm")
+            raw_level = weather_data.get("mos_precip_level")
             condition = (weather_data.get("condition") or "").lower()
             raw_temp = weather_data.get("temp_f")
 
-            if _is_missing(raw_mm):
+            # THE GATE NARROWED AGAIN, for the archived day-before bulletins (Plan
+            # 33.2-12). A bulletin carries NO millimetre amount -- only the forecast
+            # probability (P06) and an ordinal QPF category, turned into a LEVEL by the
+            # pre-registered anchoring (config/mos_tolerance.QPF_CATEGORY_TO_PRECIP_LEVEL,
+            # owner ruling "Middle of each range"). Under the gate below that stood
+            # alone, every one of those rows would have lost its whole precipitation
+            # family to a NULL millimetre it can never have. The family is now NULL only
+            # when NONE of the three readings exists; a category is banded, never turned
+            # into a fabricated millimetre value.
+            if _is_missing(raw_mm) and _is_missing(raw_prob) and _is_missing(raw_level):
                 # THE GATE NARROWED, and what it now refuses on is the
                 # MEASUREMENT (Plan 33.1-07 Task 4, 2026-09-14).
                 #
@@ -1084,7 +1267,10 @@ class WeatherFeaturesCalculator:
                 # reading as a dry day.
                 return dict.fromkeys(PRECIPITATION_FEATURE_COLUMNS, NAN)
 
-            precip_mm = float(raw_mm)
+            precip_mm: float | None = None if _is_missing(raw_mm) else float(raw_mm)
+            precip_level: int | None = (
+                None if _is_missing(raw_level) else int(raw_level)
+            )
 
             # NO PROBABILITY IS INVENTED. Where the archive gave none, the
             # column stays NULL and every derived quantity is computed from the
@@ -1097,8 +1283,10 @@ class WeatherFeaturesCalculator:
             # Basic precipitation features
             precip_features = {
                 "precip_prob": float(precip_prob) if precip_prob is not None else NAN,
-                "precip_mm": float(precip_mm),
-                **self._precipitation_bands(precip_mm, precip_prob),
+                "precip_mm": float(precip_mm) if precip_mm is not None else NAN,
+                **self._precipitation_bands(
+                    precip_mm, precip_prob, precip_level=precip_level
+                ),
             }
 
             # Precipitation TYPE needs the temperature, and the temperature is
@@ -1115,10 +1303,28 @@ class WeatherFeaturesCalculator:
             # this is the original disjunction unchanged; without one the
             # probability disjunct is simply not applied -- it is not replaced by
             # a zero-probability assumption, and the millimetres carry the test.
+            #
+            # With no millimetre reading (an archived bulletin), the rainfall disjunct
+            # reads the QPF LEVEL instead: level 1 (light) and above is the category
+            # whose anchored midpoint lies above the same 0.5 mm line.
+            if precip_mm is not None:
+                rainfall_fell = precip_mm > 0.5
+            else:
+                rainfall_fell = precip_level is not None and precip_level >= 1
             measurable_precipitation = (
                 precip_prob is not None and precip_prob > 0.3
-            ) or precip_mm > 0.5
+            ) or rainfall_fell
 
+            # NO PRECIPITATION-TYPE LINE IN THE ARCHIVED BULLETINS WE STORE, AND NONE AT
+            # ALL AT SOME STATIONS -- not a decode bug. The GFS MOS (MAV) product's TYP
+            # element (precipitation type) is not issued for stations where frozen
+            # precipitation is climatologically negligible -- southern Florida (the
+            # MIA00, TAM00 and JAX00 venues' airports) and every California station
+            # (NWS MDL, "GFS MOS MAV message description",
+            # https://www.weather.gov/mdl/mos_gfsmos_mavcard) -- and the silver row
+            # carries no TYP-derived condition for any station. So rain versus snow is
+            # decided below by this temperature fallback, which is the right behaviour
+            # there, rather than from a condition string.
             is_snow = temperature_known and (
                 temp_f <= 35.0 and (measurable_precipitation or "snow" in condition)
             )
@@ -1138,7 +1344,9 @@ class WeatherFeaturesCalculator:
                 precip_features.update({"is_snow": NAN, "is_rain": NAN, "is_dry": NAN})
 
             # Precipitation impact scoring
-            precip_impact = self._precipitation_impact(precip_mm, precip_prob)
+            precip_impact = self._precipitation_impact(
+                precip_mm, precip_prob, precip_level=precip_level
+            )
 
             # Snow has different impact than rain
             if not temperature_known:
@@ -1198,7 +1406,11 @@ class WeatherFeaturesCalculator:
     # ------------------------------------------------------------------
 
     def _precipitation_bands(
-        self, precip_mm: float, precip_prob: float | None
+        self,
+        precip_mm: float | None,
+        precip_prob: float | None,
+        *,
+        precip_level: int | None = None,
     ) -> dict[str, float]:
         """The four intensity one-hots.
 
@@ -1209,12 +1421,27 @@ class WeatherFeaturesCalculator:
         game as both light and moderate.
 
         Args:
-            precip_mm: The measured rainfall in millimetres.
+            precip_mm: The measured rainfall in millimetres, or ``None``/NaN when
+                there is no millimetre reading (every archived bulletin).
             precip_prob: The forecast probability, or ``None`` when absent.
+            precip_level: The QPF category's anchored LEVEL (0-3), or ``None``.
 
         Returns:
             The four band columns.
         """
+        if _is_missing(precip_mm):
+            # THE ABSENT-MILLIMETRE ARM (Plan 33.2-12), symmetric to the
+            # probability-absent arm directly below. WITHOUT IT every archived
+            # bulletin -- all of which carry a probability and no millimetres --
+            # would reach `_rainfall_band_index` with a NaN, which is False at all
+            # three cut points and returns 3: every outdoor game in 24 seasons
+            # labelled heavy rain. The band is the LARGER of the indices that EXIST:
+            # the probability's, and the QPF level (the rainfall side, banded from the
+            # category and never turned into a millimetre value). The PARTITION RULE
+            # is unchanged; only the missing reading is not consulted.
+            return self._one_hot_band(
+                self._absent_millimetre_band_index(precip_prob, precip_level)
+            )
         if precip_prob is None:
             return {
                 "precip_none": 1.0 if precip_mm <= 0.5 else 0.0,
@@ -1266,6 +1493,40 @@ class WeatherFeaturesCalculator:
             for position, column in enumerate(PRECIPITATION_BAND_COLUMNS)
         }
 
+    @staticmethod
+    def _one_hot_band(band: int) -> dict[str, float]:
+        """Exactly the band at *band* hot, in PRECIPITATION_BAND_COLUMNS order."""
+        return {
+            column: 1.0 if position == band else 0.0
+            for position, column in enumerate(PRECIPITATION_BAND_COLUMNS)
+        }
+
+    def _absent_millimetre_band_index(
+        self, precip_prob: float | None, precip_level: int | None
+    ) -> int:
+        """The band of a row with NO millimetre reading, from the readings that exist.
+
+        The larger of the probability's band index and the QPF level. The caller's
+        measurement gate guarantees at least one exists.
+
+        Raises:
+            ValueError: neither exists (the gate should have returned the NULL family).
+        """
+        indices = [
+            index
+            for index in (
+                None
+                if precip_prob is None
+                else self._probability_band_index(precip_prob),
+                precip_level,
+            )
+            if index is not None
+        ]
+        if not indices:
+            msg = "no millimetre, probability or QPF level: nothing to band"
+            raise ValueError(msg)
+        return max(indices)
+
     def _rainfall_band_index(self, precip_mm: float) -> int:
         """The ordinal intensity band of a MEASURED rainfall, 0 through 3.
 
@@ -1294,9 +1555,12 @@ class WeatherFeaturesCalculator:
 
         Args:
             precip_prob: The forecast probability, already known to be present.
-                ``None`` never reaches here -- the mm-only branch above owns
-                the absent case, and ``precip_prob=None`` is this module's ONE
-                spelling of "the probability is absent".
+                ``None`` never reaches here -- the mm-only branch of
+                ``_precipitation_bands`` owns the probability-absent case, the
+                absent-MILLIMETRE arm (``_absent_millimetre_band_index``) owns the
+                millimetre-absent case and calls this only with a real probability,
+                and ``precip_prob=None`` is this module's ONE spelling of "the
+                probability is absent".
 
         Returns:
             0 through 3, positions into :data:`PRECIPITATION_BAND_COLUMNS`.
@@ -1310,7 +1574,11 @@ class WeatherFeaturesCalculator:
         return 3
 
     def _precipitation_impact(
-        self, precip_mm: float, precip_prob: float | None
+        self,
+        precip_mm: float | None,
+        precip_prob: float | None,
+        *,
+        precip_level: int | None = None,
     ) -> float:
         """The 0-1 impact score, before the snow multiplier.
 
@@ -1322,7 +1590,15 @@ class WeatherFeaturesCalculator:
         the same quantity ``_precipitation_bands`` one-hots, read off
         :data:`PRECIPITATION_IMPACT_BY_BAND` instead of re-derived, so the two
         cannot disagree.
+
+        With NO millimetre reading (an archived bulletin) the score is the level of
+        the band the absent-millimetre arm fires -- the same lookup, so the score and
+        the one-hot still cannot disagree.
         """
+        if _is_missing(precip_mm):
+            return PRECIPITATION_IMPACT_BY_BAND[
+                self._absent_millimetre_band_index(precip_prob, precip_level)
+            ]
         if precip_prob is None:
             if precip_mm <= 0.5:
                 return 0.0
@@ -1361,7 +1637,7 @@ class WeatherFeaturesCalculator:
         ]
 
     def _turnover_multiplier(
-        self, precip_mm: float, precip_prob: float | None
+        self, precip_mm: float | None, precip_prob: float | None
     ) -> float:
         """Wet-ball turnover multiplier.
 
@@ -1372,7 +1648,17 @@ class WeatherFeaturesCalculator:
         not assumed to be zero -- it is a quantity this observation does not
         carry, and the multiplier says so by being narrower rather than by
         inventing the input that would widen it.
+
+        THE SAME RULE, MIRRORED, for a row with no millimetre reading (an archived
+        bulletin): the ``precip_mm`` term is not applied and the dry test reads the
+        probability alone. With neither reading the multiplier is unknown (NaN).
         """
+        if _is_missing(precip_mm):
+            if precip_prob is None:
+                return NAN
+            if precip_prob <= 0.3:
+                return 1.0
+            return min(1.0 + 0.2 + (precip_prob * 0.2), 1.5)
         if precip_prob is None:
             if precip_mm <= 1.0:
                 return 1.0
@@ -1382,7 +1668,9 @@ class WeatherFeaturesCalculator:
         base_increase = 0.2 + (precip_prob * 0.2) + (min(precip_mm, 10.0) / 10.0 * 0.2)
         return min(1.0 + base_increase, 1.5)
 
-    def _passing_efficiency(self, precip_mm: float, precip_prob: float | None) -> float:
+    def _passing_efficiency(
+        self, precip_mm: float | None, precip_prob: float | None
+    ) -> float:
         """Completion-percentage multiplier in the wet.
 
         RANGE: with a probability, 0.85 to 1.0; without one the
@@ -1391,7 +1679,16 @@ class WeatherFeaturesCalculator:
         ``precip_mm <= 0.5`` -- the module's OWN millimetre threshold for "no
         meaningful precipitation", already used by ``precip_none`` and by the
         rain/snow test, rather than a new number chosen here.
+
+        Mirrored for a row with no millimetre reading: the ``precip_mm`` term is not
+        applied; with neither reading the multiplier is unknown (NaN).
         """
+        if _is_missing(precip_mm):
+            if precip_prob is None:
+                return NAN
+            if precip_prob <= 0.3:
+                return 1.0
+            return max(0.85, 1.0 - (precip_prob * 0.15))
         if precip_prob is None:
             if precip_mm <= 0.5:
                 return 1.0
@@ -1518,6 +1815,7 @@ class WeatherFeaturesCalculator:
         *,
         weather_df: pd.DataFrame | None = None,
         unobserved_game_ids: frozenset[str] = frozenset(),
+        build_instant: datetime | None = None,
     ) -> pd.DataFrame:
         """
         Build weather features for all games.
@@ -1547,6 +1845,9 @@ class WeatherFeaturesCalculator:
                 weeks that were never ingested (Plan 33-18, owner ruling W1 of
                 2026-09-15); a game NOT named here that has no record is still
                 refused by name -- including every game in the week being predicted.
+            build_instant: The instant this build runs, the upper bound of the ONE
+                weather fence (``min(game_lock, build_instant)``). ``None`` means now.
+                A forecast issued after it does not exist yet and is never admitted.
 
         Returns:
             DataFrame with weather features added (full 38+ columns, uncompressed)
@@ -1589,6 +1890,9 @@ class WeatherFeaturesCalculator:
                 weather_df = weather_df[weather_df["game_id"].isin(game_ids)]
 
             weather_features = []
+            fence_build_instant = (
+                build_instant if build_instant is not None else datetime.now(UTC)
+            )
 
             for _, game in games_df.iterrows():
                 game_id = game["game_id"]
@@ -1606,9 +1910,15 @@ class WeatherFeaturesCalculator:
                     weather_features.append(game_features)
                     continue
 
-                # Use most recent weather forecast for this game
-                latest_weather = game_weather.sort_values("forecast_time").iloc[-1]
-                weather_data = latest_weather.to_dict()
+                # THE ONE FENCE (see select_weather_row): the latest forecast known by
+                # min(this game's lock, the build instant). It replaced an unfenced
+                # `sort_values("forecast_time").iloc[-1]`.
+                weather_data, known_at = select_weather_row(
+                    game_weather,
+                    game.get("kickoff_et"),
+                    fence_build_instant,
+                    game_id=game_id,
+                )
 
                 # Basic game identifiers
                 game_features: dict[str, Any] = {
@@ -1616,6 +1926,24 @@ class WeatherFeaturesCalculator:
                     "season": season,
                     "week": week,
                 }
+
+                if _no_forecast_the_game_may_see(weather_data, known_at):
+                    # NO FORECAST THE GAME MAY SEE: none admissible by the fence, only an
+                    # observation (never a forecast), or an outdoor record that carries
+                    # no forecast. Weather still APPLIES -- the venue says so -- but the
+                    # forecast is absent, so the row is NULL-plus-flag. Nothing observed
+                    # stands in for it, under any name.
+                    game_features.update(
+                        self._absent_observation_features(
+                            is_outdoor=bool(
+                                game_weather["is_outdoor"].astype(bool).any()
+                            )
+                            if "is_outdoor" in game_weather.columns
+                            else True
+                        )
+                    )
+                    weather_features.append(game_features)
+                    continue
 
                 covered = _row_is_covered(weather_data)
                 is_outdoor = bool(weather_data.get("is_outdoor", False))
@@ -1865,6 +2193,89 @@ class WeatherFeaturesCalculator:
         return True
 
     # ------------------------------------------------------------------
+    # InformationTimeProvider (features.protocol, Plan 33.2-01's owned contract),
+    # supplied HERE because this plan owns the weather fence: the selector is the only
+    # thing that knows which bulletin a game used (33.2-REPLAN-RULINGS.md).
+    # ------------------------------------------------------------------
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        """What a forecast-less weather row must carry: see WEATHER_NO_INFORMATION_SIGNATURE."""
+        return dict(WEATHER_NO_INFORMATION_SIGNATURE)
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+        weather_df: pd.DataFrame | None = None,
+        feature_game_ids: frozenset[str] | None = None,
+        build_instant: datetime | None = None,
+    ) -> pd.DataFrame:
+        """One provenance row per game in the gold-feeding weather frame.
+
+        * A game whose selection (``select_weather_row``, the ONE fence) admitted a forecast
+          for an outdoor, covered row: ``basis="per_row"`` and the ``forecast_known_at`` of
+          THE ROW ACTUALLY SELECTED.
+        * A forecast-less game -- a dome (``is_outdoor`` false), an absence
+          (``weather_coverage`` false), a game with no admissible forecast or no silver row
+          at all: ``basis="no_information"`` and a NULL time. Its values are then CHECKED
+          against :meth:`no_information_signature` by the gate, never believed.
+
+        Args:
+            games_df: The build's games (``game_id``, ``kickoff_et``).
+            target_season: Optional season filter, applied as the builder applies it.
+            target_week: Optional week filter, likewise.
+            weather_df: The silver weather frame; read from the store when ``None``.
+            feature_game_ids: Restrict the map to these games; ``None`` means every game
+                in *games_df*. The gold build's weather frame is scoped to its games and
+                carries a row for each (the builder refuses a game with no silver row), so
+                one row per build game covers it one-to-one; a game the frame lacks is a
+                coverage gap the gate refuses by name.
+            build_instant: The fence's build-instant bound; ``None`` means now.
+
+        Returns:
+            A frame with exactly ``PROVENANCE_COLUMNS``.
+        """
+        games = games_df
+        if target_season and target_week:
+            games = games[
+                (games["season"] == target_season) & (games["week"] == target_week)
+            ]
+        if weather_df is None:
+            weather_df = load_dataframe(SILVER_WEATHER_TABLE, "silver", "parquet")
+        instant = build_instant if build_instant is not None else datetime.now(UTC)
+        by_game = {str(gid): rows for gid, rows in weather_df.groupby("game_id")}
+
+        records: list[dict[str, Any]] = []
+        for game in games.to_dict("records"):
+            game_id = str(game["game_id"])
+            if feature_game_ids is not None and game_id not in feature_game_ids:
+                continue
+            rows = by_game.get(game_id)
+            known_at = None
+            if rows is not None:
+                row, known_at = select_weather_row(
+                    rows, game.get("kickoff_et"), instant, game_id=game_id
+                )
+                if row is None or not (
+                    _row_is_covered(row) and bool(row.get("is_outdoor", False))
+                ):
+                    known_at = None
+            records.append(
+                {
+                    "game_id": game_id,
+                    "basis": (
+                        InformationBasis.NO_INFORMATION.value
+                        if known_at is None
+                        else InformationBasis.PER_ROW.value
+                    ),
+                    "information_time": known_at,
+                }
+            )
+        return pd.DataFrame(records, columns=list(PROVENANCE_COLUMNS))
+
+    # ------------------------------------------------------------------
     # FeatureBuilder Protocol methods (compressed output)
     # ------------------------------------------------------------------
 
@@ -1920,9 +2331,10 @@ class WeatherFeaturesCalculator:
                 weather_df = load_dataframe(SILVER_WEATHER_TABLE, "silver", "parquet")
             logger.info("Loaded weather data", weather_records=len(weather_df))
 
-            # Time-fence: only use forecasts available before as_of_datetime
-            if "forecast_time" in weather_df.columns:
-                weather_df = weather_df[weather_df["forecast_time"] <= as_of_datetime]
+            # NO FRAME-WIDE FILTER HERE ANY MORE (Plan 33.2-12). A separate
+            # `forecast_time <= as_of_datetime` filter stood here while the full builder
+            # had no fence at all -- two rules. Both builders now call
+            # select_weather_row per game, with as_of_datetime as the build instant.
 
             # Filter to target if specified
             if target_season and target_week:
@@ -1945,8 +2357,26 @@ class WeatherFeaturesCalculator:
                 if len(game_weather) == 0:
                     raise _no_weather_row(game_id)
 
-                latest_weather = game_weather.sort_values("forecast_time").iloc[-1]
-                weather_data: dict[str, Any] = latest_weather.to_dict()
+                selected, known_at = select_weather_row(
+                    game_weather,
+                    game.get("kickoff_et"),
+                    as_of_datetime,
+                    game_id=game_id,
+                )
+                if _no_forecast_the_game_may_see(selected, known_at):
+                    # No forecast the game may see (the same test the full builder
+                    # applies): NULL features, `is_outdoor` still says weather APPLIES.
+                    compressed_rows.append(
+                        {
+                            "game_id": game_id,
+                            "weather_severity_score": NAN,
+                            "wind_mph": NAN,
+                            "is_precipitation": NAN,
+                            "is_outdoor": 1.0,
+                        }
+                    )
+                    continue
+                weather_data: dict[str, Any] = selected
 
                 is_outdoor = bool(weather_data.get("is_outdoor", False))
 

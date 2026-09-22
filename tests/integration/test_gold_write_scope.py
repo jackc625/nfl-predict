@@ -428,6 +428,35 @@ def _elo_source_from(snapshots: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _sandbox_silver_weather(games: pd.DataFrame) -> pd.DataFrame:
+    """One archived day-before bulletin row per game, the values the weather source carries.
+
+    Since Plan 33.2-12 the weather builder is an information-time supplier: it dates each
+    game from the silver ``weather`` row its one fence selected, so a sandbox that seeds the
+    weather FEATURES must also seed the silver rows they came from. Each is issued at the
+    12 UTC cycle of the ET day before kickoff, before the game's 18:00 ET lock.
+    """
+    kickoffs = pd.to_datetime(games["kickoff_et"], utc=True)
+    issued = kickoffs.dt.tz_convert("America/New_York").dt.normalize().dt.tz_localize(
+        None
+    ) - pd.Timedelta(hours=12)
+    issued = issued.dt.tz_localize("UTC")
+    return pd.DataFrame(
+        {
+            "game_id": games["game_id"].to_numpy(),
+            "forecast_time": issued.to_numpy(),
+            "game_time": kickoffs.to_numpy(),
+            "forecast_issue_time": issued.to_numpy(),
+            "weather_source": "historical_forecast",
+            "is_outdoor": True,
+            "weather_coverage": True,
+            "temp_f": 60.0,
+            "wind_mph": 5.0,
+            "humidity_pct": 50.0,
+        }
+    )
+
+
 def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
     """Feature sources in the real shape, with the identity columns on `games`.
 
@@ -544,6 +573,9 @@ def _build_into_sandbox(
     storage_mod._parquet_manager.save(seeded_games, "silver/games.parquet")
     storage_mod._parquet_manager.save(
         _honest_elo_snapshots(seeded_games), "silver/elo_game_snapshots.parquet"
+    )
+    storage_mod._parquet_manager.save(
+        _sandbox_silver_weather(seeded_games), "silver/weather.parquet"
     )
 
     builder = FeatureMatrixBuilder()

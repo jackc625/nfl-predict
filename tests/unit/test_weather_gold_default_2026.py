@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import inspect
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -67,9 +67,16 @@ UNHELD_SEASON = 2025
 HELD_GAME_ID = "2026_W02_KC@BUF"
 UNHELD_GAME_ID = "2025_W02_KC@BUF"
 FORECAST_TIME = datetime(2026, 9, 11, 18, 0)
-# NAIVE on purpose: `build_features` time-fences against the silver
-# `forecast_time` column, which this repository writes naive.
-AS_OF = datetime(2026, 9, 11, 20, 0)
+# AWARE since Plan 33.2-12: the one weather fence admits a row when its forecast time is at
+# or before min(the game's lock, the build instant) and refuses a naive instant rather than
+# relabelling it. The silver row below is a LIVE forecast row, fetched two days before a
+# Sunday 13:00 ET kickoff in its own season, so it is admitted for either season.
+AS_OF = datetime(2026, 9, 11, 20, 0, tzinfo=UTC)
+
+
+def _season_instant(game_id: str, month_day_time: str) -> pd.Timestamp:
+    return pd.Timestamp(f"{game_id[:4]}-{month_day_time}", tz="UTC")
+
 
 # The four columns the compressed builder emits beside `game_id`.
 COMPRESSED_FEATURE_COLUMNS = (
@@ -89,7 +96,16 @@ HELD_NULL_COLUMNS = tuple(
 
 
 def _games(season: int, game_id: str) -> pd.DataFrame:
-    return pd.DataFrame([{"game_id": game_id, "season": season, "week": 2}])
+    return pd.DataFrame(
+        [
+            {
+                "game_id": game_id,
+                "season": season,
+                "week": 2,
+                "kickoff_et": _season_instant(game_id, "09-13 17:00"),
+            }
+        ]
+    )
 
 
 def _silver(game_id: str) -> pd.DataFrame:
@@ -104,7 +120,8 @@ def _silver(game_id: str) -> pd.DataFrame:
         [
             {
                 "game_id": game_id,
-                "forecast_time": FORECAST_TIME,
+                "forecast_time": _season_instant(game_id, "09-11 18:00"),
+                "weather_source": "forecast",
                 "is_outdoor": True,
                 "weather_coverage": True,
                 "temp_f": 24.0,

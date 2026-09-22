@@ -131,7 +131,16 @@ def _weather_row(game_id: str) -> dict:
         "is_windy": False,
         "is_precipitation": True,
         "created_at": WRITTEN,
-        "weather_source": "archive" if season < CURRENT[0] else "forecast",
+        # A PAST season's row is an archived day-before bulletin since Plan 33.2-12 (rung 4
+        # replaced the ERA5 observations), stamped with the 12 UTC cycle of the day before
+        # kickoff; the current season's row is a live forecast. Both are admitted by the one
+        # weather fence, whose forecast time must be at or before the game's lock.
+        "weather_source": "historical_forecast" if season < CURRENT[0] else "forecast",
+        "forecast_issue_time": (
+            kickoff.normalize() - pd.Timedelta(hours=12)
+            if season < CURRENT[0]
+            else None
+        ),
         "weather_coverage": True,
     }
 

@@ -636,6 +636,12 @@ class FeatureMatrixBuilder:
                         (weather_df["season"] == target_season)
                         & (weather_df["week"] == target_week)
                     ]
+                # SCOPED TO THIS BUILD'S GAMES (Plan 33.2-12). The frame is left-merged
+                # onto `games`, so a row for a game outside the build never reached gold;
+                # but the information-time gate checks the SOURCE frame one-to-one
+                # against a lock per game, and a silver row for a game this build does
+                # not carry (a 2026 game under --through-season 2025) has no lock.
+                weather_df = weather_df[weather_df["game_id"].isin(games_df["game_id"])]
                 feature_sources["weather"] = weather_df
                 logger.info("Loaded weather features", records=len(weather_df))
             except _SOURCE_LOAD_ERRORS as e:
@@ -944,8 +950,11 @@ class FeatureMatrixBuilder:
         """Stage 1: every registered source's per-game information time vs its lock.
 
         A STAGED ROLLOUT, NEVER AN EXEMPTION. At Plan 33.2-01 only ``elo`` satisfies
-        ``InformationTimeProvider``. The remaining keys gain suppliers in the plans that
-        make them lock-honest (33.2-12 .. 33.2-17); Plan 33.2-16 brings the
+        ``InformationTimeProvider``. ``weather`` is registered HERE by Plan 33.2-12 (at
+        Plan 33.2-14's ledger line for it): ``WeatherFeaturesCalculator`` supplies both
+        provenance members because rung 4 owns the weather fence and only the selector
+        knows which bulletin a game used. The remaining keys gain suppliers in the plans
+        that make them lock-honest (33.2-13 .. 33.2-17); Plan 33.2-16 brings the
         opponent-adjusted family into the loop; and Plan 33.2-20 arms the refusal of any
         key with no provenance once every source has one. Until then the unchecked keys
         are NAMED in the CoverageReport, which is logged at every build -- no source is

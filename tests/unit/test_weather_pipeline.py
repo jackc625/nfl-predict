@@ -597,11 +597,20 @@ class TestWeatherSourceOnTheSilverTable:
         The assertion still pins an EXACT declared width against a constant in the
         manifest; only which constant it reads has moved, and the superseded
         `WEATHER_COLUMNS_AFTER = 24` is retained in source with its own history.
+
+        RE-TARGETED AGAIN by Plan 33.2-12 (p332_ rung 4), in the same way. Plan 33.2-11
+        declared five MOS fields on WeatherSchema and recorded the schema's width, 30, as
+        `P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS`, naming Plan 33.2-12's regeneration as
+        the write that widens the stored table. That write happened, so the stored table
+        is now the schema's full width; `WEATHER_COLUMNS_AFTER_COVERAGE = 25` is retained
+        in the manifest as history.
         """
         from tests import phase33_state
 
         frame = pd.read_parquet("data/silver/weather.parquet")
-        assert len(frame.columns) == phase33_state.WEATHER_COLUMNS_AFTER_COVERAGE
+        assert (
+            len(frame.columns) == phase33_state.P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS
+        )
         assert "weather_source" in frame.columns
         assert "weather_coverage" in frame.columns
 
@@ -616,13 +625,19 @@ class TestWeatherSourceOnTheSilverTable:
         was never about. `2024_W06_` names exactly the original fourteen -- still
         fourteen, still every one of them stamped `archive` -- so the assertion
         tests what it always tested.
+
+        THE STAMP MOVED WITH THE SOURCE (Plan 33.2-12, p332_ rung 4). Rung 4 replaced
+        every 2002-2025 ERA5 observation -- these fourteen included -- with the archived
+        day-before forecast, so the same fourteen rows now read `historical_forecast`.
+        What is still tested is the claim: the rows are all there and each says, from the
+        closed vocabulary, where it came from.
         """
         from tests import phase33_state
 
         frame = pd.read_parquet("data/silver/weather.parquet")
         pre_existing = frame[frame["game_id"].str.startswith("2024_W06_")]
         assert len(pre_existing) == phase33_state.WEATHER_ROWS_BEFORE
-        assert set(pre_existing["weather_source"]) == {"archive"}
+        assert set(pre_existing["weather_source"]) == {"historical_forecast"}
 
     def test_no_stored_row_carries_a_value_outside_the_vocabulary(self):
         import scripts.ingest_weather as ingest

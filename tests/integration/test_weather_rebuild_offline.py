@@ -217,6 +217,23 @@ def lift_sandbox_games_to_post_wave_12(sandbox: Path) -> bool:
     return True
 
 
+def scope_sandbox_games_to_the_corpus(sandbox: Path) -> int:
+    """Cut the sandbox's silver ``games`` to the corpus seasons; return the rows dropped.
+
+    FOUND BY PLAN 33.2-12, and pre-existing: production silver ``games`` now carries the
+    live 2026 season (the Phase 33-18 capture), and the ERA5 corpus this class rebuilds
+    covers 2002-2025 only, so ``step_build_weather_features`` refused the first 2026 game
+    with no weather row (``2026_W02_DET@BUF``) -- measured at HEAD before any Plan 33.2-12
+    change. The 2026 games are not part of the corpus this proof is about, so the sandbox
+    is scoped to it rather than the step's refusal being loosened.
+    """
+    games_path = sandbox / "silver" / "games.parquet"
+    games = pd.read_parquet(games_path, engine="pyarrow")
+    scoped = games[games["season"].between(CORPUS_FIRST_SEASON, CORPUS_LAST_SEASON)]
+    scoped.to_parquet(games_path, engine="pyarrow", index=False)
+    return len(games) - len(scoped)
+
+
 def populate_sandbox(sandbox: Path, silver_root: Path | None = None) -> list[Path]:
     """Copy the 24 bronze snapshots and every required silver table into *sandbox*.
 
@@ -305,6 +322,7 @@ class TestSilverAndGoldRebuildOffline:
         # the shape the requirement assumes. Production is untouched, and whether
         # the lift was needed is recorded by its own test below.
         lift_sandbox_games_to_post_wave_12(sandbox)
+        scope_sandbox_games_to_the_corpus(sandbox)
         assert len(snapshots) == EXPECTED_SNAPSHOTS, (
             f"the sandbox holds {len(snapshots)} bronze snapshots, not "
             f"{EXPECTED_SNAPSHOTS} -- one per season 2002 through 2025."
@@ -446,6 +464,80 @@ class TestSilverAndGoldRebuildOffline:
             "layer='gold') at build_features.py:1935 is a read-back inside the "
             "save path and must not be treated as an input."
         )
+
+
+# ---------------------------------------------------------------------------
+# PLAN 33.2-12 (p332_ rung 4): THE HISTORY PATH IS NOW THE MOS BRONZE.
+#
+# Since rung 4, 2002-2025 silver `weather` and `weather_features` are regenerated from the
+# archived day-before NWS MOS bulletins in data/bronze/mos/ (scripts/weather_from_mos.py,
+# `scripts.build_weather --all-seasons --from-bronze`), not promoted from the ERA5 corpus.
+# The class above still proves the (quarantined) ERA5 promotion chain rebuilds offline; the
+# class below proves the path production now uses does.
+# ---------------------------------------------------------------------------
+
+MOS_BRONZE = PRODUCTION_BRONZE / "mos"
+MOS_REBUILT_TABLES = ("weather", "weather_features")
+
+requires_mos_bronze = pytest.mark.skipif(
+    not any(MOS_BRONZE.glob("mos_bulletins_raw_bronze_*.parquet")),
+    reason=(
+        "data/bronze/mos/ is absent (data/ is gitignored). Produce it with: "
+        "    uv run python -m scripts.backfill_mos_forecasts --seasons 2002-2025 --apply"
+    ),
+)
+
+
+class TestTheMosHistoryRebuildsOfflineByteIdentically:
+    """Regenerating silver weather from bronze, network denied, is byte-reproducible."""
+
+    @requires_mos_bronze
+    @pytest.mark.slow
+    def test_regeneration_is_offline_idempotent_and_reproduces_production(
+        self, tmp_path, data_boundary_guard, artifacts_boundary_guard
+    ):
+        """The network is denied by the regeneration's own counting guard.
+
+        Not layered on the module's ``deny_network`` fixture: that fixture replaces
+        ``socket.socket`` itself, and the counting guard patches ``socket.socket.connect``
+        so it can report HOW MANY connections were attempted, not merely that one was.
+        """
+        from scripts.weather_from_mos import deny_network as counting_guard
+        from scripts.weather_from_mos import regenerate_history
+
+        root = tmp_path / "mos_sandbox"
+        (root / "silver").mkdir(parents=True)
+        shutil.copytree(MOS_BRONZE, root / "bronze" / "mos")
+        for table in ("games", *MOS_REBUILT_TABLES):
+            shutil.copy2(
+                PRODUCTION_SILVER / f"{table}.parquet",
+                root / "silver" / f"{table}.parquet",
+            )
+
+        written: list[dict[str, bytes]] = []
+        for _ in range(2):
+            calls = [0]
+            with counting_guard(calls):
+                report = regenerate_history(root)
+            assert calls[0] == 0, f"{calls[0]} network connection(s) were attempted"
+            assert report.observation_rows == 0
+            written.append(
+                {
+                    table: (root / "silver" / f"{table}.parquet").read_bytes()
+                    for table in MOS_REBUILT_TABLES
+                }
+            )
+
+        assert written[0] == written[1], (
+            "a second regeneration over its own output wrote different bytes: the "
+            "regeneration is not a function of the bronze it reads"
+        )
+        for table in MOS_REBUILT_TABLES:
+            pd.testing.assert_frame_equal(
+                pd.read_parquet(root / "silver" / f"{table}.parquet"),
+                pd.read_parquet(PRODUCTION_SILVER / f"{table}.parquet"),
+                obj=f"silver {table}: sandbox regeneration vs production",
+            )
 
 
 # ---------------------------------------------------------------------------
