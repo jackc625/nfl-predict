@@ -911,8 +911,11 @@ def _sandbox_builder(monkeypatch, tmp_path):
     # sandbox has no snap table: without this frame the injury source would fail to load
     # and become EMPTY, and the build would run on past Stage 1.
     builder.snap_builder._snaps_df = _empty_snap_builder()._snaps_df
-    # LeakageGate.write_diagnostic_report defaults to the PRODUCTION outputs/diagnostics
-    # tree. Any refusal this module provokes past Stage 1 must write under tmp_path.
+    # Plan 33.2-20 removed the writer's PRODUCTION default, so a caller that does not
+    # name a directory no longer silently writes into outputs/diagnostics. This redirect
+    # stays because the caller here is ``generate_feature_matrices`` itself, which names
+    # the production tree: a refusal this module provokes past Stage 1 must still land
+    # under tmp_path.
     real_writer = builder.leakage_gate.write_diagnostic_report
     monkeypatch.setattr(
         builder.leakage_gate,

@@ -289,21 +289,30 @@ class LeakageGate:
     def write_diagnostic_report(
         self,
         violation: LeakageViolation,
-        output_dir: str | None = None,
+        output_dir: str | Path,
     ) -> str:
         """Write a JSON diagnostic report for a LeakageViolation.
 
+        ``output_dir`` IS REQUIRED AND HAS NO DEFAULT (Plan 33.2-20). It used to default
+        to the PRODUCTION ``outputs/diagnostics/`` tree, so ANY test that drove a build
+        into a Stage-2 refusal wrote a file there -- which is how
+        ``outputs/diagnostics/leakage_20260921_221559.json`` appeared during Plan
+        33.2-13's Task 3. A caller that does not say where the report goes is a caller
+        that has not decided, and "production" is the wrong thing to decide for it.
+        Plan 33.2-01 made the information-time refusal write no file at all for the same
+        reason.
+
+        The one production caller (``scripts.build_features.generate_feature_matrices``)
+        now names the production tree explicitly; every test names its own ``tmp_path``.
+
         Args:
             violation: The violation to report.
-            output_dir: Directory to write the report to. Defaults to
-                outputs/diagnostics/.
+            output_dir: Directory to write the report to. REQUIRED; there is no
+                production default.
 
         Returns:
             Absolute path to the written report file.
         """
-        if output_dir is None:
-            output_dir = str(project_root / "outputs" / "diagnostics")
-
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 

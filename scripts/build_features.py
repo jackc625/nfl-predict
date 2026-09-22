@@ -3091,7 +3091,14 @@ class FeatureMatrixBuilder:
                     combined_features, as_of_datetime
                 )
             except LeakageViolation as e:
-                self.leakage_gate.write_diagnostic_report(e)
+                # THE PRODUCTION TREE IS NAMED HERE, not defaulted inside the writer
+                # (Plan 33.2-20). ``write_diagnostic_report`` used to default to
+                # ``outputs/diagnostics/``, so every test that drove a build into this
+                # refusal wrote into the production tree. The default is gone and this,
+                # the ONE production caller, says where the report goes.
+                self.leakage_gate.write_diagnostic_report(
+                    e, output_dir=project_root / "outputs" / "diagnostics"
+                )
                 raise
 
             # Handle missing data and outliers

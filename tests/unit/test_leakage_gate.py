@@ -186,6 +186,101 @@ def test_write_diagnostic_report_produces_valid_json(gate):
 
 
 # ---------------------------------------------------------------------------
+# Test 6b (Plan 33.2-20): the writer has NO production default
+# ---------------------------------------------------------------------------
+
+
+def test_write_diagnostic_report_requires_an_output_directory(gate):
+    """A caller that does not say where the report goes must not get production.
+
+    The parameter used to default to ``outputs/diagnostics/``, so any test that drove a
+    build into a Stage-2 refusal wrote a file into the production tree -- which is how
+    ``outputs/diagnostics/leakage_20260921_221559.json`` appeared during Plan 33.2-13.
+    The default is gone; omitting the argument is now a TypeError, not a silent
+    production write.
+    """
+    import inspect
+
+    signature = inspect.signature(gate.write_diagnostic_report)
+    parameter = signature.parameters["output_dir"]
+    assert parameter.default is inspect.Parameter.empty, (
+        "write_diagnostic_report.output_dir carries a default again "
+        f"({parameter.default!r}). A default here is a production write nobody asked "
+        "for; the one production caller names the tree explicitly."
+    )
+
+    violation = LeakageViolation("Test violation", details={"violation_type": "x"})
+    with pytest.raises(TypeError):
+        gate.write_diagnostic_report(violation)
+
+
+def test_the_module_names_no_production_diagnostics_directory(gate):
+    """Structural: no call in features/validation.py builds outputs/diagnostics."""
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2] / "features" / "validation.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # DOCSTRINGS AND OTHER BARE STRING STATEMENTS ARE OUT OF THE SUBJECT, deliberately.
+    # The docstring above explains why the default was removed and has to be able to say
+    # the words "outputs/diagnostics"; a scan that could not tell that apart from a live
+    # path constant would force the explanation out of the file. A bare string statement
+    # is an ``ast.Expr`` whose value is the constant, and it can never build a path.
+    # Every constant that COULD -- an assignment value, a call argument, a ``/`` operand
+    # -- is still read.
+    narrating = {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+    }
+    offenders = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "diagnostics" in node.value
+        and id(node) not in narrating
+    ]
+    assert offenders == [], (
+        f"features/validation.py names a diagnostics directory at line(s) {offenders}. "
+        "The destination is the CALLER's decision; a path constant here is the "
+        "production default coming back under another name."
+    )
+
+
+def test_the_diagnostics_scan_flags_a_planted_path_constant() -> None:
+    """Non-vacuity: the restriction must not have blinded the scan to a real default."""
+    import ast
+
+    planted = ast.parse(
+        '"""A docstring that talks about outputs/diagnostics freely."""\n'
+        "import pathlib\n"
+        'DEFAULT_DIR = "outputs/diagnostics"\n'
+        'OTHER = pathlib.Path("outputs/diagnostics")\n'
+    )
+    narrating = {
+        id(node.value)
+        for node in ast.walk(planted)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+    }
+    hits = [
+        node.lineno
+        for node in ast.walk(planted)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "diagnostics" in node.value
+        and id(node) not in narrating
+    ]
+    assert hits == [3, 4], (
+        f"the scan found {hits!r}. It must flag the assignment value (line 3) and the "
+        "call argument (line 4) and must not flag the docstring (line 1)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 7: check_elo_ordering raises on out-of-order updates
 # ---------------------------------------------------------------------------
 
