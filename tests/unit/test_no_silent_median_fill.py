@@ -10,9 +10,15 @@ ingest wiring that makes them matter:
   excluded from the generic imputer and keeps its NaN through normalization; the injury family's
   ``*_coverage`` flags read 0.0. Its provenance is ``no_information``.
 * THE SCOPE CONTROL, which is why this module exists in this shape. A NON-empty family with a
-  WITHIN-SEASON gap is imputed exactly as before. The WHOLE-SEASON-absence case (a family with no
-  rows for one season while other seasons have them) is deliberately NOT pinned here: Plan
-  33.2-17 changes it at rung 8 and extends this module to assert it.
+  WITHIN-SEASON gap is still imputed (Plan 33.2-15 owns this case; since p332_ step 7b the fill
+  reads only games ended by the gap's lock, and a gap at the end of a season -- the one pinned
+  here -- takes the same team mean either way).
+* THE WHOLE-SEASON CASE (Plan 33.2-17 Task 2 owns it; it first reaches gold at rung 8). A family
+  that declares a coverage flag and has NO value in a column for a whole season stays NaN --
+  not the strictly-prior-seasons median -- and the NaN survives normalization. A family with no
+  flag is untouched by it (the control). And the snap / injury BUILDERS emit that honest
+  unknown -- NaN beside a false flag, never 0.0 -- for every game before the feed's first
+  covered season.
 * A SOURCE SCAN over ``scripts/build_features.py`` with its four structural controls.
 * A REGRESSION CONTROL: two weeks with genuinely different snap inputs produce different snap
   values (the measured defect was two weeks producing the same ones).
@@ -113,7 +119,19 @@ def _combined(
 
 
 def _snap_columns() -> list[str]:
-    return list(SnapCountBuilder(snaps_df=pd.DataFrame()).no_information_signature())
+    """The snap VALUE columns.
+
+    Was: every key of ``no_information_signature()``. Plan 33.2-17 added ``snap_coverage``, a
+    FLAG that reads 0.0 (not NaN) for an unmeasured game, so the value columns exclude it and
+    the flag is asserted separately.
+    """
+    signature = SnapCountBuilder(snaps_df=pd.DataFrame()).no_information_signature()
+    return [c for c in signature if not c.endswith("_coverage")]
+
+
+def _snap_flags() -> list[str]:
+    signature = SnapCountBuilder(snaps_df=pd.DataFrame()).no_information_signature()
+    return [c for c in signature if c.endswith("_coverage")]
 
 
 def _injury_columns() -> tuple[list[str], list[str]]:
@@ -149,6 +167,8 @@ class TestAnEmptySnapFamilyIsUnknown:
         for column in columns:
             assert column in processed.columns, column
             assert processed[column].isna().all(), column
+        for flag in _snap_flags():
+            assert (processed[flag] == 0.0).all(), flag
         assert builder.empty_source_families == {"snaps": tuple(columns)}
 
     def test_an_all_null_snap_frame_keeps_its_nan_through_normalization(self) -> None:
@@ -239,6 +259,9 @@ class TestTheGuardedFamiliesAreDeclared:
     def test_exactly_snaps_and_injury(self) -> None:
         assert EMPTY_SOURCE_GUARDED_FAMILIES == ("snaps", "injury")
 
+    def test_the_flag_declaring_families_are_the_same_two(self) -> None:
+        assert build_features_module.COVERAGE_FLAGGED_FAMILIES == ("snaps", "injury")
+
 
 # ---------------------------------------------------------------------------
 # THE SCOPE CONTROL: a within-season gap in a non-empty family is imputed exactly as before.
@@ -267,6 +290,199 @@ class TestAWithinSeasonGapIsImputedExactlyAsBefore:
         team = combined.loc[hole, "home_team"]
         mask = (combined["home_team"] == team) & (combined["season"] == 2024)
         assert filled == combined.loc[mask, column].mean()
+
+
+# ---------------------------------------------------------------------------
+# THE WHOLE-SEASON CASE (Plan 33.2-17 Task 2): a flag-declaring family's empty season is NaN.
+# ---------------------------------------------------------------------------
+
+
+def _two_season_snap_frame() -> tuple[FeatureMatrixBuilder, pd.DataFrame]:
+    """2024 carries real snap values; 2025 carries NONE (every value NaN, the flag 0.0)."""
+    # Twelve 2024 weeks: more than ``_MIN_FIT_POINTS`` prior values, so a prior median EXISTS
+    # and the guard (not a thin prior season) is what keeps 2025 empty.
+    games = pd.concat(
+        [_games(2024, weeks=12), _games(2025, weeks=6)], ignore_index=True
+    )
+    builder = FeatureMatrixBuilder()
+    snaps = SnapCountBuilder(snaps_df=_snap_rows(2024, 12), schedule_df=games)
+    snap_frame = snaps.build_features(games, datetime.now(UTC))
+    late = snap_frame["game_id"].str.startswith("2025")
+    snap_frame.loc[late, _snap_columns()] = np.nan
+    snap_frame.loc[late, _snap_flags()] = 0.0
+    combined = _combined(builder, games, snap_frame, _injury_frame(games))
+    assert builder.empty_source_families == {}, "the source frame is NOT empty"
+    return builder, combined
+
+
+class TestAFlagDeclaringFamilysEmptySeasonStaysNaN:
+    def test_non_vacuity_2024_carries_values(self) -> None:
+        _builder, combined = _two_season_snap_frame()
+        early = combined.loc[combined["season"] == 2024, _snap_columns()]
+        assert early.notna().any().any()
+
+    def test_the_empty_season_is_not_filled_from_the_prior_median(self) -> None:
+        builder, combined = _two_season_snap_frame()
+        processed = builder.handle_missing_data_and_outliers(combined)
+        late = processed.loc[processed["season"] == 2025, _snap_columns()]
+        assert late.isna().all().all(), (
+            "a season with no snap data was filled with a borrowed value -- the mechanism "
+            "behind 2025 weeks 3 and 15 coming out identical"
+        )
+
+    def test_the_empty_season_keeps_its_nan_through_normalization(self) -> None:
+        builder, combined = _two_season_snap_frame()
+        combined["weather_coverage"] = 1.0
+        combined["temp_f"] = 60.0
+        weather = combined[["game_id", "weather_coverage", "temp_f"]]
+        builder.record_missing_preserving_columns(weather)
+        processed = builder.handle_missing_data_and_outliers(combined)
+        normalized = builder.normalize_combined_features(processed)
+        late = normalized.loc[normalized["season"] == 2025, _snap_columns()]
+        assert late.isna().all().all()
+
+    def test_a_family_with_no_flag_still_takes_the_prior_median(self) -> None:
+        # The control: the guard is keyed on the family's flag, not applied to every column.
+        builder, combined = _two_season_snap_frame()
+        combined["home_off_rolling_cpoe"] = np.where(
+            combined["season"] == 2024, np.linspace(1.0, 2.0, len(combined)), np.nan
+        )
+        processed = builder.handle_missing_data_and_outliers(combined)
+        late = processed.loc[processed["season"] == 2025, "home_off_rolling_cpoe"]
+        assert late.notna().all()
+
+
+class TestTheBuildersEmitTheHonestUnknownBeforeCoverage:
+    """The first covered season is DERIVED from the rows upstream supplied, never a literal."""
+
+    @staticmethod
+    def _snap_output() -> tuple[pd.DataFrame, pd.DataFrame]:
+        games = pd.concat(
+            [_games(2012, weeks=4), _games(2013, weeks=4)], ignore_index=True
+        )
+        frame = SnapCountBuilder(
+            snaps_df=_snap_rows(2013, 4), schedule_df=games
+        ).build_features(games, datetime.now(UTC))
+        return games, frame.merge(games[["game_id", "season", "week"]], on="game_id")
+
+    def test_before_the_first_snap_season_every_value_is_nan_and_the_flag_false(
+        self,
+    ) -> None:
+        _games_frame, frame = self._snap_output()
+        before = frame[frame["season"] == 2012]
+        assert len(before) > 0, "non-vacuity"
+        assert before[_snap_columns()].isna().all().all()
+        assert (before[_snap_flags()] == 0.0).all().all()
+        assert not (before[_snap_columns()] == 0.0).any().any()
+
+    def test_the_first_snap_season_is_populated_with_the_flag_true(self) -> None:
+        _games_frame, frame = self._snap_output()
+        first = frame[frame["season"] == 2013]
+        for side in ("home", "away"):
+            flag = f"{side}_snap_coverage"
+            values = [c for c in _snap_columns() if c.startswith(f"{side}_")]
+            measured = first[flag] == 1.0
+            assert measured.any(), "populated from the first season with snap rows"
+            populated = first.loc[measured, values].drop(
+                columns=[f"{side}_snap_continuity"]
+            )
+            assert populated.notna().all().all()
+            # A team whose window admitted no snap game yet (its first game) is the unknown.
+            assert first.loc[~measured, values].isna().all().all()
+
+    def test_snap_coverage_is_in_the_list_the_builder_emits(self) -> None:
+        columns = SnapCountBuilder(snaps_df=pd.DataFrame())._feature_columns()
+        assert "snap_coverage" in columns
+        _games_frame, frame = self._snap_output()
+        assert {"home_snap_coverage", "away_snap_coverage"} <= set(frame.columns)
+
+    def test_an_injury_game_with_nothing_admitted_is_nan_with_its_flags_false(
+        self,
+    ) -> None:
+        from features.injury import InjuryBuilder
+
+        games = _games(2008, weeks=2)
+        snap_builder = SnapCountBuilder(snaps_df=pd.DataFrame(), schedule_df=games)
+        builder = InjuryBuilder(
+            snap_builder,
+            injuries_df=pd.DataFrame(),
+            depth_charts_df=pd.DataFrame(),
+            pbp_df=pd.DataFrame(),
+        )
+        frame = builder.build_features(games, datetime.now(UTC))
+        values, flags = _injury_columns()
+        assert frame[values].isna().all().all()
+        assert (frame[flags] == 0.0).all().all()
+        assert not (frame[values] == 0.0).any().any()
+        assert not (frame[values] == 1.0).any().any()
+
+    def test_the_injury_signature_declares_the_same_unknown(self) -> None:
+        from features.injury import InjuryBuilder
+
+        signature = InjuryBuilder(
+            SnapCountBuilder(snaps_df=pd.DataFrame())
+        ).no_information_signature()
+        assert signature, "non-empty: the gate value-checks every no-information row"
+        for column, declared in signature.items():
+            if column.endswith("_coverage"):
+                assert declared == 0.0, column
+            else:
+                assert declared is None, column
+
+
+class TestAMetricThePinnedPlayByPlayLacksIsFlagged:
+    """``rolling_cpoe`` before 2006: the pinned play-by-play carries no completion probability.
+
+    Task 1's corpus widening computes every team-form metric back to 2002, and every one is
+    real there except cpoe, which is NULL in every 2002-2005 row of silver team form (measured
+    2026-09-22). Left alone it would reach gold as the neutral 0.0 after rung 8 -- an unflagged
+    pre-coverage block no other route closes -- so it is the honest unknown with its own flag,
+    under the same coverage-floor cause (Plan 33.2-17 Task 3's routing rule).
+    """
+
+    @staticmethod
+    def _frames() -> tuple[FeatureMatrixBuilder, pd.DataFrame]:
+        games = pd.concat(
+            [_games(2005, weeks=12), _games(2006, weeks=12)], ignore_index=True
+        )
+        form = pd.DataFrame({"game_id": games["game_id"]})
+        for prefix in ("home", "away"):
+            form[f"{prefix}_off_rolling_cpoe"] = np.where(
+                games["season"] == 2006, np.linspace(-2.0, 3.0, len(games)), np.nan
+            )
+            form[f"{prefix}_off_rolling_success_rate"] = np.linspace(
+                0.4, 0.5, len(games)
+            )
+        builder = FeatureMatrixBuilder()
+        combined = builder.combine_features({"games": games, "team_form": form})
+        return builder, combined
+
+    def test_the_flag_states_where_cpoe_was_measured(self) -> None:
+        _builder, combined = self._frames()
+        for prefix in ("home", "away"):
+            flag = combined[f"{prefix}_off_rolling_cpoe_coverage"]
+            value = combined[f"{prefix}_off_rolling_cpoe"]
+            assert ((flag == 1.0) == value.notna()).all()
+            assert (flag[combined["season"] == 2005] == 0.0).all()
+
+    def test_a_metric_that_is_always_present_gets_no_flag(self) -> None:
+        _builder, combined = self._frames()
+        assert "home_off_rolling_success_rate_coverage" not in combined.columns
+
+    def test_the_unmeasured_seasons_stay_nan_through_normalization(self) -> None:
+        builder, combined = self._frames()
+        combined["weather_coverage"] = 1.0
+        combined["temp_f"] = 60.0
+        builder.record_missing_preserving_columns(
+            combined[["game_id", "weather_coverage", "temp_f"]]
+        )
+        processed = builder.handle_missing_data_and_outliers(combined)
+        normalized = builder.normalize_combined_features(processed)
+        early = normalized.loc[normalized["season"] == 2005]
+        assert early["home_off_rolling_cpoe"].isna().all()
+        assert (early["home_off_rolling_cpoe_coverage"] == 0.0).all()
+        late = normalized.loc[normalized["season"] == 2006, "home_off_rolling_cpoe"]
+        assert late.notna().all()
 
 
 # ---------------------------------------------------------------------------
