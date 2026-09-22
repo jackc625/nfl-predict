@@ -10583,6 +10583,640 @@ PHASE332_EXTRA_STEP_SIGNATURES[PHASE332_LOCK_ORDER_STEP] = (
 PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_LOCK_ORDER_STEP] = _attribute_p332_lock_order
 
 
+# ---------------------------------------------------------------------------
+# p332_ EXTRA STEP 8d -- AN UNSCORABLE CELL IS BLANK, NOT THE NEUTRAL ZERO
+# (owner ruling 2026-09-22, "LEAVE THE CELL BLANK"; run THIRD in Plan 33.2-19's
+# dispatch, after steps 8b and 8c and before step 8e and rung 9). Registered per
+# Plan 33.2-08's <owned_protocol_rung_registration> in the extra-step form: a
+# STRING id that cannot collide with rung 9, one cause, one entry in each
+# extra-step dispatch table, no new prefix branch. It FOLLOWS rung 8 like steps 8b
+# and 8c do, and because steps sharing a rung run in REGISTRATION order its
+# baseline is p332_rung8c.json.
+#
+# THE DEFECT. features/normalization.py::expanding_normalize ended with a fill of
+# 0.0 -- the neutral z-score -- for a position whose statistic could not be formed:
+# fewer than min_periods admitted rows AND no usable prior-season bootstrap. A
+# model reads a centred 0.0 as "exactly average", so a value that WAS measured left
+# gold asserting it was perfectly ordinary, and it read 0.0 WHATEVER the input
+# value, so the number said nothing at all. Plan 33.2-18 found it on rung 8's gold
+# and step 8c reduced it without closing it; the owner ruled option (a) on
+# 2026-09-22: the cell is BLANK, beside whatever coverage flag it already carries,
+# for EVERY such cell and not only for the ones whose family declares coverage.
+#
+# THE FIX. The terminal fill writes 0.0 only where the INPUT VALUE was absent. A
+# position whose value EXISTS and whose expanding mean or standard deviation is
+# still absent after the prior-season bootstrap is left blank. The models take a
+# blank natively -- XGBoost's missing branch and the WP model's in-fold imputation
+# with its _was_missing indicator -- which is the reasoning step 7b's blanks rest
+# on. UNCHANGED: the prior-season bootstrap (it runs first and IS a usable
+# statistic), min_periods, preserve_missing_cols, preserve_level_cols, the row set,
+# the returned row order, and a cell whose statistic WAS formed -- including a
+# DEGENERATE window whose admitted values are all identical, where safe_std clips
+# to 1e-8 and the honest z-score is 0.0.
+#
+# THE PREDICTION, MEASURED before the production rebuild on a full scratch build
+# (DATA_ROOT_PATH and DUCKDB_PATH pointed at a copy of today's production data/;
+# production data/ digest-identical across it, 1,128 files):
+#
+# * VALUES -- exactly the 124 columns below move, each only in the seasons named
+#   beside it and identically in all three matrices. EVERY moved cell moves from
+#   exactly 0.0 to blank: measured, 182 cells per matrix, all 182 exactly 0.0
+#   before, 0 cells gaining a value and 0 non-blank value moves anywhere.
+# * NULL COUNTS -- each declared column's null count RISES by exactly the cell
+#   count recorded beside it, and no other column's null count moves. This step is
+#   about null counts, so they are half the prediction rather than a side effect.
+# * PREDICTED UNMOVED -- the 69 feature columns the terminal fill cannot reach:
+#   the level-preserved coverage flags and weather indicators, the display-only
+#   raw_* passthroughs, the five constant market columns, the eight never-populated
+#   defensive team-form copies, and the families whose unscorable cells are ALREADY
+#   blank through preserve_missing_cols (the opponent-adjusted values, cpoe, Elo
+#   momentum). A move in any of them is a finding.
+# * STRUCTURE -- nothing added, nothing removed, widths 201/202/201 and rows 6,499
+#   unchanged.
+#
+# CORRECTION TO THE PRE-STEP ESTIMATE, recorded rather than quietly replaced. The
+# step-8c record (tests.phase33_state.P332_19_STEP8C_NEUTRAL_ZERO_*) estimated 307
+# such cells, 46 of them flag-true and 257 unflagged, from a read-only proxy -- the
+# build's tail replayed twice with a per-row offset. That proxy named EXACTLY the
+# column sets this measurement names (124 / 26 / 98), and its CELL counts are
+# larger: it also counted positions whose statistic WAS formed on a degenerate
+# window. Example measured here: away_qb_out_flag carries 105 cells of exactly 0.0
+# in 2017 alone, every one of them a real z-score of a value equal to its window
+# mean, and none of them unscorable -- the step blanks none of them, and 2017 is
+# not in that column's declared seasons. The binding numbers are the ones below,
+# measured end to end on the build that writes gold.
+# ---------------------------------------------------------------------------
+
+PHASE332_UNSCORABLE_BLANK_STEP: str = "8d"
+
+PHASE332_UNSCORABLE_BLANK_STEP_FOLLOWS: int = PHASE332_WINDOW_RUNG
+
+PHASE332_UNSCORABLE_BLANK_STEP_CAUSE: str = (
+    "AN UNSCORABLE CELL IS BLANK, NOT THE NEUTRAL ZERO, p332_ extra step 8d (owner "
+    "ruling 2026-09-22, 'LEAVE THE CELL BLANK', run third in Plan 33.2-19's dispatch), "
+    "and NOTHING else: features.normalization.expanding_normalize's terminal fill "
+    "writes the neutral 0.0 z-score only where the INPUT VALUE was absent, so a "
+    "position whose value EXISTS but whose expanding mean or standard deviation could "
+    "not be formed at all -- and whose prior-season bootstrap, which still runs first, "
+    "supplies none either -- comes back BLANK beside whatever coverage flag it already "
+    "carries. It applies to EVERY such cell, not only to the ones whose family "
+    "declares coverage. A cell whose statistic WAS formed is untouched, including a "
+    "degenerate window whose admitted values are all identical and whose honest "
+    "z-score is 0.0; min_periods, the prior-season bootstrap, preserve_missing_cols, "
+    "preserve_level_cols, the row set and the returned row order keep their meanings; "
+    "every moved cell moves from exactly 0.0 to blank, no column is added or removed, "
+    "no width moves and no row moves"
+)
+
+#: Every column the step blanks a cell in, mapped to the seasons it may move in.
+#: MEASURED on the scratch preview before the production rebuild.
+PHASE332_UNSCORABLE_BLANK_STEP_SEASONS_BY_COLUMN: dict[str, tuple[str, ...]] = {
+    "apparent_temp_f": ("2002",),
+    "away_abs_timezone_diff_hours": ("2002",),
+    "away_availability_fraction": ("2013",),
+    "away_backup_quality_delta": (
+        "2009",
+        "2010",
+    ),
+    "away_cross_country_travel": ("2002",),
+    "away_def_rolling_pass_success_rate": ("2002",),
+    "away_def_rolling_red_zone_td_rate": ("2002",),
+    "away_def_rolling_rush_success_rate": ("2002",),
+    "away_def_rolling_success_rate": ("2002",),
+    "away_def_rolling_third_down_conversion_rate": ("2002",),
+    "away_eastward_travel": ("2002",),
+    "away_elo": ("2002",),
+    "away_elo_percentile": ("2002",),
+    "away_elo_rank": ("2002",),
+    "away_elo_uncertainty": ("2002",),
+    "away_letdown_spot": ("2002",),
+    "away_look_ahead_spot": ("2002",),
+    "away_off_bye": ("2002",),
+    "away_off_rolling_avg_drive_start_yardline": ("2002",),
+    "away_off_rolling_neutral_pace": ("2002",),
+    "away_off_rolling_neutral_pass_rate": ("2002",),
+    "away_off_rolling_pass_success_rate": ("2002",),
+    "away_off_rolling_red_zone_td_rate": ("2002",),
+    "away_off_rolling_rush_success_rate": ("2002",),
+    "away_off_rolling_success_rate": ("2002",),
+    "away_off_rolling_third_down_conversion_rate": ("2002",),
+    "away_qb_adjustment": ("2002",),
+    "away_qb_out_flag": (
+        "2009",
+        "2010",
+    ),
+    "away_rest_days": ("2002",),
+    "away_rolling_snap_share_db": ("2013",),
+    "away_rolling_snap_share_dl": ("2013",),
+    "away_rolling_snap_share_lb": ("2013",),
+    "away_rolling_snap_share_ol": ("2013",),
+    "away_rolling_snap_share_qb": ("2013",),
+    "away_rolling_snap_share_rb": ("2013",),
+    "away_rolling_snap_share_te": ("2013",),
+    "away_rolling_snap_share_wr": ("2013",),
+    "away_short_rest": ("2002",),
+    "away_snap_concentration": ("2013",),
+    "away_snap_continuity": ("2013",),
+    "away_timezone_diff_hours": ("2002",),
+    "away_travel_distance_miles": ("2002",),
+    "away_travel_fatigue_score": ("2002",),
+    "away_westward_travel": ("2002",),
+    "ball_handling_difficulty": ("2002",),
+    "both_short_rest": ("2002",),
+    "cold_impact_score": ("2002",),
+    "defensive_advantage": ("2002",),
+    "elo_diff": ("2002",),
+    "elo_prob_away": ("2002",),
+    "elo_prob_home": ("2002",),
+    "game_day_of_week": ("2002",),
+    "heat_impact_score": ("2002",),
+    "hfa_used": ("2002",),
+    "home_availability_fraction": ("2013",),
+    "home_backup_quality_delta": ("2010",),
+    "home_def_rolling_pass_success_rate": ("2002",),
+    "home_def_rolling_red_zone_td_rate": ("2002",),
+    "home_def_rolling_rush_success_rate": ("2002",),
+    "home_def_rolling_success_rate": ("2002",),
+    "home_def_rolling_third_down_conversion_rate": ("2002",),
+    "home_elo": ("2002",),
+    "home_elo_percentile": ("2002",),
+    "home_elo_rank": ("2002",),
+    "home_elo_uncertainty": ("2002",),
+    "home_letdown_spot": ("2002",),
+    "home_look_ahead_spot": ("2002",),
+    "home_off_bye": ("2002",),
+    "home_off_rolling_avg_drive_start_yardline": ("2002",),
+    "home_off_rolling_neutral_pace": ("2002",),
+    "home_off_rolling_neutral_pass_rate": ("2002",),
+    "home_off_rolling_pass_success_rate": ("2002",),
+    "home_off_rolling_red_zone_td_rate": ("2002",),
+    "home_off_rolling_rush_success_rate": ("2002",),
+    "home_off_rolling_success_rate": ("2002",),
+    "home_off_rolling_third_down_conversion_rate": ("2002",),
+    "home_qb_adjustment": ("2002",),
+    "home_qb_out_flag": ("2010",),
+    "home_rest_days": ("2002",),
+    "home_rolling_snap_share_db": ("2013",),
+    "home_rolling_snap_share_dl": ("2013",),
+    "home_rolling_snap_share_lb": ("2013",),
+    "home_rolling_snap_share_ol": ("2013",),
+    "home_rolling_snap_share_qb": ("2013",),
+    "home_rolling_snap_share_rb": ("2013",),
+    "home_rolling_snap_share_te": ("2013",),
+    "home_rolling_snap_share_wr": ("2013",),
+    "home_short_rest": ("2002",),
+    "home_snap_concentration": ("2013",),
+    "home_snap_continuity": ("2013",),
+    "home_weather_advantage": ("2002",),
+    "is_away_game": (
+        "2002",
+        "2003",
+        "2004",
+        "2005",
+        "2006",
+        "2007",
+        "2008",
+        "2009",
+        "2010",
+        "2011",
+        "2012",
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2017",
+        "2018",
+        "2019",
+        "2020",
+        "2021",
+        "2022",
+        "2023",
+        "2024",
+        "2025",
+    ),
+    "is_divisional": ("2002",),
+    "is_home_game": (
+        "2002",
+        "2003",
+        "2004",
+        "2005",
+        "2006",
+        "2007",
+        "2008",
+        "2009",
+        "2010",
+        "2011",
+        "2012",
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2017",
+        "2018",
+        "2019",
+        "2020",
+        "2021",
+        "2022",
+        "2023",
+        "2024",
+        "2025",
+    ),
+    "kicking_difficulty": ("2002",),
+    "late_season": ("2002",),
+    "monday_game": ("2002",),
+    "passing_difficulty": ("2002",),
+    "passing_efficiency": ("2002",),
+    "precip_impact_score": ("2002",),
+    "precip_prob": ("2002",),
+    "rest_advantage": ("2002",),
+    "rushing_advantage": ("2002",),
+    "saturday_game": ("2002",),
+    "scoring_multiplier": ("2002",),
+    "scoring_reduction": ("2002",),
+    "season_progress": ("2002",),
+    "short_week": ("2002",),
+    "surface_mismatch": ("2002",),
+    "temp_f": ("2002",),
+    "thursday_game": ("2002",),
+    "turnover_multiplier": ("2002",),
+    "venue_capacity": ("2002",),
+    "venue_cold_climate": ("2002",),
+    "venue_elevation_ft": ("2002",),
+    "venue_high_altitude": ("2002",),
+    "venue_indoor": ("2002",),
+    "venue_large_stadium": ("2002",),
+    "venue_outdoor": ("2002",),
+    "venue_retractable": ("2002",),
+    "venue_warm_climate": ("2002",),
+    "weather_severity_score": ("2002",),
+    "wind_impact_score": ("2002",),
+    "wind_mph": ("2002",),
+}
+
+#: Cells the step blanks in EACH matrix, per column. MEASURED on the preview; their sum
+#: is the total, and each one is a null count that RISES by exactly this much.
+PHASE332_UNSCORABLE_BLANK_STEP_CELLS_BY_COLUMN: dict[str, int] = {
+    "apparent_temp_f": 1,
+    "away_abs_timezone_diff_hours": 1,
+    "away_availability_fraction": 1,
+    "away_backup_quality_delta": 4,
+    "away_cross_country_travel": 1,
+    "away_def_rolling_pass_success_rate": 1,
+    "away_def_rolling_red_zone_td_rate": 1,
+    "away_def_rolling_rush_success_rate": 1,
+    "away_def_rolling_success_rate": 1,
+    "away_def_rolling_third_down_conversion_rate": 1,
+    "away_eastward_travel": 1,
+    "away_elo": 1,
+    "away_elo_percentile": 1,
+    "away_elo_rank": 1,
+    "away_elo_uncertainty": 1,
+    "away_letdown_spot": 1,
+    "away_look_ahead_spot": 1,
+    "away_off_bye": 1,
+    "away_off_rolling_avg_drive_start_yardline": 1,
+    "away_off_rolling_neutral_pace": 1,
+    "away_off_rolling_neutral_pass_rate": 1,
+    "away_off_rolling_pass_success_rate": 1,
+    "away_off_rolling_red_zone_td_rate": 1,
+    "away_off_rolling_rush_success_rate": 1,
+    "away_off_rolling_success_rate": 1,
+    "away_off_rolling_third_down_conversion_rate": 1,
+    "away_qb_adjustment": 1,
+    "away_qb_out_flag": 4,
+    "away_rest_days": 1,
+    "away_rolling_snap_share_db": 1,
+    "away_rolling_snap_share_dl": 1,
+    "away_rolling_snap_share_lb": 1,
+    "away_rolling_snap_share_ol": 1,
+    "away_rolling_snap_share_qb": 1,
+    "away_rolling_snap_share_rb": 1,
+    "away_rolling_snap_share_te": 1,
+    "away_rolling_snap_share_wr": 1,
+    "away_short_rest": 1,
+    "away_snap_concentration": 1,
+    "away_snap_continuity": 1,
+    "away_timezone_diff_hours": 1,
+    "away_travel_distance_miles": 1,
+    "away_travel_fatigue_score": 1,
+    "away_westward_travel": 1,
+    "ball_handling_difficulty": 1,
+    "both_short_rest": 1,
+    "cold_impact_score": 1,
+    "defensive_advantage": 1,
+    "elo_diff": 1,
+    "elo_prob_away": 1,
+    "elo_prob_home": 1,
+    "game_day_of_week": 1,
+    "heat_impact_score": 1,
+    "hfa_used": 1,
+    "home_availability_fraction": 1,
+    "home_backup_quality_delta": 1,
+    "home_def_rolling_pass_success_rate": 1,
+    "home_def_rolling_red_zone_td_rate": 1,
+    "home_def_rolling_rush_success_rate": 1,
+    "home_def_rolling_success_rate": 1,
+    "home_def_rolling_third_down_conversion_rate": 1,
+    "home_elo": 1,
+    "home_elo_percentile": 1,
+    "home_elo_rank": 1,
+    "home_elo_uncertainty": 1,
+    "home_letdown_spot": 1,
+    "home_look_ahead_spot": 1,
+    "home_off_bye": 1,
+    "home_off_rolling_avg_drive_start_yardline": 1,
+    "home_off_rolling_neutral_pace": 1,
+    "home_off_rolling_neutral_pass_rate": 1,
+    "home_off_rolling_pass_success_rate": 1,
+    "home_off_rolling_red_zone_td_rate": 1,
+    "home_off_rolling_rush_success_rate": 1,
+    "home_off_rolling_success_rate": 1,
+    "home_off_rolling_third_down_conversion_rate": 1,
+    "home_qb_adjustment": 1,
+    "home_qb_out_flag": 1,
+    "home_rest_days": 1,
+    "home_rolling_snap_share_db": 1,
+    "home_rolling_snap_share_dl": 1,
+    "home_rolling_snap_share_lb": 1,
+    "home_rolling_snap_share_ol": 1,
+    "home_rolling_snap_share_qb": 1,
+    "home_rolling_snap_share_rb": 1,
+    "home_rolling_snap_share_te": 1,
+    "home_rolling_snap_share_wr": 1,
+    "home_short_rest": 1,
+    "home_snap_concentration": 1,
+    "home_snap_continuity": 1,
+    "home_weather_advantage": 1,
+    "is_away_game": 27,
+    "is_divisional": 1,
+    "is_home_game": 27,
+    "kicking_difficulty": 1,
+    "late_season": 1,
+    "monday_game": 1,
+    "passing_difficulty": 1,
+    "passing_efficiency": 1,
+    "precip_impact_score": 1,
+    "precip_prob": 1,
+    "rest_advantage": 1,
+    "rushing_advantage": 1,
+    "saturday_game": 1,
+    "scoring_multiplier": 1,
+    "scoring_reduction": 1,
+    "season_progress": 1,
+    "short_week": 1,
+    "surface_mismatch": 1,
+    "temp_f": 1,
+    "thursday_game": 1,
+    "turnover_multiplier": 1,
+    "venue_capacity": 1,
+    "venue_cold_climate": 1,
+    "venue_elevation_ft": 1,
+    "venue_high_altitude": 1,
+    "venue_indoor": 1,
+    "venue_large_stadium": 1,
+    "venue_outdoor": 1,
+    "venue_retractable": 1,
+    "venue_warm_climate": 1,
+    "weather_severity_score": 1,
+    "wind_impact_score": 1,
+    "wind_mph": 1,
+}
+
+PHASE332_UNSCORABLE_BLANK_STEP_PREDICTED_UNMOVED: tuple[str, ...] = (
+    "away_availability_coverage",
+    "away_date_modified_coverage",
+    "away_def_rolling_avg_drive_start_yardline",
+    "away_def_rolling_cpoe",
+    "away_def_rolling_neutral_pace",
+    "away_def_rolling_neutral_pass_rate",
+    "away_def_rolling_opp_adj_coverage",
+    "away_def_rolling_opp_adj_epa_per_play",
+    "away_def_rolling_opp_adj_pass_epa",
+    "away_def_rolling_opp_adj_rush_epa",
+    "away_elo_momentum",
+    "away_injury_coverage",
+    "away_off_rolling_cpoe",
+    "away_off_rolling_cpoe_coverage",
+    "away_off_rolling_opp_adj_coverage",
+    "away_off_rolling_opp_adj_epa_per_play",
+    "away_off_rolling_opp_adj_pass_epa",
+    "away_off_rolling_opp_adj_rush_epa",
+    "away_snap_coverage",
+    "extreme_weather",
+    "home_availability_coverage",
+    "home_date_modified_coverage",
+    "home_def_rolling_avg_drive_start_yardline",
+    "home_def_rolling_cpoe",
+    "home_def_rolling_neutral_pace",
+    "home_def_rolling_neutral_pass_rate",
+    "home_def_rolling_opp_adj_coverage",
+    "home_def_rolling_opp_adj_epa_per_play",
+    "home_def_rolling_opp_adj_pass_epa",
+    "home_def_rolling_opp_adj_rush_epa",
+    "home_elo_momentum",
+    "home_injury_coverage",
+    "home_off_rolling_cpoe",
+    "home_off_rolling_cpoe_coverage",
+    "home_off_rolling_opp_adj_coverage",
+    "home_off_rolling_opp_adj_epa_per_play",
+    "home_off_rolling_opp_adj_pass_epa",
+    "home_off_rolling_opp_adj_rush_epa",
+    "home_snap_coverage",
+    "is_dry",
+    "is_rain",
+    "is_snow",
+    "precip_heavy",
+    "precip_light",
+    "precip_moderate",
+    "precip_none",
+    "raw_humidity_pct",
+    "raw_precip_prob",
+    "raw_temp_f",
+    "raw_weather_severity",
+    "raw_wind_mph",
+    "snapshot_ml_prob_home_fair",
+    "snapshot_spread",
+    "snapshot_total",
+    "spread_movement",
+    "temp_cold",
+    "temp_cool",
+    "temp_hot",
+    "temp_mild",
+    "temp_very_cold",
+    "temp_warm",
+    "total_movement",
+    "weather_affects_game",
+    "weather_coverage",
+    "weather_game",
+    "wind_calm",
+    "wind_high",
+    "wind_moderate",
+    "wind_severe",
+)
+
+
+#: The declared columns, sorted.
+PHASE332_UNSCORABLE_BLANK_STEP_COLUMNS: tuple[str, ...] = tuple(
+    sorted(PHASE332_UNSCORABLE_BLANK_STEP_SEASONS_BY_COLUMN)
+)
+
+#: The cells blanked in EACH matrix, in total.
+PHASE332_UNSCORABLE_BLANK_STEP_CELLS: int = sum(
+    PHASE332_UNSCORABLE_BLANK_STEP_CELLS_BY_COLUMN.values()
+)
+
+#: The read-only pre-rebuild measurement the step's record carries beside its own.
+PHASE332_UNSCORABLE_BLANK_STEP_PREREBUILD_MEASUREMENT: str = (
+    "MEASURED 2026-09-22 before any production write, on a FULL scratch build "
+    "(DATA_ROOT_PATH and DUCKDB_PATH pointed at a copy of today's production data/, "
+    "python scripts/build_features.py --through-season 2025). Production data/ was "
+    "digest-identical across it (1,128 files, 0 added / 0 removed / 0 changed). "
+    "Against production gold -- which IS p332_rung8c.json -- the preview differs in "
+    "exactly 182 cells per matrix, spread over the 124 declared columns, every one of "
+    "them exactly 0.0 before and blank after; 0 cells gained a value, 0 non-blank "
+    "values moved, 0 columns were added or removed, and the widths 201/202/201 and "
+    "rows 6,499 are unchanged. That the rest of the build reproduces production gold "
+    "EXACTLY is this step's control: a second cause anywhere would have shown as a "
+    "value move. Of the 182, 28 cells in 26 columns carry a family coverage flag "
+    "reading TRUE (2009: 2, 2010: 4, 2013: 22) -- the value WAS measured and nothing "
+    "could place it -- and 150 cells in 98 columns sit in columns with no coverage "
+    "flag at all, 98 of them in 2002, the ladder's first season"
+)
+
+PHASE332_UNSCORABLE_BLANK_STEP_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_UNSCORABLE_BLANK_STEP,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_UNSCORABLE_BLANK_STEP_CAUSE,
+    "follows_rung": PHASE332_UNSCORABLE_BLANK_STEP_FOLLOWS,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "exactly the 124 columns in "
+        "PHASE332_UNSCORABLE_BLANK_STEP_SEASONS_BY_COLUMN, each only in the seasons "
+        "declared beside it, in all three matrices; every column in "
+        "PHASE332_UNSCORABLE_BLANK_STEP_PREDICTED_UNMOVED EMPTY"
+    ),
+    "rows_changed": (
+        "only the rows holding one of the 182 cells per matrix declared in "
+        "PHASE332_UNSCORABLE_BLANK_STEP_CELLS_BY_COLUMN. Each such cell moves from "
+        "exactly 0.0 to blank, so each declared column's null count RISES by exactly "
+        "its declared cell count and no other null count moves"
+    ),
+    "predicted_changed": PHASE332_UNSCORABLE_BLANK_STEP_COLUMNS,
+    "predicted_unmoved": PHASE332_UNSCORABLE_BLANK_STEP_PREDICTED_UNMOVED,
+    "declared_families": ("normalization",),
+    "family_mechanisms": {
+        "normalization": (
+            "features.normalization.expanding_normalize's terminal fill, now applied "
+            "only where the input value was absent: a position whose value exists and "
+            "whose exp_mean or exp_std is still absent after the prior-season "
+            "bootstrap is masked back to NaN"
+        ),
+    },
+    "prerebuild_measurement": PHASE332_UNSCORABLE_BLANK_STEP_PREREBUILD_MEASUREMENT,
+    "declared_before_the_rebuild": True,
+}
+
+EXTRA_STEPS_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_UNSCORABLE_BLANK_STEP
+] = PHASE332_UNSCORABLE_BLANK_STEP_FOLLOWS
+EXTRA_STEP_CAUSES_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_UNSCORABLE_BLANK_STEP
+] = PHASE332_UNSCORABLE_BLANK_STEP_CAUSE
+
+PHASE332_UNSCORABLE_BLANK_STEP_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-22 before step 8d wrote anything: production data/ was "
+    "digest-identical to outputs/p332_step8c_after.json, and the only code changed "
+    "since step 8c's rebuild is this step's own. p332_rung8c.json IS gold rebuilt from "
+    "today's inputs minus exactly this step's cause -- proved rather than assumed, "
+    "because the scratch preview reproduces it EXACTLY outside the 182 declared cells. "
+    "No carry-in, no retake"
+)
+
+
+def _attribute_p332_unscorable_blank(
+    detail: dict, diff: dict, verdict: dict, fail
+) -> bool:
+    """Extra step 8d of the `p332_` ladder: the blanked-cell step's OWN judge.
+
+    STRUCTURE unchanged (a surprise BLOCKS). VALUES: a changed column is attributed
+    only when it is one of the declared columns AND every season it moved in was
+    declared for it. A declared column that did NOT move fails, and so does any move
+    in a column declared UNMOVED. NULL COUNTS are judged too, because they ARE this
+    step: a declared column's null count must RISE by exactly its declared cell
+    count, and an undeclared column's must not move at all. A value move with no
+    null move would mean the step changed a NUMBER somewhere, which it never does.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    label = "p332_ extra step 8d (an unscorable cell is blank, not the neutral zero)"
+    declared = PHASE332_UNSCORABLE_BLANK_STEP_SEASONS_BY_COLUMN
+    cells = PHASE332_UNSCORABLE_BLANK_STEP_CELLS_BY_COLUMN
+    unmoved = set(PHASE332_UNSCORABLE_BLANK_STEP_PREDICTED_UNMOVED)
+    verdict["changed_by_family"] = {"normalization": []}
+    blocking = _phase33_structure(
+        detail, diff, fail, label, "Blanking the cells nothing could score"
+    )
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        allowed = declared.get(column)
+        if allowed is not None and seasons and set(seasons) <= set(allowed):
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["normalization"].append(column)
+            continue
+        if column in unmoved:
+            why = (
+                "it was declared UNMOVED: the terminal fill cannot reach it (a "
+                "level-preserved flag, a display-only passthrough, a constant market "
+                "column, a never-populated defensive copy, or a family whose "
+                "unscorable cells are already blank through preserve_missing_cols)"
+            )
+        elif allowed is None:
+            why = "it is not one of the columns holding a cell nothing could score"
+        else:
+            why = f"its declared seasons are {', '.join(allowed)}"
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The step's ONE cause is the "
+            "blank an unscorable cell now carries; do NOT widen it to fit this diff"
+        )
+    for column in PHASE332_UNSCORABLE_BLANK_STEP_COLUMNS:
+        if column not in diff["changed"]:
+            fail(
+                f"column '{column}' did not move at {label}, but it was declared as "
+                f"moving in season(s) {', '.join(declared[column])} before the rebuild"
+            )
+    for column, move in sorted(detail.get("column_details", {}).items()):
+        if _is_build_clock(column):
+            continue
+        before_nulls = move.get("null_count_before")
+        after_nulls = move.get("null_count_after")
+        if before_nulls is None or after_nulls is None:
+            continue
+        expected = cells.get(column, 0)
+        if after_nulls - before_nulls != expected:
+            fail(
+                f"column '{column}' null count moved {before_nulls} -> {after_nulls} "
+                f"at {label}, but exactly {expected} cell(s) were declared to become "
+                "blank there. This step only ever turns an unscorable 0.0 into a "
+                "blank, so the null delta IS the step"
+            )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_EXTRA_STEP_SIGNATURES[PHASE332_UNSCORABLE_BLANK_STEP] = (
+    PHASE332_UNSCORABLE_BLANK_STEP_EXPECTED_SIGNATURE
+)
+PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_UNSCORABLE_BLANK_STEP] = (
+    _attribute_p332_unscorable_blank
+)
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -11305,6 +11939,12 @@ def write_phase332_rebuild_diff(
     )
     if lock_order_document.exists():
         lines.extend(_phase332_lock_order_step_lines(fingerprint_dir))
+
+    unscorable_blank_document = rung_document_path(
+        fingerprint_dir, PHASE332_UNSCORABLE_BLANK_STEP, PHASE332_RUNG_PREFIX
+    )
+    if unscorable_blank_document.exists():
+        lines.extend(_phase332_unscorable_blank_step_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -12321,6 +12961,90 @@ def _phase332_lock_order_step_lines(fingerprint_dir: Path | str) -> list[str]:
     for column in PHASE332_LOCK_ORDER_STEP_COLUMNS:
         seasons = PHASE332_LOCK_ORDER_STEP_SEASONS_BY_COLUMN[column]
         lines.append(f"{column} = {_toml_array(list(seasons))}")
+    lines.extend(["", f'[rung."{step}".moved_seasons]'])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_unscorable_blank_step_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` extra step 8d, recomputed from the ladder.
+
+    Judged by the same ``attribute_rung`` call the ladder run makes, against step 8c.
+    Records all three halves of the prediction -- the declared per-column seasons, the
+    declared per-column CELL counts (this step is a null-count step, so the counts are
+    the prediction rather than a footnote) and the columns declared UNMOVED -- beside
+    the measured moves.
+    """
+    step = PHASE332_UNSCORABLE_BLANK_STEP
+    require_rung_ladder(fingerprint_dir, step, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, step)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, step, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, step, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_UNSCORABLE_BLANK_STEP_EXPECTED_SIGNATURE
+    measured_cells = {
+        matrix: sum(
+            move["null_count_after"] - move["null_count_before"]
+            for column, move in report[matrix]["column_details"].items()
+            if not _is_build_clock(column)
+        )
+        for matrix in GOLD_MATRICES
+    }
+    lines = [
+        "",
+        f'[rung."{step}"]',
+        f'rung = "{step}"',
+        f"follows_rung = {PHASE332_UNSCORABLE_BLANK_STEP_FOLLOWS}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_UNSCORABLE_BLANK_STEP_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_UNSCORABLE_BLANK_STEP_CAUSE)}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        "prerebuild_measurement = "
+        f'"{_toml_escape(PHASE332_UNSCORABLE_BLANK_STEP_PREREBUILD_MEASUREMENT)}"',
+        "declared_columns = "
+        f"{_toml_array(list(PHASE332_UNSCORABLE_BLANK_STEP_COLUMNS))}",
+        "predicted_unmoved_columns = "
+        f"{_toml_array(list(PHASE332_UNSCORABLE_BLANK_STEP_PREDICTED_UNMOVED))}",
+        f"declared_cells = {PHASE332_UNSCORABLE_BLANK_STEP_CELLS}",
+        f"measured_cells = {_toml_array([measured_cells[m] for m in GOLD_MATRICES])}",
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_EXTRA_STEP_ATTRIBUTORS[step].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the step is '
+            'recorded as declared-but-not-run rather than as a step that ran"'
+        )
+    lines.extend(["", f'[rung."{step}".declared_seasons]'])
+    for column in PHASE332_UNSCORABLE_BLANK_STEP_COLUMNS:
+        seasons = PHASE332_UNSCORABLE_BLANK_STEP_SEASONS_BY_COLUMN[column]
+        lines.append(f"{column} = {_toml_array(list(seasons))}")
+    lines.extend(["", f'[rung."{step}".declared_cells]'])
+    for column in PHASE332_UNSCORABLE_BLANK_STEP_COLUMNS:
+        lines.append(
+            f"{column} = {PHASE332_UNSCORABLE_BLANK_STEP_CELLS_BY_COLUMN[column]}"
+        )
     lines.extend(["", f'[rung."{step}".moved_seasons]'])
     for column, seasons in sorted(_phase332_moved_seasons(report).items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
