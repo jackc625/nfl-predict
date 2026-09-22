@@ -347,12 +347,20 @@ def test_added_excluded_column_does_not_change_other_zscores(multi_season_df):
 def test_degenerate_prior_season_falls_back_to_zero_not_raw():
     """When a column's prior season is degenerate (constant placeholder -> std 0
     -> omitted from prior_season_stats), the next season's first ``min_periods-1``
-    games fall back to 0.0 (neutral z-score), NOT the raw value.
+    games come back BLANK -- never the raw value.
 
     Regression for 260524-svu: pre-2018 Elo is a constant 1500 placeholder, so it
     was omitted from 2018's prior stats and the first 3 games of 2018 leaked raw
-    ~1500 Elo into the normalized ``home_elo`` column. The fallback must be the
-    neutral z-score, never the raw magnitude.
+    ~1500 Elo into the normalized ``home_elo`` column. THE SUBJECT OF THIS TEST IS
+    THAT LEAK, and it is unchanged: the fallback must never be the raw magnitude.
+
+    THE FALLBACK ITSELF MOVED, CORRECTED HERE RATHER THAN SILENCED (p332_ extra
+    step 8d, owner ruling 2026-09-22). Was: the three positions were asserted to be
+    exactly 0.0, the neutral z-score. Nothing could score them -- no expanding
+    statistic and no usable bootstrap -- and a model reads a centred 0.0 as
+    "exactly average", so that answer made a confident claim about a value nobody
+    could place. They are BLANK now, which the models take natively. The node name
+    keeps its original spelling so its id is stable.
     """
     rows = []
     # Prior season 2017: 'elo' is a constant 1500.0 placeholder (std 0 -> omitted).
@@ -381,12 +389,13 @@ def test_degenerate_prior_season_falls_back_to_zero_not_raw():
     # filtered 2018 slice is in order -- head(3) is W1's first 3 (insufficient) games.
     s2018 = result[result["season"] == 2018]
     first3 = [float(v) for v in s2018["elo"].head(3)]
-    # Raw values here were ~1510-1512; the fix must yield 0.0, not those magnitudes.
-    assert all(abs(v) < 1e-9 for v in first3), (
-        f"insufficient-data positions with a degenerate prior must be 0.0 "
-        f"(neutral), not raw values; got {first3}"
+    # Raw values here were ~1510-1512; the fix must yield a blank, not those
+    # magnitudes and not the neutral 0.0 that used to stand in for one.
+    assert all(pd.isna(v) for v in first3), (
+        f"insufficient-data positions with a degenerate prior have no statistic "
+        f"and must be blank, not raw values; got {first3}"
     )
     # And no normalized value anywhere should carry a raw-Elo magnitude.
-    assert bool((s2018["elo"].abs() < 10).all()), (
+    assert bool((s2018["elo"].dropna().abs() < 10).all()), (
         "no 2018 'elo' value should exceed a plausible z-score band (raw leak)"
     )

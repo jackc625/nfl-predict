@@ -294,6 +294,17 @@ def _normalized(
 
 class TestBlankMeansBlank:
     def test_a_gap_with_no_honest_fill_stays_nan_through_normalization(self) -> None:
+        """This step's gap stays blank, and it is the only blank of ITS kind.
+
+        THE OTHER BLANKS ARE p332_ EXTRA STEP 8d's (owner ruling 2026-09-22): the
+        earliest games of the season have no expanding statistic and no prior-season
+        bootstrap, so nothing can score them either. Here that is the first TWO lock
+        groups -- weeks 1 and 2, four games -- because the gap itself removes one of
+        the four observations ``min_periods`` needs, so the week-2 group reaches only
+        three. Every row from week 3 on is scored. The two causes are named apart
+        rather than counted together. Was: every cell but the gap asserted non-null,
+        which held only while an unscorable cell was written as the neutral 0.0.
+        """
         games = _schedule()
         frame = _frame(games)
         frame["weather_coverage"] = 1.0
@@ -305,7 +316,12 @@ class TestBlankMeansBlank:
         assert np.isnan(normalized.loc[gap, "home_metric"]), (
             "a value nobody could know at the lock came out of normalization as a number"
         )
-        assert normalized["home_metric"].notna().sum() == len(frame) - 1
+        ordered = normalized.sort_values(["season", "week"])
+        blank_ids = set(ordered.loc[ordered["home_metric"].isna(), "game_id"])
+        unscorable_ids = set(ordered.loc[ordered["week"] <= 2, "game_id"])
+        assert blank_ids == unscorable_ids
+        assert "2024_W01_DET@KC" in unscorable_ids, "non-vacuity: the gap is in there"
+        assert ordered.loc[ordered["week"] > 2, "home_metric"].notna().all()
 
     def test_the_blank_register_names_exactly_that_cell(self) -> None:
         games = _schedule()
@@ -341,7 +357,6 @@ class TestTheBuildRecordsTheTiming:
         self,
     ) -> None:
         from features.point_in_time_fill import imputation_game_timing
-
         from utils.game_lock import game_lock
 
         games = _schedule(weeks=1)

@@ -120,7 +120,16 @@ class TestTheNormalizerExemptionIsOptInAndNarrow:
         assert np.isfinite(result[WEATHER_COLUMN].iloc[3])
 
     def test_a_present_value_is_transformed_identically(self):
-        """Preservation applies to ABSENCE, never to the transform."""
+        """Preservation applies to ABSENCE, never to the transform.
+
+        THE COMPARISON IS NAN-AWARE since p332_ extra step 8d (owner ruling
+        2026-09-22): positions 0-2 have fewer than ``min_periods`` earlier rows and
+        no prior-season bootstrap, so BOTH calls now return them blank, and
+        ``abs(nan - nan) < 1e-12`` is false for a pair that agrees perfectly. The
+        subject is unchanged -- the two calls must agree on every position that is
+        not the preserved absence -- so the equality gained the one case the old
+        spelling could not express. Was: a bare absolute difference.
+        """
         frame = _normalizable_frame()
         preserved = _normalize(
             frame.copy(),
@@ -129,13 +138,12 @@ class TestTheNormalizerExemptionIsOptInAndNarrow:
         )
         plain = _normalize(frame.copy(), feature_cols=[WEATHER_COLUMN])
         for position in (0, 1, 2, 4, 5, 6, 7):
-            assert (
-                abs(
-                    preserved[WEATHER_COLUMN].iloc[position]
-                    - plain[WEATHER_COLUMN].iloc[position]
-                )
-                < 1e-12
-            )
+            left = preserved[WEATHER_COLUMN].iloc[position]
+            right = plain[WEATHER_COLUMN].iloc[position]
+            if pd.isna(left) or pd.isna(right):
+                assert pd.isna(left) and pd.isna(right), position
+                continue
+            assert abs(left - right) < 1e-12, position
 
     def test_the_default_is_empty(self):
         import inspect

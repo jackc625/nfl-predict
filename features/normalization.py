@@ -83,9 +83,14 @@ def expanding_normalize(
     data points, uses prior_season_stats (mean, std) as bootstrap values.
     If prior_season_stats is not provided or a column is not in it (e.g. the
     first data-bearing season, or a season whose prior season is degenerate /
-    all-placeholder), those positions fall back to 0.0 -- the neutral z-score --
-    NOT the raw value (which would leak an un-normalized magnitude, e.g. a raw
-    ~1500 Elo, into the normalized column) and NOT NaN.
+    all-placeholder), a position whose VALUE is present comes back BLANK (NaN):
+    nothing could score it, and the neutral 0.0 that used to be written there
+    read as "exactly average" about a value nobody could place (p332_ extra step
+    8d, owner ruling 2026-09-22). A position whose value was ABSENT keeps its
+    existing treatment -- the neutral 0.0 unless its column is named in
+    preserve_missing_cols. The raw value is never returned in either case: it
+    would leak an un-normalized magnitude, e.g. a raw ~1500 Elo, into the
+    normalized column.
 
     Resets each season to avoid cross-season distribution contamination.
 
@@ -105,13 +110,19 @@ def expanding_normalize(
             existing caller is byte-preserved.
 
             TWO CAUSES WERE COLLAPSED INTO ONE FILL, and this separates them.
-            The ``fillna(0.0)`` below exists for a position whose STATISTIC was
+            The terminal fill below exists for a position whose STATISTIC was
             unavailable -- an early week with fewer than ``min_periods`` points
             and no prior-season bootstrap. Applied to a position whose VALUE was
             absent it fabricates a neutral reading for a measurement that does
             not exist. A weather observation that never arrived is the second
             case, not the first (SPEC R5, D33.1-07), and only a caller that
             NAMES a column gets the second treatment for it.
+
+            SINCE p332_ EXTRA STEP 8d the FIRST case is blank too, so the two
+            causes now produce the same reading for opposite reasons -- and the
+            separation still matters, because a column NOT named here keeps the
+            neutral 0.0 for an absent value. Naming a column is still the only
+            way to say "an absent measurement stays absent".
         preserve_level_cols: Columns returned at their RECORDED LEVEL rather
             than z-scored. Defaults to empty, so every existing caller is
             byte-preserved.
@@ -266,12 +277,45 @@ def expanding_normalize(
             # For positions still without valid stats -- insufficient expanding
             # data AND no usable prior_season_stats for this column (the first
             # data-bearing season, or a season whose prior season is degenerate /
-            # all-placeholder) -- fall back to 0.0, the neutral z-score. Returning
-            # the RAW value here would leak an un-normalized magnitude (e.g. a raw
-            # ~1500 Elo) into the normalized column and corrupt the model feature.
+            # all-placeholder) -- the cell is left BLANK.
+            #
+            # P332_ EXTRA STEP 8d (owner ruling 2026-09-22, "LEAVE THE CELL BLANK").
+            # This fill used to write 0.0, the neutral z-score, into such a position.
+            # A model reads a centred 0.0 as "exactly average", so a value that WAS
+            # measured left gold asserting it was perfectly ordinary -- and it read
+            # 0.0 WHATEVER the input value, so the number said nothing at all.
+            # Measured on step 8c's own gold: 307 cells with a PRESENT value had no
+            # statistic, 46 of them in columns whose coverage flag reads TRUE.
+            #
+            # The ruling covers ALL of them, not only the flagged ones: whether a
+            # family happens to declare coverage is not a reason to treat its
+            # unscorable cells differently. The models take a blank natively --
+            # XGBoost's missing branch, and the WP model's in-fold imputation with
+            # its ``_was_missing`` indicator -- which is the reasoning step 7b's
+            # blanks already rest on.
+            #
+            # TWO KINDS OF ZERO STAY DISTINGUISHABLE, which is the whole point. A
+            # cell whose statistic WAS formed reads 0.0 only when its value happens
+            # to equal the window mean; that is a real reading and is untouched
+            # here. Only a position with NO usable statistic AND no usable
+            # bootstrap -- ``exp_mean`` or ``exp_std`` still absent after the
+            # prior-season fill -- is blanked.
+            #
+            # A CELL WHOSE INPUT VALUE WAS ABSENT KEEPS ITS EXISTING TREATMENT. The
+            # ruling is about a value that EXISTS and has no statistic to be scored
+            # against; an absent measurement is the separate question
+            # ``preserve_missing_cols`` answers below, and double-handling it here
+            # would change a behaviour nobody ruled on. Hence the ``values.notna()``
+            # conjunct: it is what keeps the two causes apart, exactly as the
+            # ``absent_mask`` captured above does for the other direction.
+            #
+            # Returning the RAW value was never an option either way: it would leak
+            # an un-normalized magnitude (e.g. a raw ~1500 Elo) into the normalized
+            # column and corrupt the model feature.
             still_missing = normalized.isna()
             if still_missing.any():
-                normalized = normalized.fillna(0.0)
+                unscorable = (exp_mean.isna() | exp_std.isna()) & values.notna()
+                normalized = normalized.fillna(0.0).mask(unscorable)
 
             # ...EXCEPT where the input VALUE was absent rather than its
             # statistic. The fill above answers "this column could not be

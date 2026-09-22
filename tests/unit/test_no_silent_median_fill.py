@@ -56,6 +56,12 @@ from utils.exceptions import DataValidationError
 
 ET = "America/New_York"
 
+#: The gold build's ``min_periods`` for the expanding normalization
+#: (``FeatureMatrixBuilder.normalize_combined_features``). A season's first
+#: ``min_periods - 1`` games have no expanding statistic, and with no prior-season
+#: bootstrap they come back BLANK (p332_ extra step 8d, owner ruling 2026-09-22).
+NORMALIZER_MIN_PERIODS = 4
+
 
 # ---------------------------------------------------------------------------
 # Fixtures: a small, time-coherent schedule and the families built on it.
@@ -470,6 +476,18 @@ class TestAMetricThePinnedPlayByPlayLacksIsFlagged:
         assert "home_off_rolling_success_rate_coverage" not in combined.columns
 
     def test_the_unmeasured_seasons_stay_nan_through_normalization(self) -> None:
+        """2005 is blank because nothing MEASURED it; 2006 carries what was measured.
+
+        THE COVERED SEASON'S FIRST THREE GAMES ARE BLANK TOO, FOR A DIFFERENT REASON
+        (p332_ extra step 8d, owner ruling 2026-09-22), and telling the two apart is
+        the point of asserting the flag beside the value. 2005 holds no cpoe at all,
+        so it contributes no prior-season bootstrap, and 2006's first
+        ``min_periods - 1`` games have fewer than four earlier rows: nothing can
+        SCORE them, though the metric itself was measured and the flag says so.
+        This is the 46-cell phenomenon the step closes, in miniature. Was: every
+        2006 row asserted non-null, which held only while an unscorable cell was
+        written as the neutral 0.0.
+        """
         builder, combined = self._frames()
         combined["weather_coverage"] = 1.0
         combined["temp_f"] = 60.0
@@ -481,8 +499,13 @@ class TestAMetricThePinnedPlayByPlayLacksIsFlagged:
         early = normalized.loc[normalized["season"] == 2005]
         assert early["home_off_rolling_cpoe"].isna().all()
         assert (early["home_off_rolling_cpoe_coverage"] == 0.0).all()
-        late = normalized.loc[normalized["season"] == 2006, "home_off_rolling_cpoe"]
-        assert late.notna().all()
+        covered = normalized.loc[normalized["season"] == 2006].sort_values("week")
+        late = covered["home_off_rolling_cpoe"]
+        assert (covered["home_off_rolling_cpoe_coverage"] == 1.0).all(), (
+            "the metric WAS measured in 2006; the flag is what says so"
+        )
+        assert late.iloc[: NORMALIZER_MIN_PERIODS - 1].isna().all()
+        assert late.iloc[NORMALIZER_MIN_PERIODS - 1 :].notna().all()
 
 
 # ---------------------------------------------------------------------------

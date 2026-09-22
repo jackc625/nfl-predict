@@ -216,11 +216,19 @@ class TestTheUnchangedContract:
         assert len(out) == len(frame)
 
     def test_min_periods_still_means_what_it_meant(self) -> None:
-        """Below min_periods with no prior-season bootstrap, the answer is the neutral 0.0."""
+        """Below min_periods with no prior-season bootstrap, no row has a statistic.
+
+        THE SUBJECT IS min_periods, and it is unchanged: raising it to 99 leaves
+        every row of this frame unscorable, exactly as before. WHAT SUCH A ROW
+        READS moved at p332_ extra step 8d (owner ruling 2026-09-22) -- was the
+        neutral 0.0, is a blank -- so the assertion follows the reading. Step 8c's
+        lock ordering is what this module is about and neither reading depends on
+        it; the node is here as an unchanged-contract control.
+        """
         frame = _frame(list(_BASE))
         out = _normalize(frame, min_periods=99)
 
-        assert (out["metric"] == 0.0).all()
+        assert out["metric"].isna().all()
 
     def test_the_prior_season_bootstrap_is_still_used_below_min_periods(self) -> None:
         frame = _frame(list(_BASE))

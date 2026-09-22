@@ -99,6 +99,29 @@ CONTROL_COLUMN = "weather_severity_score"
 SEASON = 2019
 WEEKS = list(range(1, 9))
 
+#: Rows of these eight-row, one-season frames that the expanding window cannot score:
+#: the first ``min_periods - 1``, which have fewer than four earlier rows and no
+#: prior-season bootstrap.
+#:
+#: P332_ EXTRA STEP 8d (owner ruling 2026-09-22) returns those rows BLANK. Was: every
+#: assertion below read ``set(result[column].tolist()) == {0.0}``, which was true only
+#: while an unscorable cell was written as the neutral 0.0 -- the reading this step
+#: replaced, because a 0.0 there said "exactly average" about a value nothing could
+#: place. The SUBJECT of each assertion is untouched: a column outside the level
+#: exemption is Z-SCORED, so it never comes back at its recorded level, and every row
+#: that CAN be scored is the flat 0.0 a constant column z-scores to.
+UNSCORABLE_ROWS = 3
+
+
+def _scored_levels(series: pd.Series) -> set[float]:
+    """The distinct values of the rows that HAVE a statistic (blanks excluded)."""
+    return set(series.dropna().tolist())
+
+
+def _blank_rows(series: pd.Series) -> list[int]:
+    """The positions returned blank, so the step-8d boundary is pinned, not waved."""
+    return [position for position, blank in enumerate(series.isna()) if blank]
+
 
 def _weather_only_frame() -> pd.DataFrame:
     """The merged weather frame the full builder writes, for the seam recorder."""
@@ -219,10 +242,11 @@ class TestTheFlagIsTheOneColumnItsOwnLevelsAreTheMeaningOf:
         builder = _builder_with_merged_weather()
         result = builder.normalize_combined_features(_combined_frame([1.0] * 8))
 
-        assert set(result[CONTROL_COLUMN].tolist()) == {0.0}, (
+        assert _scored_levels(result[CONTROL_COLUMN]) == {0.0}, (
             "a constant column that is NOT the coverage flag must keep today's "
             "behaviour exactly"
         )
+        assert _blank_rows(result[CONTROL_COLUMN]) == list(range(UNSCORABLE_ROWS))
 
 
 class TestTheNormalizerIsWhatDestroysTheFlag:
@@ -245,10 +269,11 @@ class TestTheNormalizerIsWhatDestroysTheFlag:
         """
         frame = _combined_frame([1.0] * 8)
         result = _normalize(frame.copy(), feature_cols=[CONTROL_COLUMN])
-        assert set(result[CONTROL_COLUMN].tolist()) == {0.0}, (
+        assert _scored_levels(result[CONTROL_COLUMN]) == {0.0}, (
             "the expanding std of a constant column is zero, so safe_std clips "
             "to 1e-8 and (v - v) / 1e-8 is 0.0. That is the whole mechanism"
         )
+        assert _blank_rows(result[CONTROL_COLUMN]) == list(range(UNSCORABLE_ROWS))
 
     def test_without_the_parameter_the_flag_itself_still_flattens_to_zero(
         self,
@@ -261,7 +286,10 @@ class TestTheNormalizerIsWhatDestroysTheFlag:
         """
         frame = _combined_frame([1.0] * 8)
         result = _normalize(frame.copy(), feature_cols=[WEATHER_COVERAGE_COLUMN])
-        assert set(result[WEATHER_COVERAGE_COLUMN].tolist()) == {0.0}
+        assert _scored_levels(result[WEATHER_COVERAGE_COLUMN]) == {0.0}
+        assert 1.0 not in result[WEATHER_COVERAGE_COLUMN].tolist(), (
+            "the recorded level must not survive without the opt-in"
+        )
 
     def test_with_the_parameter_the_recorded_levels_are_returned_unchanged(
         self,
@@ -275,7 +303,8 @@ class TestTheNormalizerIsWhatDestroysTheFlag:
             preserve_level_cols=[WEATHER_COVERAGE_COLUMN],
         )
         assert result[WEATHER_COVERAGE_COLUMN].tolist() == coverage
-        assert set(result[CONTROL_COLUMN].tolist()) == {0.0}
+        assert _scored_levels(result[CONTROL_COLUMN]) == {0.0}
+        assert _blank_rows(result[CONTROL_COLUMN]) == list(range(UNSCORABLE_ROWS))
 
 
 class TestTheExemptionCannotNARROWToNothingInSilence:
@@ -478,9 +507,13 @@ class TestTheExemptionIsAPredicateWithAPinnedResolvedSet:
 
         result = builder.normalize_combined_features(frame)
 
-        assert set(result["extreme_weather"].tolist()) == {0.0}, (
+        assert _scored_levels(result["extreme_weather"]) == {0.0}, (
             "a SINGLE-level indicator is not level-bearing; it is discrete only "
             "by accident of the data, and exempting it is T-33-81"
+        )
+        assert 1.0 not in result["extreme_weather"].tolist(), (
+            "a constant 1.0 that came back 1.0 would prove the column was "
+            "preserved; it must be normalized"
         )
 
     def test_the_resolved_set_is_the_union_of_the_two_arms(self) -> None:
