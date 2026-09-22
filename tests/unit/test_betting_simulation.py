@@ -566,6 +566,73 @@ class TestWinnerBranchIsUntouched:
             assert 0.0 < bet.model_value <= 1.0
 
 
+class TestAWinnerBetWithNoPriceIsSkipped:
+    """A WP side with no moneyline is NOT placed, NOT graded and recorded as ``no_price``.
+
+    Plan 33.2-08 (owner ruling) deliberately blanked disputed moneylines (e.g.
+    ``2024_W17_TEN@JAX``, ``2022_W08_SF@LA``) and a live game can lack a price, so this is
+    reachable in real grading. ``_get_wp_odds`` used to reach ``int(nan)`` and crash the whole
+    simulation with "cannot convert float NaN to integer"; a default price would invent a market.
+    """
+
+    _WP_WEEK = TestWinnerBranchIsUntouched._WP_WEEK
+
+    def _frame(self, plant: dict[str, object] | None = None) -> pd.DataFrame:
+        frame = TestWinnerBranchIsUntouched._frame(self)
+        if plant:
+            target = frame["game_id"] == "2021_W01_A@B"  # model 0.70 -> a HOME bet
+            for column, value in plant.items():
+                frame[column] = frame[column].astype(object)
+                frame.loc[target, column] = value
+        return frame
+
+    @staticmethod
+    def _run(frame: pd.DataFrame):
+        sim = BettingSimulator(SimulationConfig())
+        return sim.simulate(_results_like({"wp": frame}), pd.DataFrame())
+
+    @pytest.mark.parametrize("missing", [float("nan"), None], ids=["nan", "none"])
+    def test_a_missing_price_on_the_bet_side_is_skipped_by_name(self, missing) -> None:
+        from backtest.simulation import NO_PRICE_REASON, SkippedBet
+
+        results = self._run(self._frame({"ml_home": missing}))
+        assert "2021_W01_A@B" not in {r.game_id for r in results.bet_records}
+        assert results.skipped_bets == [
+            SkippedBet(
+                game_id="2021_W01_A@B",
+                season=2021,
+                week=1,
+                target="wp",
+                bet_side="home",
+                reason=NO_PRICE_REASON,
+            )
+        ]
+        assert NO_PRICE_REASON == "no_price"
+
+    def test_every_other_game_is_exactly_as_if_the_unpriced_game_were_absent(
+        self,
+    ) -> None:
+        skipped = self._run(self._frame({"ml_home": float("nan")}))
+        frame = self._frame()
+        absent = self._run(frame.loc[frame["game_id"] != "2021_W01_A@B"])
+        assert skipped.bet_records == absent.bet_records
+        assert skipped.kelly.final_bankroll == absent.kelly.final_bankroll
+        assert absent.skipped_bets == []
+
+    def test_a_missing_price_on_the_other_side_places_the_bet_unchanged(self) -> None:
+        baseline = self._run(self._frame())
+        other_side = self._run(self._frame({"ml_away": float("nan")}))
+        assert other_side.bet_records == baseline.bet_records
+        assert other_side.skipped_bets == []
+
+    def test_the_odds_helper_returns_none_rather_than_a_default(self) -> None:
+        sim = BettingSimulator(SimulationConfig())
+        assert sim._get_wp_odds("home", float("nan"), 130.0) is None
+        assert sim._get_wp_odds("away", -150.0, None) is None
+        assert sim._get_wp_odds("away", float("nan"), 130.0) == 130
+        assert sim._get_wp_odds("home", -150.0, float("nan")) == -150
+
+
 class TestNoEdgeReachesAProbabilityArgument:
     """SPEC R10: the defect is removed structurally, for all three target branches."""
 

@@ -915,10 +915,25 @@ class WPStrategy:
 
         The OPTIONAL Protocol member (see ``TargetStrategy``): declaring it is what makes the core
         price and size this target at the game's own moneyline instead of at its reference juice.
+
+        NEVER None, and never the reference juice. Both moneylines are REQUIRED market fields, so
+        a row without one is suppressed as ``missing_snapshot`` before it is priced; if that
+        guard were ever bypassed, returning None here would let ``_strategy_bet_odds`` price the
+        bet at the flat default -- a market no book offered -- so it refuses by name instead.
+
+        Raises:
+            ValueError: the side's moneyline is absent (unreachable behind the required-field
+                suppression).
         """
-        return self._sim._get_wp_odds(
-            bet_side, float(row["ml_home"]), float(row["ml_away"])
-        )
+        odds = self._sim._get_wp_odds(bet_side, row.get("ml_home"), row.get("ml_away"))
+        if odds is None:
+            msg = (
+                f"WP candidate {row.get('game_id')!r} reached pricing with no moneyline for side "
+                f"{bet_side!r}; a missing price is suppressed as missing_snapshot, never priced "
+                "at a default"
+            )
+            raise ValueError(msg)
+        return odds
 
     def decision_extras(
         self, row: dict[str, Any], bet_side: str | None

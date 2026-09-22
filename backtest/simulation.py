@@ -5,6 +5,7 @@ Provides:
 - SimulationConfig: Configuration for simulation parameters
 - SimulationResults: Complete simulation output with strategy comparison
 - BetRecord: Individual bet details for both strategies
+- SkippedBet: A decided side that was NOT placed, and why (e.g. no price)
 - StrategyResult: Per-strategy performance summary with equity curve
 
 Key design decisions:
@@ -17,7 +18,7 @@ Key design decisions:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
@@ -42,6 +43,14 @@ DEFAULT_STARTING_BANKROLL: float = 10_000.0
 DEFAULT_FLAT_STAKE: float = 100.0
 DEFAULT_KELLY_FRACTION: float = 0.25
 DEFAULT_MIN_EDGE: float = 0.02
+
+NO_PRICE_REASON: str = "no_price"
+"""Why a WP bet with a side but no moneyline for that side is not placed (Plan 33.2-16).
+
+Plan 33.2-08 (owner ruling) deliberately BLANKED disputed moneylines rather than keep a wrong one
+(e.g. ``2024_W17_TEN@JAX``, ``2022_W08_SF@LA``), and a live 2026 game can lack a price. Such a bet
+is NOT placed and NOT graded -- a price nobody quoted is never invented -- and the non-bet is
+recorded by name in ``SimulationResults.skipped_bets`` rather than dropped silently."""
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +107,22 @@ class BetRecord:
 
 
 @dataclass
+class SkippedBet:
+    """A game whose side WAS decided but whose bet was NOT placed, and why.
+
+    Carried on ``SimulationResults.skipped_bets`` so a non-bet is a recorded fact rather than an
+    absence a reader has to infer. The one reason today is :data:`NO_PRICE_REASON`.
+    """
+
+    game_id: str
+    season: int
+    week: int
+    target: str
+    bet_side: str
+    reason: str
+
+
+@dataclass
 class StrategyResult:
     """Performance summary for a single strategy.
 
@@ -145,6 +170,8 @@ class SimulationResults:
         bet_records: All individual bet records.
         by_target: Breakdown per target (n_bets, win_rate, roi per strategy).
         by_season: Breakdown per season.
+        skipped_bets: Decided sides that were NOT placed, each with its reason (a WP side with
+            no moneyline is skipped for :data:`NO_PRICE_REASON`, never priced at a default).
     """
 
     config: SimulationConfig
@@ -153,6 +180,7 @@ class SimulationResults:
     bet_records: list[BetRecord]
     by_target: dict[str, dict[str, Any]]
     by_season: dict[int, dict[str, Any]]
+    skipped_bets: list[SkippedBet] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -382,11 +410,20 @@ class BettingSimulator:
 
     # -- Odds helpers ---------------------------------------------------------
 
-    def _get_wp_odds(self, bet_side: str, ml_home: float, ml_away: float) -> int:
-        """Get American odds for a WP moneyline bet."""
-        if bet_side == "home":
-            return int(ml_home)
-        return int(ml_away)
+    def _get_wp_odds(
+        self, bet_side: str, ml_home: float | None, ml_away: float | None
+    ) -> int | None:
+        """Get American odds for a WP moneyline bet, or None when that side has no price.
+
+        Only the price of the side actually bet is read. A missing one (NULL / NaN -- a blanked
+        disputed line, or a live game not yet priced) returns None: the caller does not place the
+        bet. It used to reach ``int(nan)`` and crash with "cannot convert float NaN to integer";
+        a default price in its place would invent a market no book offered.
+        """
+        side_price = ml_home if bet_side == "home" else ml_away
+        if side_price is None or pd.isna(side_price):
+            return None
+        return int(side_price)
 
     # -- O/U routing (LOCKED-2: decisions owned by the BetSelector) ------------
 
@@ -522,6 +559,7 @@ class BettingSimulator:
         bet_game_ids: list[str] = []
 
         all_bet_records: list[BetRecord] = []
+        skipped_bets: list[SkippedBet] = []
 
         for target, preds_df in backtest_results.all_predictions.items():
             if preds_df.empty:
@@ -594,9 +632,30 @@ class BettingSimulator:
                     if bet_side is None:
                         continue
 
-                    ml_home = float(row["ml_home"])
-                    ml_away = float(row["ml_away"])
-                    odds = self._get_wp_odds(bet_side, ml_home, ml_away)
+                    wp_odds = self._get_wp_odds(
+                        bet_side, row.get("ml_home"), row.get("ml_away")
+                    )
+                    if wp_odds is None:
+                        # No price for the side bet: NOT placed and NOT graded, and recorded by
+                        # name rather than dropped (NO_PRICE_REASON).
+                        skipped_bets.append(
+                            SkippedBet(
+                                game_id=str(game_id),
+                                season=season,
+                                week=week,
+                                target=target,
+                                bet_side=bet_side,
+                                reason=NO_PRICE_REASON,
+                            )
+                        )
+                        self.logger.warning(
+                            "WP bet not placed: no moneyline for the side",
+                            game_id=game_id,
+                            bet_side=bet_side,
+                            reason=NO_PRICE_REASON,
+                        )
+                        continue
+                    odds = wp_odds
 
                     # Market implied probability for the side we're betting
                     market_prob = moneyline_to_probability(odds)
@@ -891,6 +950,7 @@ class BettingSimulator:
             bet_records=all_bet_records,
             by_target=by_target,
             by_season=by_season,
+            skipped_bets=skipped_bets,
         )
 
     # -- Breakdown builders ---------------------------------------------------
