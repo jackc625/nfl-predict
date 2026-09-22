@@ -358,6 +358,37 @@ def _is_weather_unsupplied_col(col: str) -> bool:
     return col.lower().endswith(_WEATHER_UNSUPPLIED_SUFFIXES)
 
 
+# THE BETTING LINE, WHICH IS NOT A MODEL INPUT FOR ANY TARGET (Plan 33.2-19, p332_ rung 9,
+# D33.2-03). All three deployed models selected one -- WP ``snapshot_spread``; ATS
+# ``snapshot_spread`` plus ``snapshot_ml_prob_home_fair``; O/U ``snapshot_total``, its rank-1
+# input of 25 -- and for 2018-2025 those are CLOSING lines, which did not exist at the lock.
+# None of the three targets needs one: WP predicts the winner, ATS the margin, O/U total
+# points. The line is used AFTERWARDS, to price and decide a bet, and it stays available for
+# grading and CLV; it simply stops being a thing a model is fitted on.
+#
+# Every entry is an exact endswith SUFFIX, never a bare substring -- the ``_is_line_movement_col``
+# lesson applied to a third family. ``"total" in col`` matches ``total_points`` (the O/U
+# target) and ``rolling_total_epa``; ``"spread" in col`` matches every line-movement spread
+# sibling. The suffix rule still works through a PREFIX, so a hypothetical
+# ``home_snapshot_spread`` is matched while ``rolling_total_epa`` is not.
+_MARKET_SUFFIXES: tuple[str, ...] = (
+    "snapshot_spread",
+    "snapshot_total",
+    "snapshot_ml_prob_home_fair",
+    "spread_movement",
+    "total_movement",
+)
+
+
+def _is_market_col(col: str) -> bool:
+    """Match a betting-line column by exact suffix (never a bare ``total`` substring).
+
+    Deliberately does NOT match ``total_points`` (the O/U target), ``rolling_total_epa`` or
+    any other column that merely contains the word.
+    """
+    return col.lower().endswith(_MARKET_SUFFIXES)
+
+
 _GROUP_PREDICATE = {
     "snap": _is_snap_col,
     "injury": _is_injury_col,
@@ -370,6 +401,17 @@ _GROUP_PREDICATE = {
     # screened into a model, it is DROPPED from gold by scripts.build_features.
     # _enforce_groups_dropped, the one drop mechanism line_movement already uses.
     "weather_unsupplied": _is_weather_unsupplied_col,
+    # Plan 33.2-19 (D33.2-03), p332_ rung 9. Registered here for DROPPING, not admitted to
+    # ``GROUPS`` for SCREENING -- two different jobs. Adding it to ``GROUPS`` would silently
+    # change the Phase-28 baseline, which the ``ALL_REGISTERED_GROUPS`` docstring below
+    # explains at length. It leaves gold through ``_enforce_groups_dropped``, the SAME drop
+    # mechanism line_movement and weather_unsupplied use -- one mechanism for three groups.
+    #
+    # ``ALL_REGISTERED_GROUPS`` is DERIVED from this dict, so ``market`` joins it
+    # automatically: the Phase-28 baseline pin and the Phase-30 group-gate baseline exclude it
+    # without any further edit. That is the intended effect and the reason the pin is derived
+    # rather than listed.
+    "market": _is_market_col,
 }
 
 

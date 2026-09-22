@@ -66,6 +66,16 @@ MARKET_FEATURE_COLUMNS: tuple[str, ...] = (
 def admissible_market_rows(odds_df: pd.DataFrame, locks: pd.Series) -> pd.DataFrame:
     """The odds rows known at or before THEIR OWN game's lock, by recorded capture time.
 
+    THIS SITE NO LONGER FEEDS ANY MODEL INPUT, AND THE FENCE STILL APPLIES (Plan
+    33.2-19, p332_ rung 9, D33.2-03). Rung 9 removed the five market columns from every
+    gold matrix, so nothing selected here is fitted on any more. What it still feeds is
+    GRADING and CLV, through ``pipeline/steps.py::step_build_market_anchors`` and the
+    R2 information-time gate that checks this source -- which is why the
+    ``feature_sources["market"]`` registration was deliberately RETAINED when the merge
+    seam was deleted. A grading input built from post-lock information is still a defect,
+    so the lock fence below is NOT relaxed and must not be: "it is only used for grading"
+    is a reason to keep the fence, not to drop it.
+
     A row is admitted only when (1) its game has a lock in *locks* and (2) its
     ``MARKET_CAPTURE_TIME_COLUMN`` value is present and ``utils.game_lock.is_admissible``
     against that lock -- the ONE admissibility rule, reached as a module attribute at call

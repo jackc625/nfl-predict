@@ -159,14 +159,37 @@ _LINE_MOVEMENT_GROUP = "line_movement"
 # through the same drop -- the registry, never a hand-written list.
 _WEATHER_UNSUPPLIED_GROUP = "weather_unsupplied"
 
-# EVERY group removed from the combined matrix before gold, in drop order. ONE mechanism
-# for all of them (``_enforce_groups_dropped``); Plan 33.2-19 appends ``market`` here.
-GOLD_DROPPED_GROUPS: tuple[str, ...] = (_LINE_MOVEMENT_GROUP, _WEATHER_UNSUPPLIED_GROUP)
+# THE BETTING LINE (Plan 33.2-19, p332_ rung 9, D33.2-03): ``snapshot_spread``,
+# ``snapshot_total``, ``snapshot_ml_prob_home_fair``, ``spread_movement`` and
+# ``total_movement``. No betting line is a model input for any target, and the exclusion
+# comes from the ONE registry rather than the hand-written list that used to sit in
+# ``combine_features``.
+#
+# THE SEAM SPLIT IS A DECISION, NOT AN OVERSIGHT, and it is the one difference from
+# line_movement. The MERGE block was removed; the ``feature_sources["market"]``
+# REGISTRATION was RETAINED. The market source is where the R2 information-time gate
+# checks the lock-fenced odds selection in ``features/market_anchors.py``, and the same
+# calculator feeds grading and CLV through ``pipeline/steps.py::step_build_market_anchors``.
+# Deleting the registration would retire that check silently. So after rung 9 the market
+# source is CHECKED by the gate and MERGED nowhere; Plan 33.2-20 records exactly that as
+# the key's ``checked_not_merged`` disposition and asserts its inverse -- zero market
+# columns in the final frame.
+_MARKET_GROUP = "market"
 
-# The dropped groups whose presence means a REMOVED SEAM HAS RETURNED (both the
-# registration and the merge block are gone, so finding any column is an anomaly worth a
-# warning). The others are expected in the combined matrix and dropped as a matter of course.
-_SEAM_REMOVED_GROUPS: frozenset[str] = frozenset({_LINE_MOVEMENT_GROUP})
+# EVERY group removed from the combined matrix before gold, in drop order. ONE mechanism
+# for all three (``_enforce_groups_dropped``), never three mechanisms.
+GOLD_DROPPED_GROUPS: tuple[str, ...] = (
+    _LINE_MOVEMENT_GROUP,
+    _WEATHER_UNSUPPLIED_GROUP,
+    _MARKET_GROUP,
+)
+
+# The dropped groups whose presence means a REMOVED SEAM HAS RETURNED, so finding any
+# column is an anomaly worth a warning rather than the expected path. line_movement lost
+# BOTH its registration and its merge block; market kept its registration and lost its
+# merge block, so a market column in the combined matrix still means the merge seam came
+# back. weather_unsupplied arrives from silver on every build and is dropped every build.
+_SEAM_REMOVED_GROUPS: frozenset[str] = frozenset({_LINE_MOVEMENT_GROUP, _MARKET_GROUP})
 
 # Families merged AFTER the Stage-1 information-time loop and NOT checked by the gate at
 # their merge site: a structural gap, reported in its OWN set of the CoverageReport rather
@@ -1091,25 +1114,31 @@ class FeatureMatrixBuilder:
                 [col for col in weather_features.columns if col != "game_id"]
             )
 
-        # Market anchor features (game-level, compressed 5 features)
-        market_df = feature_sources.get("market", pd.DataFrame())
-        if len(market_df) > 0:
-            market_feature_cols = [
-                "snapshot_spread",
-                "snapshot_total",
-                "snapshot_ml_prob_home_fair",
-                "spread_movement",
-                "total_movement",
-            ]
-            merge_cols = ["game_id"] + [
-                c for c in market_feature_cols if c in market_df.columns
-            ]
-            combined_features = combined_features.merge(
-                market_df[merge_cols], on="game_id", how="left"
-            )
-            feature_counts["market"] = len(
-                [c for c in market_feature_cols if c in market_df.columns]
-            )
+        # -- THE MARKET MERGE SEAM IS GONE (Plan 33.2-19, p332_ rung 9, D33.2-03) --
+        #
+        # A ``market_feature_cols`` list stood here naming ``snapshot_spread``,
+        # ``snapshot_total``, ``snapshot_ml_prob_home_fair``, ``spread_movement`` and
+        # ``total_movement``, and a merge that landed them in the combined frame. It was a
+        # SECOND answer to "which columns are the betting line", beside
+        # ``backtest.signal_lift._GROUP_PREDICATE["market"]``, and a second answer drifts.
+        # The merge is removed and the exclusion comes from that ONE registry, through
+        # ``_enforce_groups_dropped`` -- the same drop mechanism line_movement and
+        # weather_unsupplied use.
+        #
+        # THE REGISTRATION IS RETAINED ON PURPOSE. ``feature_sources["market"]`` is still
+        # built and still registered above, because that is where the R2 information-time
+        # gate checks the lock-fenced odds selection in ``features/market_anchors.py``,
+        # which grading and CLV still depend on. Removing the registration as well would
+        # retire that check silently and would leave Plan 33.2-20's nine-key
+        # ``REGISTRY_KEY_DISPOSITIONS`` ledger disagreeing with the live registry. So the
+        # market source is CHECKED and MERGED NOWHERE: Plan 33.2-20 records that as its
+        # ``checked_not_merged`` disposition.
+        #
+        # A LATER READER WHO RESTORES THE MERGE lands five line columns in the combined
+        # frame. ``_enforce_groups_dropped`` removes them, with a WARNING naming the
+        # returned seam, before ``handle_missing_data_and_outliers`` sees them -- which is
+        # why ``market`` is in ``_SEAM_REMOVED_GROUPS``. Nothing else would notice:
+        # ``combine_features`` has no generic loop over ``feature_sources``.
 
         # QB adjustment features (one value per team per game)
         qb_df = feature_sources.get("qb_tracking", pd.DataFrame())
@@ -1409,13 +1438,18 @@ class FeatureMatrixBuilder:
         )
         return report
 
-    def _enforce_groups_dropped(
-        self,
-        combined_features: pd.DataFrame,
-        groups: tuple[str, ...] = GOLD_DROPPED_GROUPS,
-    ) -> pd.DataFrame:
-        """The builder's seam onto the module-level ``_enforce_groups_dropped`` (ONE body)."""
-        return _enforce_groups_dropped(combined_features, groups)
+    # The builder's seam onto the module-level ``_enforce_groups_dropped``: the SAME
+    # function object, bound as a static method, rather than a forwarding wrapper that
+    # re-declared the signature and the default.
+    #
+    # WHY IT MATTERS BEYOND TIDINESS (Plan 33.2-19). The structural check that the ONE
+    # production call site passes all three dropped groups reads the GROUP ARGUMENT off
+    # the parsed call -- the bare fact that the call exists proves nothing, because with
+    # the market merge deleted end-state gold is clean whether or not ``market`` is in
+    # that tuple. A forwarding wrapper is a SECOND call whose argument is its own
+    # parameter name, so the check saw two calls and could not say which was production.
+    # One binding, one call, one readable argument.
+    _enforce_groups_dropped = staticmethod(_enforce_groups_dropped)
 
     def _team_form_per_game(
         self, team_form_df: pd.DataFrame, games_df: pd.DataFrame
@@ -2903,27 +2937,39 @@ class FeatureMatrixBuilder:
         # Total points (for O/U calculation if totals available)
         target_df["total_points"] = target_df["home_score"] + target_df["away_score"]
 
-        # ATS target (requires market data)
-        if "snapshot_spread" in target_df.columns:
-            # ATS = actual margin - spread (positive = home team covered)
-            target_df["target_ats"] = (
-                target_df["point_differential"] - target_df["snapshot_spread"]
-            )
-            target_df["home_covered_spread"] = (target_df["target_ats"] > 0).astype(int)
-
-        # O/U target (requires market data)
-        if "snapshot_total" in target_df.columns:
-            # O/U = actual total - market total (positive = over)
-            target_df["target_ou"] = (
-                target_df["total_points"] - target_df["snapshot_total"]
-            )
-            target_df["game_went_over"] = (target_df["target_ou"] > 0).astype(int)
+        # -- THE FOUR LINE-DERIVED TARGET COLUMNS ARE GONE (Plan 33.2-19, rung 9) --
+        #
+        # ``target_ats = point_differential - snapshot_spread`` and
+        # ``target_ou = total_points - snapshot_total`` stood here, with
+        # ``home_covered_spread`` and ``game_went_over`` as their boolean children. They
+        # were arithmetic children of exactly the columns rung 9 removes, so they cannot
+        # stay as they are; and they were never what their names said. They ran AFTER
+        # normalization, so they subtracted a Z-SCORED market value, not a line in points
+        # (recorded by Plan 33.2-08's rung-1 attribution). Since rung 5 every gold market
+        # value has been the neutral 0.0, so ``target_ats`` equalled ``point_differential``
+        # and ``target_ou`` equalled ``total_points`` for every game 2002-2025.
+        #
+        # MEASURED BEFORE REMOVING THEM, because "no reader" is a claim, not an
+        # assumption: all four are ID/EXCLUDED columns in ``models/temporal._DEFAULT_ID_COLS``
+        # -- never model inputs -- and no trainer, backtest, API or web module reads any of
+        # them. The ATS trainer's target is ``home_margin`` and the O/U trainer's is
+        # ``total_points`` (``models/trainers/ats_trainer.py``, ``ou_trainer.py``), both of
+        # which are derived from the SCORES and are untouched here. ``home_covered_spread``
+        # and ``game_went_over`` never reached a gold matrix at all: they were excluded from
+        # the feature set and named in no target list.
+        #
+        # THE ALTERNATIVE WAS RECOMPUTING THEM FROM THE RAW SILVER LINE IN POINTS -- a
+        # closing line is legitimate in an OUTCOME LABEL, since D33.2-01 governs model
+        # INPUTS -- and it was REJECTED on measurement: only 2,140 of 6,499 games carry a
+        # stored line at all, so ``final_features["target_ats"].notna()`` would have cut the
+        # ATS matrix from 6,499 rows to ~2,140. The matrices are selected on the real
+        # trainer targets below instead.
 
         logger.info(
             "Created target variables",
             wp_targets=target_df["target_wp"].notna().sum(),
-            ats_targets=target_df.get("target_ats", pd.Series()).notna().sum(),
-            ou_targets=target_df.get("target_ou", pd.Series()).notna().sum(),
+            ats_targets=target_df["home_margin"].notna().sum(),
+            ou_targets=target_df["total_points"].notna().sum(),
         )
 
         return target_df
@@ -3072,7 +3118,13 @@ class FeatureMatrixBuilder:
             # Generate separate matrices for each prediction target
             feature_matrices = {}
 
-            # Base feature columns (exclude identifiers and targets)
+            # Base feature columns (exclude identifiers and targets).
+            #
+            # ``target_ats``, ``target_ou``, ``home_covered_spread`` and
+            # ``game_went_over`` left the build at rung 9 and are RETAINED here on
+            # purpose: this list is a guard, not a description of gold, and a name that
+            # stays in it costs nothing while a name dropped from it would silently admit
+            # a reintroduced line-derived column into the feature set.
             exclude_cols = [
                 "game_id",
                 "season",
@@ -3112,28 +3164,32 @@ class FeatureMatrixBuilder:
             ].copy()
             feature_matrices["wp"] = wp_matrix
 
-            # ATS matrix (only include games with spread data)
-            if "target_ats" in final_features.columns:
+            # ATS matrix, SELECTED ON ITS TRAINER'S OWN TARGET (Plan 33.2-19, rung 9).
+            # ``home_margin`` is what ``ATSTrainer._get_target_column`` reads, and it is
+            # derived from the scores. Was: gated and row-filtered on ``target_ats``, the
+            # line-derived column rung 9 removes -- which would have left this matrix
+            # unbuilt, and which (recomputed from the raw silver line) would have cut it
+            # from 6,499 rows to the ~2,140 games that carry a stored line at all.
+            if "home_margin" in final_features.columns:
                 ats_target_cols = [
                     c
-                    for c in ["target_ats", "home_margin", "point_differential"]
+                    for c in ["home_margin", "point_differential"]
                     if c in final_features.columns
                 ]
-                ats_games = final_features["target_ats"].notna()
+                ats_games = final_features["home_margin"].notna()
                 ats_matrix = final_features.loc[
                     ats_games,
                     [*meta_cols, *score_cols, *ats_target_cols, *feature_cols],
                 ].copy()
                 feature_matrices["ats"] = ats_matrix
 
-            # O/U matrix (only include games with total data)
-            if "target_ou" in final_features.columns:
+            # O/U matrix, on ``total_points`` -- ``OUTrainer._get_target_column``'s own
+            # target, also derived from the scores. Was: ``target_ou``, same reasoning.
+            if "total_points" in final_features.columns:
                 ou_target_cols = [
-                    c
-                    for c in ["target_ou", "total_points"]
-                    if c in final_features.columns
+                    c for c in ["total_points"] if c in final_features.columns
                 ]
-                ou_games = final_features["target_ou"].notna()
+                ou_games = final_features["total_points"].notna()
                 ou_matrix = final_features.loc[
                     ou_games,
                     [*meta_cols, *score_cols, *ou_target_cols, *feature_cols],
