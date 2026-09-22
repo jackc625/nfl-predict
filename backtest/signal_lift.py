@@ -342,6 +342,22 @@ def _is_line_movement_col(col: str) -> bool:
     return col.lower().endswith(_LINE_MV_SUFFIXES)
 
 
+# The weather inputs NO FORECAST CAN SUPPLY (Plan 33.2-12, p332_ rung 4). History is now the
+# archived day-before NWS MOS bulletin, which carries a precipitation PROBABILITY and an ordinal
+# QPF CATEGORY but no millimetre AMOUNT -- and the category is banded, never turned into a
+# fabricated millimetre value. So ``precip_mm`` and ``raw_precip_mm`` are NULL on every historical
+# row and leave the model-input candidate set here, through the registry, rather than through a
+# hand-written list. Exact ``endswith`` suffixes, never a bare substring: ``"precip" in col``
+# would also match ``precip_prob``, ``precip_none``/``light``/``moderate``/``heavy`` and
+# ``precip_impact_score``, every one of which the bulletins DO supply.
+_WEATHER_UNSUPPLIED_SUFFIXES: tuple[str, ...] = ("precip_mm", "raw_precip_mm")
+
+
+def _is_weather_unsupplied_col(col: str) -> bool:
+    """Match a weather input no forecast supplies (``precip_mm``, ``raw_precip_mm``)."""
+    return col.lower().endswith(_WEATHER_UNSUPPLIED_SUFFIXES)
+
+
 _GROUP_PREDICATE = {
     "snap": _is_snap_col,
     "injury": _is_injury_col,
@@ -350,6 +366,10 @@ _GROUP_PREDICATE = {
     # default baseline-exclusion set, and adding line_movement to it would strip the kept
     # Phase-28 signal from the baseline leg (review 29-07 HIGH).
     "line_movement": _is_line_movement_col,
+    # Plan 33.2-12 (SPEC R6). Also NOT in ``GROUPS``, for the same reason: this group is never
+    # screened into a model, it is DROPPED from gold by scripts.build_features.
+    # _enforce_groups_dropped, the one drop mechanism line_movement already uses.
+    "weather_unsupplied": _is_weather_unsupplied_col,
 }
 
 

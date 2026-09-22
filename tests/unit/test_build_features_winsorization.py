@@ -223,7 +223,7 @@ class TestMissingHandlingAndWinsorizationAreIndependent:
         test is the record of that, which is worth more than a deleted assertion.
 
         What makes the removal safe TODAY is placement:
-        ``_enforce_line_movement_dropped`` runs on the combined matrix, before this
+        ``_enforce_groups_dropped`` runs on the combined matrix, before this
         method is ever reached, so a reinstated seam cannot route the family here.
         """
         coverage = np.ones(_SEASON_ROWS)

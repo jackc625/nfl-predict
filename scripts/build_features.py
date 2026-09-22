@@ -131,6 +131,22 @@ _SOURCE_LOAD_ERRORS = (
 #      again AUTOMATICALLY if it ever returns.
 _LINE_MOVEMENT_GROUP = "line_movement"
 
+# The weather inputs no forecast can supply (Plan 33.2-12, SPEC R6): ``precip_mm`` and
+# ``raw_precip_mm``. The archived day-before bulletins carry no millimetre amount, so both
+# are NULL on every historical row. Unlike line_movement, they DO arrive in the combined
+# matrix on every build (silver ``weather_features`` still carries them), and they leave
+# through the same drop -- the registry, never a hand-written list.
+_WEATHER_UNSUPPLIED_GROUP = "weather_unsupplied"
+
+# EVERY group removed from the combined matrix before gold, in drop order. ONE mechanism
+# for all of them (``_enforce_groups_dropped``); Plan 33.2-19 appends ``market`` here.
+GOLD_DROPPED_GROUPS: tuple[str, ...] = (_LINE_MOVEMENT_GROUP, _WEATHER_UNSUPPLIED_GROUP)
+
+# The dropped groups whose presence means a REMOVED SEAM HAS RETURNED (both the
+# registration and the merge block are gone, so finding any column is an anomaly worth a
+# warning). The others are expected in the combined matrix and dropped as a matter of course.
+_SEAM_REMOVED_GROUPS: frozenset[str] = frozenset({_LINE_MOVEMENT_GROUP})
+
 # Families merged AFTER the Stage-1 information-time loop, so they are not
 # ``feature_sources`` registry keys at all and cannot be reached by registering a
 # provenance supplier. Reported in their OWN set of the CoverageReport rather than
@@ -299,6 +315,66 @@ def drop_feature_group(df: pd.DataFrame, group: str) -> pd.DataFrame:
         )
         raise ValueError(msg)
     return df.drop(columns=columns)
+
+
+def _enforce_groups_dropped(
+    combined_features: pd.DataFrame,
+    groups: tuple[str, ...] = GOLD_DROPPED_GROUPS,
+) -> pd.DataFrame:
+    """Guarantee no column of any group in *groups* reaches gold.
+
+    GENERALISED from the Phase-29 line-movement drop (Plan 33.2-12) rather than
+    copied: ONE body, one registry lookup per group, so the weather inputs no
+    forecast supplies (``weather_unsupplied``) and, later, the market columns
+    (Plan 33.2-19) leave through the same mechanism as line movement.
+
+    LINE MOVEMENT (SPEC R3 / D29-07-01). On the intended path its lookup finds
+    nothing, because BOTH seams that could land the family have been removed --
+    the ``feature_sources`` registration and the explicit ``combine_features``
+    merge block. That is the structural removal, and it is the one that matters.
+    WEATHER_UNSUPPLIED arrives from silver ``weather_features`` on every build and
+    is dropped every build; that is the expected path, logged at info.
+
+    This is nevertheless not dead code, and the ``if`` is not a formality.
+    ``combine_features`` has NO generic loop over ``feature_sources``, so a
+    seam restored by a later edit lands its columns in gold SILENTLY -- the
+    LeakageGate passes them and nothing else looks. This is the one place that
+    would notice, and it sits before ``handle_missing_data_and_outliers``, so a
+    reinstated family is removed before any imputation or winsorization can see
+    it (which is what makes removing the WR-10 neutral-default guard safe).
+
+    NOTE ON THE EMPTY CASE, because the asymmetry is deliberate.
+    ``drop_feature_group`` REFUSES a zero match -- a drop asked to remove
+    something and removing nothing is indistinguishable downstream from one
+    that worked. A build whose seams are gone was never asking, so it must not
+    raise; the refusal guards the drop, and the seam removal guards the build.
+    """
+    # Deferred for the same reason as in ``drop_feature_group``: importing
+    # ``backtest.signal_lift`` eagerly pulls the whole model stack into a
+    # data-layer build script.
+    from backtest.signal_lift import group_columns
+
+    for group in groups:
+        present = group_columns(combined_features, group)
+        if not present:
+            continue
+        if group in _SEAM_REMOVED_GROUPS:
+            logger.warning(
+                "A dropped group's columns reached the combined matrix and were "
+                "dropped before gold; a removed merge/registration seam has returned",
+                group=group,
+                columns=present,
+                count=len(present),
+            )
+        else:
+            logger.info(
+                "Dropped a group that must not reach gold",
+                group=group,
+                columns=present,
+                count=len(present),
+            )
+        combined_features = drop_feature_group(combined_features, group)
+    return combined_features
 
 
 class FeatureMatrixBuilder:
@@ -911,7 +987,7 @@ class FeatureMatrixBuilder:
         # reverse, that is exactly why removing only the registration would not
         # have been enough on its own, and why removing only this block would not
         # either -- a later reader restoring one seam must restore both, and
-        # ``_enforce_line_movement_dropped`` will remove the result anyway.
+        # ``_enforce_groups_dropped`` will remove the result anyway.
 
         # Add feature timestamp (tz-aware UTC; the storage layer rejects naive
         # datetimes, and feature_timestamp is persisted into every gold matrix)
@@ -1021,47 +1097,13 @@ class FeatureMatrixBuilder:
         )
         return report
 
-    def _enforce_line_movement_dropped(
-        self, combined_features: pd.DataFrame
+    def _enforce_groups_dropped(
+        self,
+        combined_features: pd.DataFrame,
+        groups: tuple[str, ...] = GOLD_DROPPED_GROUPS,
     ) -> pd.DataFrame:
-        """Guarantee the Phase-29 line-movement family does not reach gold.
-
-        SPEC R3 / D29-07-01. On the intended path this finds nothing and returns
-        the frame untouched, because BOTH seams that could land the family have
-        been removed -- the ``feature_sources`` registration and the explicit
-        ``combine_features`` merge block. That is the structural removal, and it
-        is the one that matters.
-
-        This is nevertheless not dead code, and the ``if`` is not a formality.
-        ``combine_features`` has NO generic loop over ``feature_sources``, so a
-        seam restored by a later edit lands its columns in gold SILENTLY -- the
-        LeakageGate passes them and nothing else looks. This is the one place that
-        would notice, and it sits before ``handle_missing_data_and_outliers``, so a
-        reinstated family is removed before any imputation or winsorization can see
-        it (which is what makes removing the WR-10 neutral-default guard safe).
-
-        NOTE ON THE EMPTY CASE, because the asymmetry is deliberate.
-        ``drop_feature_group`` REFUSES a zero match -- a drop asked to remove
-        something and removing nothing is indistinguishable downstream from one
-        that worked. A build whose seams are gone was never asking, so it must not
-        raise; the refusal guards the drop, and the seam removal guards the build.
-        """
-        # Deferred for the same reason as in ``drop_feature_group``: importing
-        # ``backtest.signal_lift`` eagerly pulls the whole model stack into a
-        # data-layer build script.
-        from backtest.signal_lift import group_columns
-
-        present = group_columns(combined_features, _LINE_MOVEMENT_GROUP)
-        if not present:
-            return combined_features
-
-        logger.warning(
-            "Line-movement columns reached the combined matrix and were dropped "
-            "before gold; a removed merge/registration seam has returned",
-            columns=present,
-            count=len(present),
-        )
-        return drop_feature_group(combined_features, _LINE_MOVEMENT_GROUP)
+        """The builder's seam onto the module-level ``_enforce_groups_dropped`` (ONE body)."""
+        return _enforce_groups_dropped(combined_features, groups)
 
     def _get_team_features(
         self,
@@ -2209,10 +2251,13 @@ class FeatureMatrixBuilder:
                 logger.error("No features to process")
                 return {}
 
-            # -- SPEC R3: the line-movement family must not reach gold --
-            # Runs on the COMBINED matrix, before every downstream stage and
-            # therefore long before the gold write.
-            combined_features = self._enforce_line_movement_dropped(combined_features)
+            # -- SPEC R3 / R6: the dropped groups must not reach gold (line movement,
+            # and the weather inputs no forecast supplies). Runs on the COMBINED
+            # matrix, before every downstream stage and therefore long before the
+            # gold write.
+            combined_features = self._enforce_groups_dropped(
+                combined_features, GOLD_DROPPED_GROUPS
+            )
 
             # -- Replace raw EPA with opponent-adjusted EPA --
             # OpponentAdjuster needs per-game stats (with game_id, raw EPA),

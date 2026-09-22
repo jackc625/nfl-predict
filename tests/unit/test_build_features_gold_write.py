@@ -468,7 +468,7 @@ class TestTheDropIsWiredIntoTheBuild:
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         }
-        assert "_enforce_line_movement_dropped" in called, (
+        assert "_enforce_groups_dropped" in called, (
             "generate_feature_matrices no longer enforces the SPEC R3 removal on "
             "the combined matrix, so a reinstated seam would reach gold unnoticed"
         )
@@ -484,13 +484,23 @@ class TestTheDropIsWiredIntoTheBuild:
                 "snapshot_total": [44.0, 45.0],
                 "opening_total": [44.5, np.nan],
                 "line_movement_coverage": [1.0, 0.0],
+                "precip_mm": [np.nan, np.nan],
+                "raw_precip_mm": [np.nan, np.nan],
+                "precip_prob": [0.2, 0.7],
             }
         )
-        out = FeatureMatrixBuilder()._enforce_line_movement_dropped(frame)
+        out = FeatureMatrixBuilder()._enforce_groups_dropped(
+            frame, ("line_movement", "weather_unsupplied")
+        )
 
+        # The generalised body drops EVERY group it is handed -- line movement AND the
+        # weather inputs no forecast supplies (Plan 33.2-12) -- and nothing else.
         assert "opening_total" not in out.columns
         assert "line_movement_coverage" not in out.columns
+        assert "precip_mm" not in out.columns
+        assert "raw_precip_mm" not in out.columns
         assert "snapshot_total" in out.columns
+        assert "precip_prob" in out.columns
 
     def test_a_clean_frame_passes_through_untouched(self) -> None:
         """The intended path: both seams gone, so there is nothing to drop.
@@ -509,7 +519,9 @@ class TestTheDropIsWiredIntoTheBuild:
                 "total_movement": [0.5],
             }
         )
-        out = FeatureMatrixBuilder()._enforce_line_movement_dropped(frame)
+        out = FeatureMatrixBuilder()._enforce_groups_dropped(
+            frame, ("line_movement", "weather_unsupplied")
+        )
 
         assert list(out.columns) == list(frame.columns)
 

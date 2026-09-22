@@ -516,7 +516,7 @@ class TestTheWr10GuardIsGoneWithItsFamily:
     load-bearing for whoever adds the next family with a defined neutral state: a
     column whose gaps must NOT read as the column median no longer gets that
     protection automatically. What makes the removal safe today is placement, not
-    luck -- ``_enforce_line_movement_dropped`` runs on the COMBINED matrix, before
+    luck -- ``_enforce_groups_dropped`` runs on the COMBINED matrix, before
     this method is ever called, so a family reinstated by a returning seam is
     already gone before any imputation could see it. That placement is asserted in
     ``tests/unit/test_build_features_gold_write.py``.

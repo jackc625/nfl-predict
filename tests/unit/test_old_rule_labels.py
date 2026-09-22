@@ -93,6 +93,12 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "bounds on data decoding, not a model accuracy or betting result, and it rests on no "
         "pre-fix model."
     ),
+    "WEATHER-NULL-LIST.md": (
+        "Plan 33.2-12's list of the 2002-2025 games that carry no day-before forecast (NULL "
+        "weather plus a coverage flag), with the reason for each, written under the day-before "
+        "lock. It counts games and names venues; it reports no model accuracy or betting result "
+        "and rests on no pre-fix model."
+    ),
     "PIPELINE.md": (
         "Canonical run-sequence instructions (commands, entry points, expected outputs). It "
         "reports no model or betting result."
