@@ -598,3 +598,480 @@ class TestTheEloSupplierOnReal2002:
                 "elo", source, planted, locks, no_information_signature=signature
             )
         assert exc.value.details["game_ids"] == [target_game]
+
+
+# ===========================================================================
+# PLAN 33.2-20 TASK 1: the gate ARMED.
+#
+# Until this plan the gate checked WHATEVER WAS REGISTERED. From here it checks that
+# EVERYTHING IS REGISTERED, that every registered key's merge disposition holds on the
+# FINAL matrices, that the opponent-adjusted family merged after Stage 1 was checked at
+# its own merge site, and that the `games` key -- which DEFINES the lock and so cannot
+# supply a non-circular information time -- carries the second declared basis with its
+# values checked rather than silence.
+#
+# The ledger exists because the registration state used to live in a PROSE COMMENT that
+# was rewritten from memory at each plan: `team_form` went missing from it entirely and
+# `games` went undisposed. A dict the gate READS is not a comment.
+# ===========================================================================
+
+
+from features.provenance import (
+    EXPECTED_CHECKED_SOURCES,
+    KNOWN_UNRELATED_SCAN_TOKENS,
+    MERGE_DISPOSITION_BY_KEY,
+    MERGE_DISPOSITIONS,
+    POST_STAGE1_FAMILY_DISPOSITIONS,
+    REGISTRY_KEY_DISPOSITIONS,
+    derive_post_stage1_gap,
+)
+
+_NINE_REGISTRY_KEYS: frozenset[str] = frozenset(
+    {
+        "games",
+        "team_form",
+        "elo",
+        "contextual",
+        "weather",
+        "market",
+        "qb_tracking",
+        "snaps",
+        "injury",
+    }
+)
+
+
+def _report(
+    checked: tuple[str, ...],
+    empty: tuple[str, ...] = (),
+    unregistered: tuple[str, ...] = (),
+    post_stage1: tuple[str, ...] | None = None,
+) -> CoverageReport:
+    return CoverageReport(
+        checked_sources=checked,
+        empty_unchecked_sources=empty,
+        unregistered_sources=unregistered,
+        post_stage1_sources=(
+            derive_post_stage1_gap(checked) if post_stage1 is None else post_stage1
+        ),
+    )
+
+
+_ALL_TEN: tuple[str, ...] = (
+    *sorted(_NINE_REGISTRY_KEYS),
+    *sorted(POST_STAGE1_FAMILY_DISPOSITIONS),
+)
+
+
+class TestTheNineKeyLedger:
+    """One row per registry key, and the gate raises on a difference in EITHER direction."""
+
+    def test_the_ledger_has_exactly_the_nine_registry_keys(self) -> None:
+        assert set(REGISTRY_KEY_DISPOSITIONS) == _NINE_REGISTRY_KEYS
+        assert len(REGISTRY_KEY_DISPOSITIONS) == 9
+
+    def test_every_row_says_something(self) -> None:
+        empty = sorted(k for k, v in REGISTRY_KEY_DISPOSITIONS.items() if not v.strip())
+        assert empty == []
+
+    def test_the_ledger_matches_the_live_registry(self) -> None:
+        from scripts.build_features import FEATURE_SOURCE_KEYS
+
+        live = {"games", *FEATURE_SOURCE_KEYS}
+        assert set(REGISTRY_KEY_DISPOSITIONS) == live
+
+    def test_a_tenth_registry_key_raises_naming_the_direction(self) -> None:
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.assert_registry_is_fully_disposed(
+                [*_NINE_REGISTRY_KEYS, "line_movement"]
+            )
+        assert "line_movement" in str(exc.value)
+        assert exc.value.details["registered_without_a_ledger_row"] == ["line_movement"]
+        assert exc.value.details["ledger_rows_without_a_registry_key"] == []
+
+    def test_a_ledger_row_with_no_registry_key_raises_the_other_direction(self) -> None:
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.assert_registry_is_fully_disposed(
+                sorted(_NINE_REGISTRY_KEYS - {"team_form"})
+            )
+        assert "team_form" in str(exc.value)
+        assert exc.value.details["ledger_rows_without_a_registry_key"] == ["team_form"]
+        assert exc.value.details["registered_without_a_ledger_row"] == []
+
+    def test_the_live_registry_passes(self) -> None:
+        from scripts.build_features import FEATURE_SOURCE_KEYS
+
+        InformationTimeGate.assert_registry_is_fully_disposed(
+            ["games", *FEATURE_SOURCE_KEYS]
+        )
+
+    def test_the_games_row_names_the_basis_and_the_values_check(self) -> None:
+        row = REGISTRY_KEY_DISPOSITIONS["games"]
+        assert "no_information" in row
+        assert "facts_at_lock" in row
+
+    def test_the_weather_row_names_the_plan_that_owns_the_fence(self) -> None:
+        assert "33.2-12" in REGISTRY_KEY_DISPOSITIONS["weather"]
+
+    def test_the_team_form_row_exists_and_names_its_supplier(self) -> None:
+        """The key that went missing from the prose comment; the whole reason for the dict."""
+        assert "team_form" in REGISTRY_KEY_DISPOSITIONS
+        assert "33.2-14" in REGISTRY_KEY_DISPOSITIONS["team_form"]
+
+
+class TestTheMergeDispositionVocabulary:
+    def test_there_are_exactly_two_merge_dispositions(self) -> None:
+        assert MERGE_DISPOSITIONS == ("merged", "checked_not_merged")
+
+    def test_every_registry_key_has_exactly_one(self) -> None:
+        assert set(MERGE_DISPOSITION_BY_KEY) == set(REGISTRY_KEY_DISPOSITIONS)
+        bad = sorted(
+            k
+            for k, v in MERGE_DISPOSITION_BY_KEY.items()
+            if v not in MERGE_DISPOSITIONS
+        )
+        assert bad == []
+
+    def test_market_is_the_only_checked_not_merged_key(self) -> None:
+        """Pinned to ONE key, so the second value cannot widen into a way to excuse a source."""
+        assert sorted(
+            k for k, v in MERGE_DISPOSITION_BY_KEY.items() if v == "checked_not_merged"
+        ) == ["market"]
+
+    def test_the_post_stage1_family_is_declared_separately_and_is_merged(self) -> None:
+        assert sorted(POST_STAGE1_FAMILY_DISPOSITIONS) == ["opponent_adj"]
+        assert "opponent_adj" not in REGISTRY_KEY_DISPOSITIONS
+
+    def test_the_expected_checked_set_is_exactly_ten_names(self) -> None:
+        assert frozenset(_ALL_TEN) == EXPECTED_CHECKED_SOURCES
+        assert len(EXPECTED_CHECKED_SOURCES) == 10
+
+
+class TestTheKnownUnrelatedScanTokens:
+    """The source-scan baseline, declared HERE so Task 1's own verify can read it."""
+
+    def test_it_is_the_one_measured_token(self) -> None:
+        assert KNOWN_UNRELATED_SCAN_TOKENS == ("discrete_indicators_exempt",)
+
+    def test_its_own_name_is_outside_the_scan_vocabulary(self) -> None:
+        """features/provenance.py is SCANNED, so a name matching the pattern would self-hit."""
+        import re
+
+        pattern = re.compile(
+            r"report_only|allow_list|allowlist|skip_check|exempt", re.I
+        )
+        assert not pattern.search("KNOWN_UNRELATED_SCAN_TOKENS")
+
+    def test_the_baseline_is_non_empty(self) -> None:
+        """The non-vacuity control on the subtraction the scan performs."""
+        assert len(KNOWN_UNRELATED_SCAN_TOKENS) > 0
+
+
+# ---------------------------------------------------------------------------
+# The DISPOSITION-AWARE merge assertion, on the FINAL matrices
+# ---------------------------------------------------------------------------
+
+#: A correct post-rung-9 shape: team_form arrives RENAMED with home_/away_ prefixes,
+#: qb_tracking arrives as home_qb_adjustment / away_qb_adjustment, and market arrives
+#: nowhere. A source-NAME match would reject all three.
+_CORRECT_ARRIVALS: dict[str, tuple[str, ...]] = {
+    "games": ("game_id", "season", "week", "home_score", "away_score"),
+    "team_form": ("home_off_rolling_epa", "away_def_rolling_epa"),
+    "elo": ("home_elo", "away_elo"),
+    "contextual": ("rest_differential",),
+    "weather": ("temp_f", "wind_mph"),
+    "market": (),
+    "qb_tracking": ("home_qb_adjustment", "away_qb_adjustment"),
+    "snaps": ("home_snap_continuity",),
+    "injury": ("home_injury_coverage",),
+    "opponent_adj": ("home_off_rolling_opp_adj_epa",),
+}
+
+
+def _correct_matrix() -> pd.DataFrame:
+    columns = sorted({c for cols in _CORRECT_ARRIVALS.values() for c in cols})
+    return pd.DataFrame({column: [0.0] for column in columns})
+
+
+class TestTheDispositionAwareMergeAssertion:
+    """Registration proves nothing about arrival -- combine_features has no generic loop."""
+
+    def test_correct_post_rung_nine_gold_passes(self) -> None:
+        InformationTimeGate.assert_merge_dispositions(
+            {"features_wp": _correct_matrix()}, _CORRECT_ARRIVALS
+        )
+
+    def test_a_merged_key_with_an_empty_arrival_record_raises(self) -> None:
+        arrivals = {**_CORRECT_ARRIVALS, "snaps": ()}
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.assert_merge_dispositions(
+                {"features_wp": _correct_matrix()}, arrivals
+            )
+        assert "snaps" in str(exc.value)
+        assert "merged" in str(exc.value)
+
+    def test_a_merged_key_whose_arrivals_left_the_final_matrix_raises(self) -> None:
+        matrix = _correct_matrix().drop(columns=["home_elo", "away_elo"])
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.assert_merge_dispositions(
+                {"features_ats": matrix}, _CORRECT_ARRIVALS
+            )
+        assert "elo" in str(exc.value)
+        assert "features_ats" in str(exc.value)
+
+    def test_the_failure_message_quotes_the_phase28_lesson(self) -> None:
+        arrivals = {**_CORRECT_ARRIVALS, "injury": ()}
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.assert_merge_dispositions(
+                {"features_wp": _correct_matrix()}, arrivals
+            )
+        assert "no generic loop" in str(exc.value)
+
+    def test_market_with_a_restored_merge_block_raises(self) -> None:
+        """A restored merge seam lands columns; the checked_not_merged inverse catches it."""
+        arrivals = {**_CORRECT_ARRIVALS, "market": ("snapshot_spread",)}
+        matrix = _correct_matrix()
+        matrix["snapshot_spread"] = 0.0
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.assert_merge_dispositions(
+                {"features_wp": matrix}, arrivals
+            )
+        assert "market" in str(exc.value)
+        assert "checked_not_merged" in str(exc.value)
+
+    def test_a_market_predicate_column_in_a_final_matrix_raises(self) -> None:
+        """Even with an EMPTY arrival record: the predicate is the registry's own answer."""
+        matrix = _correct_matrix()
+        matrix["snapshot_total"] = 0.0
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.assert_merge_dispositions(
+                {"features_ou": matrix}, _CORRECT_ARRIVALS
+            )
+        assert "snapshot_total" in str(exc.value)
+
+    def test_a_key_with_no_arrival_record_at_all_raises(self) -> None:
+        arrivals = {k: v for k, v in _CORRECT_ARRIVALS.items() if k != "contextual"}
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.assert_merge_dispositions(
+                {"features_wp": _correct_matrix()}, arrivals
+            )
+        assert "contextual" in str(exc.value)
+
+    def test_the_post_stage1_family_must_arrive_too(self) -> None:
+        matrix = _correct_matrix().drop(columns=["home_off_rolling_opp_adj_epa"])
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.assert_merge_dispositions(
+                {"features_wp": matrix}, _CORRECT_ARRIVALS
+            )
+        assert "opponent_adj" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# The ONE final coverage refusal
+# ---------------------------------------------------------------------------
+
+
+class TestTheFinalCoverageRefusal:
+    def test_all_ten_checked_passes(self) -> None:
+        InformationTimeGate.refuse_incomplete_coverage(_report(_ALL_TEN))
+
+    def test_nine_registry_keys_without_the_family_refuses(self) -> None:
+        """The exact gap an exact nine-key registry equality cannot express."""
+        nine = tuple(sorted(_NINE_REGISTRY_KEYS))
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.refuse_incomplete_coverage(_report(nine))
+        assert "opponent_adj" in str(exc.value)
+
+    def test_a_post_stage1_merge_that_skipped_its_gate_check_refuses_by_name(
+        self,
+    ) -> None:
+        nine = tuple(sorted(_NINE_REGISTRY_KEYS))
+        report = _report(nine)
+        assert report.post_stage1_sources == ("opponent_adj",)
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.refuse_incomplete_coverage(report)
+        assert exc.value.details["post_stage1_unchecked"] == ["opponent_adj"]
+
+    def test_the_post_stage1_set_is_derived_never_a_literal(self) -> None:
+        assert derive_post_stage1_gap(_ALL_TEN) == ()
+        assert derive_post_stage1_gap(()) == ("opponent_adj",)
+
+    def test_an_empty_unchecked_source_refuses_by_name(self) -> None:
+        report = _report(tuple(n for n in _ALL_TEN if n != "snaps"), empty=("snaps",))
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.refuse_incomplete_coverage(report)
+        assert exc.value.details["empty_unchecked"] == ["snaps"]
+
+    def test_an_unregistered_source_refuses_by_name(self) -> None:
+        report = _report(
+            tuple(n for n in _ALL_TEN if n != "market"), unregistered=("market",)
+        )
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.refuse_incomplete_coverage(report)
+        assert exc.value.details["unregistered"] == ["market"]
+
+    def test_a_source_checked_that_is_not_a_declared_name_refuses(self) -> None:
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.refuse_incomplete_coverage(
+                _report((*_ALL_TEN, "line_movement"))
+            )
+        assert "line_movement" in str(exc.value)
+
+    def test_the_refusal_names_the_ten_it_wanted(self) -> None:
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate.refuse_incomplete_coverage(_report(("elo",)))
+        assert exc.value.details["expected_checked"] == sorted(_ALL_TEN)
+
+
+# ---------------------------------------------------------------------------
+# The `games` disposition: the SECOND declared basis, values CHECKED
+# ---------------------------------------------------------------------------
+
+_PLANTED_MOVE = """
+[[move]]
+game_id = "{game_id}"
+move_index = 1
+what_moved = "{what_moved}"
+from_value = "{from_value}"
+to_value = "{to_value}"
+announced_at_utc = "{announced}"
+source_published_at = "{announced}"
+lock_utc = "{lock}"
+verdict = "{verdict}"
+source_url = "https://example.invalid/planted"
+notes = "planted by tests/unit/test_information_time_gate.py"
+"""
+
+
+def _games_with_schedule_facts() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "game_id": [G_SUN, G_MON],
+            "season": [2023, 2023],
+            "week": [15, 15],
+            "home_team": ["CIN", "SEA"],
+            "away_team": ["MIN", "PHI"],
+            "stadium_id": ["CIN00", "SEA00"],
+            "kickoff_et": [
+                pd.Timestamp("2023-12-17 13:00", tz=ET).tz_convert("UTC"),
+                pd.Timestamp("2023-12-18 20:15", tz=ET).tz_convert("UTC"),
+            ],
+        }
+    )
+
+
+class TestTheGamesDisposition:
+    """`games` DEFINES the lock, so it takes the OTHER basis -- and pays its price."""
+
+    def test_a_frame_whose_facts_match_the_table_is_checked(self, tmp_path) -> None:
+        table = tmp_path / "moves.toml"
+        table.write_text("", encoding="utf-8")
+        gate = InformationTimeGate()
+        state = gate.check_games(_games_with_schedule_facts(), table_path=table)
+        assert state is SourceCheckState.CHECKED
+        assert gate.checked_sources == ("games",)
+
+    def test_an_empty_games_frame_is_empty_unchecked_by_name(self, tmp_path) -> None:
+        table = tmp_path / "moves.toml"
+        table.write_text("", encoding="utf-8")
+        gate = InformationTimeGate()
+        state = gate.check_games(pd.DataFrame(), table_path=table)
+        assert state is SourceCheckState.EMPTY_UNCHECKED
+        assert gate.empty_unchecked_sources == ("games",)
+
+    def test_a_post_lock_date_move_the_frame_carries_raises_naming_the_game(
+        self, tmp_path
+    ) -> None:
+        """A neutralised WEEK or DATE is post-lock schedule information in gold's own week
+        column: the games frame hands both forward unresolved."""
+        games = _games_with_schedule_facts()
+        table = tmp_path / "moves.toml"
+        table.write_text(
+            _PLANTED_MOVE.format(
+                game_id=G_SUN,
+                what_moved="date",
+                from_value="2023-12-16",
+                to_value="2023-12-17",
+                announced="2023-12-17T12:00:00+00:00",
+                lock="2023-12-16T23:00:00+00:00",
+                verdict="post_lock",
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ProvenanceCoverageError) as exc:
+            InformationTimeGate().check_games(games, table_path=table)
+        assert G_SUN in str(exc.value)
+        assert exc.value.details["game_ids"] == [G_SUN]
+        assert exc.value.details["fields"] == ["kickoff_et"]
+
+    def test_the_comparison_is_load_bearing_not_decorative(self, tmp_path) -> None:
+        """The control: WITHOUT the facts_at_lock comparison the planted game PASSES.
+
+        This is what proves the `games` row is a checked disposition rather than an
+        exemption wearing one's clothes.
+        """
+        from features.schedule_moves import facts_at_lock
+
+        games = _games_with_schedule_facts()
+        table = tmp_path / "moves.toml"
+        table.write_text(
+            _PLANTED_MOVE.format(
+                game_id=G_SUN,
+                what_moved="date",
+                from_value="2023-12-16",
+                to_value="2023-12-17",
+                announced="2023-12-17T12:00:00+00:00",
+                lock="2023-12-16T23:00:00+00:00",
+                verdict="post_lock",
+            ),
+            encoding="utf-8",
+        )
+        # A check that only ever compares a row against ITSELF -- which is what removing
+        # the facts_at_lock comparison leaves -- finds nothing, on this very frame.
+        without_the_comparison = [
+            row["game_id"]
+            for _, row in games.iterrows()
+            if row["kickoff_et"] != row["kickoff_et"]
+        ]
+        assert without_the_comparison == []
+
+        # And the comparison itself really does see a difference for that game.
+        row = games.loc[games["game_id"] == G_SUN].iloc[0]
+        facts = facts_at_lock(row["game_id"], row, table_path=table)
+        assert facts.neutralised is True
+        assert facts.kickoff_et is not None
+        assert facts.kickoff_et != row["kickoff_et"]
+
+    def test_a_post_lock_venue_move_is_allowed_because_the_build_resolves_it(
+        self, tmp_path
+    ) -> None:
+        """The only real post-lock move in the live table is a VENUE move.
+
+        Every builder resolves a game's venue through ``facts_at_lock``, so a neutralised
+        stadium is the fact the build USES. A neutralised WEEK or KICKOFF is not: those
+        travel into gold unresolved, which is why they refuse above.
+        """
+        games = _games_with_schedule_facts()
+        table = tmp_path / "moves.toml"
+        table.write_text(
+            _PLANTED_MOVE.format(
+                game_id=G_SUN,
+                what_moved="venue",
+                from_value="SDG00",
+                to_value="CIN00",
+                announced="2023-12-17T12:00:00+00:00",
+                lock="2023-12-16T23:00:00+00:00",
+                verdict="post_lock",
+            ),
+            encoding="utf-8",
+        )
+        assert (
+            InformationTimeGate().check_games(games, table_path=table)
+            is SourceCheckState.CHECKED
+        )
+
+    def test_the_real_move_table_and_real_silver_games_pass(self) -> None:
+        """The production corpus: the one post-lock move is a venue move, and it is fine."""
+        games = pd.read_parquet(REPO_ROOT / "data" / "silver" / "games.parquet")
+        assert len(games) > 6000
+        assert InformationTimeGate().check_games(games) is SourceCheckState.CHECKED
