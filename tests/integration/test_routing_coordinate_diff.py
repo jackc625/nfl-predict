@@ -53,6 +53,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from conf.season_partition import CORPUS_FIRST_SEASON
 from data.upstream_pin import load_schedules
 from features import contextual
 from scripts import ingest_weather
@@ -63,7 +64,9 @@ pytestmark = pytest.mark.integration
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VENUES_PATH = REPO_ROOT / "data" / "venues.json"
 
-FIRST_SEASON = 2002
+# The corpus floor, read from the one rule module (Plan 33.2-18: no floor literal outside
+# conf/season_partition.py). Was: FIRST_SEASON = 2002.
+FIRST_SEASON = CORPUS_FIRST_SEASON
 LAST_SEASON = 2025
 
 # R4's rule for "weather applies to this game", read from the feed's own per-game

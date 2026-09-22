@@ -45,6 +45,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from conf.season_partition import CORPUS_FIRST_SEASON
 from data.upstream_pin import load_schedules
 from features import contextual
 from scripts import ingest_weather
@@ -56,7 +57,9 @@ VENUES_PATH = REPO_ROOT / "data" / "venues.json"
 
 # The corpus, stated once. 2026 is excluded because the pin's live zone is
 # append-only per week and this phase is history only (SPEC boundaries).
-FIRST_SEASON = 2002
+# The corpus floor, read from the one rule module (Plan 33.2-18: no floor literal outside
+# conf/season_partition.py). Was: FIRST_SEASON = 2002.
+FIRST_SEASON = CORPUS_FIRST_SEASON
 LAST_SEASON = 2025
 EXPECTED_GAMES = 6499
 EXPECTED_DISTINCT_STADIUM_IDS = 55

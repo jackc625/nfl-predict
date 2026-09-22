@@ -23,6 +23,7 @@ import pandas as pd
 import pytest
 
 import scripts.build_features as bf
+from conf.season_partition import CORPUS_FIRST_SEASON
 from scripts.build_features import (
     FeatureMatrixBuilder,
     parse_args,
@@ -30,7 +31,9 @@ from scripts.build_features import (
 )
 
 LADDER_BOUND = 2025
-FIRST_SEASON = 2002
+# The corpus floor, read from the one rule module (Plan 33.2-18: no floor literal outside
+# conf/season_partition.py). Was: FIRST_SEASON = 2002.
+FIRST_SEASON = CORPUS_FIRST_SEASON
 SILVER_SEASONS = list(range(FIRST_SEASON, 2027))  # 2002..2026, as silver holds today
 
 

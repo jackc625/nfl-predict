@@ -39,13 +39,16 @@ from pathlib import Path
 
 import pytest
 
+from conf.season_partition import CORPUS_FIRST_SEASON
 from tests import phase33_state
 from tests.unit.test_venues_json_international import EXPECTED_TOTAL_RECORDS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VENUES_PATH = REPO_ROOT / "data" / "venues.json"
 
-FIRST_SEASON = 2002
+# The corpus floor, read from the one rule module (Plan 33.2-18: no floor literal outside
+# conf/season_partition.py). Was: FIRST_SEASON = 2002.
+FIRST_SEASON = CORPUS_FIRST_SEASON
 LAST_SEASON = 2025
 
 # The field order HISTORICAL_VENUE_FACTS is stated in, named here so the unpacking below is

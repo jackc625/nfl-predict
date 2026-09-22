@@ -35,6 +35,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from conf.season_partition import CORPUS_FIRST_SEASON
 from scripts import ingest_games
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -42,7 +43,9 @@ GAMES_PATH = REPO_ROOT / "data" / "silver" / "games.parquet"
 VENUES_PATH = REPO_ROOT / "data" / "venues.json"
 RECORD_PATH = REPO_ROOT / "config" / "kickoff_hour_corrections.toml"
 
-FIRST_SEASON = 2002
+# The corpus floor, read from the one rule module (Plan 33.2-18: no floor literal outside
+# conf/season_partition.py). Was: FIRST_SEASON = 2002.
+FIRST_SEASON = CORPUS_FIRST_SEASON
 LAST_SEASON = 2025
 CORRECTED_SEASONS = (2002, 2003, 2004, 2005)
 NOON_MINUTES = 12 * 60

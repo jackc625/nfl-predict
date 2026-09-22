@@ -16132,3 +16132,62 @@ P332_17_STEP7B_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
     "gold/features_ou.parquet",
     "nfl_predictions.duckdb",
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-18 Task 2 -- THE SEASON PARTITION RULE'S WITNESS, RE-ESTABLISHED AFTER ITS SECOND
+# AMENDMENT (D33.2-14). APPENDED ONCE on 2026-09-22, in ONE block, by this task. Nothing above
+# this line was edited.
+#
+# WHAT MOVED: conf/season_partition.py's SELECTION_WINDOW_FIRST_SEASON went from 2018 to 2002
+# and its RULE_EVIDENCE was rewritten, in commit 0ca6798 -- a commit touching that file and
+# nothing else (Plan 33.2-08 owned protocol W2). The Elo, odds and team-stat coverage floors the
+# 2018 boundary rested on all dissolved in Phase 33.2, and the "90 gold columns" figure did not
+# reproduce. NO Phase 33.2 window had been scored when it was made (the first fit on this
+# partition is Plan 33.2-20's); Phase 33's re-fit ran on the 2018 window, and its artifacts are
+# dead by the standing ruling of 2026-09-14.
+#
+# WHY NEW NAMES (W5): SEASON_PARTITION_RULE_COMMIT and SEASON_PARTITION_RULE_FILE_SHA256 above
+# stay BYTE-UNCHANGED as the record of the rule before this amendment, and SEASON_PARTITION_AFTER
+# as the record of the partition it produced. The 2026-09-14 WR-01 precedent
+# (SEASON_PARTITION_RULE_REANCHOR) edited the two constants in place; W5 supersedes it, so two
+# amendments are witnessed without either touching the other's record.
+#
+# MEASURED 2026-09-22 AFTER the file's last write (W1), recorded in this strictly later commit
+# (W3): `git log -1 --format=%H -- conf/season_partition.py` resolves to the commit below, and
+# the newline-normalized working-tree digest equals the sha256 of
+# `git cat-file blob 0ca6798155d27ef13a116467ae68f58a256b7079:conf/season_partition.py`, whose
+# blob carries zero CRLF pairs. tests/unit/test_preregistration_ancestry.py's
+# TestThePhase331SeasonPartitionRule reads these names (W6's four assertions) and carries a
+# control proving the checks fail against the superseded pair.
+# ---------------------------------------------------------------------------
+
+P332_18_SEASON_PARTITION_RULE_COMMIT: str = "0ca6798155d27ef13a116467ae68f58a256b7079"
+
+P332_18_SEASON_PARTITION_RULE_FILE_SHA256: dict[str, str] = {
+    "conf/season_partition.py": (
+        "f28e13facd3edd650f6db9f4fb5f1c391365680f90bf807d9f6144ad9dc9ebe2"
+    ),
+}
+
+P332_18_SEASON_PARTITION_RULE_MEASURED_AT: str = "2026-09-22, Plan 33.2-18 Task 2"
+
+# The partition the amended rule produces on 2002-2025, measured from
+# conf.season_partition.default_season_partition() and backtest_seasons() after commit 0ca6798.
+# The outside reference tests/unit/test_season_partition_agreement.py compares the sixteen sites
+# with; SEASON_PARTITION_AFTER above is its predecessor, unedited.
+P332_18_SEASON_PARTITION_RULE_PARTITION_AFTER: dict[str, object] = {
+    "selection": (
+        2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012,
+        2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022,
+    ),
+    "hp_val": (2023,),
+    "holdout": (2024, 2025),
+    "final_fit_first": 2002,
+    "final_fit_last": 2025,
+    "final_fit_count": 24,
+    "backtest_seasons_first": 2002,
+    "backtest_seasons_last": 2025,
+    "latest_completed_season": 2025,
+    "before": "selection 2018-2022, hp_val 2023, holdout 2024-2025 (SEASON_PARTITION_AFTER)",
+    "measured_on": "2026-09-22, Plan 33.2-18 Task 2",
+}  # fmt: skip
