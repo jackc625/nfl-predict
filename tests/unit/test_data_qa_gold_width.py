@@ -93,10 +93,16 @@ PHASE_28_WIDTHS = {"features_wp": 194, "features_ats": 195, "features_ou": 194}
 # longer exists while the integer still matches.
 PHASE_331_ADDED_WEATHER_COLUMNS = (WEATHER_COVERAGE_COLUMN,)
 
-# The market columns that must SURVIVE the drop. ``snapshot_total`` /
-# ``snapshot_spread`` are the freeze anchors and ``total_movement`` /
-# ``spread_movement`` are the pre-existing MarketAnchor columns; all four are
-# baseline features, and all four are near-misses for a careless substring prune.
+# The market columns that must survive the LINE-MOVEMENT drop. ``snapshot_total`` /
+# ``snapshot_spread`` are the freeze anchors and ``total_movement`` / ``spread_movement``
+# are the pre-existing MarketAnchor columns; all four are near-misses for a careless
+# substring prune, which is what the node below still guards against.
+#
+# THEY ARE NO LONGER BASELINE FEATURES IN GOLD (Plan 33.2-19, p332_ rung 9, D33.2-03).
+# They left all three matrices with the rest of the betting line, through the ``market``
+# group -- a DIFFERENT family from line_movement, and the point of the node below is that
+# the two predicates are told apart: line_movement matches none of these four and market
+# matches all of them, so their removal is attributable to the market group alone.
 MARKET_SURVIVORS = (
     "snapshot_total",
     "snapshot_spread",
@@ -344,21 +350,38 @@ def test_the_phase_331_widening_is_pinned_to_the_named_coverage_flag(
 
 @pytest.mark.parametrize("table_name", list(GOLD_FEATURE_MATRICES))
 def test_the_market_survivors_are_not_taken_with_the_family(table_name: str) -> None:
-    """The drop must be a family removal, not a suffix sweep.
+    """The line-movement drop must be a family removal, not a suffix sweep.
 
-    ``snapshot_total`` ends in ``total`` and ``spread_movement`` contains
-    ``spread``; a substring-based prune would take all four of these with the
-    fifteen and quietly delete the freeze anchors the whole market leg rests on.
+    ``snapshot_total`` ends in ``total`` and ``spread_movement`` contains ``spread``; a
+    substring-based prune would take all four of these with the fifteen. THAT suffix
+    discipline is the node's real and unchanged subject, and it is asserted here AT THE
+    PREDICATE: ``line_movement`` matches none of the four, ``market`` matches all four.
+
+    IT NO LONGER READS GOLD, because the four are no longer IN gold and that is by
+    decision (Plan 33.2-19, p332_ rung 9, D33.2-03): they left through the ``market``
+    group, not through the line-movement drop, and the check now proves exactly that
+    attribution. Was: the four asserted PRESENT in every matrix, which held only while
+    no betting line had been removed from the model inputs.
+
+    The predicate is asked about NAMES on a header-only frame, so this node says nothing
+    about which gold exists; ``test_the_phase_332_width_deltas_chain_and_are_pinned_by_name``
+    is what asserts their absence from the live matrices.
     """
-    path = GOLD_DIR / f"{table_name}.parquet"
-    if not path.exists():
-        pytest.skip(f"{path} not built yet -- run scripts.build_features first")
+    del table_name  # the assertion is about the predicate, not about a matrix
+    frame = pd.DataFrame(
+        columns=pd.Index([*PHASE_30_REMOVED_LINE_MOVEMENT_COLUMNS, *MARKET_SURVIVORS])
+    )
 
-    columns = set(pd.read_parquet(path).columns)
-    missing = [c for c in MARKET_SURVIVORS if c not in columns]
-    assert not missing, (
-        f"{table_name} lost market columns {missing} to the line-movement drop. "
-        f"These are pre-existing baseline features, not Phase-29 columns."
+    taken_by_line_movement = set(group_columns(frame, "line_movement")) & set(
+        MARKET_SURVIVORS
+    )
+    assert taken_by_line_movement == set(), (
+        f"the line-movement predicate matches market columns {sorted(taken_by_line_movement)}; "
+        "a family drop that reaches them is the substring sweep this node exists to catch"
+    )
+    assert set(group_columns(frame, "market")) == set(MARKET_SURVIVORS), (
+        "the market predicate does not match exactly the four survivors, so their "
+        "removal from gold is not attributable to the market group alone"
     )
 
 
