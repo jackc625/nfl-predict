@@ -30,11 +30,15 @@ The contract these tests pin:
   inverted rather than deleted, because "no name-based interception survives" is
   the fact the next family with a defined neutral state needs to know.
 
-The residual this does NOT close, deliberately: within-season lookahead. Season Y's
-week-1 bound still sees season Y's week 18 whenever Y self-fits, and
-``_impute_team_features``' team mean and season mean remain within-season. D30-16
-accepts both; they cannot be moved by adding a LATER season's rows, which is what
-SPEC R2 asserts.
+The residual this does NOT close, deliberately: within-season lookahead in the
+WINSORIZATION bound. Season Y's week-1 bound still sees season Y's week 18 whenever Y
+self-fits. D30-16 accepted it; it cannot be moved by adding a LATER season's rows, which
+is what SPEC R2 asserts.
+
+The IMPUTATION half of that residual is gone (p332_ extra step 7b, owner ruling
+2026-09-22): ``_impute_team_features``' team mean and season mean used to be computed
+over the whole season, and now read only games that had ENDED by the gap's own lock
+(``tests/unit/test_point_in_time_imputation.py`` pins the rule).
 """
 
 from __future__ import annotations
@@ -661,26 +665,36 @@ class TestImputeTeamFeaturesFallbacks:
             "that is the third WR-06 surface (T-30-28)"
         )
 
-    def test_the_within_season_means_are_deliberately_retained(self) -> None:
-        """D30-16 accepts the within-season residual; removing it silently would be a
-        larger behavioural change than the phase authorises in this file.
+    def test_the_whole_season_means_are_gone_and_the_fill_is_point_in_time(
+        self,
+    ) -> None:
+        """The within-season residual D30-16 accepted is retired by p332_ step 7b.
 
-        Structural for the same reason as the guard above, and additionally because
-        this is a PRESENCE assertion: a textual form would pass vacuously the moment
-        the expression survived only in a comment.
+        Was: ``test_the_within_season_means_are_deliberately_retained`` -- a PRESENCE
+        assertion that ``team_values.mean`` and ``season_data[col].mean`` (the team's and
+        the league's mean over the WHOLE season) were still in the method, because
+        removing them was then a larger change than the phase authorised. The owner
+        ruled on 2026-09-22 that a week-3 gap filled from weeks 4-17 is post-lock
+        information (D33.2-01), so both are gone: every within-season statistic is now
+        ``features.point_in_time_fill.admitted_mean`` over games ended by the gap's lock.
+
+        Structural, as before: an ABSENCE assertion on the parsed calls, plus a PRESENCE
+        assertion on the point-in-time call so the absence cannot pass vacuously.
         """
         source = inspect.getsource(FeatureMatrixBuilder._impute_team_features)
         tree = ast.parse(textwrap.dedent(source))
 
-        means = {
+        calls = {
             ast.unparse(node.func)
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "mean"
         }
+        means = {c for c in calls if c.endswith(".mean")}
 
-        assert "team_values.mean" in means, "the within-season TEAM mean was removed"
-        assert "season_data[col].mean" in means, (
-            "the within-season SEASON mean was removed"
+        assert "team_values.mean" not in means, "the whole-season TEAM mean is back"
+        assert "season_data[col].mean" not in means, (
+            "the whole-season SEASON mean is back"
+        )
+        assert "admitted_mean" in calls, (
+            "the point-in-time fill is not called: the absence above proves nothing"
         )

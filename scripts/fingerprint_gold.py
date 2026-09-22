@@ -6022,6 +6022,295 @@ PHASE332_RUNG_SIGNATURES[PHASE332_OPPADJ_RUNG] = PHASE332_OPPADJ_RUNG_EXPECTED_S
 PHASE332_RUNG_ATTRIBUTORS[PHASE332_OPPADJ_RUNG] = _attribute_p332_oppadj
 
 
+# ---------------------------------------------------------------------------
+# p332_ EXTRA STEP 7b -- WITHIN-SEASON IMPUTATION MADE POINT-IN-TIME (owner ruling 2026-09-22,
+# run first in Plan 33.2-17's dispatch; deferred-items.md "fill a mid-season gap from EARLIER
+# games only").
+#
+# NOT A NUMBERED RUNG and NOT inside rung 7 or rung 8. It follows rung 7, is judged against
+# p332_rung7.json, and rung 8 (Plan 33.2-18) is judged against p332_rung7b.json -- so neither
+# step carries two causes (D33.2-20).
+#
+# THE LEAK. scripts/build_features.FeatureMatrixBuilder._impute_team_features filled a NaN in
+# any home_* / away_* column with the team's mean over the WHOLE season, then the whole-season
+# league mean -- so a week-1 gap was filled from weeks 2-18, which is post-lock information
+# under D33.2-01. _impute_game_level_features fell back to a median of the gap's own season
+# when no prior season could be fitted (the same read).
+#
+# THE ONE CAUSE: every imputed value is computed only from games that had ENDED by the gap's
+# own lock (kickoff plus the declared game duration, admitted at or before the lock --
+# features.point_in_time_fill, the builders' own timing): the team's pre-lock mean, then the
+# league's pre-lock mean that season, then the strictly-prior-seasons median (never a
+# self-fit), and where nothing honest exists the cell stays BLANK -- NaN through
+# normalization, never the neutral 0.0.
+#
+# DECLARED BEFORE THE REBUILD, measured READ-ONLY on the exact frame the imputer receives in a
+# --through-season 2025 build (captured 2026-09-22, nothing saved, data/ digest-identical):
+#
+# * 3,584 cells are imputed today, in exactly the 50 columns below and nowhere else: 28
+#   team-form columns (seasons 2020-2025), 20 snap columns (2013 only) and the two Elo
+#   momentum columns (every season 2002-2025). 1,611 of them change under the rule; 832 are
+#   left BLANK (the first week of team form's first covered season 2020, of snaps' 2013, and
+#   2002's Elo momentum: in-season values exist, none had ended by the lock, and no prior
+#   season exists).
+# * VALUES -- only those 50 columns can move, each only from its first imputed season through
+#   2025: in the imputed season through the rescaling a changed value causes (winsorization
+#   bounds and expanding normalization), and in LATER seasons through the prior-season
+#   normalization bootstrap and the strictly-prior winsorization bounds. Never earlier.
+# * BLANKS -- each column's null count grows by EXACTLY its declared blank cells (16 per
+#   column; 32 for each snap_continuity column), in every matrix.
+# * STRUCTURE -- nothing added, nothing removed, widths 197/198/197 and rows 6,499 unchanged.
+#   The twelve *_rolling_opp_adj_* values stay excluded from the imputer (Plan 33.2-16) and
+#   cannot move.
+# ---------------------------------------------------------------------------
+
+PHASE332_IMPUTATION_STEP: str = "7b"
+
+PHASE332_IMPUTATION_STEP_FOLLOWS: int = PHASE332_OPPADJ_RUNG
+
+PHASE332_IMPUTATION_STEP_CAUSE: str = (
+    "WITHIN-SEASON IMPUTATION MADE POINT-IN-TIME, p332_ extra step 7b (owner ruling "
+    "2026-09-22, run first in Plan 33.2-17's dispatch), and NOTHING else: the gold imputer "
+    "fills a gap only from games that had ENDED by that gap's own lock -- the team's pre-lock "
+    "mean, then the league's pre-lock mean that season, then the strictly-prior-seasons median "
+    "(never a self-fit on the gap's own season) -- and where nothing known at the lock exists "
+    "the cell stays blank through normalization instead of taking a whole-season mean or the "
+    "neutral 0.0. Only the 50 columns the imputer fills today can move (28 team-form, 20 snap, "
+    "2 Elo momentum), each from its first imputed season through 2025; each gains exactly its "
+    "declared blank cells; no column is added or removed and no row moves"
+)
+
+#: The first season each imputed column is filled in (measured read-only before the rebuild).
+PHASE332_IMPUTATION_STEP_FIRST_SEASON_BY_COLUMN: dict[str, int] = {
+    "away_def_rolling_pass_success_rate": 2020,
+    "away_def_rolling_red_zone_td_rate": 2020,
+    "away_def_rolling_rush_success_rate": 2020,
+    "away_def_rolling_success_rate": 2020,
+    "away_def_rolling_third_down_conversion_rate": 2020,
+    "away_elo_momentum": 2002,
+    "away_off_rolling_avg_drive_start_yardline": 2020,
+    "away_off_rolling_cpoe": 2020,
+    "away_off_rolling_neutral_pace": 2020,
+    "away_off_rolling_neutral_pass_rate": 2020,
+    "away_off_rolling_pass_success_rate": 2020,
+    "away_off_rolling_red_zone_td_rate": 2020,
+    "away_off_rolling_rush_success_rate": 2020,
+    "away_off_rolling_success_rate": 2020,
+    "away_off_rolling_third_down_conversion_rate": 2020,
+    "away_rolling_snap_share_db": 2013,
+    "away_rolling_snap_share_dl": 2013,
+    "away_rolling_snap_share_lb": 2013,
+    "away_rolling_snap_share_ol": 2013,
+    "away_rolling_snap_share_qb": 2013,
+    "away_rolling_snap_share_rb": 2013,
+    "away_rolling_snap_share_te": 2013,
+    "away_rolling_snap_share_wr": 2013,
+    "away_snap_concentration": 2013,
+    "away_snap_continuity": 2013,
+    "home_def_rolling_pass_success_rate": 2020,
+    "home_def_rolling_red_zone_td_rate": 2020,
+    "home_def_rolling_rush_success_rate": 2020,
+    "home_def_rolling_success_rate": 2020,
+    "home_def_rolling_third_down_conversion_rate": 2020,
+    "home_elo_momentum": 2002,
+    "home_off_rolling_avg_drive_start_yardline": 2020,
+    "home_off_rolling_cpoe": 2020,
+    "home_off_rolling_neutral_pace": 2020,
+    "home_off_rolling_neutral_pass_rate": 2020,
+    "home_off_rolling_pass_success_rate": 2020,
+    "home_off_rolling_red_zone_td_rate": 2020,
+    "home_off_rolling_rush_success_rate": 2020,
+    "home_off_rolling_success_rate": 2020,
+    "home_off_rolling_third_down_conversion_rate": 2020,
+    "home_rolling_snap_share_db": 2013,
+    "home_rolling_snap_share_dl": 2013,
+    "home_rolling_snap_share_lb": 2013,
+    "home_rolling_snap_share_ol": 2013,
+    "home_rolling_snap_share_qb": 2013,
+    "home_rolling_snap_share_rb": 2013,
+    "home_rolling_snap_share_te": 2013,
+    "home_rolling_snap_share_wr": 2013,
+    "home_snap_concentration": 2013,
+    "home_snap_continuity": 2013,
+}
+
+#: The declared columns, sorted.
+PHASE332_IMPUTATION_STEP_COLUMNS: tuple[str, ...] = tuple(
+    sorted(PHASE332_IMPUTATION_STEP_FIRST_SEASON_BY_COLUMN)
+)
+
+#: Cells per column the rule leaves BLANK (no admitted in-season value, no prior season).
+PHASE332_IMPUTATION_STEP_BLANK_CELLS_BY_COLUMN: dict[str, int] = {
+    "away_def_rolling_pass_success_rate": 16,
+    "away_def_rolling_red_zone_td_rate": 16,
+    "away_def_rolling_rush_success_rate": 16,
+    "away_def_rolling_success_rate": 16,
+    "away_def_rolling_third_down_conversion_rate": 16,
+    "away_elo_momentum": 16,
+    "away_off_rolling_avg_drive_start_yardline": 16,
+    "away_off_rolling_cpoe": 16,
+    "away_off_rolling_neutral_pace": 16,
+    "away_off_rolling_neutral_pass_rate": 16,
+    "away_off_rolling_pass_success_rate": 16,
+    "away_off_rolling_red_zone_td_rate": 16,
+    "away_off_rolling_rush_success_rate": 16,
+    "away_off_rolling_success_rate": 16,
+    "away_off_rolling_third_down_conversion_rate": 16,
+    "away_rolling_snap_share_db": 16,
+    "away_rolling_snap_share_dl": 16,
+    "away_rolling_snap_share_lb": 16,
+    "away_rolling_snap_share_ol": 16,
+    "away_rolling_snap_share_qb": 16,
+    "away_rolling_snap_share_rb": 16,
+    "away_rolling_snap_share_te": 16,
+    "away_rolling_snap_share_wr": 16,
+    "away_snap_concentration": 16,
+    "away_snap_continuity": 32,
+    "home_def_rolling_pass_success_rate": 16,
+    "home_def_rolling_red_zone_td_rate": 16,
+    "home_def_rolling_rush_success_rate": 16,
+    "home_def_rolling_success_rate": 16,
+    "home_def_rolling_third_down_conversion_rate": 16,
+    "home_elo_momentum": 16,
+    "home_off_rolling_avg_drive_start_yardline": 16,
+    "home_off_rolling_cpoe": 16,
+    "home_off_rolling_neutral_pace": 16,
+    "home_off_rolling_neutral_pass_rate": 16,
+    "home_off_rolling_pass_success_rate": 16,
+    "home_off_rolling_red_zone_td_rate": 16,
+    "home_off_rolling_rush_success_rate": 16,
+    "home_off_rolling_success_rate": 16,
+    "home_off_rolling_third_down_conversion_rate": 16,
+    "home_rolling_snap_share_db": 16,
+    "home_rolling_snap_share_dl": 16,
+    "home_rolling_snap_share_lb": 16,
+    "home_rolling_snap_share_ol": 16,
+    "home_rolling_snap_share_qb": 16,
+    "home_rolling_snap_share_rb": 16,
+    "home_rolling_snap_share_te": 16,
+    "home_rolling_snap_share_wr": 16,
+    "home_snap_concentration": 16,
+    "home_snap_continuity": 32,
+}
+
+#: The read-only pre-rebuild measurement the step's record carries beside its own.
+PHASE332_IMPUTATION_STEP_PREREBUILD_MEASUREMENT: str = (
+    "Read-only 2026-09-22, on the exact frame handle_missing_data_and_outliers receives in a "
+    "--through-season 2025 build (captured, nothing saved, data/ digest-identical): 3,584 "
+    "cells imputed in 50 columns; 1,611 change under the point-in-time rule; 832 are left "
+    "blank (2002: 32 Elo momentum; 2013: 352 snap; 2020: 448 team form)"
+)
+
+PHASE332_IMPUTATION_STEP_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_IMPUTATION_STEP,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_IMPUTATION_STEP_CAUSE,
+    "follows_rung": PHASE332_IMPUTATION_STEP_FOLLOWS,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to the 50 imputed columns in PHASE332_IMPUTATION_STEP_COLUMNS, each only "
+        "in its first imputed season through 2025; every other column EMPTY"
+    ),
+    "rows_changed": (
+        "before normalization only the imputed cells differ (1,611 of 3,584); after it, the "
+        "same columns can also differ on same-season neighbours through the rescaling a "
+        "changed value causes, and on later seasons through the prior-season bootstrap and "
+        "the strictly-prior winsorization bounds; each column's null count grows by exactly "
+        "its declared blank cells"
+    ),
+    "predicted_changed": PHASE332_IMPUTATION_STEP_COLUMNS,
+    "declared_families": ("team_form", "snaps", "elo"),
+    "family_mechanisms": {
+        "imputer": (
+            "scripts.build_features.FeatureMatrixBuilder._impute_team_features and "
+            "_impute_game_level_features over features.point_in_time_fill; blank cells kept "
+            "by _restore_imputation_blanks"
+        ),
+    },
+    "prerebuild_measurement": PHASE332_IMPUTATION_STEP_PREREBUILD_MEASUREMENT,
+    "declared_before_the_rebuild": True,
+}
+
+EXTRA_STEPS_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[PHASE332_IMPUTATION_STEP] = (
+    PHASE332_IMPUTATION_STEP_FOLLOWS
+)
+EXTRA_STEP_CAUSES_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_IMPUTATION_STEP
+] = PHASE332_IMPUTATION_STEP_CAUSE
+
+PHASE332_IMPUTATION_STEP_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-22 before step 7b wrote anything: production data/ was "
+    "digest-identical to outputs/p332_rung7_after.json (1,128 files), and the only code "
+    "change since rung 7's rebuild commit 615b722 that a build reads is this step's own "
+    "(b40170d touches backtest/ only). p332_rung7.json IS gold rebuilt from today's inputs "
+    "minus exactly this step's cause. No carry-in, no retake"
+)
+
+
+def _attribute_p332_imputation(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Extra step 7b of the `p332_` ladder: the point-in-time imputer's OWN judge.
+
+    STRUCTURE unchanged (a surprise BLOCKS). VALUES: a changed column is attributed only when
+    it is one of the 50 declared imputed columns and every season it moved in is at or after
+    its first imputed season. BLANKS: each declared column's null count must grow by exactly
+    its declared blank cells -- no more (a fill lost that should have stayed) and no fewer (a
+    blank that became a number). Anything else is UNATTRIBUTED and fails; the cause is never
+    widened to fit it.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    label = "p332_ extra step 7b (within-season imputation made point-in-time)"
+    verdict["changed_by_family"] = {"imputer": []}
+    blocking = _phase33_structure(
+        detail, diff, fail, label, "Making the imputation point-in-time"
+    )
+    first_season = PHASE332_IMPUTATION_STEP_FIRST_SEASON_BY_COLUMN
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        if column in first_season and seasons:
+            allowed = {str(s) for s in range(first_season[column], 2026)}
+            if set(seasons) <= allowed:
+                verdict["attributed"].append(column)
+                verdict["changed_by_family"]["imputer"].append(column)
+                continue
+            why = f"it moved before its first imputed season ({first_season[column]})"
+        else:
+            why = "it is not one of the 50 columns the imputer fills"
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The step's ONE cause is the "
+            "point-in-time imputation; do NOT widen it to fit this diff"
+        )
+    column_details = detail.get("column_details", {})
+    for column, blanks in PHASE332_IMPUTATION_STEP_BLANK_CELLS_BY_COLUMN.items():
+        move = column_details.get(column)
+        if move is None:
+            fail(
+                f"column '{column}' did not move at {label}, but {blanks} blank cells were declared"
+            )
+            continue
+        before = move.get("null_count_before")
+        after = move.get("null_count_after")
+        if before is None or after is None or after - before != blanks:
+            fail(
+                f"column '{column}' null count moved {before} -> {after} at {label}; exactly "
+                f"{blanks} blank cells were declared before the rebuild"
+            )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_EXTRA_STEP_SIGNATURES[PHASE332_IMPUTATION_STEP] = (
+    PHASE332_IMPUTATION_STEP_EXPECTED_SIGNATURE
+)
+PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_IMPUTATION_STEP] = _attribute_p332_imputation
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -6501,7 +6790,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 7, steps 3b, 3c, 4b, 6b).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 7, steps 3b-7b).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -6720,6 +7009,12 @@ def write_phase332_rebuild_diff(
     )
     if oppadj_document.exists():
         lines.extend(_phase332_oppadj_rung_lines(fingerprint_dir))
+
+    imputation_document = rung_document_path(
+        fingerprint_dir, PHASE332_IMPUTATION_STEP, PHASE332_RUNG_PREFIX
+    )
+    if imputation_document.exists():
+        lines.extend(_phase332_imputation_step_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -7413,6 +7708,85 @@ def _phase332_oppadj_rung_lines(fingerprint_dir: Path | str) -> list[str]:
         )
     lines.extend(["", f"[rung.{rung}.moved_seasons]"])
     for column, seasons in sorted(moved_seasons.items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_imputation_step_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` extra step 7b, recomputed from the ladder.
+
+    Judged by the same ``attribute_rung`` call the ladder run makes, against rung 7. Records
+    the declared columns, first seasons and blank cells beside the measured moves, and each
+    moved column's measured null-count growth.
+    """
+    step = PHASE332_IMPUTATION_STEP
+    require_rung_ladder(fingerprint_dir, step, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, step)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, step, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, step, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_IMPUTATION_STEP_EXPECTED_SIGNATURE
+    wp = report["features_wp"]["column_details"]
+    blanks_measured = {
+        column: wp[column]["null_count_after"] - wp[column]["null_count_before"]
+        for column in PHASE332_IMPUTATION_STEP_COLUMNS
+        if column in wp
+    }
+    lines = [
+        "",
+        f'[rung."{step}"]',
+        f'rung = "{step}"',
+        f"follows_rung = {PHASE332_IMPUTATION_STEP_FOLLOWS}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_IMPUTATION_STEP_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_IMPUTATION_STEP_CAUSE)}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        "prerebuild_measurement = "
+        f'"{_toml_escape(PHASE332_IMPUTATION_STEP_PREREBUILD_MEASUREMENT)}"',
+        f"declared_columns = {_toml_array(list(PHASE332_IMPUTATION_STEP_COLUMNS))}",
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_EXTRA_STEP_ATTRIBUTORS[step].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the step is '
+            'recorded as declared-but-not-run rather than as a step that ran"'
+        )
+    lines.extend(["", f'[rung."{step}".declared_first_season]'])
+    for column in PHASE332_IMPUTATION_STEP_COLUMNS:
+        lines.append(
+            f"{column} = {PHASE332_IMPUTATION_STEP_FIRST_SEASON_BY_COLUMN[column]}"
+        )
+    lines.extend(["", f'[rung."{step}".declared_blank_cells]'])
+    for column in PHASE332_IMPUTATION_STEP_COLUMNS:
+        lines.append(
+            f"{column} = {PHASE332_IMPUTATION_STEP_BLANK_CELLS_BY_COLUMN[column]}"
+        )
+    lines.extend(["", f'[rung."{step}".measured_blank_cells_wp]'])
+    for column, blanks in sorted(blanks_measured.items()):
+        lines.append(f"{column} = {blanks}")
+    lines.extend(["", f'[rung."{step}".moved_seasons]'])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines
 

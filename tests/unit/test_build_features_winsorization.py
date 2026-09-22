@@ -174,6 +174,20 @@ class TestContinuousColumnsAreStillWinsorized:
         assert out["spread_drift"].max() < 20.0
 
 
+def _with_prior_season(frame: pd.DataFrame, **prior_columns) -> pd.DataFrame:
+    """*frame* preceded by a fully-populated 2022 season (p332_ extra step 7b).
+
+    A gap is filled only from what was known at its lock. In an untimed single-season
+    frame nothing is -- the pre-7b fill was a median of the gap's OWN whole season -- so
+    the two tests below that exercise a fill give it an honest source: the strictly-prior
+    season. Their assertions are unchanged.
+    """
+    prior = _single_season_frame(**prior_columns)
+    prior["season"] = 2022
+    prior["game_id"] = [f"2022_{i:03d}" for i in range(len(prior))]
+    return pd.concat([prior, frame], ignore_index=True)
+
+
 class TestMissingHandlingAndWinsorizationAreIndependent:
     """The old ``continue`` coupled two unrelated decisions."""
 
@@ -194,16 +208,26 @@ class TestMissingHandlingAndWinsorizationAreIndependent:
         gapped = clean.copy()
         gapped[5] = np.nan
 
+        # Was: two single-season frames, the gap filled from that season's own median.
+        # Step 7b fills it only from what was known at its lock, so a prior season supplies
+        # the fill (and, identically for both frames, the strictly-prior bounds).
+        prior = rng.normal(0.0, 1.5, _SEASON_ROWS)
         without_gap = builder.handle_missing_data_and_outliers(
-            _single_season_frame(spread_drift=clean)
+            _with_prior_season(
+                _single_season_frame(spread_drift=clean), spread_drift=prior
+            )
         )
         with_gap = builder.handle_missing_data_and_outliers(
-            _single_season_frame(spread_drift=gapped)
+            _with_prior_season(
+                _single_season_frame(spread_drift=gapped), spread_drift=prior
+            )
         )
 
-        assert without_gap["spread_drift"].max() == pytest.approx(
-            with_gap["spread_drift"].max()
+        late = without_gap["season"] == 2023
+        assert without_gap.loc[late, "spread_drift"].max() == pytest.approx(
+            with_gap.loc[late, "spread_drift"].max()
         )
+        assert with_gap.loc[late, "spread_drift"].max() < 60.0, "not winsorized at all"
 
     def test_a_gap_in_a_rare_binary_flag_now_fills_from_the_median(
         self, builder
@@ -230,8 +254,13 @@ class TestMissingHandlingAndWinsorizationAreIndependent:
         coverage[:_UNCOVERED] = np.nan
         frame = _single_season_frame()
         frame["line_movement_coverage"] = coverage
+        # Was: a single season, the gap filled from that season's own median. Step 7b fills
+        # a gap only from what was known at its lock, so a fully-covered prior season is the
+        # fitted median's source now; the assertions are unchanged.
+        frame = _with_prior_season(frame, line_movement_coverage=np.ones(_SEASON_ROWS))
 
         out = builder.handle_missing_data_and_outliers(frame)
+        out = out.loc[out["season"] == 2023]
 
         assert out["line_movement_coverage"].isna().sum() == 0, (
             "the gap was not imputed at all"

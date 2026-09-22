@@ -55,6 +55,7 @@ import pytest
 
 import scripts.build_features as build_features_module
 from features.normalization import expanding_normalize
+from features.point_in_time_fill import imputation_game_timing
 from features.weather import WEATHER_FEATURE_COLUMNS_BY_BUILDER
 from scripts.build_features import BUILDER_KEYS, FeatureMatrixBuilder
 
@@ -171,8 +172,22 @@ def _merged_frame(builder_key: str) -> pd.DataFrame:
     return pd.concat([frame, weather], axis=1)
 
 
+def _timed_games() -> pd.DataFrame:
+    """The merged frame's games, one Sunday apart (so each can be timed at its lock)."""
+    first = pd.Timestamp("2020-09-13 13:00", tz="America/New_York")
+    return pd.DataFrame(
+        {
+            "game_id": [f"2020_W{week:02d}_A@B" for week in range(1, _ROWS + 1)],
+            "kickoff_et": [first + pd.Timedelta(days=7 * i) for i in range(_ROWS)],
+        }
+    )
+
+
 def _builder_with_merged_weather(builder_key: str) -> FeatureMatrixBuilder:
     builder = FeatureMatrixBuilder()
+    # p332_ extra step 7b: a gap is filled only from games ended by its lock, so the
+    # builder is given the games' timing (what ``combine_features`` records in a build).
+    builder.imputation_timing = imputation_game_timing(_timed_games())
     resolved = builder.record_missing_preserving_columns(
         _weather_only_frame(builder_key)
     )
@@ -252,9 +267,18 @@ class TestEachCallSiteReceivesItsOwnBuildersEntry:
             "the recorder saw ZERO calls, so this test would pass while "
             "asserting nothing about either call site"
         )
-        expected = builder.missing_preserving_columns[builder_key]
+        # Was: ``observed == tuple(expected)`` with expected the weather entry alone.
+        # Plan 33.2-16 (rung 7) appends the twelve opponent-adjusted values
+        # (FLAG_GUARDED_NAN_COLUMNS) AFTER the weather entry at the real call site; the
+        # weather half must still be exactly this builder's entry, in order.
+        expected = tuple(builder.missing_preserving_columns[builder_key])
+        expected += tuple(
+            c
+            for c in build_features_module.FLAG_GUARDED_NAN_COLUMNS
+            if c not in expected
+        )
         for observed in recorded:
-            assert observed == tuple(expected)
+            assert observed == expected
 
 
 class TestTheSeamIsCommitted:

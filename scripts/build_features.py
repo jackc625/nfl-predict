@@ -55,6 +55,11 @@ from features.opponent_adj import (
     OpponentAdjuster,
     opponent_adjusted_gold_columns,
 )
+from features.point_in_time_fill import (
+    admitted_mean,
+    imputation_game_timing,
+    row_timing,
+)
 from features.protocol import InformationTimeProvider
 from features.provenance import (
     PROVENANCE_COLUMNS,
@@ -552,6 +557,19 @@ class FeatureMatrixBuilder:
         # EMPTY_SOURCE_GUARDED_FAMILIES). Reset on every ``combine_features`` call.
         self.empty_source_families: dict[str, tuple[str, ...]] = {}
 
+        # P332_ EXTRA STEP 7b (owner ruling 2026-09-22): when each game's RESULT existed and
+        # its lock, ``game_id``-indexed (``features.point_in_time_fill``). Set by
+        # ``combine_features`` from the games frame it combines; the imputer admits a value
+        # into a fill only when its game had ended by the gap's lock. ``None`` = nothing can
+        # be timed, so no within-season statistic is read at all.
+        self.imputation_timing: pd.DataFrame | None = None
+
+        # ...and the cells the imputer had to leave BLANK because nothing known at the lock
+        # could fill them, although the season carries values for the column. Column ->
+        # row index. Reset on every ``handle_missing_data_and_outliers`` call; normalization
+        # keeps these cells NaN instead of turning them into the neutral 0.0 z-score.
+        self.imputation_left_blank: dict[str, pd.Index] = {}
+
     # ------------------------------------------------------------------
     # Ruling K1: the per-builder missing-preserving seam
     # ------------------------------------------------------------------
@@ -952,6 +970,10 @@ class FeatureMatrixBuilder:
         if len(games_df) == 0:
             logger.error("No games data available")
             return pd.DataFrame()
+
+        # P332_ EXTRA STEP 7b: time every game once, from the frame being combined, so the
+        # imputer can tell which games had ended by a gap's lock.
+        self.imputation_timing = imputation_game_timing(games_df)
 
         # Initialize combined features with game identifiers
         combined_features = games_df[
@@ -1678,11 +1700,18 @@ class FeatureMatrixBuilder:
         bootstrap, versus median and quantiles for imputation and clipping), so
         they are NOT required to agree. Do not "fix" one to match the other.
 
-        ACCEPTED RESIDUAL, documented rather than left unstated: within-season
-        lookahead remains. A self-fitting season's week-1 bound still sees that
-        season's week 18, and ``_impute_team_features``' team mean and season mean
-        are still within-season. D30-16 accepts both, and neither can be moved by
-        adding a LATER season's rows -- which is exactly what SPEC R2 asserts.
+        THE IMPUTATION IS POINT-IN-TIME (p332_ extra step 7b, owner ruling
+        2026-09-22). D30-16 accepted a within-season residual: the team mean and the
+        season mean used to be computed over the WHOLE season, so a week-3 gap was
+        filled from weeks 4-17. Under the day-before lock (D33.2-01) that is post-lock
+        information, and it is gone: a gap is filled only from games that had ENDED by
+        its own lock (``features.point_in_time_fill``), then from the strictly-prior
+        seasons, and where nothing honest exists it stays blank
+        (``self.imputation_left_blank``) through normalization too.
+
+        STILL WITHIN-SEASON, and NOT this step's cause: a self-fitting season's
+        winsorization bound still sees that whole season. It is recorded for the owner
+        in the phase's deferred items rather than folded into step 7b.
 
         Args:
             features_df: Feature matrix
@@ -1721,6 +1750,11 @@ class FeatureMatrixBuilder:
 
         missing_stats = {}
         outlier_stats = {}
+
+        # P332_ EXTRA STEP 7b: every row timed ONCE (when its game ended, its lock), and the
+        # blank register reset -- it describes THIS call's frame only.
+        self.imputation_left_blank = {}
+        timed_rows = row_timing(processed_df, self.imputation_timing)
 
         # WR-06: the per-season passes, computed ONCE. ``season`` sits in the
         # target-column exclusion list above, which removes it from ``numeric_cols``
@@ -1776,17 +1810,22 @@ class FeatureMatrixBuilder:
 
             # Handle missing data
             if original_missing > 0 and not preserve_this_column:
-                # For team-based features, use team's season average
+                source_values = self._column(processed_df, col).copy()
+                # For team-based features, the team's mean over its games ended by the lock
                 if any(prefix in col for prefix in ["home_", "away_"]):
-                    processed_df[col] = self._impute_team_features(processed_df, col)
+                    processed_df[col] = self._impute_team_features(
+                        processed_df, col, timed_rows
+                    )
                 else:
                     # WR-06 surface 1: for game-level features this was
                     # ``processed_df[col].median()`` over the WHOLE frame, so a 2002
                     # gap was filled from a statistic that saw 2025. It is now a
-                    # per-season, strictly-prior median.
+                    # per-season, strictly-prior median (and, step 7b, a pre-lock mean
+                    # where no prior season can be fitted).
                     processed_df[col] = self._impute_game_level_features(
-                        processed_df, col, season_passes, earliest_season
+                        processed_df, col, season_passes, earliest_season, timed_rows
                     )
+                self._record_imputation_blanks(processed_df, col, source_values)
 
                 missing_stats[col] = original_missing
 
@@ -2002,38 +2041,55 @@ class FeatureMatrixBuilder:
         col: str,
         season_passes: list[tuple],
         earliest_season,
+        timed_rows: tuple[np.ndarray, np.ndarray] | None = None,
     ) -> pd.Series:
-        """Fill a game-level column's gaps with a prior-seasons-only median (WR-06).
+        """Fill a game-level column's gaps from what was known at each gap's lock.
 
-        Replaces ``df[col].fillna(df[col].median())``, whose median saw every future
-        season. A season with no usable fit source at all keeps its NaNs rather than
-        borrowing a value from the future: that is the deliberate consequence of the
-        fix, not an oversight, and downstream ``expanding_normalize`` already maps an
-        un-normalizable position to the neutral 0.0 z-score.
+        WR-06: the fill is the median of the seasons STRICTLY BEFORE the gap's season,
+        replacing ``df[col].fillna(df[col].median())``, whose median saw every future
+        season. The median is fitted on the column as it ENTERED this pass -- ``source``
+        below -- never on the partially-filled frame, so no season's statistic can depend
+        on values another season's fill just wrote.
 
-        Like the winsorization pass, the median is fitted on the column as it
-        ENTERED this pass -- ``source`` below -- never on the partially-filled
-        frame. One rule for both passes, and no season's statistic can depend on
-        values another season's fill just wrote.
+        P332_ EXTRA STEP 7b (owner ruling 2026-09-22). Where no prior season can be fitted
+        (the earliest season, or a column whose data starts later) this used to fall back
+        to a median over the gap's OWN whole season -- every later game that season
+        included. It now takes the mean over that season's games that had ENDED by the
+        gap's own lock, and where there is none the gap stays NaN: never a value read from
+        a game after the lock.
+
+        Args:
+            df: The combined frame.
+            col: The column to fill.
+            season_passes: ``_season_passes(df)``.
+            earliest_season: The first season in *df* (kept for the caller's signature;
+                the strictly-prior slice of the earliest season is empty by construction).
+            timed_rows: ``features.point_in_time_fill.row_timing`` for *df*; derived from
+                ``self.imputation_timing`` when omitted.
         """
+        del earliest_season  # the strictly-prior slice already encodes it
         source = self._column(df, col)
         result = source.copy()
+        ends, locks = timed_rows if timed_rows is not None else self._timed_rows(df)
+        missing = source.isna().to_numpy()
 
-        for season, season_mask, prior_mask in season_passes:
+        for _season, season_mask, prior_mask in season_passes:
             season_values = result.loc[season_mask]
             if not season_values.isna().any():
                 continue
 
-            fit_source, self_fit = self._season_fit_source(
-                source, season, season_mask, prior_mask, earliest_season
-            )
-            median_value = float(fit_source.median())
-            if np.isnan(median_value):
+            prior_median = self._strict_prior_median(source, prior_mask)
+            if prior_median is not None:
+                result.loc[season_mask] = season_values.fillna(prior_median)
                 continue
 
-            if self_fit:
-                self._record_self_fit(col, season)
-            result.loc[season_mask] = season_values.fillna(median_value)
+            in_season = season_mask.to_numpy()
+            season_source = source[in_season]
+            season_ends = ends[in_season]
+            for position in np.flatnonzero(in_season & missing):
+                fill = admitted_mean(season_source, season_ends, locks[position])
+                if not np.isnan(fill):
+                    result.iloc[position] = fill
 
         return result
 
@@ -2178,15 +2234,17 @@ class FeatureMatrixBuilder:
             prior_stats = compute_prior_season_stats(
                 processed_features, numeric_feature_cols, target_season - 1
             )
-            return expanding_normalize(
-                processed_features,
-                feature_cols=numeric_feature_cols,
-                group_col="season",
-                sort_cols=["season", "week"],
-                min_periods=4,
-                prior_season_stats=prior_stats,
-                preserve_missing_cols=preserve_missing,
-                preserve_level_cols=preserve_level_cols,
+            return self._restore_imputation_blanks(
+                expanding_normalize(
+                    processed_features,
+                    feature_cols=numeric_feature_cols,
+                    group_col="season",
+                    sort_cols=["season", "week"],
+                    min_periods=4,
+                    prior_season_stats=prior_stats,
+                    preserve_missing_cols=preserve_missing,
+                    preserve_level_cols=preserve_level_cols,
+                )
             )
 
         # Batch mode: compute prior-season stats per season
@@ -2208,7 +2266,10 @@ class FeatureMatrixBuilder:
                 preserve_level_cols=preserve_level_cols,
             )
             normalized_parts.append(norm_part)
-        return pd.concat(normalized_parts, ignore_index=False)
+        # P332_ EXTRA STEP 7b: a recorded blank stays blank (never the neutral 0.0).
+        return self._restore_imputation_blanks(
+            pd.concat(normalized_parts, ignore_index=False)
+        )
 
     @staticmethod
     def _is_discrete_indicator(series: pd.Series) -> bool:
@@ -2366,33 +2427,45 @@ class FeatureMatrixBuilder:
             )
         )
 
-    def _impute_team_features(self, df: pd.DataFrame, col: str) -> pd.Series:
-        """Impute missing team features using team's season average.
+    def _impute_team_features(
+        self,
+        df: pd.DataFrame,
+        col: str,
+        timed_rows: tuple[np.ndarray, np.ndarray] | None = None,
+    ) -> pd.Series:
+        """Impute a missing team feature from what was known at the gap's own lock.
 
-        WR-14: the two ``col.replace("home_", "")`` / ``col.replace("away_", "")``
-        statements that used to sit here were no-ops -- ``str`` is immutable and
-        the results were discarded -- so they looked like they computed a base
-        column name and did not. Nothing downstream ever needed one: the imputation
-        works on ``col`` itself and only needs to know WHICH team column to group
-        by. The dead lines are gone rather than "fixed", because there was no bug
-        to fix, only a false suggestion that a base name was in play.
+        P332_ EXTRA STEP 7b (owner ruling 2026-09-22, "Fill from earlier games"). This used
+        to fill a gap with the team's mean over the WHOLE season and then the whole-season
+        league mean -- so a week-3 gap was filled from weeks 4-17, which under the
+        day-before lock (D33.2-01) is post-lock information. Every statistic below now
+        reads only games that had ENDED by the gap's lock (kickoff plus the declared game
+        duration, admitted at or before the lock -- the builders' own timing,
+        ``features.point_in_time_fill``):
 
-        WR-06 SURFACE 3, named by neither the SPEC nor CONTEXT (T-30-28). Both
-        last-resort fallbacks below used to be ``df[col].median()`` over the WHOLE
-        frame, and this is the branch every ``home_*`` / ``away_*`` column takes --
-        the large majority of features. Any 2021-2024 row reaching either of them
-        WOULD move when the N-01 re-sync adds 2025 rows, failing SPEC R2's
-        byte-identity control for a cause unrelated to the two surfaces D30-16
-        names. Both now fit on the strictly-prior seasons.
+        1. the team's mean over its earlier games this season, on the SAME side of the
+           ball the column describes (a ``home_*`` column averages the team's home rows,
+           as it always has);
+        2. if the team has none, the league's mean over the season's games ended by the
+           lock;
+        3. then the median of the seasons STRICTLY BEFORE this one (WR-06 surface 3) --
+           never a self-fit on the gap's own season;
+        4. and where none of those exists the gap stays NaN. The caller records it in
+           ``imputation_left_blank`` and normalization keeps it blank.
 
-        The two WITHIN-SEASON statistics -- the team mean and the season mean -- are
-        DELIBERATELY left exactly as they are. Neither can be moved by adding a
-        later season's rows, so neither threatens SPEC R2, and converting them would
-        be a larger behavioural change than D30-16 authorises in the
-        highest-blast-radius file in this phase.
+        WR-14: the no-op ``col.replace(...)`` statements that once sat here are gone; the
+        imputation only needs to know WHICH team column to group by.
+
+        Args:
+            df: The combined frame.
+            col: The column to fill.
+            timed_rows: ``features.point_in_time_fill.row_timing`` for *df*; derived from
+                ``self.imputation_timing`` when omitted.
         """
         season_passes = self._season_passes(df)
         earliest_season = season_passes[0][0] if season_passes else None
+        if timed_rows is None:
+            timed_rows = self._timed_rows(df)
 
         if col.startswith("home_"):
             team_col = "home_team"
@@ -2404,74 +2477,105 @@ class FeatureMatrixBuilder:
             # ``col.startswith("home_")``, so a column carrying the substring
             # anywhere but the front lands here. WR-06 surface 3, first site.
             return self._impute_game_level_features(
-                df, col, season_passes, earliest_season
+                df, col, season_passes, earliest_season, timed_rows
             )
 
-        result = self._column(df, col).copy()
+        source = self._column(df, col)
+        result = source.copy()
+        ends, locks = timed_rows
+        teams = df[team_col].to_numpy()
+        missing = source.isna().to_numpy()
 
-        # For each team with missing data, use their season average
-        for season, season_mask, prior_mask in season_passes:
-            season_data = df.loc[season_mask]
-            # Computed LAZILY, and only when the two within-season statistics have
-            # both come back NaN: computing it eagerly would record a self-fit for
-            # every season of a late-arriving column, whose prior slices are empty
-            # but whose fallback is never actually reached.
-            prior_median = None
+        for _season, season_mask, prior_mask in season_passes:
+            in_season = season_mask.to_numpy()
+            gaps = np.flatnonzero(in_season & missing)
+            if len(gaps) == 0:
+                continue
+            # A season with no value at all for this column is a coverage floor, not a
+            # within-season gap: nothing inside it can be admitted.
+            season_has_values = bool((in_season & ~missing).any())
+            # Computed LAZILY, and at most once per season.
+            prior_median: float | None = None
             prior_median_computed = False
 
-            for team in season_data[team_col].unique():
-                team_mask = season_mask & (df[team_col] == team)
-                team_values = df.loc[team_mask, col]
-
-                if team_values.isna().any():
-                    team_mean = team_values.mean()
-                    if pd.isna(team_mean):
-                        # Use season average if team has no data
-                        team_mean = season_data[col].mean()
-                    if pd.isna(team_mean):
-                        # WR-06 surface 3, second site: the last resort is the
-                        # median of the seasons STRICTLY BEFORE this one, not of
-                        # the whole frame.
-                        if not prior_median_computed:
-                            prior_median = self._prior_season_median(
-                                self._column(df, col),
-                                col,
-                                season,
-                                season_mask,
-                                prior_mask,
-                                earliest_season,
-                            )
-                            prior_median_computed = True
-                        if prior_median is None:
-                            # Nothing at or before this season can fill the
-                            # gap. Leave it NaN rather than borrow from the
-                            # future -- the deliberate consequence of WR-06.
-                            continue
-                        team_mean = prior_median
-
-                    result.loc[team_mask & result.isna()] = team_mean
+            for position in gaps:
+                fill = float("nan")
+                if season_has_values:
+                    team_rows = in_season & (teams == teams[position])
+                    fill = admitted_mean(
+                        source[team_rows], ends[team_rows], locks[position]
+                    )
+                    if np.isnan(fill):
+                        fill = admitted_mean(
+                            source[in_season], ends[in_season], locks[position]
+                        )
+                if np.isnan(fill):
+                    if not prior_median_computed:
+                        prior_median = self._strict_prior_median(source, prior_mask)
+                        prior_median_computed = True
+                    if prior_median is None:
+                        # Nothing known at this lock can fill the gap. Leave it NaN rather
+                        # than borrow from a later game.
+                        continue
+                    fill = prior_median
+                result.iloc[position] = fill
 
         return result
 
-    def _prior_season_median(
-        self,
-        values: pd.Series,
-        col: str,
-        season,
-        season_mask: pd.Series,
-        prior_mask: pd.Series,
-        earliest_season,
+    def _timed_rows(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """Per-row ``(end_ns, lock_ns)`` for *df* from ``self.imputation_timing``."""
+        return row_timing(df, getattr(self, "imputation_timing", None))
+
+    def _strict_prior_median(
+        self, values: pd.Series, prior_mask: pd.Series
     ) -> float | None:
-        """Return the strictly-prior-seasons median for *col* in *season* (WR-06)."""
-        fit_source, self_fit = self._season_fit_source(
-            values, season, season_mask, prior_mask, earliest_season
-        )
-        median_value = float(fit_source.median())
-        if np.isnan(median_value):
+        """The median of the seasons STRICTLY BEFORE this one, or None (WR-06, step 7b).
+
+        Unlike ``_season_fit_source`` -- which the winsorization pass still uses -- this
+        NEVER falls back to the season's own rows: that fallback is a whole-season read,
+        and an imputed value must never see a game after its lock. A prior slice with too
+        few values to support a median (``_MIN_FIT_POINTS``) yields None.
+        """
+        prior = values.loc[prior_mask]
+        if prior.notna().sum() <= self._MIN_FIT_POINTS:
             return None
-        if self_fit:
-            self._record_self_fit(col, season)
-        return float(median_value)
+        return float(prior.median())
+
+    def _record_imputation_blanks(
+        self, df: pd.DataFrame, col: str, source_values: pd.Series
+    ) -> None:
+        """Record the cells of *col* the imputer had to leave blank (step 7b).
+
+        A cell is recorded when it is still NaN after imputation AND its season carries at
+        least one value for the column -- a within-season gap nothing known at its lock
+        could fill. A season with NO value is a coverage floor, a different cause (Plan
+        33.2-17 Task 2 / rung 8), and is not recorded here.
+        """
+        still_missing = self._column(df, col).isna() & source_values.isna()
+        if not still_missing.any():
+            return
+        if "season" in df.columns:
+            seasons_with_values = set(df.loc[source_values.notna(), "season"])
+            still_missing &= df["season"].isin(seasons_with_values)
+        elif not source_values.notna().any():
+            return
+        if still_missing.any():
+            self.imputation_left_blank[col] = df.index[still_missing.to_numpy()]
+
+    def _restore_imputation_blanks(self, normalized: pd.DataFrame) -> pd.DataFrame:
+        """Put back the NaN of every recorded blank cell after normalization (step 7b).
+
+        ``expanding_normalize`` excludes a NaN from its statistics and then writes the
+        neutral 0.0 z-score into it. For a recorded blank that 0.0 would read as "exactly
+        average" about a value nobody could know at the lock, so the cell is NaN again --
+        blank all the way into gold. Every model reads it as missing: WP's fold-fitted
+        ``_was_missing`` indicator (D33.2-08 item 2) and XGBoost's native missing branch.
+        """
+        for col, rows in getattr(self, "imputation_left_blank", {}).items():
+            if col in normalized.columns:
+                present = rows.intersection(normalized.index)
+                normalized.loc[present, col] = np.nan
+        return normalized
 
     def normalize_features_within_seasons(
         self, features_df: pd.DataFrame, target_columns: list[str] | None = None
