@@ -66,18 +66,25 @@ def _gold(matrix: str) -> pd.DataFrame:
 
 
 def _latest_section() -> tuple[str, str]:
-    """(heading, body) of the LAST ``## Before/After rung 8`` section in the document."""
+    """(heading, body) of the LAST ``## Before/After rung 8`` HEADING in the document.
+
+    Matched as a heading at the start of a line, so prose that merely names a section cannot
+    be mistaken for it.
+    """
     assert DOCUMENT.is_file(), (
         f"{DOCUMENT} is missing: the before-state was never published"
     )
     text = DOCUMENT.read_text(encoding="utf-8")
-    starts = [
-        (text.rfind(heading), heading)
-        for heading in (BEFORE_SECTION, AFTER_SECTION)
-        if heading in text
-    ]
-    position, heading = max(starts)
-    return heading, text[position:]
+    headings = list(
+        re.finditer(
+            rf"^({re.escape(BEFORE_SECTION)}|{re.escape(AFTER_SECTION)})[ 	]*$",
+            text,
+            flags=re.MULTILINE,
+        )
+    )
+    assert headings, "the document carries no Before/After rung 8 section"
+    last = headings[-1]
+    return last.group(1), text[last.start() :]
 
 
 def _recorded(body: str, key: str) -> int:

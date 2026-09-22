@@ -99,6 +99,12 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "lock. It counts games and names venues; it reports no model accuracy or betting result "
         "and rests on no pre-fix model."
     ),
+    "PRECOVERAGE-SCAN.md": (
+        "Plan 33.2-17's re-scan of the three gold matrices for constant blocks before each "
+        "family's first covered season, written under the day-before lock. It classifies and "
+        "counts gold columns and names the planned fix for each; it reports no model accuracy "
+        "or betting result and rests on no pre-fix model."
+    ),
     "PIPELINE.md": (
         "Canonical run-sequence instructions (commands, entry points, expected outputs). It "
         "reports no model or betting result."
