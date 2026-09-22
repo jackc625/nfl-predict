@@ -15594,3 +15594,110 @@ P332_14_GOLD_WEATHER_CONSTANCY_AFTER_STEP4B: dict[str, object] = {
     "raw_temp_f_at_66": 110,
     "raw_temp_f_distinct": 98,
 }
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-14 Task 3 -- p332_ RUNG 5: EVERY BUILDER SELECTION CUTOFF ON THE PER-GAME LOCK
+# (SPEC R5, D33.2-01). APPENDED ONCE on 2026-09-22, in ONE block, by the only task in this plan
+# that appends a P332_14_RUNG5_* name. Nothing above this line was edited.
+#
+# THE CAUSE, declared in commit fd20e38 before any rebuild result was read: one rule -- a builder
+# admits a row only when it was known at or before the target game's own lock -- applied to
+# eight selections (injury, starting-QB identity, QB play-by-play, letdown, rest days, market
+# odds, snap window, team-form rolling window). The prediction was declared PER BUILDER:
+# injury / qb EMPTY (landed at step 4b as Plan 33.2-13's carry-in), contextual / snaps EMPTY
+# (measured byte-identical), team_form EMPTY (D33.2-01's 0 post-lock week-keyed inputs),
+# market = the five market columns plus target_ats / target_ou, seasons 2018-2025.
+#
+# THE MARKET RULE (owner ruling 2026-09-22, "Only real capture times"): a line counts only with
+# a recorded capture time (created_at) at or before the lock. MEASURED 2026-09-22 on silver
+# odds_snapshot 2002-2025: 2,140 rows, 1,855 with created_at NULL (the nulled 1970 family),
+# 285 with created_at after the game's lock (the 2026-09-05 backfill of 2025), 0 admitted --
+# so all 6,499 games are the honest unknown in the builder's frame (every market value NULL,
+# no_information, checked by the gate: market is now among the eight CHECKED sources).
+#
+# THE OWNER'S STOP CHECK, RUN FIRST IN A SCRATCH DATA ROOT (production data/ digest-identical,
+# 1107 files, across it): no market column became entirely empty or dropped out of gold. The
+# gold build's existing missing handling carries the NULLs into the same representation
+# 2002-2017 games already hold (the neutral 0.0 z-score), so the five market columns are now
+# constant 0.0 in all three matrices, widths 193/194/193 and 6,499 rows unchanged. Rung 9
+# (Plan 33.2-19) removes the columns.
+#
+# MEASURED 2026-09-22: production rebuild --through-season 2025 judged against p332_rung4b.json
+# -- attribution_ok true, not blocking, zero unattributed; exactly the declared market family
+# moved, every builder's measured subset inside its prediction; spread_movement and
+# total_movement did not move (already 0.0 for every game); non-clock columns identical to
+# the scratch preview. Digest bracket outputs/p332_rung5_before.json -> after: exactly the four
+# declared paths, mixed empty.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_CUTOFF_RUNG_CAUSE (UTF-8), declared in commit
+# fd20e38 before any rebuild result was read.
+P332_14_RUNG5_CAUSE_DIGEST: str = (
+    "94591682f38d1bb2105304ec7e8f6814fc69d24191441692c3e73c139d07103f"
+)
+
+P332_14_RUNG5_DECLARED_IN_COMMIT: str = "fd20e38979c5dc22e647a149dd9a085668e2fde8"
+
+P332_14_RUNG5_BASELINE_DOCUMENT: str = "p332_rung4b.json"
+
+P332_14_RUNG5_MOVED_COLUMNS: tuple[str, ...] = (
+    "snapshot_ml_prob_home_fair",
+    "snapshot_spread",
+    "snapshot_total",
+    "target_ats",
+    "target_ou",
+)
+
+P332_14_RUNG5_MOVED_BY_BUILDER: dict[str, tuple[str, ...]] = {
+    "injury": (),
+    "qb": (),
+    "contextual": (),
+    "snaps": (),
+    "team_form": (),
+    "market": (
+        "snapshot_ml_prob_home_fair",
+        "snapshot_spread",
+        "snapshot_total",
+        "target_ats",
+        "target_ou",
+    ),
+    "unmapped": (),
+}
+
+P332_14_RUNG5_MOVED_SEASONS: tuple[str, ...] = (
+    "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025",
+)  # fmt: skip
+
+P332_14_RUNG5_WIDTHS: tuple[int, int, int] = (193, 194, 193)
+
+P332_14_RUNG5_ROWS: int = 6499
+
+# Rows whose value moved, per matrix (identical in all three), against a copy of the before-gold.
+# 2,227 rows are 2018-2025; the few that did not move were already the 0.0 z-score.
+P332_14_RUNG5_ROWS_MOVED_PER_COLUMN: dict[str, int] = {
+    "snapshot_spread": 2221,
+    "snapshot_total": 2221,
+    "snapshot_ml_prob_home_fair": 2224,
+    "spread_movement": 0,
+    "total_movement": 0,
+    "target_ats": 2221,
+    "target_ou": 2221,
+}
+
+P332_14_RUNG5_ROWS_2018_2025: int = 2227
+
+P332_14_RUNG5_ODDS_ROWS_2002_2025: int = 2140
+
+P332_14_RUNG5_ODDS_CREATED_AT_NULL: int = 1855
+
+P332_14_RUNG5_ODDS_CREATED_AT_AFTER_LOCK: int = 285
+
+P332_14_RUNG5_ODDS_ADMITTED: int = 0
+
+P332_14_RUNG5_GAMES_MARKET_UNKNOWN: int = 6499
+
+P332_14_RUNG5_MARKET_GOLD_CONSTANT_VALUE: float = 0.0
+
+P332_14_RUNG5_CHECKED_SOURCES: tuple[str, ...] = (
+    "team_form", "elo", "contextual", "weather", "market", "qb_tracking", "snaps", "injury",
+)  # fmt: skip

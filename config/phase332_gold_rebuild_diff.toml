@@ -10,7 +10,7 @@
 # scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
 # ===========================================================================
 
-generated_at = "2026-09-22T03:21:14.917424+00:00"
+generated_at = "2026-09-22T05:21:06.319191+00:00"
 rung_prefix = "p332_"
 float_tolerance = "none -- EXACT byte comparison"
 
@@ -368,3 +368,50 @@ home_date_modified_coverage = ["2009", "2010", "2013", "2017", "2020", "2022", "
 home_injury_coverage = ["2009", "2010", "2013", "2017", "2020", "2022", "2023"]
 home_qb_adjustment = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
 home_qb_out_flag = ["2009", "2010"]
+
+[rung.5]
+rung = 5
+prefix = "p332_"
+rebuilt = true
+baseline_document = "p332_rung4b.json"
+baseline_confirmation = "CONFIRMED 2026-09-22 before rung 5 rebuilt gold. p332_rung4b.json IS gold rebuilt from today's inputs minus exactly this rung's cause: step 4b's rebuild (2026-09-21, code 5e190c9) is the last production gold write, the production data/ tree has been digest-identical since (1107 files: outputs/p332_rung5_probe_before.json, taken after that write, equals outputs/p332_rung5_scratch_prod_before.json), and every code change since is rung 5's own cause (the contextual, snap, team-form and market selections and their registration: fc1a5dd, dabcc83, 009126f). No carry-in, no retake"
+cause = "EVERY BUILDER SELECTION CUTOFF MOVED FROM A FRAME-WIDE GLOBAL CLOCK TO THE TARGET GAME'S OWN DAY-BEFORE LOCK, p332_ rung 5 of Plan 33.2-14 (SPEC R5, D33.2-01), and NOTHING else. It is ONE rule change applied uniformly to eight selections, not eight unrelated corrections: injury reports, starting-QB identity and QB play-by-play (Plan 33.2-13), and the letdown flag, the rest-days window, the market-odds selection, the snap window and the team-form rolling window (this plan). A prior game counts only once it ENDED (kickoff plus the declared four hours) at or before the lock, a report or depth chart only when timed at or before it, and a market line only with a RECORDED capture time (created_at) at or before it (owner ruling 2026-09-22) -- so every stored 2018-2025 line, whose only time is a manufactured snapshot_ts label, becomes the honest unknown. The injury and QB half already landed in production gold at step 4b as Plan 33.2-13's measured carry-in, and the contextual, snap and team-form windows agree with their week-keyed predecessors on every ordinary schedule, so only the five market columns and their two arithmetic children (target_ats, target_ou) can move, in seasons 2018-2025. No column is added, none removed, no row moves"
+owner_ruling = "2026-09-22, Plan 33.2-14 market-odds checkpoint, Option B 'Only real capture times': a market line is admissible only with a genuinely recorded capture time at or before the game's lock; the fabricated snapshot_ts stamps are never information times; target_ats / target_ou move with the market columns"
+earliest_market_season = 2018
+rows_changed = "every 2018-2025 game's market values become the honest unknown (NULL in the builder's frame), which the gold build's existing missing handling carries into the same representation 2002-2017 games already hold (no line); spread_movement and total_movement were already that representation for every game (one stored snapshot per game gave a 0.0 movement), so they are expected not to move"
+widths_before = ["193", "194", "193"]
+widths_after = ["193", "194", "193"]
+moved_columns = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "target_ats", "target_ou"]
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_cutoff"
+
+[rung.5.predicted_by_builder]
+injury = []
+qb = []
+contextual = []
+snaps = []
+team_form = []
+market = ["snapshot_spread", "snapshot_total", "snapshot_ml_prob_home_fair", "spread_movement", "total_movement", "target_ats", "target_ou"]
+
+[rung.5.moved_by_builder]
+injury = []
+qb = []
+contextual = []
+snaps = []
+team_form = []
+market = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "target_ats", "target_ou"]
+unmapped = []
+
+[rung.5.market_children]
+target_ats = "snapshot_spread"
+target_ou = "snapshot_total"
+
+[rung.5.moved_seasons]
+snapshot_ml_prob_home_fair = ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+snapshot_spread = ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+snapshot_total = ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+target_ats = ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+target_ou = ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
