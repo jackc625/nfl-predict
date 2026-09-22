@@ -14,6 +14,7 @@ Tests cover:
 """
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -21,6 +22,21 @@ import pytest
 
 from features.protocol import FeatureBuilder  # Protocol only, no heavy imports
 from features.qb_tracking import QBTracker
+
+# Kickoffs are tz-aware Eastern, as silver `games.kickoff_et` is: each game's lock is derived
+# from its kickoff (utils.game_lock, Plan 33.2-13), and a naive kickoff is refused by name.
+_ET = ZoneInfo("America/New_York")
+
+# The (home, away) pair of every mock PBP game. Real play-by-play carries `home_team` /
+# `away_team`, which is how the per-game lock fence times a PBP game against the schedule
+# (PBP and silver game_ids never match), so the fixture carries them too.
+_MOCK_PBP_TEAMS: dict[str, tuple[str, str]] = {
+    "2024_01_KC_BUF": ("KC", "BUF"),
+    "2024_02_KC_DAL": ("KC", "DAL"),
+    "2024_02_BUF_MIA": ("BUF", "MIA"),
+    "2024_03_KC_DEN": ("KC", "DEN"),
+    "2024_03_BUF_NE": ("BUF", "NE"),
+}
 
 # ---------------------------------------------------------------------------
 # Fixtures: mock depth chart and PBP data
@@ -36,19 +52,99 @@ def mock_depth_charts() -> pd.DataFrame:
     """
     rows = [
         # KC -- Mahomes is QB1 every week
-        {"season": 2024, "week": 1, "club_code": "KC", "position": "QB", "depth_team": "1", "full_name": "Patrick Mahomes", "gsis_id": "00-0033873"},
-        {"season": 2024, "week": 2, "club_code": "KC", "position": "QB", "depth_team": "1", "full_name": "Patrick Mahomes", "gsis_id": "00-0033873"},
-        {"season": 2024, "week": 3, "club_code": "KC", "position": "QB", "depth_team": "1", "full_name": "Patrick Mahomes", "gsis_id": "00-0033873"},
-        {"season": 2024, "week": 4, "club_code": "KC", "position": "QB", "depth_team": "1", "full_name": "Patrick Mahomes", "gsis_id": "00-0033873"},
+        {
+            "season": 2024,
+            "week": 1,
+            "club_code": "KC",
+            "position": "QB",
+            "depth_team": "1",
+            "full_name": "Patrick Mahomes",
+            "gsis_id": "00-0033873",
+        },
+        {
+            "season": 2024,
+            "week": 2,
+            "club_code": "KC",
+            "position": "QB",
+            "depth_team": "1",
+            "full_name": "Patrick Mahomes",
+            "gsis_id": "00-0033873",
+        },
+        {
+            "season": 2024,
+            "week": 3,
+            "club_code": "KC",
+            "position": "QB",
+            "depth_team": "1",
+            "full_name": "Patrick Mahomes",
+            "gsis_id": "00-0033873",
+        },
+        {
+            "season": 2024,
+            "week": 4,
+            "club_code": "KC",
+            "position": "QB",
+            "depth_team": "1",
+            "full_name": "Patrick Mahomes",
+            "gsis_id": "00-0033873",
+        },
         # KC backup
-        {"season": 2024, "week": 1, "club_code": "KC", "position": "QB", "depth_team": "2", "full_name": "Carson Wentz", "gsis_id": "00-0033092"},
+        {
+            "season": 2024,
+            "week": 1,
+            "club_code": "KC",
+            "position": "QB",
+            "depth_team": "2",
+            "full_name": "Carson Wentz",
+            "gsis_id": "00-0033092",
+        },
         # BUF -- Allen weeks 1-2, then Barkley weeks 3-4
-        {"season": 2024, "week": 1, "club_code": "BUF", "position": "QB", "depth_team": "1", "full_name": "Josh Allen", "gsis_id": "00-0034857"},
-        {"season": 2024, "week": 2, "club_code": "BUF", "position": "QB", "depth_team": "1", "full_name": "Josh Allen", "gsis_id": "00-0034857"},
-        {"season": 2024, "week": 3, "club_code": "BUF", "position": "QB", "depth_team": "1", "full_name": "Matt Barkley", "gsis_id": "00-0029746"},
-        {"season": 2024, "week": 4, "club_code": "BUF", "position": "QB", "depth_team": "1", "full_name": "Matt Barkley", "gsis_id": "00-0029746"},
+        {
+            "season": 2024,
+            "week": 1,
+            "club_code": "BUF",
+            "position": "QB",
+            "depth_team": "1",
+            "full_name": "Josh Allen",
+            "gsis_id": "00-0034857",
+        },
+        {
+            "season": 2024,
+            "week": 2,
+            "club_code": "BUF",
+            "position": "QB",
+            "depth_team": "1",
+            "full_name": "Josh Allen",
+            "gsis_id": "00-0034857",
+        },
+        {
+            "season": 2024,
+            "week": 3,
+            "club_code": "BUF",
+            "position": "QB",
+            "depth_team": "1",
+            "full_name": "Matt Barkley",
+            "gsis_id": "00-0029746",
+        },
+        {
+            "season": 2024,
+            "week": 4,
+            "club_code": "BUF",
+            "position": "QB",
+            "depth_team": "1",
+            "full_name": "Matt Barkley",
+            "gsis_id": "00-0029746",
+        },
         # Non-QB entries (should be filtered out)
-        {"season": 2024, "week": 1, "club_code": "KC", "position": "WR", "depth_team": "1", "full_name": "Some Receiver", "gsis_id": "00-0099999"},
+        {
+            "season": 2024,
+            "week": 1,
+            "club_code": "KC",
+            "position": "WR",
+            "depth_team": "1",
+            "full_name": "Some Receiver",
+            "gsis_id": "00-0099999",
+        },
     ]
     return pd.DataFrame(rows)
 
@@ -67,105 +163,173 @@ def mock_pbp_data() -> pd.DataFrame:
     # Week 1: KC vs BUF
     # Mahomes: 20 pass plays, high EPA + CPOE
     for i in range(20):
-        plays.append({
-            "game_id": "2024_01_KC_BUF",
-            "season": 2024,
-            "week": 1,
-            "posteam": "KC",
-            "passer_player_id": "00-0033873",
-            "qb_epa": 0.3 + (i * 0.01),
-            "cpoe": 5.0 + (i * 0.1),
-            "play_id": 100 + i,
-        })
+        plays.append(
+            {
+                "game_id": "2024_01_KC_BUF",
+                "season": 2024,
+                "week": 1,
+                "posteam": "KC",
+                "passer_player_id": "00-0033873",
+                "qb_epa": 0.3 + (i * 0.01),
+                "cpoe": 5.0 + (i * 0.1),
+                "play_id": 100 + i,
+            }
+        )
     # Allen: 18 pass plays, moderate EPA + CPOE
     for i in range(18):
-        plays.append({
+        plays.append(
+            {
+                "game_id": "2024_01_KC_BUF",
+                "season": 2024,
+                "week": 1,
+                "posteam": "BUF",
+                "passer_player_id": "00-0034857",
+                "qb_epa": 0.1 + (i * 0.01),
+                "cpoe": 2.0 + (i * 0.1),
+                "play_id": 200 + i,
+            }
+        )
+    # A sack play for Allen (cpoe is null on sacks)
+    plays.append(
+        {
             "game_id": "2024_01_KC_BUF",
             "season": 2024,
             "week": 1,
             "posteam": "BUF",
             "passer_player_id": "00-0034857",
-            "qb_epa": 0.1 + (i * 0.01),
-            "cpoe": 2.0 + (i * 0.1),
-            "play_id": 200 + i,
-        })
-    # A sack play for Allen (cpoe is null on sacks)
-    plays.append({
-        "game_id": "2024_01_KC_BUF",
-        "season": 2024,
-        "week": 1,
-        "posteam": "BUF",
-        "passer_player_id": "00-0034857",
-        "qb_epa": -2.0,
-        "cpoe": None,
-        "play_id": 299,
-    })
+            "qb_epa": -2.0,
+            "cpoe": None,
+            "play_id": 299,
+        }
+    )
 
     # Week 2: KC vs DAL
     for i in range(22):
-        plays.append({
-            "game_id": "2024_02_KC_DAL",
-            "season": 2024,
-            "week": 2,
-            "posteam": "KC",
-            "passer_player_id": "00-0033873",
-            "qb_epa": 0.25 + (i * 0.01),
-            "cpoe": 4.5 + (i * 0.1),
-            "play_id": 300 + i,
-        })
+        plays.append(
+            {
+                "game_id": "2024_02_KC_DAL",
+                "season": 2024,
+                "week": 2,
+                "posteam": "KC",
+                "passer_player_id": "00-0033873",
+                "qb_epa": 0.25 + (i * 0.01),
+                "cpoe": 4.5 + (i * 0.1),
+                "play_id": 300 + i,
+            }
+        )
     # BUF vs MIA (Allen)
     for i in range(20):
-        plays.append({
-            "game_id": "2024_02_BUF_MIA",
-            "season": 2024,
-            "week": 2,
-            "posteam": "BUF",
-            "passer_player_id": "00-0034857",
-            "qb_epa": 0.15 + (i * 0.01),
-            "cpoe": 3.0 + (i * 0.1),
-            "play_id": 400 + i,
-        })
+        plays.append(
+            {
+                "game_id": "2024_02_BUF_MIA",
+                "season": 2024,
+                "week": 2,
+                "posteam": "BUF",
+                "passer_player_id": "00-0034857",
+                "qb_epa": 0.15 + (i * 0.01),
+                "cpoe": 3.0 + (i * 0.1),
+                "play_id": 400 + i,
+            }
+        )
 
     # Week 3: KC vs DEN
     for i in range(19):
-        plays.append({
-            "game_id": "2024_03_KC_DEN",
-            "season": 2024,
-            "week": 3,
-            "posteam": "KC",
-            "passer_player_id": "00-0033873",
-            "qb_epa": 0.35 + (i * 0.01),
-            "cpoe": 6.0 + (i * 0.1),
-            "play_id": 500 + i,
-        })
+        plays.append(
+            {
+                "game_id": "2024_03_KC_DEN",
+                "season": 2024,
+                "week": 3,
+                "posteam": "KC",
+                "passer_player_id": "00-0033873",
+                "qb_epa": 0.35 + (i * 0.01),
+                "cpoe": 6.0 + (i * 0.1),
+                "play_id": 500 + i,
+            }
+        )
     # BUF vs NE (Barkley -- new starter)
     for i in range(15):
-        plays.append({
-            "game_id": "2024_03_BUF_NE",
-            "season": 2024,
-            "week": 3,
-            "posteam": "BUF",
-            "passer_player_id": "00-0029746",
-            "qb_epa": -0.1 + (i * 0.005),
-            "cpoe": -1.0 + (i * 0.1),
-            "play_id": 600 + i,
-        })
+        plays.append(
+            {
+                "game_id": "2024_03_BUF_NE",
+                "season": 2024,
+                "week": 3,
+                "posteam": "BUF",
+                "passer_player_id": "00-0029746",
+                "qb_epa": -0.1 + (i * 0.005),
+                "cpoe": -1.0 + (i * 0.1),
+                "play_id": 600 + i,
+            }
+        )
 
-    return pd.DataFrame(plays)
+    frame = pd.DataFrame(plays)
+    frame["home_team"] = frame["game_id"].map(lambda g: _MOCK_PBP_TEAMS[g][0])
+    frame["away_team"] = frame["game_id"].map(lambda g: _MOCK_PBP_TEAMS[g][1])
+    return frame
 
 
 @pytest.fixture()
 def mock_games_df() -> pd.DataFrame:
     """Games DataFrame matching the mock PBP data."""
-    return pd.DataFrame([
-        {"game_id": "2024_01_KC_BUF", "season": 2024, "week": 1, "home_team": "KC", "away_team": "BUF", "kickoff_et": datetime(2024, 9, 5, 20, 20)},
-        {"game_id": "2024_02_KC_DAL", "season": 2024, "week": 2, "home_team": "KC", "away_team": "DAL", "kickoff_et": datetime(2024, 9, 12, 13, 0)},
-        {"game_id": "2024_02_BUF_MIA", "season": 2024, "week": 2, "home_team": "BUF", "away_team": "MIA", "kickoff_et": datetime(2024, 9, 12, 13, 0)},
-        {"game_id": "2024_03_KC_DEN", "season": 2024, "week": 3, "home_team": "KC", "away_team": "DEN", "kickoff_et": datetime(2024, 9, 19, 13, 0)},
-        {"game_id": "2024_03_BUF_NE", "season": 2024, "week": 3, "home_team": "BUF", "away_team": "NE", "kickoff_et": datetime(2024, 9, 19, 16, 25)},
-        {"game_id": "2024_04_KC_LA", "season": 2024, "week": 4, "home_team": "KC", "away_team": "LA", "kickoff_et": datetime(2024, 9, 26, 13, 0)},
-        {"game_id": "2024_04_BUF_JAX", "season": 2024, "week": 4, "home_team": "BUF", "away_team": "JAX", "kickoff_et": datetime(2024, 9, 26, 13, 0)},
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "game_id": "2024_01_KC_BUF",
+                "season": 2024,
+                "week": 1,
+                "home_team": "KC",
+                "away_team": "BUF",
+                "kickoff_et": datetime(2024, 9, 5, 20, 20, tzinfo=_ET),
+            },
+            {
+                "game_id": "2024_02_KC_DAL",
+                "season": 2024,
+                "week": 2,
+                "home_team": "KC",
+                "away_team": "DAL",
+                "kickoff_et": datetime(2024, 9, 12, 13, 0, tzinfo=_ET),
+            },
+            {
+                "game_id": "2024_02_BUF_MIA",
+                "season": 2024,
+                "week": 2,
+                "home_team": "BUF",
+                "away_team": "MIA",
+                "kickoff_et": datetime(2024, 9, 12, 13, 0, tzinfo=_ET),
+            },
+            {
+                "game_id": "2024_03_KC_DEN",
+                "season": 2024,
+                "week": 3,
+                "home_team": "KC",
+                "away_team": "DEN",
+                "kickoff_et": datetime(2024, 9, 19, 13, 0, tzinfo=_ET),
+            },
+            {
+                "game_id": "2024_03_BUF_NE",
+                "season": 2024,
+                "week": 3,
+                "home_team": "BUF",
+                "away_team": "NE",
+                "kickoff_et": datetime(2024, 9, 19, 16, 25, tzinfo=_ET),
+            },
+            {
+                "game_id": "2024_04_KC_LA",
+                "season": 2024,
+                "week": 4,
+                "home_team": "KC",
+                "away_team": "LA",
+                "kickoff_et": datetime(2024, 9, 26, 13, 0, tzinfo=_ET),
+            },
+            {
+                "game_id": "2024_04_BUF_JAX",
+                "season": 2024,
+                "week": 4,
+                "home_team": "BUF",
+                "away_team": "JAX",
+                "kickoff_et": datetime(2024, 9, 26, 13, 0, tzinfo=_ET),
+            },
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +381,11 @@ class TestQBStarterDetection:
         starters = tracker.get_starters_from_depth_charts(mock_depth_charts)
 
         # No WR entries should be present
-        assert "WR" not in starters.get("position", pd.Series()).values if "position" in starters.columns else True
+        assert (
+            "WR" not in starters.get("position", pd.Series()).values
+            if "position" in starters.columns
+            else True
+        )
         # Only QB1 entries
         assert len(starters) == 8
 
@@ -244,8 +412,7 @@ class TestRollingQBStats:
 
         # Allen week 1 had 18 plays with CPOE + 1 sack with null CPOE
         allen_w1 = qb_stats[
-            (qb_stats["passer_player_id"] == "00-0034857")
-            & (qb_stats["week"] == 1)
+            (qb_stats["passer_player_id"] == "00-0034857") & (qb_stats["week"] == 1)
         ]
         assert len(allen_w1) == 1
         # mean_cpoe should be computed only from the 18 non-null plays
@@ -259,10 +426,7 @@ class TestRollingQBStats:
         qb_stats = tracker.compute_per_game_qb_stats(mock_pbp_data)
 
         # In week 1 KC game, Mahomes had 20 attempts -- should be primary
-        kc_w1 = qb_stats[
-            (qb_stats["posteam"] == "KC")
-            & (qb_stats["week"] == 1)
-        ]
+        kc_w1 = qb_stats[(qb_stats["posteam"] == "KC") & (qb_stats["week"] == 1)]
         assert len(kc_w1) == 1  # Only primary passer returned
         assert kc_w1.iloc[0]["passer_player_id"] == "00-0033873"
 
@@ -388,8 +552,16 @@ class TestEdgeCases:
 
         # Create minimal PBP with no data before week 1
         empty_pbp = pd.DataFrame(
-            columns=["game_id", "season", "week", "posteam",
-                     "passer_player_id", "qb_epa", "cpoe", "play_id"]
+            columns=[
+                "game_id",
+                "season",
+                "week",
+                "posteam",
+                "passer_player_id",
+                "qb_epa",
+                "cpoe",
+                "play_id",
+            ]
         )
 
         tracker._depth_chart_cache = {2024: mock_depth_charts}
@@ -425,15 +597,66 @@ class TestGameIdFormatMismatch:
         Same logical games as mock_games_df but with silver-layer IDs:
         e.g. "2024_W01_KC@BUF" instead of "2024_01_KC_BUF".
         """
-        return pd.DataFrame([
-            {"game_id": "2024_W01_KC@BUF", "season": 2024, "week": 1, "home_team": "KC", "away_team": "BUF", "kickoff_et": datetime(2024, 9, 5, 20, 20)},
-            {"game_id": "2024_W02_KC@DAL", "season": 2024, "week": 2, "home_team": "KC", "away_team": "DAL", "kickoff_et": datetime(2024, 9, 12, 13, 0)},
-            {"game_id": "2024_W02_BUF@MIA", "season": 2024, "week": 2, "home_team": "BUF", "away_team": "MIA", "kickoff_et": datetime(2024, 9, 12, 13, 0)},
-            {"game_id": "2024_W03_KC@DEN", "season": 2024, "week": 3, "home_team": "KC", "away_team": "DEN", "kickoff_et": datetime(2024, 9, 19, 13, 0)},
-            {"game_id": "2024_W03_BUF@NE", "season": 2024, "week": 3, "home_team": "BUF", "away_team": "NE", "kickoff_et": datetime(2024, 9, 19, 16, 25)},
-            {"game_id": "2024_W04_KC@LA", "season": 2024, "week": 4, "home_team": "KC", "away_team": "LA", "kickoff_et": datetime(2024, 9, 26, 13, 0)},
-            {"game_id": "2024_W04_BUF@JAX", "season": 2024, "week": 4, "home_team": "BUF", "away_team": "JAX", "kickoff_et": datetime(2024, 9, 26, 13, 0)},
-        ])
+        return pd.DataFrame(
+            [
+                {
+                    "game_id": "2024_W01_KC@BUF",
+                    "season": 2024,
+                    "week": 1,
+                    "home_team": "KC",
+                    "away_team": "BUF",
+                    "kickoff_et": datetime(2024, 9, 5, 20, 20, tzinfo=_ET),
+                },
+                {
+                    "game_id": "2024_W02_KC@DAL",
+                    "season": 2024,
+                    "week": 2,
+                    "home_team": "KC",
+                    "away_team": "DAL",
+                    "kickoff_et": datetime(2024, 9, 12, 13, 0, tzinfo=_ET),
+                },
+                {
+                    "game_id": "2024_W02_BUF@MIA",
+                    "season": 2024,
+                    "week": 2,
+                    "home_team": "BUF",
+                    "away_team": "MIA",
+                    "kickoff_et": datetime(2024, 9, 12, 13, 0, tzinfo=_ET),
+                },
+                {
+                    "game_id": "2024_W03_KC@DEN",
+                    "season": 2024,
+                    "week": 3,
+                    "home_team": "KC",
+                    "away_team": "DEN",
+                    "kickoff_et": datetime(2024, 9, 19, 13, 0, tzinfo=_ET),
+                },
+                {
+                    "game_id": "2024_W03_BUF@NE",
+                    "season": 2024,
+                    "week": 3,
+                    "home_team": "BUF",
+                    "away_team": "NE",
+                    "kickoff_et": datetime(2024, 9, 19, 16, 25, tzinfo=_ET),
+                },
+                {
+                    "game_id": "2024_W04_KC@LA",
+                    "season": 2024,
+                    "week": 4,
+                    "home_team": "KC",
+                    "away_team": "LA",
+                    "kickoff_et": datetime(2024, 9, 26, 13, 0, tzinfo=_ET),
+                },
+                {
+                    "game_id": "2024_W04_BUF@JAX",
+                    "season": 2024,
+                    "week": 4,
+                    "home_team": "BUF",
+                    "away_team": "JAX",
+                    "kickoff_et": datetime(2024, 9, 26, 13, 0, tzinfo=_ET),
+                },
+            ]
+        )
 
     def test_time_fence_with_silver_game_ids(
         self,

@@ -16,19 +16,32 @@ QB Quality Metric (FEAT-12):
 - Default to 0.0 (league average) for QBs with no history
 
 Key constraints:
-- No data leakage: features for Week N use only data from weeks < N
+- No data leakage: every input is fenced at the TARGET GAME'S OWN LOCK -- 18:00 ET on
+  the ET calendar day before kickoff (utils.game_lock, D33.2-01). QB1 comes from the
+  depth chart as known at the lock; play-by-play is admitted per GAME, only when that
+  game ended (kickoff + DECLARED_GAME_DURATION) at or before the lock. The rolling
+  window additionally reads only weeks < N.
+- The 2025+ depth charts carry a real upstream publication time (`dt`) instead of a
+  week; the 2002-2024 week-keyed charts carry none (Plan 33.2-13).
 - Canonical team abbreviations: LA is Rams (not LAR), per Phase 2 decision
 - Single composite metric per team per game (D-03)
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from features.provenance import DECLARED_GAME_DURATION, InformationTimeViolation
+import utils.game_lock as lock_rule
+from features.provenance import (
+    DECLARED_GAME_DURATION,
+    PROVENANCE_COLUMNS,
+    InformationBasis,
+    InformationTimeViolation,
+)
 from utils import get_logger
 from utils.team_data import normalize_team_abbreviation
 
@@ -72,6 +85,34 @@ class DepthChartQBs:
     qb1: str | None
     qb2: str | None
     published_at: pd.Timestamp | None
+
+
+@dataclass
+class _WeekContext:
+    """What one (season, week) reads, loaded once and shared by all its games."""
+
+    season: int
+    week: int
+    depth: pd.DataFrame
+    pbp: pd.DataFrame
+    game_ends: pd.Series
+    window_ids: frozenset[str]
+    rolling: dict[frozenset[str], pd.DataFrame] = field(default_factory=dict)
+    primary: dict[frozenset[str], pd.DataFrame] = field(default_factory=dict)
+    # One resolution per (game, lock): information_times re-reads exactly what
+    # build_features resolved rather than resolving it a second time.
+    inputs: dict[tuple[str, pd.Timestamp], "_GameQBInputs"] = field(
+        default_factory=dict
+    )
+
+
+@dataclass(frozen=True)
+class _GameQBInputs:
+    """Both teams' adjustments for one game, and when the inputs behind them were known."""
+
+    adjustments: dict[str, float]
+    published: tuple[pd.Timestamp, ...]
+    latest_end: pd.Timestamp | None
 
 
 def to_aware_utc(values: pd.Series, *, column: str) -> pd.Series:
@@ -136,7 +177,9 @@ def lock_as_utc(lock: Any) -> pd.Timestamp:
 class QBTracker:
     """Track QB starters and compute composite QB quality metric.
 
-    Conforms to the FeatureBuilder Protocol with as_of_datetime time-fence.
+    Conforms to the FeatureBuilder Protocol AND to
+    ``features.protocol.InformationTimeProvider``: every input is fenced at the target
+    game's own lock, and ``information_times`` reports when the inputs used were known.
     Produces a single `qb_adjustment` feature per team per game.
 
     The composite metric combines:
@@ -157,6 +200,12 @@ class QBTracker:
         self._depth_chart_cache: dict[int, pd.DataFrame] = {}
         self._pbp_cache: dict[int, pd.DataFrame] = {}
         self._games_cache: pd.DataFrame | None = None
+        # Per-(season, week) contexts, each held beside the games frame it was built
+        # from and reused only for that SAME frame object (a narrowed frame -- e.g. a
+        # live run's exclusions -- times PBP against a different schedule).
+        self._context_memo: dict[
+            tuple[int, int], tuple[pd.DataFrame, _WeekContext]
+        ] = {}
 
     # ------------------------------------------------------------------
     # QB Starter Detection (FEAT-13)
@@ -544,7 +593,9 @@ class QBTracker:
             raise DepthChartSchemaError(msg)
 
         qbs = depth_charts.loc[depth_charts["position"] == "QB"]
-        qbs = qbs.loc[qbs["club_code"].map(self._safe_normalize_team) == team]
+        codes = qbs["club_code"]
+        canonical = {code: self._safe_normalize_team(code) for code in codes.unique()}
+        qbs = qbs.loc[codes.map(canonical) == team]
         if len(qbs) == 0:
             return DepthChartQBs(None, None, None)
 
@@ -641,7 +692,7 @@ class QBTracker:
         return pbp.loc[pbp["game_id"].isin(admitted_ids)]
 
     # ------------------------------------------------------------------
-    # FeatureBuilder Protocol methods
+    # FeatureBuilder Protocol methods, each game fenced at its OWN lock
     # ------------------------------------------------------------------
 
     def build_features(
@@ -651,133 +702,82 @@ class QBTracker:
         *,
         target_season: int | None = None,
         target_week: int | None = None,
+        lock_frame: pd.Series | None = None,
     ) -> pd.DataFrame:
-        """Build QB adjustment features for games.
+        """Build QB adjustment features, each game fenced at its own lock (D33.2-01).
 
-        Conforms to the FeatureBuilder Protocol. Uses as_of_datetime to
-        enforce the time-fence: only depth chart and PBP data from before
-        this cutoff are used.
+        For every target game: QB1 comes from the depth chart as known at that game's
+        lock (:meth:`resolve_depth_chart_qbs`), and the rolling quality comes only from
+        play-by-play games whose RESULT was known at that lock (kickoff plus
+        ``DECLARED_GAME_DURATION``, :meth:`pbp_game_end_times`). The retired fence
+        compared every kickoff with one frame-wide ``as_of_datetime`` (``now`` in
+        production) and admitted PBP by (season, week) pair, so one finished game in a
+        week admitted that whole week -- the target game's own plays included.
 
         Args:
-            games_df: DataFrame of games to build features for.
-            as_of_datetime: Time-fence cutoff. Only data before this
-                timestamp may be used.
+            games_df: The build's games (``game_id``, ``season``, ``week``, teams and a
+                tz-aware ``kickoff_et``). Also the schedule PBP games are timed against.
+            as_of_datetime: Carried for the ``FeatureBuilder`` Protocol ONLY. It is NOT a
+                fence and no selection reads it.
             target_season: Season to calculate features for.
             target_week: Week to calculate features for.
+            lock_frame: The build's ``game_id`` -> lock frame, built ONCE by the caller.
+                When ``None`` it is built here, once, through
+                ``utils.game_lock.lock_frame``.
 
         Returns:
             DataFrame with columns: game_id, team, qb_adjustment
         """
         logger.info(
             "Building QB adjustment features",
-            as_of_datetime=str(as_of_datetime),
             target_season=target_season,
             target_week=target_week,
         )
-
-        if target_season is None or target_week is None:
-            # Build for ALL season/week combos in games_df
-            if len(games_df) == 0:
-                return pd.DataFrame(columns=["game_id", "team", "qb_adjustment"])
-            self._games_cache = games_df
-            all_results = []
-            season_weeks = (
-                games_df[["season", "week"]]
-                .drop_duplicates()
-                .sort_values(["season", "week"])
-            )
-            for _, row in season_weeks.iterrows():
-                try:
-                    chunk = self.build_features(
-                        games_df,
-                        as_of_datetime,
-                        target_season=int(row["season"]),
-                        target_week=int(row["week"]),
-                    )
-                    if len(chunk) > 0:
-                        all_results.append(chunk)
-                except (ValueError, KeyError, TypeError) as e:
-                    logger.debug(
-                        "Skipping QB features for season/week",
-                        season=int(row["season"]),
-                        week=int(row["week"]),
-                        error=str(e),
-                    )
-            if all_results:
-                return pd.concat(all_results, ignore_index=True)
-            return pd.DataFrame(columns=["game_id", "team", "qb_adjustment"])
-
-        # Store games for get_features_for_game lookups
+        columns = ["game_id", "team", "qb_adjustment"]
+        if len(games_df) == 0:
+            return pd.DataFrame(columns=columns)
         self._games_cache = games_df
+        target_games = self._target_games(games_df, target_season, target_week)
+        if len(target_games) == 0:
+            return pd.DataFrame(columns=columns)
+        if lock_frame is None:
+            lock_frame = lock_rule.lock_frame(target_games)
 
-        # Load data (from cache or nflreadpy)
-        depth_charts = self._load_depth_charts(target_season)
-        pbp = self._load_pbp_data(target_season)
-
-        # Apply as_of_datetime filter to PBP data
-        # Only use PBP data from games before the time-fence.
-        # Uses season/week pairs instead of game_id matching because the
-        # silver-layer games table has a different game_id format than PBP
-        # (e.g. "2024_W01_KC@BUF" vs "2024_01_KC_BUF"). See 05-06-PLAN.md.
-        if "kickoff_et" in games_df.columns:
-            kickoff_col = pd.to_datetime(games_df["kickoff_et"])
-            cutoff = pd.Timestamp(as_of_datetime)
-            if kickoff_col.dt.tz is not None and cutoff.tz is None:
-                cutoff = cutoff.tz_localize(kickoff_col.dt.tz)
-            completed_games = games_df[kickoff_col < cutoff]
-            if len(pbp) > 0 and len(completed_games) > 0:
-                completed_sw = completed_games[["season", "week"]].drop_duplicates()
-                pbp = pbp.merge(completed_sw, on=["season", "week"], how="inner")
-
-        # Get rolling QB metrics
-        rolling_qb = self.compute_rolling_qb_metrics(pbp, target_season, target_week)
-
-        # Get starters for the target week
-        starters = self.get_starters_from_depth_charts(depth_charts)
-        target_starters = starters[
-            (starters["season"] == target_season) & (starters["week"] == target_week)
-        ]
-
-        # Also use PBP primary passers as fallback for historical games
-        primary_passers = self.compute_per_game_qb_stats(pbp)
-
-        # Build feature rows: one per team per game in the target week
-        target_games = games_df[
-            (games_df["season"] == target_season) & (games_df["week"] == target_week)
-        ]
-
-        feature_rows = []
-        for _, game in target_games.iterrows():
-            game_id = game["game_id"]
-            home_team = game["home_team"]
-            away_team = game["away_team"]
-
-            for team in [home_team, away_team]:
-                qb_adj = self._get_qb_adjustment_for_team(
-                    team,
-                    target_starters,
-                    primary_passers,
-                    rolling_qb,
-                    target_season,
-                    target_week,
+        # A fan-out over every week keeps its historical tolerance for one unbuildable
+        # week. That week's games then have no QB rows, which the information-time gate
+        # refuses by name (a provenance row with no source row), so it cannot pass quietly.
+        fan_out = target_season is None or target_week is None
+        chunks: list[pd.DataFrame] = []
+        for (season, week), week_games in target_games.groupby(
+            ["season", "week"], sort=True
+        ):
+            try:
+                chunks.append(
+                    self._build_week(
+                        games_df, week_games, int(season), int(week), lock_frame
+                    )
                 )
-                feature_rows.append(
-                    {
-                        "game_id": game_id,
-                        "team": team,
-                        "qb_adjustment": qb_adj,
-                    }
+            except (ValueError, KeyError, TypeError) as e:
+                if not fan_out:
+                    raise
+                logger.warning(
+                    "Skipping QB features for season/week",
+                    season=int(season),
+                    week=int(week),
+                    error=str(e),
                 )
-
-        result = pd.DataFrame(feature_rows)
-
+        chunks = [chunk for chunk in chunks if len(chunk) > 0]
+        result = (
+            pd.concat(chunks, ignore_index=True)
+            if chunks
+            else pd.DataFrame(columns=columns)
+        )
         logger.info(
             "Built QB adjustment features",
             records=len(result),
             target_season=target_season,
             target_week=target_week,
         )
-
         return result
 
     def get_features_for_game(
@@ -785,155 +785,270 @@ class QBTracker:
         game_id: str,
         as_of_datetime: datetime,
     ) -> dict[str, float]:
-        """Get QB adjustment features for a single game.
+        """QB adjustment for one game, fenced at its lock.
 
-        Conforms to the FeatureBuilder Protocol.
-
-        Args:
-            game_id: Unique game identifier.
-            as_of_datetime: Time-fence cutoff.
+        The game is resolved from the frame handed to the last ``build_features`` call,
+        because its lock needs the kickoff; a game that cannot be resolved has no lock and
+        is refused by name rather than built from a manufactured cutoff.
+        ``as_of_datetime`` is carried for the Protocol only.
 
         Returns:
             Dictionary with "home_qb_adjustment" and "away_qb_adjustment".
+
+        Raises:
+            utils.game_lock.MissingKickoffError: the game is not in the cached frame.
         """
-        # Parse game_id to extract season, week, teams
-        # Expected format: {season}_{week:02d}_{away}_{home} or similar
-        parts = game_id.split("_")
-        if len(parts) < 4:
-            logger.warning(
-                "Cannot parse game_id for QB tracking lookup",
-                game_id=game_id,
+        game = self._resolve_game(game_id)
+        if game is None or self._games_cache is None:
+            msg = (
+                f"game {game_id} is not in the games frame this tracker was given, so it "
+                "has no kickoff and therefore no lock; refusing rather than guessing one"
             )
-            return {"home_qb_adjustment": 0.0, "away_qb_adjustment": 0.0}
-
-        season = int(parts[0])
-        week = int(parts[1])
-
-        # Look up teams from games cache or parse from game_id
-        home_team, away_team = self._resolve_teams_for_game(game_id, parts)
-
-        # Load data
-        depth_charts = self._load_depth_charts(season)
-        pbp = self._load_pbp_data(season)
-
-        # Apply time fence using season/week pairs (format-agnostic).
-        # See build_features() comment for rationale on season/week vs game_id.
-        if self._games_cache is not None and "kickoff_et" in self._games_cache.columns:
-            kickoff_col = pd.to_datetime(self._games_cache["kickoff_et"])
-            cutoff = pd.Timestamp(as_of_datetime)
-            if kickoff_col.dt.tz is not None and cutoff.tz is None:
-                cutoff = cutoff.tz_localize(kickoff_col.dt.tz)
-            completed_games = self._games_cache[kickoff_col < cutoff]
-            if len(pbp) > 0 and len(completed_games) > 0:
-                completed_sw = completed_games[["season", "week"]].drop_duplicates()
-                pbp = pbp.merge(completed_sw, on=["season", "week"], how="inner")
-
-        rolling_qb = self.compute_rolling_qb_metrics(pbp, season, week)
-        starters = self.get_starters_from_depth_charts(depth_charts)
-        target_starters = starters[
-            (starters["season"] == season) & (starters["week"] == week)
-        ]
-        primary_passers = self.compute_per_game_qb_stats(pbp)
-
-        home_adj = self._get_qb_adjustment_for_team(
-            home_team, target_starters, primary_passers, rolling_qb, season, week
-        )
-        away_adj = self._get_qb_adjustment_for_team(
-            away_team, target_starters, primary_passers, rolling_qb, season, week
-        )
-
+            raise lock_rule.MissingKickoffError(msg)
+        season, week = int(game["season"]), int(game["week"])
+        lock = lock_rule.game_lock(game.get("kickoff_et"), game_id=str(game_id))
+        context = self._week_context(self._games_cache, season, week)
+        inputs = self._game_inputs(game, lock, context)
+        home = self._safe_normalize_team(game["home_team"])
+        away = self._safe_normalize_team(game["away_team"])
         return {
-            "home_qb_adjustment": float(home_adj),
-            "away_qb_adjustment": float(away_adj),
+            "home_qb_adjustment": float(inputs.adjustments[home]),
+            "away_qb_adjustment": float(inputs.adjustments[away]),
         }
+
+    # ------------------------------------------------------------------
+    # InformationTimeProvider (features.protocol, Plan 33.2-01's owned contract)
+    # ------------------------------------------------------------------
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        """A game with no dated input has no rolling history: ``qb_adjustment`` 0.0.
+
+        ``no_information`` is reported only when no depth-chart snapshot and no finished
+        play-by-play game was known at the lock -- and with no admitted PBP the rolling
+        metrics are empty, so both teams' adjustment is the league-average 0.0.
+        """
+        return {"qb_adjustment": 0.0}
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """One provenance row per game: WHEN the inputs this builder used were known.
+
+        The time is the MAXIMUM of (the ``dt`` of each depth-chart snapshot used, 2025+)
+        and (the end instant of the latest play-by-play game admitted at the lock) --
+        what the builder actually read, from the same resolution ``build_features`` runs.
+        A week-keyed 2002-2024 chart carries no publication time, so it contributes none;
+        no time is manufactured for it. A game with neither input is
+        ``basis="no_information"`` with a NULL time, value-checked by the gate.
+
+        Returns:
+            A frame with exactly ``PROVENANCE_COLUMNS``.
+        """
+        target_games = self._target_games(games_df, target_season, target_week)
+        records: list[dict[str, Any]] = []
+        if len(target_games) > 0:
+            locks = lock_rule.lock_frame(target_games)
+            for (season, week), week_games in target_games.groupby(
+                ["season", "week"], sort=True
+            ):
+                context = self._week_context(games_df, int(season), int(week))
+                for game in week_games.to_dict("records"):
+                    game_id = str(game["game_id"])
+                    inputs = self._game_inputs(game, locks[game_id], context)
+                    known = [
+                        t
+                        for t in (*inputs.published, inputs.latest_end)
+                        if t is not None
+                    ]
+                    latest = max(known) if known else None
+                    records.append(
+                        {
+                            "game_id": game_id,
+                            "basis": (
+                                InformationBasis.PER_ROW.value
+                                if latest is not None
+                                else InformationBasis.NO_INFORMATION.value
+                            ),
+                            "information_time": latest,
+                        }
+                    )
+        return pd.DataFrame(records, columns=list(PROVENANCE_COLUMNS))
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _get_qb_adjustment_for_team(
+    def _build_week(
         self,
-        team: str,
-        starters: pd.DataFrame,
-        primary_passers: pd.DataFrame,
-        rolling_qb: pd.DataFrame,
-        target_season: int,
-        target_week: int,
-    ) -> float:
-        """Look up the QB quality for a team's starter.
-
-        Strategy:
-        1. Check depth chart starters for the target week
-        2. Fall back to most recent primary passer from PBP
-        3. If no QB found or no rolling data, return 0.0 (league avg)
-
-        Args:
-            team: Canonical team abbreviation.
-            starters: Depth chart starters DataFrame.
-            primary_passers: PBP-derived primary passers.
-            rolling_qb: Rolling QB metrics DataFrame.
-            target_season: Target season.
-            target_week: Target week.
-
-        Returns:
-            QB quality value (0.0 = league average).
-        """
-        qb_id = None
-
-        # Try depth chart first
-        team_starter = starters[starters["team"] == team]
-        if len(team_starter) > 0:
-            qb_id = team_starter.iloc[0]["gsis_id"]
-
-        # Fall back to most recent primary passer from PBP
-        if qb_id is None and len(primary_passers) > 0:
-            team_passers = primary_passers[
-                primary_passers["posteam"] == team
-            ].sort_values(["season", "week"], ascending=False)
-            if len(team_passers) > 0:
-                qb_id = team_passers.iloc[0]["passer_player_id"]
-
-        if qb_id is None:
-            return 0.0
-
-        # Look up rolling quality
-        if len(rolling_qb) == 0:
-            return 0.0
-
-        qb_row = rolling_qb[rolling_qb["passer_player_id"] == qb_id]
-        if len(qb_row) == 0:
-            return 0.0
-
-        return float(qb_row.iloc[0]["qb_quality"])
-
-    def _resolve_teams_for_game(
-        self, game_id: str, parts: list[str]
-    ) -> tuple[str, str]:
-        """Resolve home and away teams for a game_id.
-
-        Checks games cache first, then falls back to parsing the game_id.
-
-        Args:
-            game_id: The game identifier.
-            parts: Pre-split parts of game_id.
-
-        Returns:
-            Tuple of (home_team, away_team).
-        """
-        # Check cache
-        if self._games_cache is not None:
-            game_row = self._games_cache[self._games_cache["game_id"] == game_id]
-            if len(game_row) > 0:
-                return (
-                    str(game_row.iloc[0]["home_team"]),
-                    str(game_row.iloc[0]["away_team"]),
+        games_df: pd.DataFrame,
+        week_games: pd.DataFrame,
+        season: int,
+        week: int,
+        lock_frame: pd.Series,
+    ) -> pd.DataFrame:
+        """One row per team per game for one (season, week), each at its game's lock."""
+        context = self._week_context(games_df, season, week)
+        rows: list[dict[str, Any]] = []
+        for game in week_games.to_dict("records"):
+            inputs = self._game_inputs(game, lock_frame[str(game["game_id"])], context)
+            for column in ("home_team", "away_team"):
+                rows.append(
+                    {
+                        "game_id": game["game_id"],
+                        "team": game[column],
+                        "qb_adjustment": float(
+                            inputs.adjustments[self._safe_normalize_team(game[column])]
+                        ),
+                    }
                 )
+        return pd.DataFrame(rows, columns=["game_id", "team", "qb_adjustment"])
 
-        # Parse from game_id: {season}_{week}_{home}_{away}
-        if len(parts) >= 4:
-            return parts[2], parts[3]
+    def _week_context(
+        self, games_df: pd.DataFrame, season: int, week: int
+    ) -> _WeekContext:
+        """Everything one (season, week) reads, loaded once for all its games."""
+        memo = self._context_memo.get((season, week))
+        if memo is not None and memo[0] is games_df:
+            return memo[1]
+        depth = self._load_depth_charts(season)
+        if len(depth) > 0 and "position" in depth.columns:
+            depth = depth.loc[depth["position"] == "QB"]
+        pbp = self._load_pbp_data(season)
+        ends = self.pbp_game_end_times(pbp, games_df)
+        if len(pbp) > 0:
+            meta = pbp[["game_id", "season", "week"]].drop_duplicates("game_id")
+            windowed = (meta["season"] < season) | (
+                (meta["season"] == season) & (meta["week"] < week)
+            )
+            window_ids = frozenset(meta.loc[windowed, "game_id"])
+        else:
+            window_ids = frozenset()
+        context = _WeekContext(
+            season=season,
+            week=week,
+            depth=depth,
+            pbp=pbp,
+            game_ends=ends,
+            window_ids=window_ids,
+        )
+        self._context_memo[(season, week)] = (games_df, context)
+        return context
 
-        return "UNK", "UNK"
+    def _game_inputs(
+        self, game: Mapping[str, Any], lock: Any, context: _WeekContext
+    ) -> _GameQBInputs:
+        """Resolve both teams' QB and quality for one game from what its lock admits."""
+        lock_utc = lock_as_utc(lock)
+        memo_key = (str(game["game_id"]), lock_utc)
+        if memo_key in context.inputs:
+            return context.inputs[memo_key]
+        admitted_ends = context.game_ends.loc[context.game_ends <= lock_utc]
+        latest_end = pd.Timestamp(admitted_ends.max()) if len(admitted_ends) else None
+        admitted_ids = frozenset(admitted_ends.index)
+
+        # The rolling window reads only games in earlier weeks, so the rolling result
+        # depends only on the admitted games INSIDE that window -- one computation per
+        # distinct set rather than one per lock.
+        window = admitted_ids & context.window_ids
+        rolling = context.rolling.get(window)
+        if rolling is None:
+            rolling = self.compute_rolling_qb_metrics(
+                context.pbp.loc[context.pbp["game_id"].isin(window)]
+                if len(context.pbp) > 0
+                else context.pbp,
+                context.season,
+                context.week,
+            )
+            context.rolling[window] = rolling
+
+        adjustments: dict[str, float] = {}
+        published: list[pd.Timestamp] = []
+        for column in ("home_team", "away_team"):
+            team = self._safe_normalize_team(game[column])
+            qbs = self.resolve_depth_chart_qbs(
+                context.depth, context.season, context.week, team, lock
+            )
+            if qbs.published_at is not None:
+                published.append(qbs.published_at)
+            qb_id = qbs.qb1
+            if qb_id is None:
+                qb_id = self._latest_admitted_primary_passer(
+                    context, admitted_ids, team
+                )
+            adjustments[team] = self._quality_of(rolling, qb_id)
+        inputs = _GameQBInputs(
+            adjustments=adjustments, published=tuple(published), latest_end=latest_end
+        )
+        context.inputs[memo_key] = inputs
+        return inputs
+
+    def _latest_admitted_primary_passer(
+        self, context: _WeekContext, admitted_ids: frozenset[str], team: str
+    ) -> str | None:
+        """The team's most recent primary passer among games FINISHED at the lock.
+
+        Used only when no depth chart names a QB1 (87 of 12,428 team-games in 2002-2024,
+        none in 2025, measured 2026-09-21). It can no longer name the season's final
+        passer: it reads only play-by-play whose game ended at or before THIS game's lock,
+        so a passer who first appears later -- or in this game -- is never seen.
+        """
+        if not admitted_ids or len(context.pbp) == 0:
+            return None
+        primary = context.primary.get(admitted_ids)
+        if primary is None:
+            primary = self.compute_per_game_qb_stats(
+                context.pbp.loc[context.pbp["game_id"].isin(admitted_ids)]
+            )
+            if len(primary) > 0:
+                primary = primary.assign(
+                    _team=primary["posteam"].map(self._safe_normalize_team)
+                )
+            context.primary[admitted_ids] = primary
+        if len(primary) == 0:
+            return None
+        team_passers = primary.loc[primary["_team"] == team].sort_values(
+            ["season", "week"], ascending=False
+        )
+        if len(team_passers) == 0:
+            return None
+        return str(team_passers.iloc[0]["passer_player_id"])
+
+    @staticmethod
+    def _quality_of(rolling: pd.DataFrame, qb_id: str | None) -> float:
+        """The QB's rolling quality, or 0.0 (league average) with no id or no history."""
+        if qb_id is None or len(rolling) == 0:
+            return 0.0
+        match = rolling.loc[rolling["passer_player_id"] == qb_id]
+        if len(match) == 0:
+            return 0.0
+        return float(match.iloc[0]["qb_quality"])
+
+    @staticmethod
+    def _target_games(
+        games_df: pd.DataFrame, target_season: int | None, target_week: int | None
+    ) -> pd.DataFrame:
+        """The games a build covers: one (season, week) when both are given, else all."""
+        if len(games_df) == 0:
+            return games_df
+        if target_season is not None and target_week is not None:
+            return games_df.loc[
+                (games_df["season"] == target_season)
+                & (games_df["week"] == target_week)
+            ]
+        return games_df
+
+    def _resolve_game(self, game_id: str) -> dict[str, Any] | None:
+        """The cached games-frame row for *game_id*, or ``None``."""
+        if self._games_cache is None or len(self._games_cache) == 0:
+            return None
+        match = self._games_cache.loc[self._games_cache["game_id"] == game_id]
+        if len(match) == 0:
+            return None
+        return match.iloc[0].to_dict()
 
     def _load_depth_charts(self, season: int) -> pd.DataFrame:
         """Load depth chart data, with caching.
@@ -972,10 +1087,15 @@ class QBTracker:
                 # Add season column if missing
                 if "season" not in dc.columns:
                     dc["season"] = season
-                # Add week column from dt if missing
-                if "week" not in dc.columns and "dt" in dc.columns:
-                    # dt column may encode week; default to 0 if not parseable
-                    dc["week"] = 0
+                # NO WEEK IS MANUFACTURED (Plan 33.2-13). This block used to stamp every
+                # 2025+ row with a constant week, so no chart matched any target week and
+                # the starter fell through to the season's final primary passer. The 2025+
+                # schema has no week by design: each update carries its ISO-8601 upstream
+                # publication time `dt`, parsed here ONCE (aware, never relabelled) so
+                # `resolve_depth_chart_qbs` can take the latest snapshot at or before a
+                # game's lock.
+                if "dt" in dc.columns:
+                    dc["dt"] = to_aware_utc(dc["dt"], column="dt")
 
             self._depth_chart_cache[season] = dc
             return dc
