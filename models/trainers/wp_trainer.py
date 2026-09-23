@@ -25,7 +25,7 @@ from sklearn.preprocessing import StandardScaler
 from models.calibrate import ProbabilityCalibrator
 from models.clv import compute_clv_for_predictions
 from models.temporal import TemporalSplitConfig, WalkForwardSplitter
-from models.trainers.base import BaseTrainer
+from models.trainers.base import BaseTrainer, concat_holdout_predictions
 
 # Maximum number of features to select (soft target ~16, hard cap 20)
 _WP_MAX_FEATURES = 20
@@ -44,6 +44,15 @@ WP_PIPELINE_STEP_NAMES: tuple[str, ...] = (
 # WP's feature space from here on, so they are new symbols of this phase and are
 # named rather than positional.
 MISSING_INDICATOR_SUFFIX: str = "_was_missing"
+
+# THE PROBABILITY CLIP WP's OWN LOG LOSS USES, declared ONCE (Plan 33.2-22).
+#
+# ``_compute_cv_score`` clips before ``log_loss`` so a probability of exactly 0 or 1 cannot
+# produce an infinite score. ``backtest.signal_lift``'s outcome-loss objective computes the
+# SAME per-game log loss over this trainer's out-of-sample predictions, and it imports this
+# constant rather than re-typing the bounds: two copies of a clip are two metrics wearing one
+# name, and the whole point of the objective is that it IS the trainer's own primary metric.
+WP_LOG_LOSS_CLIP: tuple[float, float] = (1e-7, 1.0 - 1e-7)
 
 
 class _ImputeAndCarryRaw(BaseEstimator, TransformerMixin):
@@ -331,8 +340,9 @@ class WPTrainer(BaseTrainer):
         """
         from sklearn.metrics import log_loss
 
-        # Clip predictions to avoid log(0)
-        clipped = np.clip(predictions, 1e-7, 1 - 1e-7)
+        # Clip predictions to avoid log(0). The bounds are WP_LOG_LOSS_CLIP, declared once at
+        # module level so the signal-lift outcome-loss objective measures the SAME metric.
+        clipped = np.clip(predictions, *WP_LOG_LOSS_CLIP)
         return float(log_loss(actuals.values, clipped))
 
     # ------------------------------------------------------------------
@@ -403,7 +413,9 @@ class WPTrainer(BaseTrainer):
 
         Returns:
             Dict with per-season metrics, overall metrics, feature names,
-            best parameters, and CLV results.
+            best parameters, CLV results, and ``holdout_predictions`` -- the
+            per-game out-of-sample record (:data:`HOLDOUT_PREDICTION_COLUMNS`),
+            returned whether or not a closing-odds frame was passed.
 
         Raises:
             ValueError: If target column "home_win" is missing.
@@ -508,6 +520,7 @@ class WPTrainer(BaseTrainer):
         all_predictions = []
         all_actuals = []
         all_pred_dfs = []
+        all_holdout_dfs: list[pd.DataFrame] = []
 
         for split in splitter.generate_splits(features_df):
             X_train = split.train_data[self.feature_names]
@@ -544,15 +557,28 @@ class WPTrainer(BaseTrainer):
             all_predictions.extend(calibrated_predictions.tolist())
             all_actuals.extend(y_test.values.tolist())
 
+            # THE PER-GAME OUT-OF-SAMPLE RECORD, BUILT ON EVERY SPLIT (Plan 33.2-22).
+            # It used to be built only `if closing_odds_df is not None`, so no caller could
+            # obtain this model's own out-of-sample predictions without handing it a closing
+            # line -- which made an outcome-based feature-group screen impossible to compute
+            # without the very market line D33.2-03 removes from every fit decision.
+            holdout_frame = pd.DataFrame(
+                {
+                    "game_id": split.test_data.index,
+                    "season": split.test_season,
+                    "prediction": calibrated_predictions,
+                    "actual": y_test.values,
+                }
+            )
+            all_holdout_dfs.append(holdout_frame)
+
             if closing_odds_df is not None:
-                pred_df = pd.DataFrame(
-                    {
-                        "game_id": split.test_data.index,
-                        "model_prob": calibrated_predictions,
-                        "actual": y_test.values,
-                        "season": split.test_season,
-                    }
-                )
+                # DERIVED from the same frame, in exactly the columns and the order the CLV
+                # path has always received, so `clv_results` is unchanged for every caller
+                # that passes odds.
+                pred_df = holdout_frame.rename(columns={"prediction": "model_prob"})[
+                    ["game_id", "model_prob", "actual", "season"]
+                ]
                 all_pred_dfs.append(pred_df)
 
             self.logger.info(
@@ -623,6 +649,7 @@ class WPTrainer(BaseTrainer):
             "feature_names": self.feature_names,
             "best_params": best_params,
             "clv_results": clv_results,
+            "holdout_predictions": concat_holdout_predictions(all_holdout_dfs),
             "metadata": self.metadata,
         }
 

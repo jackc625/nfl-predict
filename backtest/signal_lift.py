@@ -68,6 +68,37 @@ readouts it feeds (``SIGNAL-LIFT-READOUT.md``, ``LINE-MOVEMENT-READOUT.md``) say
 carried to Phase 30", NEVER "deployed" / "proven". A flat or negative screen is a COMPLETE
 result, not a failure: it is what stops Phase 30 chasing a signal that is not there.
 
+THE OBJECTIVE (Plan 33.2-22, D33.2-15 / D33.2-03). This screen has TWO objectives and the
+caller names which one it wants:
+
+  * ``objective="closing_clv"`` -- the DEFAULT and the historical behaviour, byte-for-byte.
+    Every Phase-28, Phase-29 and Phase-30 caller and every doc-drift guard that reproduces
+    their published grids keeps it with no edit.
+  * ``objective="outcome_loss"`` -- each model's OWN out-of-sample loss under its own primary
+    metric: WP per-game log loss under the trainer's ``WP_LOG_LOSS_CLIP``, ATS and O/U per-game
+    absolute error. NO market line of ANY timing enters it.
+
+WHY THE SECOND OBJECTIVE EXISTS. The closing-CLV path filters on ``has_closing_odds`` and
+reads the target's CLV column, and ``run_signal_lift_screen`` loads
+``data/silver/odds_snapshot.parquet`` when it is not handed odds. Re-used unchanged on
+corrected gold, a CLOSING line would choose which feature families the corrected models are
+FITTED on -- a closing line feeding a fit decision, which is the post-lock leak D33.2-03
+removes. The pre-registered rule in ``backtest/group_gate_constants.py`` does not fix the
+metric (its own docstring gives the metric to this module and says the rule "re-derives no
+metric"), so changing the objective edits no frozen byte.
+
+WHY NOT THE OWNED PRE-LOCK LINE CORPUS. It was considered for this decision and rejected, and
+the reason is recorded here rather than left to be rediscovered. The owned ``odds_timeline``
+(the Phase-29 purchase) carries spreads and totals only and NO MONEYLINE of any kind, so a WP
+line-relative objective would have to run through Plan 33.2-21's fitted spread-to-win-
+probability converter, which lands in the same wave; it covers 2020-2024 only, so the paired
+sample would shrink to the 1,346 games that join a pre-lock line; and a market line is the
+BLEND's instrument (Plan 33.2-24), where the market enters by design and after the model has
+predicted. The outcome is the label the model is already trained to predict, it is available
+for every game in every season, and it is the SAME yardstick Plan 33.2-23's search optimises
+and adjudicates by -- so the feature-group decision and the hyperparameter decision agree on
+what "better" means.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -78,6 +109,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from backtest.diagnose import (
@@ -86,10 +118,16 @@ from backtest.diagnose import (
     SIGNIFICANCE_ALPHA,
     clv_significance,
 )
+from backtest.ev_chain_constants import HOLD_SEASONS_P31
+from conf.season_partition import (
+    LATEST_COMPLETED_SEASON,
+    completed_seasons_from,
+    derive_season_partition,
+)
 from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
-from models.trainers.wp_trainer import WPTrainer
+from models.trainers.wp_trainer import WP_LOG_LOSS_CLIP, WPTrainer
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -440,6 +478,179 @@ _GROUP_PREDICATE = {
 ALL_REGISTERED_GROUPS: tuple[str, ...] = tuple(_GROUP_PREDICATE)
 
 
+# ---------------------------------------------------------------------------
+# (1b) THE OBJECTIVE, ITS REFUSAL, AND THE DERIVED 2025-EXCLUDING CONFIG
+#      Plan 33.2-22 (D33.2-15 / D33.2-03). See the module docstring.
+# ---------------------------------------------------------------------------
+
+#: The historical objective: paired incremental CLOSING-LINE CLV. The DEFAULT, so every
+#: pre-existing caller is byte-preserved.
+OBJECTIVE_CLOSING_CLV: str = "closing_clv"
+
+#: Each model's OWN out-of-sample loss under its own primary metric. No market line.
+OBJECTIVE_OUTCOME_LOSS: str = "outcome_loss"
+
+SCREEN_OBJECTIVES: tuple[str, ...] = (OBJECTIVE_CLOSING_CLV, OBJECTIVE_OUTCOME_LOSS)
+
+#: The per-target loss NAME under ``OBJECTIVE_OUTCOME_LOSS``, reported in the cell where the
+#: closing-CLV path reports its CLV column. A cell that kept a CLV column name while carrying a
+#: loss would render a CLV label onto a measurement that has nothing to do with a market line.
+OUTCOME_LOSS_COLUMN_FOR: dict[str, str] = {
+    "wp": "log_loss",
+    "ats": "absolute_error",
+    "ou": "absolute_error",
+}
+
+#: The anchor string the result carries under ``OBJECTIVE_OUTCOME_LOSS``. It NAMES the loss, so
+#: no reader of a stored result can mistake the number for a CLV lift.
+OUTCOME_LOSS_ANCHOR: str = (
+    "paired out-of-sample outcome-loss improvement (baseline_loss - candidate_loss): WP "
+    "per-game log loss clipped to WP_LOG_LOSS_CLIP; ATS and O/U per-game absolute error. No "
+    "market line of any timing enters it."
+)
+
+#: The anchor string the result carries under ``OBJECTIVE_CLOSING_CLV`` -- unchanged behaviour,
+#: stated so the two objectives are labelled in the same place and in the same way.
+CLOSING_CLV_ANCHOR: str = (
+    "paired incremental CLOSING-LINE CLV lift (candidate_clv - baseline_clv), read from the "
+    "trainer's own walk-forward clv_results on games that have closing odds."
+)
+
+# THE CLOSING-LINE COLUMNS, NAMED. Every entry is matched by EXACT column name, never as a
+# substring: "drive_start_yardline" contains "line", "total_points" (the O/U target) contains
+# "total", and "rolling_total_epa" contains both. The substring form is the mistake
+# ``_is_snap_col`` and ``_is_line_movement_col`` already record; this is the same lesson applied
+# to the refusal. The market FEATURE columns are matched separately, by the registry's own
+# ``_GROUP_PREDICATE["market"]`` suffix predicate, so the two halves cannot drift apart.
+CLOSING_LINE_COLUMNS: tuple[str, ...] = (
+    # the raw closing quote, as silver odds_snapshot stores it
+    "ml_home",
+    "ml_away",
+    "spread",
+    "total",
+    "spread_line",
+    "total_line",
+    "home_moneyline",
+    "away_moneyline",
+    # everything derived from a closing quote by models/clv.py
+    "fair_closing_prob",
+    "probability_clv",
+    "line_clv",
+    "has_closing_odds",
+)
+
+
+class ScreenObjectiveError(Exception):
+    """Base class for every refusal the screen's objective machinery raises.
+
+    Inherits ``Exception`` and NOT ``ValueError`` / ``KeyError`` / ``TypeError`` /
+    ``RuntimeError``, for the reason ``data.sealed_probe_log.SealedProbeLogCorrupt`` and
+    ``models.market_probability.MarketProbabilityError`` both record: several call sites in
+    this repository catch that tuple and degrade quietly, and a closing-line refusal degraded
+    into "carry on and screen anyway" is precisely the leak this objective exists to stop.
+    """
+
+
+class ClosingLineInScreenError(ScreenObjectiveError):
+    """A closing line reached a screen running under ``OBJECTIVE_OUTCOME_LOSS``.
+
+    Raised on a non-None ``closing_odds_df``, on a gold column named in
+    :data:`CLOSING_LINE_COLUMNS` or matched by the market group's predicate, and on the same
+    columns arriving through a trainer's own per-game frame. Closing lines remain valid for
+    GRADING bets and measuring CLV; they may not choose which features a model is fitted on
+    (D33.2-03).
+    """
+
+
+def closing_line_columns_in(frame: pd.DataFrame) -> list[str]:
+    """Return the closing-line columns present in *frame*, sorted. Empty when there are none.
+
+    Two independent halves, deliberately: EXACT membership of :data:`CLOSING_LINE_COLUMNS`
+    (the raw quote and everything ``models/clv.py`` derives from one) and the registry's own
+    ``market`` suffix predicate (the model-input line columns p332_ rung 9 removed from gold).
+
+    Args:
+        frame: Any frame the screen is about to hand a trainer, or read a leg's losses from.
+
+    Returns:
+        The offending column names, sorted. A caller treats a non-empty list as a refusal.
+    """
+    named = {name.lower() for name in CLOSING_LINE_COLUMNS}
+    market_predicate = _GROUP_PREDICATE["market"]
+    return sorted(
+        column
+        for column in frame.columns
+        if str(column).lower() in named or market_predicate(str(column))
+    )
+
+
+def _refuse_closing_line(frame: pd.DataFrame, *, where: str) -> None:
+    """Raise :class:`ClosingLineInScreenError` naming every closing-line column in *frame*."""
+    offenders = closing_line_columns_in(frame)
+    if not offenders:
+        return
+    msg = (
+        f"a closing line reached the feature-group screen at {where}: {offenders}. Under "
+        f"objective={OBJECTIVE_OUTCOME_LOSS!r} no market line of ANY timing may enter, "
+        "because the result CHOOSES which feature families the corrected models are fitted on "
+        "(D33.2-03). Closing lines stay valid for grading bets and measuring CLV."
+    )
+    raise ClosingLineInScreenError(msg)
+
+
+def screen_config_excluding_spent_hold(
+    gold_by_target: dict[str, pd.DataFrame],
+) -> TemporalSplitConfig:
+    """DERIVE the screen's split config from gold, with the spent 2025 hold removed.
+
+    The seasons are DERIVED, never typed: the gold frames' own ``season`` columns go through
+    ``conf.season_partition.completed_seasons_from`` (which clamps a live season away) minus
+    ``backtest.ev_chain_constants.HOLD_SEASONS_P31`` (the named spent single-use hold), and the
+    committed partition rule turns what remains into the three folds.
+
+    WHY THE HOLD IS REMOVED. Choosing feature groups by their 2025 score would make 2025 a
+    SELECTION criterion, and the Phase-31 pre-registration spent that season once and
+    unrepeatably. Plan 33.2-23 excludes it from its own adjudication for the same reason; this
+    screen follows the same rule so the two decisions rest on the same evidence.
+
+    On the corpus as it stands that yields selection 2002-2021, hp_val 2022, holdout 2023-2024.
+
+    Args:
+        gold_by_target: The per-target gold frames the screen is about to measure.
+
+    Returns:
+        The derived :class:`~models.temporal.TemporalSplitConfig`.
+    """
+    seasons: set[int] = set()
+    for frame in gold_by_target.values():
+        seasons.update(int(season) for season in frame["season"].dropna().unique())
+    completed = [
+        season
+        for season in completed_seasons_from(seasons)
+        if season not in set(HOLD_SEASONS_P31)
+    ]
+    partition = derive_season_partition(completed)
+    return TemporalSplitConfig(
+        train_seasons=list(partition.selection),
+        hp_val_seasons=list(partition.hp_val),
+        holdout_seasons=list(partition.holdout),
+    )
+
+
+def _scored_seasons(config: TemporalSplitConfig) -> set[int]:
+    """The seasons a leg may see: the config's own three folds, minus the spent hold.
+
+    The subtraction is belt-and-braces and is deliberate. A caller that hands the screen its
+    OWN config could name the spent hold in it; the exclusion must be a property of the
+    outcome-loss path, not only of the derived config's construction.
+    """
+    return {
+        int(season)
+        for season in config.all_seasons
+        if season not in set(HOLD_SEASONS_P31) and season <= LATEST_COMPLETED_SEASON
+    }
+
+
 def group_columns(gold_df: pd.DataFrame, group: str) -> list[str]:
     """Return the NEW columns belonging to ``group`` present in ``gold_df`` (sorted)."""
     if group not in _GROUP_PREDICATE:
@@ -561,6 +772,67 @@ def _walkforward_clv(
     return _walkforward_clv_series(clv_results, target), selected
 
 
+def _outcome_loss_series(
+    target: str, holdout_predictions: pd.DataFrame
+) -> pd.DataFrame:
+    """Return the per-game out-of-sample LOSS (game_id + loss) for one target.
+
+    WP is per-game log loss under the trainer's own ``WP_LOG_LOSS_CLIP`` -- the constant
+    ``WPTrainer._compute_cv_score`` clips with, IMPORTED rather than re-typed so the screen
+    measures the same metric the trainer optimises. ATS and O/U are per-game absolute error,
+    which is ``BaseTrainer._compute_cv_score``'s default and both trainers' tuning metric.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        holdout_predictions: A trainer's per-game out-of-sample record.
+
+    Returns:
+        A frame with ``game_id`` and ``loss``, NaN losses dropped.
+    """
+    frame = holdout_predictions
+    prediction = frame["prediction"].to_numpy(dtype=float)
+    actual = frame["actual"].to_numpy(dtype=float)
+    if target == "wp":
+        low, high = WP_LOG_LOSS_CLIP
+        clipped = np.clip(prediction, low, high)
+        loss = -(actual * np.log(clipped) + (1.0 - actual) * np.log(1.0 - clipped))
+    else:
+        loss = np.abs(prediction - actual)
+    out = pd.DataFrame({"game_id": frame["game_id"].to_numpy(), "loss": loss})
+    return out.dropna(subset=["loss"]).reset_index(drop=True)
+
+
+def _walkforward_outcome_loss(
+    target: str,
+    features_df: pd.DataFrame,
+    config: TemporalSplitConfig,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Run ONE in-process walk-forward re-fit with NO odds; return per-game loss + selection.
+
+    The same mechanism as :func:`_walkforward_clv` -- a fresh trainer, ``tune=False``, the
+    trainer's own train<=Y-1 / measure-Y walk-forward -- reading ``holdout_predictions``
+    instead of ``clv_results``. ``closing_odds_df`` is passed as None BY CONSTRUCTION here:
+    there is no parameter through which a caller could supply one.
+    """
+    trainer_cls = _TRAINER_FOR[target]
+    trainer = trainer_cls(config=config)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = trainer.train_and_evaluate(features_df, None, tune=False)
+    selected = list(
+        result.get("feature_names") or getattr(trainer, "feature_names", [])
+    )
+    holdout_predictions = result.get("holdout_predictions")
+    if holdout_predictions is None or len(holdout_predictions) == 0:
+        return pd.DataFrame(columns=["game_id", "loss"]), selected
+    # The refusal applies to the leg's own per-game frame too, so a closing line cannot arrive
+    # through the trainer instead of through gold.
+    _refuse_closing_line(
+        holdout_predictions, where=f"the {target} leg's per-game holdout frame"
+    )
+    return _outcome_loss_series(target, holdout_predictions), selected
+
+
 def _paired_delta(
     baseline_clv: pd.DataFrame,
     candidate_clv: pd.DataFrame,
@@ -578,6 +850,25 @@ def _paired_delta(
     return delta, len(merged)
 
 
+def _paired_loss_delta(
+    baseline_loss: pd.DataFrame,
+    candidate_loss: pd.DataFrame,
+) -> tuple[Any, int]:
+    """Merge baseline + candidate per-game LOSS on ``game_id``; return (delta, n_paired).
+
+    The delta is ``baseline - candidate``, the opposite subtraction order from
+    :func:`_paired_delta`, and that is the whole point: a loss goes DOWN when the model gets
+    better, so orienting the delta this way keeps a POSITIVE number meaning "the group
+    helped". The frozen rule reads the sign of ``delta_mean`` and nothing else, so its KEEP
+    and DROP arms are unchanged by the objective swap.
+    """
+    merged = baseline_loss.merge(
+        candidate_loss, on="game_id", how="inner", suffixes=("_base", "_cand")
+    )
+    delta = (merged["loss_base"] - merged["loss_cand"]).to_numpy()
+    return delta, len(merged)
+
+
 # ---------------------------------------------------------------------------
 # (3) Per-target screen + (4) the D-05 keep/drop rule
 # ---------------------------------------------------------------------------
@@ -587,23 +878,38 @@ def _screen_target(
     target: str,
     gold_df: pd.DataFrame,
     baseline_clv: pd.DataFrame,
-    closing_odds_df: pd.DataFrame,
+    closing_odds_df: pd.DataFrame | None,
     config: TemporalSplitConfig,
     group: str,
     exclude_groups: tuple[str, ...] | list[str] = GROUPS,
+    objective: str = OBJECTIVE_CLOSING_CLV,
 ) -> dict[str, Any]:
-    """Screen one (group, target): paired incremental CLV delta + the per-target keep/veto flags.
+    """Screen one (group, target): the paired incremental delta + the per-target keep/veto flags.
 
     ``exclude_groups`` MUST be the same set used for the baseline leg, otherwise the two legs
     differ by more than the one group under screen and the delta is not an add-one-in.
+
+    ``objective`` selects WHICH per-game series the two legs are paired on -- the closing-line
+    CLV or each model's own out-of-sample loss. EVERYTHING BELOW THE PAIRING IS SHARED: the
+    significance primitive, the selection-churn accounting, the small-sample refusal and the
+    per-target keep/veto flags are the same code on both paths, because a second
+    implementation of the screen would be a second answer.
     """
     candidate_df = select_group_columns(
         gold_df, group=group, exclude_groups=exclude_groups
     )
-    candidate_clv, selected = _walkforward_clv(
-        target, candidate_df, closing_odds_df, config
-    )
-    delta, n_paired = _paired_delta(baseline_clv, candidate_clv)
+    if objective == OBJECTIVE_OUTCOME_LOSS:
+        candidate_loss, selected = _walkforward_outcome_loss(
+            target, candidate_df, config
+        )
+        delta, n_paired = _paired_loss_delta(baseline_clv, candidate_loss)
+        metric = OUTCOME_LOSS_COLUMN_FOR[target]
+    else:
+        candidate_clv, selected = _walkforward_clv(
+            target, candidate_df, closing_odds_df, config
+        )
+        delta, n_paired = _paired_delta(baseline_clv, candidate_clv)
+        metric = CLV_COLUMN_FOR[target]
     sig = clv_significance(delta)
 
     # Did the group under screen actually REACH the model? A column can sit in the candidate
@@ -633,7 +939,14 @@ def _screen_target(
     paired_sufficient = bool(n_paired >= MIN_CLV_SAMPLE)
     return {
         "target": target,
-        "clv_column": CLV_COLUMN_FOR[target],
+        # The measured quantity, NAMED. Under the outcome objective this is the loss, not a
+        # CLV column: leaving "line_clv" here would render a CLV label onto a number no market
+        # line entered. ``clv_column`` keeps its name because the frozen renderer and the
+        # Phase-28/29/30 records read that key; ``metric`` and ``objective`` say plainly what
+        # it now holds.
+        "clv_column": metric,
+        "metric": metric,
+        "objective": objective,
         "n_paired": int(n_paired),
         "delta_mean": mean,
         "delta_t": sig["t"],
@@ -790,6 +1103,7 @@ def run_signal_lift_screen(
     targets: tuple[str, ...] | list[str] = TARGETS,
     groups: tuple[str, ...] | list[str] = GROUPS,
     baseline_exclude_groups: tuple[str, ...] | list[str] = GROUPS,
+    objective: str = OBJECTIVE_CLOSING_CLV,
 ) -> dict[str, Any]:
     """Run the add-one-in lift screen over all groups x targets into ONE structured dict.
 
@@ -813,22 +1127,70 @@ def run_signal_lift_screen(
             RETAINS the kept Phase-28 groups and the delta is line-movement incremental to the
             post-Phase-28 feature set (review 29-07 HIGH). It is threaded into BOTH legs, so the
             two legs differ by exactly the group under screen.
+        objective: ``"closing_clv"`` (the default, today's behaviour byte-for-byte) or
+            ``"outcome_loss"``. Under ``"outcome_loss"`` a non-None ``closing_odds_df`` is a
+            REFUSAL, the odds loader below is never reached, every trainer is called with
+            ``closing_odds_df=None``, gold is filtered to the derived 2025-excluding config's
+            seasons, and each leg is paired on that model's own out-of-sample loss. See the
+            module docstring for why the objective exists.
 
     Returns:
         Dict with ``measure_window``, ``alpha``, ``anchor`` (the LIFT_ANCHOR string),
+        ``objective`` and ``objective_anchor`` (which NAME the measured quantity),
         ``baseline_excludes`` (what the baseline leg dropped), ``multiplicity_note``, ``targets``,
         and ``groups`` -- the last a mapping group -> {``coverage_span``, ``per_target``
         (target -> screen result), ``decision`` (the keep/drop)}.
+
+    Raises:
+        ValueError: If ``objective`` is not one of :data:`SCREEN_OBJECTIVES`.
+        ClosingLineInScreenError: Under ``"outcome_loss"``, if a closing-odds frame is passed
+            or a closing-line column is present in gold or in a leg's per-game frame.
     """
-    config = config or TemporalSplitConfig.default()
+    if objective not in SCREEN_OBJECTIVES:
+        msg = (
+            f"unknown screen objective {objective!r}; must be one of "
+            f"{list(SCREEN_OBJECTIVES)}"
+        )
+        raise ValueError(msg)
+
     targets = list(targets)
     groups = list(groups)
     baseline_exclude_groups = list(baseline_exclude_groups)
+    outcome_loss = objective == OBJECTIVE_OUTCOME_LOSS
 
-    if closing_odds_df is None:
+    if outcome_loss and closing_odds_df is not None:
+        # Checked FIRST, before gold is touched and before the odds loader below could run:
+        # a refusal that arrived after twelve walk-forward re-fits is a refusal nobody can
+        # afford to trust.
+        msg = (
+            f"run_signal_lift_screen was handed a closing-odds frame under "
+            f"objective={OBJECTIVE_OUTCOME_LOSS!r}. The outcome objective measures each "
+            "model's own out-of-sample loss and no market line of any timing may enter it "
+            "(D33.2-03)."
+        )
+        raise ClosingLineInScreenError(msg)
+
+    if closing_odds_df is None and not outcome_loss:
         closing_odds_df = pd.read_parquet(_ODDS_PATH)
     if gold_by_target is None:
         gold_by_target = {t: pd.read_parquet(_GOLD_PATH_FOR[t]) for t in targets}
+
+    if outcome_loss:
+        # THE REFUSAL, applied to every gold frame BEFORE any leg runs.
+        for target in targets:
+            _refuse_closing_line(
+                gold_by_target[target], where=f"the {target} gold matrix"
+            )
+        # THE DERIVED CONFIG and the season filter. Both halves are needed: the config decides
+        # what is FITTED and SCORED, and the filter decides what a trainer can see at all.
+        config = config or screen_config_excluding_spent_hold(gold_by_target)
+        scored = _scored_seasons(config)
+        gold_by_target = {
+            target: frame[frame["season"].isin(scored)].copy()
+            for target, frame in gold_by_target.items()
+        }
+
+    config = config or TemporalSplitConfig.default()
 
     # Baseline per target: computed ONCE (minus baseline_exclude_groups) and reused per group.
     baseline_clv_by_target: dict[str, pd.DataFrame] = {}
@@ -836,12 +1198,18 @@ def run_signal_lift_screen(
         baseline_df = select_group_columns(
             gold_by_target[target], group=None, exclude_groups=baseline_exclude_groups
         )
-        baseline_clv_by_target[target], _ = _walkforward_clv(
-            target, baseline_df, closing_odds_df, config
-        )
+        if outcome_loss:
+            baseline_clv_by_target[target], _ = _walkforward_outcome_loss(
+                target, baseline_df, config
+            )
+        else:
+            baseline_clv_by_target[target], _ = _walkforward_clv(
+                target, baseline_df, closing_odds_df, config
+            )
         logger.info(
-            "Baseline walk-forward CLV computed",
+            "Baseline walk-forward leg computed",
             target=target,
+            objective=objective,
             n_games=len(baseline_clv_by_target[target]),
             baseline_excludes=list(baseline_exclude_groups),
             n_baseline_cols=len(baseline_df.columns),
@@ -859,6 +1227,7 @@ def run_signal_lift_screen(
                 config,
                 group,
                 exclude_groups=baseline_exclude_groups,
+                objective=objective,
             )
         decision = decide_group_keep(per_target)
         measurable_targets = [t for t, r in per_target.items() if r["measurable"]]
@@ -899,6 +1268,13 @@ def run_signal_lift_screen(
         "measure_window": measure_window,
         "alpha": SIGNIFICANCE_ALPHA,
         "anchor": LIFT_ANCHOR,
+        # The objective, NAMED in the result itself, and an anchor string naming the quantity
+        # it measured -- so a stored result can never be read as the other objective's number.
+        "objective": objective,
+        "objective_anchor": (
+            OUTCOME_LOSS_ANCHOR if outcome_loss else CLOSING_CLV_ANCHOR
+        ),
+        "measured_seasons": sorted(config.holdout_seasons),
         "baseline_excludes": list(baseline_exclude_groups),
         # WR-13: sized to the grid actually run, not hardcoded 3x3.
         "multiplicity_note": _multiplicity_note(len(groups_out), len(targets)),

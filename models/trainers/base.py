@@ -33,6 +33,46 @@ from models.tuning import OptunaTuner, TuningResult, count_completed_trials
 from utils import get_logger
 
 # ---------------------------------------------------------------------------
+# THE PER-GAME OUT-OF-SAMPLE RECORD (Plan 33.2-22, D33.2-15)
+# ---------------------------------------------------------------------------
+#
+# Every concrete trainer returns ``holdout_predictions`` from ``train_and_evaluate`` --
+# whether or not a closing-odds frame was passed. Before Plan 33.2-22 that per-game frame was
+# built only ``if closing_odds_df is not None``, so no caller could obtain a model's OWN
+# out-of-sample predictions without handing it a closing line. That made an outcome-based
+# feature-group screen impossible to compute without the very market line D33.2-03 removes
+# from every fit decision.
+#
+# The columns and the concatenation live HERE, on the shared base, because all three concrete
+# trainers emit the frame and a declaration in any one of them would be a declaration in the
+# wrong place -- three copies of a column list are three contracts wearing one name.
+HOLDOUT_PREDICTION_COLUMNS: tuple[str, ...] = (
+    "game_id",
+    "season",
+    "prediction",
+    "actual",
+)
+
+
+def concat_holdout_predictions(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Concatenate per-split holdout frames into ONE per-game out-of-sample record.
+
+    Returns an EMPTY frame carrying :data:`HOLDOUT_PREDICTION_COLUMNS` when a run produced no
+    split at all, so a consumer always receives the same shape and never has to tell ``None``
+    apart from "no holdout season had rows".
+
+    Args:
+        frames: One frame per walk-forward split, each already carrying the four columns.
+
+    Returns:
+        The concatenated frame, columns in :data:`HOLDOUT_PREDICTION_COLUMNS` order.
+    """
+    if not frames:
+        return pd.DataFrame(columns=list(HOLDOUT_PREDICTION_COLUMNS))
+    return pd.concat(frames, ignore_index=True)[list(HOLDOUT_PREDICTION_COLUMNS)]
+
+
+# ---------------------------------------------------------------------------
 # Optuna study identity + storage (Plan 30-01 T-30-02/T-30-14; Plan 30-16 T-30-63..68)
 # ---------------------------------------------------------------------------
 #

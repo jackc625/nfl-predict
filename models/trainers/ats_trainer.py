@@ -21,7 +21,7 @@ from xgboost import XGBRegressor
 
 from models.temporal import TemporalSplitConfig, WalkForwardSplitter
 from models.train_ats import ResidualDistributionConverter
-from models.trainers.base import BaseTrainer
+from models.trainers.base import BaseTrainer, concat_holdout_predictions
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -197,7 +197,10 @@ class ATSTrainer(BaseTrainer):
                 unchanged -- only the params source changes.
 
         Returns:
-            Dict with per-season metrics, feature names, best params, etc.
+            Dict with per-season metrics, feature names, best params, CLV results,
+            and ``holdout_predictions`` -- the per-game out-of-sample record
+            (``models.trainers.base.HOLDOUT_PREDICTION_COLUMNS``), returned whether
+            or not a closing-odds frame was passed.
         """
         target_col = self._get_target_column()
         splitter = WalkForwardSplitter(
@@ -252,6 +255,7 @@ class ATSTrainer(BaseTrainer):
         # Step 3: Walk-forward through holdout
         season_results = []
         all_predictions = []
+        all_holdout_dfs: list[pd.DataFrame] = []
 
         for split in splitter.generate_splits(features_df):
             X_train = split.train_data[self.feature_names]
@@ -269,18 +273,29 @@ class ATSTrainer(BaseTrainer):
             )
             season_results.append(season_metrics)
 
-            # Collect predictions for CLV
+            # THE PER-GAME OUT-OF-SAMPLE RECORD, BUILT ON EVERY SPLIT (Plan 33.2-22). It used
+            # to be built only `if closing_odds_df is not None`, so no caller could obtain
+            # this model's own out-of-sample predictions without handing it a closing line.
+            holdout_frame = pd.DataFrame(
+                {
+                    "game_id": split.test_data.index,
+                    "season": split.test_season,
+                    "prediction": predictions,
+                    "actual": y_test.values,
+                }
+            )
+            all_holdout_dfs.append(holdout_frame)
+
+            # Collect predictions for CLV, DERIVED from the same frame in exactly the columns
+            # and the order the CLV path has always received.
             if closing_odds_df is not None:
-                pred_df = pd.DataFrame(
-                    {
-                        "game_id": split.test_data.index,
-                        "model_prob": predictions,
-                        "model_spread": predictions,
-                        "actual": y_test.values,
-                        "season": split.test_season,
-                    }
+                pred_df = holdout_frame.rename(columns={"prediction": "model_prob"})
+                pred_df["model_spread"] = holdout_frame["prediction"].to_numpy()
+                all_predictions.append(
+                    pred_df[
+                        ["game_id", "model_prob", "model_spread", "actual", "season"]
+                    ]
                 )
-                all_predictions.append(pred_df)
 
             self.logger.info(
                 "Holdout season evaluated",
@@ -315,6 +330,7 @@ class ATSTrainer(BaseTrainer):
             "feature_names": self.feature_names,
             "best_params": best_params,
             "clv_results": clv_results,
+            "holdout_predictions": concat_holdout_predictions(all_holdout_dfs),
             "metadata": self.metadata,
         }
 
