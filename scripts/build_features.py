@@ -352,6 +352,104 @@ def scope_games_through_season(
     return scoped
 
 
+def scope_full_rebuild_to_elo_coverage(
+    games_df: pd.DataFrame,
+    snapshots: pd.DataFrame,
+) -> pd.DataFrame:
+    """*games_df* cut to the games an Elo snapshot can date -- the FULL rebuild only.
+
+    WHAT THIS RESOLVES, AND WHY IT IS NOT A RELAXATION (Plan 33.2-20).
+
+    Under the owned provenance contract a game in the Elo SOURCE frame with no
+    ``elo_game_snapshots`` row gets no provenance row, and the gate's two-way coverage
+    refuses it by name. That is correct and stays. But ``--all-seasons`` loads EVERY silver
+    game, and silver now carries the whole unplayed 2026 schedule: MEASURED 2026-09-22, 240
+    of the 272 2026 games are beyond the provisional week and have no snapshot, because
+    pre-game Elo for a game five months out does not exist. A full history rebuild would
+    refuse on all 240.
+
+    The two honest routes were: scope the build to games that CAN carry a snapshot, or have
+    the provisional-snapshot path cover them. The second is rejected on its merits --
+    generating a "provisional" pre-game rating for a week-18 game before week 3 is played
+    is a fabricated number wearing a real column's name, which is the defect this whole
+    phase removes. So the build is SCOPED, and the coverage rule is untouched: every game
+    that IS in the build still needs a snapshot and a provenance row, checked exactly as
+    before.
+
+    THE SCOPE IS BOUNDED SO IT CAN NEVER BECOME A SILENT HISTORY-DROPPER. A game is removed
+    only when it has NO snapshot AND is UNPLAYED (no result). A game WITH a result and no
+    snapshot is a real coverage defect -- the Elo chain skipped a game that has been played
+    -- and it RAISES here, naming the games, rather than being quietly dropped along with
+    the future ones. MEASURED on production silver: every one of the 6,499 games through
+    2025 has a snapshot, so the refusal arm is live and the drop arm reaches only the future.
+
+    FULL REBUILD ONLY. A scoped build (``--season`` / ``--week``) is untouched, exactly as
+    ``scope_games_through_season`` is: the live daily path builds a week whose provisional
+    snapshots were written moments earlier, and a missing one there must still refuse rather
+    than silently produce an empty build.
+
+    Args:
+        games_df: The base games frame.
+        snapshots: The ``elo_game_snapshots`` table (``game_id`` column).
+
+    Returns:
+        *games_df* without the unplayed, snapshot-less games. The SAME object when there
+        are none.
+
+    Raises:
+        ProvenanceCoverageError: a PLAYED game has no Elo snapshot.
+    """
+    if len(games_df) == 0:
+        return games_df
+
+    dated = {str(g) for g in snapshots["game_id"]} if len(snapshots) else set()
+    missing = ~games_df["game_id"].astype(str).isin(dated)
+    if not bool(missing.any()):
+        return games_df
+
+    played = pd.Series(False, index=games_df.index)
+    for column in ("home_score", "away_score"):
+        if column in games_df.columns:
+            played |= games_df[column].notna()
+
+    played_without_a_snapshot = games_df.loc[missing & played, "game_id"]
+    if len(played_without_a_snapshot) > 0:
+        names = sorted(str(g) for g in played_without_a_snapshot)
+        more = f" (+{len(names) - 10} more)" if len(names) > 10 else ""
+        msg = (
+            f"{len(names)} PLAYED game(s) have no elo_game_snapshots row: "
+            f"{names[:10]}{more}. A played "
+            "game with no pre-game Elo is a coverage defect in the Elo chain, not a game "
+            "in the future -- it is refused here rather than dropped with the unplayed "
+            "ones. Rebuild the Elo chain; the coverage rule is not relaxed."
+        )
+        raise ProvenanceCoverageError(
+            msg,
+            {
+                "source": "elo",
+                "violation_type": "played_game_without_a_snapshot",
+                "game_ids": names,
+            },
+        )
+
+    scoped = games_df.loc[~missing]
+    dropped = games_df.loc[missing]
+    logger.info(
+        "Scoped the full rebuild to the games an Elo snapshot can date: unplayed games "
+        "beyond the provisional week carry no pre-game Elo and are not built",
+        games_before=len(games_df),
+        games_after=len(scoped),
+        dropped=len(dropped),
+        dropped_by_season={
+            int(season): int(count)
+            for season, count in dropped.groupby("season").size().items()
+        }
+        if "season" in dropped.columns
+        else {},
+    )
+    return scoped
+
+
 # THE TWO WEATHER BUILDER IDENTITIES (Ruling K1, Plan 33.1-04).
 #
 # `features.weather` exposes two builders that do NOT emit the same weather
@@ -848,6 +946,14 @@ class FeatureMatrixBuilder:
                 target_season=target_season,
                 target_week=target_week,
             )
+            # PLAN 33.2-20: the FULL rebuild carries only the games an Elo snapshot can
+            # date. An unplayed game months out has no pre-game Elo and never will until
+            # it is played; a PLAYED game with no snapshot still refuses by name. A scoped
+            # build is untouched, so the live daily path's behaviour is unchanged.
+            if target_season is None and target_week is None:
+                games_df = scope_full_rebuild_to_elo_coverage(
+                    games_df, self.elo_calc._load_snapshots()
+                )
             feature_sources["games"] = games_df
             logger.info("Loaded games data", records=len(games_df))
 

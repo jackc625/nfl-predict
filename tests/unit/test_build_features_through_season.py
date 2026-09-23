@@ -171,6 +171,18 @@ def _recording_calculator(seen: list[set[int]]):
             seen.append(set(games_df["season"]))
             return pd.DataFrame()
 
+        def _load_snapshots(self):
+            """Plan 33.2-20: the full rebuild asks the Elo calculator which games it can
+            date, so the recording stub answers with a snapshot for EVERY sandbox game.
+
+            An empty answer here would scope this sandbox's unplayed games out and this
+            module would stop measuring what it is for -- the ``--through-season`` bound.
+            Saying "every game is dated" keeps the Elo scope inert for this fixture, which
+            is exactly the state ``tests/unit/test_full_rebuild_elo_scope.py`` measures
+            separately.
+            """
+            return pd.DataFrame({"game_id": _games()["game_id"]})
+
     return _Calculator()
 
 
