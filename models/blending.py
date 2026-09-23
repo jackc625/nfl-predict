@@ -32,10 +32,81 @@ from scipy.special import expit, logit
 
 from models.blending_data import TUNING_SEASONS
 from models.clv import compute_line_clv, compute_probability_clv
+from models.market_probability import (
+    MarketProbabilityArtifactError,
+    load_market_probability_artifact,
+    market_home_win_probability,
+)
 from utils import get_logger
 from utils.probability_utils import moneyline_to_probability
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Refusals
+# ---------------------------------------------------------------------------
+
+
+class MarketProbabilityUnavailable(Exception):
+    """The WP blend has no market opinion for a game, so it refuses to pretend it has one.
+
+    WHY THIS EXISTS. ``_blend_wp_predictions`` used to log a warning and RETURN when the
+    market columns were absent, leaving ``model_prob`` untouched. A silent no-blend is
+    indistinguishable from a blend with weight zero, so a blend that quietly stops blending
+    is a model change nobody can see -- in a system whose predictions are published.
+
+    WHY THIS BASE CLASS. It inherits ``Exception`` and NOT ``ValueError`` / ``KeyError`` /
+    ``RuntimeError`` / ``ImportError``, for the reason
+    ``data.sealed_probe_log.SealedProbeLogCorrupt`` records: several call sites in this
+    repository catch that tuple and degrade quietly, and this refusal degraded into "carry
+    on" would restore the exact silent fallback it replaced.
+
+    A caller that genuinely wants the model's own unblended probability asks for it by name
+    through :meth:`MarketBlender.unblended_wp_predictions`, so the intent is in the call
+    rather than in an absence.
+    """
+
+
+class MarketProbabilityBindingError(Exception):
+    """A blend's bound converter does not match the converter directory it names.
+
+    Raised when ``blend_weights.json`` names a ``market_probability_*`` artifact that is
+    absent, records a slope the directory disagrees with, or carries only half the binding.
+
+    Without the binding, nothing guarantees that the converter a blend was TUNED against is
+    the converter it is SERVED with: ``artifacts/latest.json`` names four artifacts under
+    SPEC R13 and the converter is deliberately not a fifth, while :meth:`from_artifacts`
+    resolves only the blend directory (reviews round ``f924749``, Codex HIGH).
+
+    Base class chosen for the same reason as :class:`MarketProbabilityUnavailable`.
+    """
+
+
+#: The market column the WP blend reads. It is a PRE-LOCK spread, not a closing one: under
+#: D33.2-03 no betting line of any timing is a MODEL input, and this is a BLEND input --
+#: the market's own opinion, applied after the model has predicted.
+_PRELOCK_SPREAD_COLUMN: str = "spread"
+
+
+def home_fav_margin_from_prelock_spread(spread: np.ndarray | pd.Series) -> np.ndarray:
+    """The stored pre-lock spread, on the converter's documented ``home_fav_margin`` scale.
+
+    WHICH STORE'S CONVENTION THIS EXPECTS, stated once so no call site has to guess: the
+    ``spread`` column of silver ``odds_snapshot`` and of the live ingest, which is on the
+    HOME-MARGIN scale -- POSITIVE when the home team is favoured. That was MEASURED, not
+    assumed (DEF-31-01): ``ml_home <= -300`` gives mean spread +10.18, ``ml_away <= -300``
+    gives -9.59, and corr(spread, realized home margin) = +0.44.
+
+    So the conversion is the identity, and this function exists anyway -- because the one
+    place in the tree that knows the convention should be a NAMED place. The owned
+    ``odds_timeline`` stores the OPPOSITE sign (D33.2-23, corr -0.9867) and is flipped once
+    at its own reader, ``models.market_probability.load_owned_prelock_lines``; a frame
+    arriving here has already been through that flip or was never on that scale to begin
+    with. Flipping again here would be the double flip the converter's plausibility band
+    exists to catch.
+    """
+    return np.asarray(spread, dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -301,9 +372,28 @@ class MarketBlender:
         self,
         config: BlendConfig | None = None,
         dynamic_weights: DynamicBlendWeights | None = None,
+        market_probability_artifact_id: str | None = None,
+        market_probability_slope_beta: float | None = None,
     ) -> None:
+        """Construct a blender, optionally with a converter BOUND to it.
+
+        Args:
+            config: Per-target weights, clipping and edge thresholds.
+            dynamic_weights: The week-varying schedule, when one is configured.
+            market_probability_artifact_id: The ``market_probability_*`` directory this
+                blend was tuned against. Carried for provenance and cross-checked at load.
+            market_probability_slope_beta: That converter's ``slope_beta``. The WP blend
+                converts with THIS number and nothing else -- no lookup of "the newest
+                converter directory", no module default, no fallback to a moneyline.
+        """
         self.config = config or BlendConfig()
         self._dynamic_weights = dynamic_weights
+        self.market_probability_artifact_id = market_probability_artifact_id
+        self.market_probability_slope_beta = (
+            None
+            if market_probability_slope_beta is None
+            else float(market_probability_slope_beta)
+        )
         self.logger = get_logger(__name__)
 
     def blend_wp(
@@ -498,44 +588,105 @@ class MarketBlender:
             )
         return merged
 
+    def unblended_wp_predictions(self, predictions_df: pd.DataFrame) -> pd.DataFrame:
+        """The model's OWN win probabilities, explicitly unblended.
+
+        This is the named path a caller takes when it deliberately wants the model half on
+        its own -- a diagnostic, a before/after comparison, an ablation. It exists so that
+        "no blending happened" is something a call site SAYS rather than something that
+        happens when a market opinion is quietly missing.
+
+        Returns:
+            A copy of *predictions_df*, values untouched.
+        """
+        return predictions_df.copy()
+
     def _blend_wp_predictions(
         self,
         result: pd.DataFrame,
         merged: pd.DataFrame,
     ) -> None:
-        """Blend WP predictions in-place using devigged moneylines."""
-        if "ml_home" not in merged.columns or "ml_away" not in merged.columns:
-            self.logger.warning("Missing ml_home/ml_away columns for WP blending")
-            return
+        """Blend WP predictions in-place using the BOUND converter and the pre-lock spread.
 
-        # Compute fair market probability from closing moneylines
-        # Using proportional devigging (same as CLV module)
-        valid_mask = merged["ml_home"].notna() & merged["ml_away"].notna()
+        What changed in Plan 33.2-21, and why (D33.2-09):
 
-        if not valid_mask.any():
-            self.logger.warning("No valid moneyline data for WP blending")
-            return
+        * the market opinion is ``market_home_win_probability(pre-lock spread, bound
+          slope)``, not a devigged two-sided CLOSING moneyline. A closing price did not
+          exist at the game's lock, and the owned line history carries no moneyline at all;
+        * an ABSENT market opinion RAISES :class:`MarketProbabilityUnavailable` instead of
+          returning the unblended model probability. There is no longer any path through
+          this method that leaves ``model_prob`` untouched;
+        * the conversion uses ``self.market_probability_slope_beta`` and NOTHING else --
+          no "newest converter directory" lookup, no module default. A blender with no
+          bound converter refuses, naming the missing binding.
 
-        home_raw = merged.loc[valid_mask, "ml_home"].apply(
-            lambda ml: moneyline_to_probability(int(ml))
+        Raises:
+            MarketProbabilityUnavailable: when no converter is bound, when the pre-lock
+                spread column is absent, or when any game lacks a pre-lock spread.
+        """
+        games = (
+            [str(game_id) for game_id in merged["game_id"]]
+            if "game_id" in merged.columns
+            else []
         )
-        away_raw = merged.loc[valid_mask, "ml_away"].apply(
-            lambda ml: moneyline_to_probability(int(ml))
-        )
-        fair_home = home_raw / (home_raw + away_raw)
 
-        # Blend model_prob with fair market probability
-        model_prob = result.loc[valid_mask, "model_prob"].values
-        market_prob = fair_home.values
+        if self.market_probability_slope_beta is None:
+            msg = (
+                "no market opinion: this blender has no bound converter, so "
+                "market_probability_slope_beta is None and there is nothing to convert "
+                f"the pre-lock spread with. Games affected: {games[:10]}. A blend "
+                "artifact binds a converter by writing market_probability_artifact_id "
+                "and market_probability_slope_beta into blend_weights.json (Plan "
+                "33.2-24); the live incumbent carries neither, and refusing here is the "
+                "point -- a silent no-blend is indistinguishable from a blend with "
+                "weight zero."
+            )
+            raise MarketProbabilityUnavailable(msg)
+
+        if _PRELOCK_SPREAD_COLUMN not in merged.columns:
+            msg = (
+                f"no market opinion: the market frame has no {_PRELOCK_SPREAD_COLUMN!r} "
+                f"column, so no pre-lock spread can be converted. Games affected: "
+                f"{games[:10]}. Since D33.2-09 the WP blend's market half comes from the "
+                "pre-lock SPREAD, never from a closing moneyline."
+            )
+            raise MarketProbabilityUnavailable(msg)
+
+        missing_mask = merged[_PRELOCK_SPREAD_COLUMN].isna()
+        if bool(missing_mask.any()):
+            offenders = sorted(
+                {
+                    str(game_id)
+                    for game_id in merged.loc[missing_mask, "game_id"]
+                    if "game_id" in merged.columns
+                }
+            )
+            msg = (
+                f"no market opinion for {int(missing_mask.sum())} game(s): they carry no "
+                f"pre-lock spread, e.g. {offenders[:10]}. Refusing the whole WP blend "
+                "rather than blending some games and silently leaving the rest "
+                "unblended, which would put two different models' outputs in one column."
+            )
+            raise MarketProbabilityUnavailable(msg)
+
+        market_prob = np.asarray(
+            market_home_win_probability(
+                home_fav_margin_from_prelock_spread(
+                    merged[_PRELOCK_SPREAD_COLUMN].to_numpy()
+                ),
+                self.market_probability_slope_beta,
+            ),
+            dtype=np.float64,
+        )
+        model_prob = np.asarray(result["model_prob"].to_numpy(), dtype=np.float64)
 
         if self._dynamic_weights is not None and "game_id" in merged.columns:
             merged = self._ensure_week_season_columns(merged)
-            valid_merged = merged.loc[valid_mask]
             blended = np.empty_like(model_prob, dtype=np.float64)
-            for (season_val, week_val), group_idx in valid_merged.groupby(
+            for (season_val, week_val), group_idx in merged.groupby(
                 ["season", "week"]
             ).groups.items():
-                local_idx = np.isin(valid_merged.index, group_idx)
+                local_idx = np.isin(merged.index, group_idx)
                 blended[local_idx] = self.blend_wp(
                     np.asarray(model_prob[local_idx], dtype=np.float64),
                     np.asarray(market_prob[local_idx], dtype=np.float64),
@@ -543,17 +694,16 @@ class MarketBlender:
                     season=int(season_val),
                 )
         else:
-            blended = self.blend_wp(
-                np.asarray(model_prob, dtype=np.float64),
-                np.asarray(market_prob, dtype=np.float64),
-            )
-        result.loc[valid_mask, "model_prob"] = blended
+            blended = self.blend_wp(model_prob, market_prob)
 
-        n_blended = valid_mask.sum()
+        result["model_prob"] = blended
+
         self.logger.info(
             "Blended WP predictions",
-            n_blended=int(n_blended),
+            n_blended=len(result),
             n_total=len(result),
+            market_probability_artifact_id=self.market_probability_artifact_id,
+            market_probability_slope_beta=self.market_probability_slope_beta,
         )
 
     def _blend_ats_predictions(
@@ -1306,4 +1456,73 @@ class MarketBlender:
         if dynamic_data is not None:
             dynamic_weights = DynamicBlendWeights.from_dict(dynamic_data)
 
-        return cls(config=config, dynamic_weights=dynamic_weights)
+        converter_id, converter_slope = cls._read_converter_binding(data, artifacts_dir)
+
+        return cls(
+            config=config,
+            dynamic_weights=dynamic_weights,
+            market_probability_artifact_id=converter_id,
+            market_probability_slope_beta=converter_slope,
+        )
+
+    @staticmethod
+    def _read_converter_binding(
+        data: dict,
+        artifacts_dir: Path,
+    ) -> tuple[str | None, float | None]:
+        """The converter this blend is BOUND to, cross-checked against its directory.
+
+        ``blend_weights.json`` is the blend's one payload file and the only file
+        :meth:`from_artifacts` opens, which makes it the one place a converter binding can
+        live without adding a fifth ``latest.json`` pointer (SPEC R13 fixes it at four).
+        Plan 33.2-24 writes the two keys read here.
+
+        An ABSENT binding loads unchanged and returns ``(None, None)``: the live incumbent
+        ``blend_dynamic_20260606_020635`` carries neither key, and nothing that loads
+        today's blend may break at load time. The refusal happens later, at the blend
+        itself, where a market opinion would have had to be invented.
+
+        Raises:
+            MarketProbabilityBindingError: when only half the binding is present, when the
+                named converter directory is absent, or when its ``slope_beta`` differs
+                from the recorded one.
+        """
+        recorded_id = data.get("market_probability_artifact_id")
+        recorded_slope = data.get("market_probability_slope_beta")
+
+        if recorded_id is None and recorded_slope is None:
+            return None, None
+
+        if recorded_id is None or recorded_slope is None:
+            msg = (
+                "half a converter binding in blend_weights.json: got "
+                f"market_probability_artifact_id={recorded_id!r} and "
+                f"market_probability_slope_beta={recorded_slope!r}. A binding is both "
+                "keys or neither -- an id with no slope cannot be served, and a slope "
+                "with no id cannot be audited."
+            )
+            raise MarketProbabilityBindingError(msg)
+
+        try:
+            payload = load_market_probability_artifact(str(recorded_id), artifacts_dir)
+        except MarketProbabilityArtifactError as exc:
+            msg = (
+                f"this blend is bound to converter {recorded_id!r}, which is not present "
+                f"under {artifacts_dir}. A converter artifact is immutable and an id "
+                "names one payload forever, so an absent directory means the binding "
+                "cannot be honoured -- not that a different converter should be used."
+            )
+            raise MarketProbabilityBindingError(msg) from exc
+
+        on_disk = float(payload["slope_beta"])
+        recorded = float(recorded_slope)
+        if on_disk != recorded:
+            msg = (
+                f"converter binding mismatch: the blend records slope_beta={recorded!r} "
+                f"for {recorded_id!r}, but that directory records {on_disk!r}. The blend "
+                "was tuned against one converter and would be served with another, which "
+                "is exactly what the binding exists to make impossible."
+            )
+            raise MarketProbabilityBindingError(msg)
+
+        return str(recorded_id), recorded
