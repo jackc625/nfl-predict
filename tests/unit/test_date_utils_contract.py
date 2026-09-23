@@ -90,24 +90,27 @@ class TestCurrentNflWeekAcrossEveryWeekday:
         assert now.strftime("%a") == "Tue"
         assert get_current_nfl_week(now) == (season, 2)
 
-    def test_preseason_guard_is_unchanged(self) -> None:
-        """Deliberately preserved. Anchoring two days earlier without this guard
-        would flip the pre-season Tuesday and Wednesday from the previous season's
-        week 18 to the new season's week 1 -- a behaviour change nobody asked for."""
+    def test_the_preseason_holds_until_the_openers_lock_day(self) -> None:
+        """The pre-season contract holds up to, and not including, the opener's LOCK DAY.
+
+        Was: ``test_preseason_guard_is_unchanged``, which also pinned Wednesday
+        2024-09-04 to (2023, 18). That Wednesday is the 2024 opener's lock day
+        (``2024_W01_BAL@KC`` kicks off Thursday 2024-09-05 and locks Wednesday 18:00 ET,
+        D33.2-01), so the old pin asserted the step-24b defect: a daily run at that lock
+        resolved the PREVIOUS season and omitted the opener. The slate is now read from the
+        schedule (step 24c); the days before the lock day keep the documented value.
+        """
         assert get_current_nfl_week(_et("2024-08-20")) == (
             2023,
             NFL_REGULAR_SEASON_WEEKS,
         )
-        # The Tuesday and Wednesday immediately before kickoff are the edge the
-        # guard exists to hold.
+        # The Tuesday before a Thursday opener is still the pre-season.
         assert get_current_nfl_week(_et("2024-09-03")) == (
             2023,
             NFL_REGULAR_SEASON_WEEKS,
         )
-        assert get_current_nfl_week(_et("2024-09-04")) == (
-            2023,
-            NFL_REGULAR_SEASON_WEEKS,
-        )
+        # The opener's lock day is week 1.
+        assert get_current_nfl_week(_et("2024-09-04")) == (2024, 1)
 
     def test_week_is_clamped_to_the_total_week_count(self) -> None:
         """Deep into February, the bucket arithmetic must not run past week 22."""
