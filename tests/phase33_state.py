@@ -18285,3 +18285,74 @@ P332_24_CONVERTER_ARTIFACT_ID: str = "market_probability_20260923_025709"
 
 #: The OpenMP thread count every fit in the run was pinned to.
 P332_24_THREAD_LIMIT: int = 1
+
+# ---------------------------------------------------------------------------
+# STEP 24b (a): THE MISFILED CHRISTMAS LINES, RE-KEYED IN THE OWNED TIMELINE.
+#
+# APPENDED by Plan 33.2-24's orchestrator-assigned step 24b on 2026-09-23, AFTER the one
+# declared write. The P332_24_* slot above is byte-unchanged: it records the corpus as it
+# stood when the blend was first fitted, with the two games still unjoinable.
+#
+# THE DEFECT. scripts/ingest_odds_timeline keyed each captured event by COUNTING weeks from
+# the season's opening Thursday, so the two Wednesday 2024 Christmas games were stored as
+# 2024_W16_KC@PIT / 2024_W16_BAL@HOU -- ids no scheduled game carries -- while silver games
+# has them in week 17. The ingest now keys every event to its scheduled game (commit
+# 9035c05); this slot records the repair of the rows the old key already wrote.
+#
+# THE WRITE. scripts/rekey_odds_timeline_misfiled.py --apply, declared in commit a578b4e
+# before it ran, inside the data/ digest bracket outputs/p332_24b_data_before.json, which
+# closed naming exactly ONE rewritten file: silver/odds_timeline.parquet. The gold
+# generation key read the same value before and after
+# (P332_20_CLEAN_BUILD_GOLD_GENERATION); gold does not read this table. Row count, pair
+# count and per-season counts are unchanged; only game_id moved, only on the 16 rows below.
+# ---------------------------------------------------------------------------
+
+#: ``(stored id, scheduled id)`` for every misfiled id, found by replaying the retired count
+#: forward over the schedule and inverting it -- an exact re-derivation, never a team match.
+P332_24B_ODDS_TIMELINE_REKEY_MAP: tuple[tuple[str, str], ...] = (
+    ("2024_W16_BAL@HOU", "2024_W17_BAL@HOU"),
+    ("2024_W16_KC@PIT", "2024_W17_KC@PIT"),
+)
+
+#: The rows whose game_id moved (eight captures per game).
+P332_24B_ODDS_TIMELINE_ROWS_REKEYED: int = 16
+
+#: The unjoined ids that name NO scheduled game and were left exactly as stored: the
+#: suspended, never-completed 2022_W17_BUF@CIN and three speculative 2024 wild-card
+#: pairings priced 1-3 January 2025, before week 18 settled the bracket.
+P332_24B_ODDS_TIMELINE_NO_GAME_IDS: tuple[str, ...] = (
+    "2022_W17_BUF@CIN",
+    "2024_W19_DET@LA",
+    "2024_W19_LAC@BAL",
+    "2024_W19_PIT@HOU",
+)
+
+#: The sorted (game_id, snapshot_ts) pair-list digest -- the SAME expression
+#: tests/phase30_state.ODDS_TIMELINE_PAIR_LIST_SHA256 was measured with -- before and after.
+#: BEFORE equals that Phase-30 record; AFTER is what the archive now digests to.
+P332_24B_ODDS_TIMELINE_PAIR_LIST_SHA256_BEFORE: str = (
+    "c4e313a788799b8bfbae5b85169c190101684b155b44e3ea28c9b2c4a0e82a2f"
+)
+P332_24B_ODDS_TIMELINE_PAIR_LIST_SHA256_AFTER: str = (
+    "fc45ef961f69bf7c84bbf27d5b2840c8257fab5aaccc710369da9705a408f627"
+)
+
+#: Row-content digests (pandas row hashes, stored order): the whole table before and after,
+#: and the 9,941 rows that were NOT re-keyed -- identical on both sides of the write.
+P332_24B_ODDS_TIMELINE_CONTENT_SHA256_BEFORE: str = (
+    "06e2f59b3c04eee89734e410401e39e3baf97838ea3372f866af6fe825ea7677"
+)
+P332_24B_ODDS_TIMELINE_CONTENT_SHA256_AFTER: str = (
+    "5b29cf995b9495761722234f14b4a8f07fefbb071c770240d16443d85c866844"
+)
+P332_24B_ODDS_TIMELINE_UNTOUCHED_ROWS_SHA256: str = (
+    "5e1387bdddb8c3b5faebf68c24c7686d63a07250b1c112611ca929b13e9192b1"
+)
+
+#: The file digests the data/ bracket reported for the one rewritten file.
+P332_24B_ODDS_TIMELINE_FILE_SHA256_BEFORE: str = (
+    "1709d009e785c2b00d215d382cb1b1e3a958cd80737873a00479f5578cad0f26"
+)
+P332_24B_ODDS_TIMELINE_FILE_SHA256_AFTER: str = (
+    "cab6efa1e955e2fbd3dbd9ee35e2a34d5e258caad0e08604001ed852267a53ca"
+)

@@ -44,6 +44,11 @@ from tests.phase30_state import (
     ODDS_TIMELINE_ROWS,
     ODDS_TIMELINE_SEASON_COUNTS,
 )
+from tests.phase33_state import (
+    P332_24B_ODDS_TIMELINE_PAIR_LIST_SHA256_AFTER,
+    P332_24B_ODDS_TIMELINE_PAIR_LIST_SHA256_BEFORE,
+    P332_24B_ODDS_TIMELINE_REKEY_MAP,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _ARCHIVE_PATH = REPO_ROOT / "data" / "silver" / "odds_timeline.parquet"
@@ -134,10 +139,35 @@ class TestPaidArchiveIntegrity:
     def test_the_pair_list_digest_is_the_committed_baseline(
         self, archive: pd.DataFrame
     ):
-        assert pair_list_sha256(archive) == ODDS_TIMELINE_PAIR_LIST_SHA256, (
+        """The archive digests to its recorded state, and differs from Phase 30 by ONE write.
+
+        Was: the live pair list had to equal ``ODDS_TIMELINE_PAIR_LIST_SHA256`` exactly.
+        Plan 33.2-24 step 24b re-keyed 16 rows of two mis-filed Christmas games (week 16 ->
+        week 17), a declared and bracketed write, so the live digest is now the step's
+        recorded AFTER value. The Phase-30 record is not edited: rewinding the recorded
+        re-key map must reproduce it EXACTLY, which proves the only change since Phase 30 is
+        that declared re-key -- a stronger statement than either digest alone.
+        """
+        assert (
+            P332_24B_ODDS_TIMELINE_PAIR_LIST_SHA256_BEFORE
+            == ODDS_TIMELINE_PAIR_LIST_SHA256
+        ), (
+            "the step-24b BEFORE record must be the Phase-30 baseline it claims to extend"
+        )
+        assert (
+            pair_list_sha256(archive) == P332_24B_ODDS_TIMELINE_PAIR_LIST_SHA256_AFTER
+        ), (
             "the archive's (game_id, snapshot_ts) pair list no longer digests to the "
-            "committed baseline. The counts can all match while the CONTENT has moved; "
+            "recorded state. The counts can all match while the CONTENT has moved; "
             "this is the assertion that catches that."
+        )
+        rewind = {
+            scheduled: stored for stored, scheduled in P332_24B_ODDS_TIMELINE_REKEY_MAP
+        }
+        rewound = archive.assign(game_id=archive["game_id"].replace(rewind))
+        assert pair_list_sha256(rewound) == ODDS_TIMELINE_PAIR_LIST_SHA256, (
+            "rewinding the recorded step-24b re-key does not reproduce the Phase-30 pair "
+            "list, so something other than that one declared write has moved the archive"
         )
 
     def test_no_closing_line_leaked_into_the_archive_schema(

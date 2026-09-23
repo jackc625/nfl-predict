@@ -139,3 +139,25 @@ def test_the_planned_state_guard_refuses_a_different_archive():
     report = repair.prepare_repair(_timeline(), GAMES)
     with pytest.raises(repair.MisfiledRekeyError):
         repair.assert_planned_state(report)
+
+
+@pytest.mark.skipif(
+    not (SILVER / "odds_timeline.parquet").exists(),
+    reason="production silver odds_timeline absent",
+)
+def test_the_production_archive_carries_no_misfiled_id():
+    """After step 24b's --apply: nothing misfiled, and the four no-game ids untouched."""
+    from tests.phase33_state import (
+        P332_24B_ODDS_TIMELINE_NO_GAME_IDS,
+        P332_24B_ODDS_TIMELINE_REKEY_MAP,
+    )
+
+    timeline, games = repair.load_inputs()
+    classification = repair.classify_unjoined_ids(timeline, games)
+
+    assert len(timeline) > 9000, "non-vacuity: the production archive was read"
+    assert classification.rekey_map == {}
+    assert classification.no_game_ids == P332_24B_ODDS_TIMELINE_NO_GAME_IDS
+    assert dict(P332_24B_ODDS_TIMELINE_REKEY_MAP) == repair.EXPECTED_REKEY_MAP
+    for _stored, scheduled in P332_24B_ODDS_TIMELINE_REKEY_MAP:
+        assert (timeline["game_id"] == scheduled).sum() == 8
