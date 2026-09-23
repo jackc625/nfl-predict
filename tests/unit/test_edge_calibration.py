@@ -23,11 +23,48 @@ import pytest
 
 from models.blending import (
     BlendConfig,
+    BlendProvenance,
     BlendWeights,
     EdgeThresholds,
     MarketBlender,
     TuningResult,
 )
+
+#: A converter the artifact tests bind to. Since Plan 33.2-24 a blend artifact must carry a
+#: converter binding (a blend that cannot convert a spread cannot serve WP), and
+#: ``from_artifacts`` cross-checks it against the named directory.
+_CONVERTER_ID = "market_probability_20990101_000000"
+_CONVERTER_SLOPE = 0.15
+
+
+def _write_converter(root: Path) -> None:
+    directory = root / _CONVERTER_ID
+    directory.mkdir(parents=True)
+    (directory / "metadata.json").write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "slope_beta": _CONVERTER_SLOPE,
+                "walk_forward_slopes": {"2021": 0.14},
+                "training_seasons": [2020, 2021],
+                "n_games": 10,
+                "input_digest": "0" * 64,
+                "fitted_at": "2099-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _provenance() -> BlendProvenance:
+    return BlendProvenance(
+        gold_generation_digest="a" * 64,
+        source_artifact_ids={"wp": "wp_x", "ats": "ats_x", "ou": "ou_x"},
+        tuning_corpus_rows=400,
+        excluded_counts={"no_prelock_line": 0, "no_prior_fold_converter": 0},
+        thread_limit=1,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers: Synthetic data for edge calibration
@@ -72,13 +109,15 @@ def _make_wp_predictions_with_edges(
             model_prob = float(np.clip(fair_prob + edge, 0.05, 0.95))
             actual = int(rng.random() < fair_prob)
 
-            pred_rows.append({
-                "game_id": game_id,
-                "season": season,
-                "week": week,
-                "model_prob": model_prob,
-                "actual": actual,
-            })
+            pred_rows.append(
+                {
+                    "game_id": game_id,
+                    "season": season,
+                    "week": week,
+                    "model_prob": model_prob,
+                    "actual": actual,
+                }
+            )
 
             # Convert fair_prob to moneylines for odds
             if fair_prob >= 0.5:
@@ -97,13 +136,15 @@ def _make_wp_predictions_with_edges(
             spread = rng.normal(-2, 5)
             total = rng.normal(45, 4)
 
-            odds_rows.append({
-                "game_id": game_id,
-                "ml_home": ml_home,
-                "ml_away": ml_away,
-                "spread": spread,
-                "total": total,
-            })
+            odds_rows.append(
+                {
+                    "game_id": game_id,
+                    "ml_home": ml_home,
+                    "ml_away": ml_away,
+                    "spread": spread,
+                    "total": total,
+                }
+            )
 
     return pd.DataFrame(pred_rows), pd.DataFrame(odds_rows)
 
@@ -136,25 +177,29 @@ def _make_ats_predictions_with_edges(
             model_spread = market_spread + edge
             actual_margin = market_spread + rng.normal(0, 14)
 
-            pred_rows.append({
-                "game_id": game_id,
-                "season": season,
-                "week": week,
-                "model_spread": model_spread,
-                "actual": actual_margin,
-            })
+            pred_rows.append(
+                {
+                    "game_id": game_id,
+                    "season": season,
+                    "week": week,
+                    "model_spread": model_spread,
+                    "actual": actual_margin,
+                }
+            )
 
             # Moneylines for the odds DataFrame (required for merge)
             ml_home = rng.choice([-150, -130, -120, -110, 100, 110, 130])
             ml_away = -ml_home if ml_home > 0 else abs(ml_home) - 20
 
-            odds_rows.append({
-                "game_id": game_id,
-                "ml_home": ml_home,
-                "ml_away": ml_away,
-                "spread": market_spread,
-                "total": rng.normal(45, 4),
-            })
+            odds_rows.append(
+                {
+                    "game_id": game_id,
+                    "ml_home": ml_home,
+                    "ml_away": ml_away,
+                    "spread": market_spread,
+                    "total": rng.normal(45, 4),
+                }
+            )
 
     return pd.DataFrame(pred_rows), pd.DataFrame(odds_rows)
 
@@ -293,20 +338,24 @@ class TestCheckWeeklyEdgeRate:
         for i in range(5):
             game_id = f"{season}_01_{i:04d}"
             # All 5 games have model_prob far from market (edge ~0.30)
-            preds_rows.append({
-                "game_id": game_id,
-                "season": season,
-                "week": 1,
-                "model_prob": 0.80,
-                "actual": 1,
-            })
-            odds_rows.append({
-                "game_id": game_id,
-                "ml_home": -110,
-                "ml_away": -110,
-                "spread": -1.0,
-                "total": 45.0,
-            })
+            preds_rows.append(
+                {
+                    "game_id": game_id,
+                    "season": season,
+                    "week": 1,
+                    "model_prob": 0.80,
+                    "actual": 1,
+                }
+            )
+            odds_rows.append(
+                {
+                    "game_id": game_id,
+                    "ml_home": -110,
+                    "ml_away": -110,
+                    "spread": -1.0,
+                    "total": 45.0,
+                }
+            )
 
         preds = pd.DataFrame(preds_rows)
         odds = pd.DataFrame(odds_rows)
@@ -349,20 +398,25 @@ class TestArtifactsWithEdgeThresholds:
 
     @pytest.fixture()
     def sample_tuning_result(self) -> TuningResult:
+        """The fixed-weight TuningResult shape (Plan 33.2-24): an outcome-loss record."""
         return TuningResult(
             weights=BlendWeights(
                 wp_model_weight=0.55,
                 ats_model_weight=0.62,
                 ou_model_weight=0.58,
             ),
-            per_target_clv={"wp": 0.012, "ats": 0.35, "ou": 0.28},
-            per_target_grid={
-                "wp": [(0.55, 0.012)],
-                "ats": [(0.62, 0.35)],
-                "ou": [(0.58, 0.28)],
+            objective_by_target={
+                "wp": "log_loss",
+                "ats": "mean_absolute_error",
+                "ou": "mean_absolute_error",
             },
-            tuning_seasons=list(range(2010, 2018)),
+            loss_by_target={"wp": 0.61, "ats": 10.1, "ou": 9.9},
+            market_only_loss_by_target={"wp": 0.62, "ats": 10.2, "ou": 10.0},
+            model_only_loss_by_target={"wp": 0.63, "ats": 10.3, "ou": 10.1},
+            grid_by_target={"wp": [], "ats": [], "ou": []},
+            seasons_by_target={"wp": [2021], "ats": [2020, 2021], "ou": [2020, 2021]},
             n_games={"wp": 400, "ats": 400, "ou": 400},
+            season_best_weight_by_target={"wp": {}, "ats": {}, "ou": {}},
         )
 
     def test_save_includes_edge_thresholds(
@@ -378,9 +432,14 @@ class TestArtifactsWithEdgeThresholds:
                 ou_threshold=1.50,
             ),
         )
-        blender = MarketBlender(config=config)
+        _write_converter(tmp_path)
+        blender = MarketBlender(
+            config=config,
+            market_probability_artifact_id=_CONVERTER_ID,
+            market_probability_slope_beta=_CONVERTER_SLOPE,
+        )
         artifact_dir = blender.save_blend_artifacts(
-            sample_tuning_result, artifacts_dir=tmp_path
+            sample_tuning_result, artifacts_dir=tmp_path, provenance=_provenance()
         )
 
         data = json.loads((artifact_dir / "blend_weights.json").read_text())
@@ -402,10 +461,21 @@ class TestArtifactsWithEdgeThresholds:
                 ou_threshold=1.50,
             ),
         )
-        blender = MarketBlender(config=config)
-        blender.save_blend_artifacts(sample_tuning_result, artifacts_dir=tmp_path)
+        _write_converter(tmp_path)
+        blender = MarketBlender(
+            config=config,
+            market_probability_artifact_id=_CONVERTER_ID,
+            market_probability_slope_beta=_CONVERTER_SLOPE,
+        )
+        # Plan 33.2-24: saving no longer moves latest.json by default, so the saved
+        # directory is named explicitly rather than resolved through the manifest.
+        artifact_dir = blender.save_blend_artifacts(
+            sample_tuning_result, artifacts_dir=tmp_path, provenance=_provenance()
+        )
 
-        loaded = MarketBlender.from_artifacts(artifacts_dir=tmp_path)
+        loaded = MarketBlender.from_artifacts(
+            artifacts_dir=tmp_path, version=artifact_dir.name
+        )
         assert loaded.config.edge_thresholds.wp_threshold == pytest.approx(0.04)
         assert loaded.config.edge_thresholds.ats_threshold == pytest.approx(1.75)
         assert loaded.config.edge_thresholds.ou_threshold == pytest.approx(1.50)

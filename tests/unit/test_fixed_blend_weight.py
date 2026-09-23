@@ -36,6 +36,7 @@ import ast
 import hashlib
 import inspect
 import json
+import os
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -218,13 +219,15 @@ def _artifacts_tree(root: Path) -> None:
     _incumbents(root)
 
 
-def _run(tmp_path: Path, **overrides: Any):
+def _run(tmp_path: Path, *, build: bool = True, **overrides: Any):
+    """Run the real fit over the fixture tree. ``build=False`` reuses a tree a test edited."""
     from backtest.tune import run_blend_tuning
 
     artifacts = tmp_path / "artifacts"
     silver = tmp_path / "silver"
-    _artifacts_tree(artifacts)
-    _silver(silver)
+    if build:
+        _artifacts_tree(artifacts)
+        _silver(silver)
     kwargs: dict[str, Any] = {
         "artifacts_dir": artifacts,
         "silver_dir": silver,
@@ -721,11 +724,12 @@ class TestABoundaryWeightIsAFinding:
 # The end-to-end fit: the READ SET, the corpus, the written artifact
 # ---------------------------------------------------------------------------
 
-_RECORDER: list[tuple[str, str]] | None = None
+_RECORDER: list[tuple[str, bool]] | None = None
 _HOOK_INSTALLED = False
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
 
 
-def _record_into(sink: list[tuple[str, str]] | None) -> None:
+def _record_into(sink: list[tuple[str, bool]] | None) -> None:
     """Arm (or disarm) the open-event recorder; audit hooks cannot be uninstalled."""
     global _RECORDER, _HOOK_INSTALLED
     if not _HOOK_INSTALLED:
@@ -735,18 +739,29 @@ def _record_into(sink: list[tuple[str, str]] | None) -> None:
 
 
 def _audit(event: str, args: tuple) -> None:
+    """Record every ``open`` as (path, is_write).
+
+    ``builtins.open`` reports a mode string; ``os.open`` (which ``tempfile`` uses) reports
+    ``None`` for the mode and puts the intent in the flags. Both are classified, so a file the
+    fit WRITES is never mistaken for one it READ.
+    """
     if _RECORDER is None or event != "open":
         return
-    target, mode = args[0], args[1]
-    if isinstance(target, (str, Path)):
-        _RECORDER.append((str(target), str(mode)))
+    target, mode, flags = args[0], args[1], args[2]
+    if not isinstance(target, (str, Path)):
+        return
+    if isinstance(mode, str):
+        is_write = any(ch in mode for ch in "wax+")
+    else:
+        is_write = bool(int(flags or 0) & _WRITE_FLAGS)
+    _RECORDER.append((str(target), is_write))
 
 
 class TestTheEndToEndFit:
     def test_the_fit_reads_the_three_sources_and_the_converter_and_nothing_else(
         self, tmp_path: Path
     ) -> None:
-        opened: list[tuple[str, str]] = []
+        opened: list[tuple[str, bool]] = []
         _record_into(opened)
         try:
             run = _run(tmp_path)
@@ -755,8 +770,8 @@ class TestTheEndToEndFit:
 
         artifacts = (tmp_path / "artifacts").resolve()
         read_dirs = set()
-        for path, mode in opened:
-            if "w" in mode or "a" in mode or "+" in mode or "x" in mode:
+        for path, is_write in opened:
+            if is_write:
                 continue
             resolved = Path(path).resolve()
             if resolved.is_relative_to(artifacts):
@@ -824,8 +839,9 @@ class TestTheEndToEndFit:
                 "gold_generation_digest": "d" * 64,
             },
         )
+        _silver(tmp_path / "silver")
         with pytest.raises(BlendSourceError, match="gold"):
-            _run(tmp_path)
+            _run(tmp_path, build=False)
 
     def test_a_recipe_that_is_not_the_trainer_default_refuses(self) -> None:
         """The walk-forward refits the recipe with tune=False, i.e. the trainer defaults."""

@@ -1,12 +1,21 @@
 """The blend re-validation left production alone (Phase 30, Plan 30-12, T-30-07 / T-30-14).
 
-THE HAZARD, WHICH IS NOT HYPOTHETICAL
---------------------------------------
-``backtest.tune.run_comparison`` is a DIAGNOSTIC that rewrites the production swap surface by
-default. Its final step calls ``MarketBlender.save_blend_artifacts``, whose own docstring says it
-"Updates artifacts/latest.json with 'blend' key" and whose implementation reads, mutates and
-atomically rewrites that manifest. Its ``baselines_dir`` parameter defaults to
-``data/baselines/v2.0``, so its comparison report and gating JSON land under the data tree.
+THE HAZARD, WHICH WAS NOT HYPOTHETICAL
+---------------------------------------
+``backtest.tune.run_comparison`` was a DIAGNOSTIC that rewrote the production swap surface by
+default. Its final step called ``MarketBlender.save_blend_artifacts``, which at the time read,
+mutated and atomically rewrote ``artifacts/latest.json`` UNCONDITIONALLY. Its ``baselines_dir``
+parameter defaulted to ``data/baselines/v2.0``, so its comparison report and gating JSON landed
+under the data tree.
+
+WHAT CHANGED IN PLAN 33.2-24 (D33.2-10). ``run_comparison`` -- the fixed-versus-DYNAMIC
+comparator this module's live tests describe -- is DELETED with the week-varying blend, and
+``save_blend_artifacts`` gained ``update_latest: bool = False`` (mirroring
+``save_model_artifact``'s D24-08 flag): the manifest is rewritten only when a caller says so.
+The narrative below is kept because the three LIVE tests still witness what the real Plan 30-12
+run did, against Phase-30 anchors this plan does not touch. The hermetic pair now runs over a
+FIXED-WEIGHT, converter-bound blender, the negative control passes ``update_latest=True``
+explicitly, and a new case asserts the DEFAULT does not rewrite.
 
 Run as documented it would therefore break TWO Phase-30 constraints at once:
 
@@ -31,10 +40,13 @@ So the redirection is proven from BOTH sides:
     key DID move and a new blend artifact dir appeared IN THE COPY, while the original is
     byte-identical. The rewrite is real AND contained.
   * ``test_blend_save_pointed_at_the_original_rewrites_it`` -- the NEGATIVE control. The same call
-    aimed at the original moves the original. Without this, the first test could pass because
-    ``save_blend_artifacts`` had quietly stopped writing manifests at all.
+    aimed at the original, with ``update_latest=True``, moves the original. Without this, the
+    first test could pass because ``save_blend_artifacts`` had quietly stopped writing manifests
+    at all.
+  * ``test_blend_save_by_default_leaves_the_manifest_alone`` -- the Plan 33.2-24 default: a save
+    that does not ask to move the manifest leaves it byte-identical.
 
-Those two are fully hermetic (``tmp_path`` fixtures, no repo state) so they never skip and they
+Those three are fully hermetic (``tmp_path`` fixtures, no repo state) so they never skip and they
 survive a fresh checkout. Three further tests assert the LIVE outcome of the real Plan 30-12 run
 against the git-tracked anchors in ``tests/phase30_state.py``; ``artifacts/``, ``artifacts_staging/``,
 ``outputs/`` and ``data/`` are all gitignored, so those anchors are the only durable record.
@@ -62,11 +74,10 @@ import pytest
 
 from models.blending import (
     BlendConfig,
+    BlendProvenance,
     BlendWeights,
-    DynamicBlendWeights,
     EdgeThresholds,
     MarketBlender,
-    SigmoidParams,
     TuningResult,
 )
 from tests.phase30_state import (
@@ -121,36 +132,45 @@ def _tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+_CONVERTER_ID = "market_probability_20990101_000000"
+_CONVERTER_SLOPE = 0.15
+_SEEDED_BLEND = "blend_20990101_000000"
+
+
 def _seed_artifacts_tree(root: Path, blend_version: str) -> Path:
-    """Create a minimal artifacts tree with one blend artifact and a latest.json pointing at it.
+    """Create a minimal artifacts tree: one fixed-weight blend, its converter, a latest.json.
 
     Mirrors the real artifact shape closely enough for ``MarketBlender.from_artifacts``: a
-    ``blend_weights.json`` carrying static weights, edge thresholds and a ``dynamic`` section.
+    ``blend_weights.json`` carrying fixed weights and the converter binding, beside the
+    ``market_probability_*`` directory that binding names.
     """
     root.mkdir(parents=True, exist_ok=True)
+    converter_dir = root / _CONVERTER_ID
+    converter_dir.mkdir(parents=True, exist_ok=True)
+    (converter_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "slope_beta": _CONVERTER_SLOPE,
+                "walk_forward_slopes": {"2021": 0.14},
+                "training_seasons": [2020, 2021],
+                "n_games": 10,
+                "input_digest": "0" * 64,
+                "fitted_at": "2099-01-01T00:00:00+00:00",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     blend_dir = root / blend_version
     blend_dir.mkdir(parents=True, exist_ok=True)
     (blend_dir / "blend_weights.json").write_text(
         json.dumps(
             {
-                "blender_version": "2.0",
+                "blender_version": "3.0",
                 "weights": {"wp": 0.59, "ats": 0.55, "ou": 0.60},
-                "edge_thresholds": {"wp": 0.01, "ats": 0.5, "ou": 0.5},
-                "per_target_clv": {"wp": 0.0, "ats": 0.0, "ou": 1.0},
-                "tuning_seasons": [],
-                "n_games": {"wp": 10, "ats": 10, "ou": 10},
-                "dynamic": {
-                    "wp": {"midpoint": 0.21, "steepness": 1.31},
-                    "ats": {"midpoint": 0.82, "steepness": 0.10},
-                    "ou": {"midpoint": 0.18, "steepness": 1.02},
-                    "low": 0.30,
-                    "high": 0.80,
-                    "mode_by_target": {
-                        "wp": "dynamic",
-                        "ats": "dynamic",
-                        "ou": "dynamic",
-                    },
-                },
+                "market_probability_artifact_id": _CONVERTER_ID,
+                "market_probability_slope_beta": _CONVERTER_SLOPE,
             },
             indent=2,
         ),
@@ -172,20 +192,38 @@ def _seed_artifacts_tree(root: Path, blend_version: str) -> Path:
 
 
 def _tuning_result() -> TuningResult:
-    """Build the TuningResult shape ``run_comparison`` hands to ``save_blend_artifacts``."""
+    """The TuningResult shape the one fixed-weight fit hands to ``save_blend_artifacts``."""
     return TuningResult(
         weights=BlendWeights(
             wp_model_weight=0.59, ats_model_weight=0.55, ou_model_weight=0.60
         ),
-        per_target_clv={"wp": 0.0, "ats": 0.0, "ou": 1.0},
-        per_target_grid={},
-        tuning_seasons=[],
+        objective_by_target={
+            "wp": "log_loss",
+            "ats": "mean_absolute_error",
+            "ou": "mean_absolute_error",
+        },
+        loss_by_target={"wp": 0.6, "ats": 10.0, "ou": 10.0},
+        market_only_loss_by_target={"wp": 0.61, "ats": 10.1, "ou": 10.1},
+        model_only_loss_by_target={"wp": 0.62, "ats": 10.2, "ou": 10.2},
+        grid_by_target={},
+        seasons_by_target={"wp": [2021], "ats": [2020, 2021], "ou": [2020, 2021]},
         n_games={"wp": 10, "ats": 10, "ou": 10},
+        season_best_weight_by_target={},
+    )
+
+
+def _provenance() -> BlendProvenance:
+    return BlendProvenance(
+        gold_generation_digest="a" * 64,
+        source_artifact_ids={"wp": "wp_stub", "ats": "ats_stub", "ou": "ou_stub"},
+        tuning_corpus_rows=10,
+        excluded_counts={"no_prelock_line": 0, "no_prior_fold_converter": 0},
+        thread_limit=1,
     )
 
 
 def _blender() -> MarketBlender:
-    """A dynamic-mode blender, so ``save_blend_artifacts`` takes the ``blend_dynamic_*`` path."""
+    """A fixed-weight blender with a converter bound -- the only shape a blend now has."""
     return MarketBlender(
         config=BlendConfig(
             weights=BlendWeights(
@@ -193,11 +231,8 @@ def _blender() -> MarketBlender:
             ),
             edge_thresholds=EdgeThresholds(),
         ),
-        dynamic_weights=DynamicBlendWeights(
-            wp=SigmoidParams(midpoint=0.21, steepness=1.31),
-            ats=SigmoidParams(midpoint=0.82, steepness=0.10),
-            ou=SigmoidParams(midpoint=0.18, steepness=1.02),
-        ),
+        market_probability_artifact_id=_CONVERTER_ID,
+        market_probability_slope_beta=_CONVERTER_SLOPE,
     )
 
 
@@ -221,7 +256,7 @@ def test_blend_save_pointed_at_a_copy_leaves_the_original_untouched(
       * the ORIGINAL manifest is byte-identical by sha256 and gained no new blend directory.
     """
     original = tmp_path / "artifacts"
-    _seed_artifacts_tree(original, "blend_dynamic_20260101_000000")
+    _seed_artifacts_tree(original, _SEEDED_BLEND)
     original_sha = _sha256(original / "latest.json")
     original_dirs = sorted(p.name for p in original.iterdir() if p.is_dir())
 
@@ -232,8 +267,12 @@ def test_blend_save_pointed_at_a_copy_leaves_the_original_untouched(
         "pre-condition: the copy must start byte-identical to the original"
     )
 
-    # The call run_comparison makes at its final step, aimed at the COPY.
-    artifact_dir = _blender().save_blend_artifacts(_tuning_result(), copy)
+    # A manifest-moving save, aimed at the COPY. It asks to move the manifest explicitly --
+    # since Plan 33.2-24 the default does not -- so the containment below is proven against a
+    # rewrite that genuinely happens.
+    artifact_dir = _blender().save_blend_artifacts(
+        _tuning_result(), copy, provenance=_provenance(), update_latest=True
+    )
 
     # The rewrite is REAL and it landed in the copy.
     copy_manifest = json.loads((copy / "latest.json").read_text())
@@ -241,7 +280,7 @@ def test_blend_save_pointed_at_a_copy_leaves_the_original_untouched(
         "the copy's manifest blend key was not repointed at the newly saved artifact -- the "
         "rewrite did not happen, so the isolation assertion below would be vacuous"
     )
-    assert copy_manifest["blend"] != "blend_dynamic_20260101_000000", (
+    assert copy_manifest["blend"] != _SEEDED_BLEND, (
         "the copy's manifest blend key did not move"
     )
     assert artifact_dir.parent == copy, (
@@ -273,12 +312,18 @@ def test_blend_save_pointed_at_the_original_rewrites_it(tmp_path: Path) -> None:
     -- the isolation assertion would still pass while proving nothing. Here the same call is aimed
     at the tree directly and MUST move it, which is precisely the production swap the real run had
     to be redirected away from.
+
+    Plan 33.2-24: the rewrite is now OPT-IN, so this control passes ``update_latest=True``
+    explicitly. Before, it asserted the rewrite happened BY DEFAULT -- which is exactly the
+    behaviour that plan removed; the next test asserts the new default.
     """
     target = tmp_path / "artifacts"
-    _seed_artifacts_tree(target, "blend_dynamic_20260101_000000")
+    _seed_artifacts_tree(target, _SEEDED_BLEND)
     before_sha = _sha256(target / "latest.json")
 
-    artifact_dir = _blender().save_blend_artifacts(_tuning_result(), target)
+    artifact_dir = _blender().save_blend_artifacts(
+        _tuning_result(), target, provenance=_provenance(), update_latest=True
+    )
 
     manifest = json.loads((target / "latest.json").read_text())
     assert manifest["blend"] == artifact_dir.name
@@ -287,6 +332,30 @@ def test_blend_save_pointed_at_the_original_rewrites_it(tmp_path: Path) -> None:
         "the isolation test above is therefore not proving containment of anything"
     )
     assert artifact_dir.parent == target
+
+
+@pytest.mark.integration
+def test_blend_save_by_default_leaves_the_manifest_alone(tmp_path: Path) -> None:
+    """Plan 33.2-24: a save that does not ASK to move the manifest leaves it byte-identical.
+
+    The new blend directory is still written -- the save is real -- but the production swap
+    surface does not move. That is what lets the one fixed-weight fit write a CANDIDATE without
+    deploying it; the swap is Plan 33.2-25's.
+    """
+    target = tmp_path / "artifacts"
+    _seed_artifacts_tree(target, _SEEDED_BLEND)
+    before_sha = _sha256(target / "latest.json")
+
+    artifact_dir = _blender().save_blend_artifacts(
+        _tuning_result(), target, provenance=_provenance()
+    )
+
+    assert artifact_dir.is_dir() and artifact_dir.parent == target
+    assert _sha256(target / "latest.json") == before_sha, (
+        "save_blend_artifacts rewrote latest.json without update_latest=True"
+    )
+    loaded = MarketBlender.from_artifacts(target, version=artifact_dir.name)
+    assert loaded.config.weights == _blender().config.weights
 
 
 # ---------------------------------------------------------------------------

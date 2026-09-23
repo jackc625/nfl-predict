@@ -3,7 +3,8 @@
 Provides:
 - BlendWeights: Per-target model weight configuration (WP, ATS, O/U)
 - BlendConfig: Full blending configuration with probability clipping
-- TuningResult: Output of grid-search weight tuning
+- TuningResult: Output of the fixed-weight tuning grid search
+- BlendProvenance: What a blend artifact was fitted on, recorded inside its payload
 - MarketBlender: Core blending logic with three strategies:
     - WP: Log-odds space blending via logit/expit (D-01)
     - ATS: Linear interpolation in spread-point space
@@ -17,22 +18,44 @@ gives in this symmetric case, but deviates in asymmetric cases).
 
 For ATS and O/U, linear interpolation is appropriate because spreads
 and totals live in a linear point space.
+
+ONE FIXED WEIGHT PER TARGET. THE WEEK-VARYING BLEND IS RETIRED (D33.2-10, Plan 33.2-24)
+---------------------------------------------------------------------------------------
+Until Plan 33.2-24 a blender could carry a week-varying "dynamic" schedule: a per-target
+sigmoid in the week of the season (six tuned parameters), auto-detected from a ``dynamic``
+section of ``blend_weights.json`` and applied through a ``_dynamic_weights`` attribute on
+every blend and edge path. That schedule was fitted on SYNTHETIC predictions over 2010-2017
+nflverse CLOSING lines and gated on a closing-line CLV comparison. Both inputs are dead: a
+closing line did not exist at a game's lock (D33.2-03), and results built on the old inputs
+are not evidence (D33.2-07, the standing ruling that old baselines are dead).
+
+So the schedule is REMOVED, not disabled. There is no constructor parameter for it, no
+attribute, no branch, no CLI flag, and ``from_artifacts`` REFUSES a payload that still carries
+a ``dynamic`` section (:class:`RetiredDynamicBlendError`) rather than silently reading it as
+static. A week-varying shape may return later ONLY with evidence measured under the new rule
+-- which is why nothing here leaves a hook for it: a dormant branch is an invitation to
+restore it without the evidence.
+
+The one weight per target is fitted on the owned PRE-LOCK lines (``models.blending_data``)
+against each model's own out-of-sample outcome loss -- WP log loss, ATS and O/U absolute
+error -- never on a closing-line objective (:meth:`MarketBlender.tune_weights`).
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from scipy.special import expit, logit
 
-from models.blending_data import TUNING_SEASONS
-from models.clv import compute_line_clv, compute_probability_clv
 from models.market_probability import (
+    OWNED_LINE_SEASONS,
     MarketProbabilityArtifactError,
     load_market_probability_artifact,
     market_home_win_probability,
@@ -72,7 +95,9 @@ class MarketProbabilityBindingError(Exception):
     """A blend's bound converter does not match the converter directory it names.
 
     Raised when ``blend_weights.json`` names a ``market_probability_*`` artifact that is
-    absent, records a slope the directory disagrees with, or carries only half the binding.
+    absent, records a slope the directory disagrees with, or carries only half the binding
+    -- and, at write time, when a blender with no converter bound is asked to save an
+    artifact that could therefore never serve WP.
 
     Without the binding, nothing guarantees that the converter a blend was TUNED against is
     the converter it is SERVED with: ``artifacts/latest.json`` names four artifacts under
@@ -81,6 +106,33 @@ class MarketProbabilityBindingError(Exception):
 
     Base class chosen for the same reason as :class:`MarketProbabilityUnavailable`.
     """
+
+
+class RetiredDynamicBlendError(ValueError):
+    """A blend payload still carries the retired week-varying ``dynamic`` section.
+
+    Raised by :meth:`MarketBlender.from_artifacts` naming the artifact. Reading such a payload
+    as static would publish a number that neither the retired rule nor the new one chose.
+
+    WHY A ``ValueError`` AND NOT A ``KeyError`` OR ``FileNotFoundError``. Both serving paths
+    catch exactly ``(KeyError, FileNotFoundError)`` around the blend load and fall back
+    SILENTLY -- ``scripts/generate_current_week_predictions.apply_blending`` to unblended
+    predictions, ``api/cache._load_predictions`` to NULL blended columns. A refusal raised as
+    either type would be swallowed into the silent no-blend a refusal exists to prevent. A
+    ``ValueError`` escapes both, so the window between this plan and the production swap
+    (Plan 33.2-25), while the live blend is still the dynamic incumbent, fails LOUDLY.
+    """
+
+
+class BlendTuningError(Exception):
+    """The blend weights cannot be tuned honestly on the frames given, so they are not tuned.
+
+    Inherits ``Exception`` for the same reason as :class:`MarketProbabilityUnavailable`.
+    """
+
+
+class IncompleteBlendProvenanceError(Exception):
+    """A blend payload carries some provenance keys but not all of them."""
 
 
 #: The market column the WP blend reads. It is a PRE-LOCK spread, not a closing one: under
@@ -100,13 +152,61 @@ def home_fav_margin_from_prelock_spread(spread: np.ndarray | pd.Series) -> np.nd
 
     So the conversion is the identity, and this function exists anyway -- because the one
     place in the tree that knows the convention should be a NAMED place. The owned
-    ``odds_timeline`` stores the OPPOSITE sign (D33.2-23, corr -0.9867) and is flipped once
-    at its own reader, ``models.market_probability.load_owned_prelock_lines``; a frame
-    arriving here has already been through that flip or was never on that scale to begin
-    with. Flipping again here would be the double flip the converter's plausibility band
-    exists to catch.
+    ``odds_timeline`` stores the OPPOSITE sign (D33.2-23, corr -0.9867) and is flipped once,
+    by ``models.market_probability.timeline_spread_to_home_fav_margin``, at its two readers;
+    a frame arriving here has already been through that flip or was never on that scale to
+    begin with. Flipping again here would be the double flip the converter's plausibility
+    band exists to catch.
     """
     return np.asarray(spread, dtype=float)
+
+
+# ---------------------------------------------------------------------------
+# The fixed-weight shape, decided in one place
+# ---------------------------------------------------------------------------
+
+#: Every blend artifact directory is ``{BLEND_ARTIFACT_PREFIX}_{timestamp}``. ONE shape, ONE
+#: prefix, ONE place it is decided: the retired week-varying blend wrote a second prefix
+#: (``blend_dynamic_*``) from a branch on its attribute, and that branch is gone with it.
+BLEND_ARTIFACT_PREFIX: str = "blend"
+
+#: The blend's one payload file, and the only file :meth:`MarketBlender.from_artifacts` opens.
+BLEND_PAYLOAD_FILENAME: str = "blend_weights.json"
+
+#: The payload schema version. "1.0" was the original static blend and "2.0" the retired
+#: week-varying one; "3.0" is one fixed weight per target tuned on owned pre-lock lines, with
+#: its provenance and converter binding inside the payload.
+BLENDER_VERSION: str = "3.0"
+
+#: The weights the grid search considers: 0.00 to 1.00 in steps of 0.01. BOTH ENDS ARE IN
+#: THE GRID ON PURPOSE: a fitted weight of exactly 0 ("the model adds nothing over the
+#: market") or exactly 1 ("the market adds nothing over the model") is a FINDING, reported
+#: rather than excluded by a narrower range. The retired tuner searched [0.50, 0.70] only.
+BLEND_WEIGHT_GRID: np.ndarray = np.round(np.arange(0, 101) / 100.0, 2)
+
+#: Each target's tuning columns: (model prediction, market opinion, realized outcome). The
+#: outcome columns are the trainers' own target columns, so the objective below is each
+#: model's own primary metric measured on the blend of its prediction with the market's.
+BLEND_TUNING_COLUMNS: dict[str, tuple[str, str, str]] = {
+    "wp": ("model_prob", "market_prob_oof", "home_win"),
+    "ats": ("model_spread", "market_spread", "home_margin"),
+    "ou": ("model_total", "market_total", "total_points"),
+}
+
+#: The loss each target's weight minimises -- the same metric its trainer is scored on.
+#: None of them reads a closing line: the market side is the pre-lock opinion and the
+#: yardstick is the game's real outcome.
+BLEND_OBJECTIVE_BY_TARGET: dict[str, str] = {
+    "wp": "log_loss",
+    "ats": "mean_absolute_error",
+    "ou": "mean_absolute_error",
+}
+
+_WEIGHT_ATTR_BY_TARGET: dict[str, str] = {
+    "wp": "wp_model_weight",
+    "ats": "ats_model_weight",
+    "ou": "ou_model_weight",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -173,22 +273,13 @@ class DynamicBlendWeights:
         weight(t) = low + (high - low) / (1 + exp(-steepness * (t - midpoint)))
     where t = week / max_week (normalized week fraction per D-04).
 
-    Contract:
-    - When DynamicBlendWeights is configured on a MarketBlender, callers
-      MUST provide week and season to blend methods. Omitting them raises
-      ValueError (no silent fallback to static).
-    - Playoff weeks (> max_week) are clamped to max_week (t=1.0).
-    - Week must be >= 1. Week 0 is invalid.
-
     Attributes:
         wp: Sigmoid parameters for Win Probability target.
         ats: Sigmoid parameters for Against the Spread target.
         ou: Sigmoid parameters for Over/Under target.
         low: Minimum weight (early season). Fixed at 0.30 per D-03.
         high: Maximum weight (late season). Fixed at 0.80 per D-03.
-        mode_by_target: Per-target mode after gating (e.g., {"wp": "dynamic",
-            "ats": "static"}). Set by comparison/gating logic.
-            Defaults to all dynamic.
+        mode_by_target: Per-target mode after gating.
     """
 
     wp: SigmoidParams
@@ -207,17 +298,8 @@ class DynamicBlendWeights:
     def get_weight(self, target: str, week: int, season: int) -> float:
         """Compute sigmoid blend weight for a specific target, week, season.
 
-        Args:
-            target: One of "wp", "ats", "ou".
-            week: Game week number (1-based). Playoff weeks (> max_week) clamped.
-            season: NFL season year (for era-based max_week per D-05).
-
-        Returns:
-            Blend weight in [low, high].
-
         Raises:
             ValueError: If week < 1.
-            AttributeError: If target is not wp/ats/ou.
         """
         if week < 1:
             msg = f"week must be >= 1, got {week}"
@@ -327,23 +409,191 @@ class BlendConfig:
     edge_thresholds: EdgeThresholds = field(default_factory=EdgeThresholds)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TuningResult:
-    """Output of blend weight grid-search tuning.
+    """Output of the fixed-weight tuning grid search (Plan 33.2-24).
 
     Attributes:
-        weights: Optimal BlendWeights found by grid search.
-        per_target_clv: Best CLV per target at the optimal weight.
-        per_target_grid: Full (weight, clv) grid per target.
-        tuning_seasons: Seasons used for tuning.
-        n_games: Number of games per target used in tuning.
+        weights: The fitted weight per target -- the grid point minimising that target's
+            outcome loss on its tuning frame.
+        objective_by_target: The loss each weight minimised (:data:`BLEND_OBJECTIVE_BY_TARGET`).
+        loss_by_target: The loss at the fitted weight.
+        market_only_loss_by_target: The loss at weight 0 -- the pre-lock market alone.
+        model_only_loss_by_target: The loss at weight 1 -- the model alone.
+        grid_by_target: The full ``(weight, loss)`` curve per target.
+        seasons_by_target: The seasons each target was tuned over.
+        n_games: The tuning rows per target.
+        season_best_weight_by_target: Per target, the weight each season would have chosen
+            ON ITS OWN -- a stability record, not a second fit.
     """
 
     weights: BlendWeights
-    per_target_clv: dict[str, float]
-    per_target_grid: dict[str, list[tuple[float, float]]]
-    tuning_seasons: list[int]
+    objective_by_target: dict[str, str]
+    loss_by_target: dict[str, float]
+    market_only_loss_by_target: dict[str, float]
+    model_only_loss_by_target: dict[str, float]
+    grid_by_target: dict[str, list[tuple[float, float]]]
+    seasons_by_target: dict[str, list[int]]
     n_games: dict[str, int]
+    season_best_weight_by_target: dict[str, dict[int, float]]
+
+    @property
+    def boundary_targets(self) -> list[str]:
+        """The tuned targets whose fitted weight is EXACTLY 0 or 1 -- a finding, reported."""
+        return [
+            target
+            for target in self.objective_by_target
+            if getattr(self.weights, _WEIGHT_ATTR_BY_TARGET[target]) in (0.0, 1.0)
+        ]
+
+
+@dataclass(frozen=True)
+class BlendProvenance:
+    """What a blend artifact was fitted ON, recorded INSIDE ``blend_weights.json``.
+
+    One payload file, one provenance answer: a separate ``metadata.json`` would be a second
+    answer about the same artifact. Plan 33.2-25's bundle validator reads these through
+    :meth:`MarketBlender.from_artifacts`, the same loader the serving path uses, and its
+    R13 check asserts ``gold_generation_digest`` across all four production artifacts.
+
+    The converter binding (``market_probability_artifact_id`` / ``..._slope_beta``) is NOT a
+    field here: it lives on the blender itself, is written from there, and is read back and
+    cross-checked by :meth:`MarketBlender._read_converter_binding` (Plan 33.2-21).
+
+    Attributes:
+        gold_generation_digest: The gold generation the three source models were fitted on
+            and the walk-forward predictions were computed from.
+        source_artifact_ids: ``{wp, ats, ou}`` -> the model artifact whose recipe produced
+            that target's tuning predictions.
+        tuning_corpus_rows: The owned pre-lock games the corpus carried.
+        excluded_counts: ``{reason: games}`` for every exclusion class.
+        thread_limit: The OpenMP thread count every fit was pinned to.
+    """
+
+    gold_generation_digest: str
+    source_artifact_ids: dict[str, str]
+    tuning_corpus_rows: int
+    excluded_counts: dict[str, int]
+    thread_limit: int
+
+    def to_payload(self) -> dict[str, Any]:
+        """The payload keys, as written into ``blend_weights.json``."""
+        return {
+            "gold_generation_digest": self.gold_generation_digest,
+            "source_artifact_ids": dict(self.source_artifact_ids),
+            "tuning_corpus": {
+                "table": "odds_timeline",
+                "rows": int(self.tuning_corpus_rows),
+                "rule": "latest snapshot at or before each game's own lock",
+            },
+            "excluded_counts": dict(self.excluded_counts),
+            "thread_limit": int(self.thread_limit),
+        }
+
+    @classmethod
+    def from_payload(cls, data: Mapping[str, Any]) -> BlendProvenance | None:
+        """The provenance recorded in *data*, or None when the payload predates it.
+
+        Raises:
+            IncompleteBlendProvenanceError: when some provenance keys are present and some
+                are not -- half a provenance record answers nothing reliably.
+        """
+        keys = (
+            "gold_generation_digest",
+            "source_artifact_ids",
+            "tuning_corpus",
+            "excluded_counts",
+            "thread_limit",
+        )
+        present = [key for key in keys if key in data]
+        if not present:
+            return None
+        if len(present) != len(keys):
+            missing = sorted(set(keys) - set(present))
+            msg = (
+                f"blend payload carries provenance keys {sorted(present)} but not {missing}; "
+                "a blend's provenance is all of it or none of it."
+            )
+            raise IncompleteBlendProvenanceError(msg)
+        return cls(
+            gold_generation_digest=str(data["gold_generation_digest"]),
+            source_artifact_ids={
+                str(k): str(v) for k, v in dict(data["source_artifact_ids"]).items()
+            },
+            tuning_corpus_rows=int(dict(data["tuning_corpus"])["rows"]),
+            excluded_counts={
+                str(k): int(v) for k, v in dict(data["excluded_counts"]).items()
+            },
+            thread_limit=int(data["thread_limit"]),
+        )
+
+
+# ---------------------------------------------------------------------------
+# The blend arithmetic, one implementation
+# ---------------------------------------------------------------------------
+
+
+def _blend_values(
+    target: str,
+    model: np.ndarray,
+    market: np.ndarray,
+    weight: float,
+    clip_min: float,
+    clip_max: float,
+) -> np.ndarray:
+    """The blend of *model* and *market* at *weight* -- the ONE place the arithmetic lives.
+
+    WP blends in log-odds space after clipping both sides to ``[clip_min, clip_max]`` so the
+    logit stays finite; ATS and O/U interpolate linearly in point space. The serving methods
+    and the tuner's grid both call this, so the weight the tuner chooses is scored with
+    exactly the arithmetic the served blend applies.
+    """
+    model = np.asarray(model, dtype=np.float64)
+    market = np.asarray(market, dtype=np.float64)
+    if target == "wp":
+        model_clipped = np.clip(model, clip_min, clip_max)
+        market_clipped = np.clip(market, clip_min, clip_max)
+        return expit(
+            weight * logit(model_clipped) + (1 - weight) * logit(market_clipped)
+        )
+    if target in ("ats", "ou"):
+        return weight * model + (1 - weight) * market
+    msg = f"Unknown target: {target}. Must be 'wp', 'ats', or 'ou'."
+    raise ValueError(msg)
+
+
+#: Two grid losses within this RELATIVE distance of each other are a tie. Exact arithmetic
+#: would score them equal; floating-point rounding separates them in the last bit.
+_TIE_RELATIVE_TOLERANCE: float = 1e-12
+
+
+def _first_minimum(losses: list[float]) -> int:
+    """The index of the FIRST loss within :data:`_TIE_RELATIVE_TOLERANCE` of the minimum.
+
+    The grid is ordered from weight 0 upward, so a tie resolves to the lowest weight -- the
+    one that trusts the market most -- deterministically rather than by rounding noise.
+    """
+    values = np.asarray(losses, dtype=np.float64)
+    minimum = float(values.min())
+    tolerance = _TIE_RELATIVE_TOLERANCE * max(1.0, abs(minimum))
+    return int(np.flatnonzero(values <= minimum + tolerance)[0])
+
+
+def _outcome_loss(target: str, blended: np.ndarray, outcome: np.ndarray) -> float:
+    """The target's own primary metric of *blended* against the realized *outcome*.
+
+    WP: log loss (the WP blend's output is already inside the clip, so it is finite).
+    ATS / O/U: mean absolute error, in points.
+    """
+    blended = np.asarray(blended, dtype=np.float64)
+    outcome = np.asarray(outcome, dtype=np.float64)
+    if target == "wp":
+        return float(
+            -np.mean(
+                outcome * np.log(blended) + (1.0 - outcome) * np.log(1.0 - blended)
+            )
+        )
+    return float(np.mean(np.abs(blended - outcome)))
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +602,7 @@ class TuningResult:
 
 
 class MarketBlender:
-    """Blends model predictions with market odds.
+    """Blends model predictions with market odds at ONE fixed weight per target.
 
     Uses log-odds space for WP (probabilities are non-linear) and
     linear interpolation for ATS/O/U (spreads and totals are linear).
@@ -371,29 +621,31 @@ class MarketBlender:
     def __init__(
         self,
         config: BlendConfig | None = None,
-        dynamic_weights: DynamicBlendWeights | None = None,
         market_probability_artifact_id: str | None = None,
         market_probability_slope_beta: float | None = None,
+        provenance: BlendProvenance | None = None,
     ) -> None:
         """Construct a blender, optionally with a converter BOUND to it.
 
         Args:
             config: Per-target weights, clipping and edge thresholds.
-            dynamic_weights: The week-varying schedule, when one is configured.
             market_probability_artifact_id: The ``market_probability_*`` directory this
                 blend was tuned against. Carried for provenance and cross-checked at load.
             market_probability_slope_beta: That converter's ``slope_beta``. The WP blend
                 converts with THIS number and nothing else -- no lookup of "the newest
                 converter directory", no module default, no fallback to a moneyline.
+            provenance: What a LOADED blend artifact was fitted on, exposed so the swap's
+                validator reads it through the same loader the serving path uses. None for a
+                blender built in memory.
         """
         self.config = config or BlendConfig()
-        self._dynamic_weights = dynamic_weights
         self.market_probability_artifact_id = market_probability_artifact_id
         self.market_probability_slope_beta = (
             None
             if market_probability_slope_beta is None
             else float(market_probability_slope_beta)
         )
+        self.provenance = provenance
         self.logger = get_logger(__name__)
 
     def blend_wp(
@@ -403,7 +655,7 @@ class MarketBlender:
         week: int | None = None,
         season: int | None = None,
     ) -> np.ndarray:
-        """Blend WP predictions in log-odds space.
+        """Blend WP predictions in log-odds space at the fixed WP weight.
 
         Clips both inputs to [clip_min, clip_max] before applying logit
         to prevent NaN/inf from boundary probabilities. The blended
@@ -412,38 +664,22 @@ class MarketBlender:
         Args:
             model_prob: Model's predicted win probabilities.
             market_prob: Market's fair win probabilities.
-            week: Game week (required when dynamic_weights is configured).
-            season: NFL season year (required when dynamic_weights is configured).
+            week: Unused. The weight no longer varies by week; the parameter leaves with its
+                one production caller in Plan 33.2-24 Task 2b.
+            season: Unused, for the same reason.
 
         Returns:
             Blended win probabilities in [0, 1].
-
-        Raises:
-            ValueError: If dynamic_weights is configured but week/season omitted.
         """
-        if (
-            self._dynamic_weights is not None
-            and self._dynamic_weights.mode_by_target.get("wp") == "dynamic"
-        ):
-            if week is None or season is None:
-                msg = "week and season are required for dynamic-mode targets"
-                raise ValueError(msg)
-            weight = self._dynamic_weights.get_weight("wp", week, season)
-        else:
-            weight = self.config.weights.wp_model_weight
-        clip_min = self.config.clip_min
-        clip_max = self.config.clip_max
-
-        # Clip to avoid logit overflow at 0 and 1
-        model_clipped = np.clip(model_prob, clip_min, clip_max)
-        market_clipped = np.clip(market_prob, clip_min, clip_max)
-
-        # Blend in log-odds space
-        blended_logit = weight * logit(model_clipped) + (1 - weight) * logit(
-            market_clipped
+        del week, season
+        return _blend_values(
+            "wp",
+            model_prob,
+            market_prob,
+            self.config.weights.wp_model_weight,
+            self.config.clip_min,
+            self.config.clip_max,
         )
-
-        return expit(blended_logit)
 
     def blend_ats(
         self,
@@ -463,29 +699,24 @@ class MarketBlender:
                 The docstring previously said "negative = home favored", which is the OPPOSITE of
                 the convention DEF-31-01 measured and the owner ruled on: the ATS trainer's target
                 column is ``home_margin`` (``models/trainers/ats_trainer.py``).
-            market_spread: Market's closing spreads on the SAME home-margin scale -- the nflverse
-                ``spread_line``, POSITIVE when the home team is favored (corr with ml_home
-                -0.9506, corr with realized home margin +0.4517, measured over 2140 stored rows).
-            week: Game week (required when dynamic_weights is configured).
-            season: NFL season year (required when dynamic_weights is configured).
+            market_spread: Market's spreads on the SAME home-margin scale, POSITIVE when the
+                home team is favored (corr with ml_home -0.9506, corr with realized home margin
+                +0.4517, measured over 2140 stored rows).
+            week: Unused; leaves with its caller in Plan 33.2-24 Task 2b.
+            season: Unused; leaves with its caller in Plan 33.2-24 Task 2b.
 
         Returns:
             Blended spreads.
-
-        Raises:
-            ValueError: If dynamic_weights is configured but week/season omitted.
         """
-        if (
-            self._dynamic_weights is not None
-            and self._dynamic_weights.mode_by_target.get("ats") == "dynamic"
-        ):
-            if week is None or season is None:
-                msg = "week and season are required for dynamic-mode targets"
-                raise ValueError(msg)
-            weight = self._dynamic_weights.get_weight("ats", week, season)
-        else:
-            weight = self.config.weights.ats_model_weight
-        return weight * model_spread + (1 - weight) * market_spread
+        del week, season
+        return _blend_values(
+            "ats",
+            model_spread,
+            market_spread,
+            self.config.weights.ats_model_weight,
+            self.config.clip_min,
+            self.config.clip_max,
+        )
 
     def blend_ou(
         self,
@@ -498,27 +729,22 @@ class MarketBlender:
 
         Args:
             model_total: Model's predicted game totals.
-            market_total: Market's closing totals.
-            week: Game week (required when dynamic_weights is configured).
-            season: NFL season year (required when dynamic_weights is configured).
+            market_total: Market's totals.
+            week: Unused; leaves with its caller in Plan 33.2-24 Task 2b.
+            season: Unused; leaves with its caller in Plan 33.2-24 Task 2b.
 
         Returns:
             Blended totals.
-
-        Raises:
-            ValueError: If dynamic_weights is configured but week/season omitted.
         """
-        if (
-            self._dynamic_weights is not None
-            and self._dynamic_weights.mode_by_target.get("ou") == "dynamic"
-        ):
-            if week is None or season is None:
-                msg = "week and season are required for dynamic-mode targets"
-                raise ValueError(msg)
-            weight = self._dynamic_weights.get_weight("ou", week, season)
-        else:
-            weight = self.config.weights.ou_model_weight
-        return weight * model_total + (1 - weight) * market_total
+        del week, season
+        return _blend_values(
+            "ou",
+            model_total,
+            market_total,
+            self.config.weights.ou_model_weight,
+            self.config.clip_min,
+            self.config.clip_max,
+        )
 
     def blend_predictions(
         self,
@@ -531,8 +757,8 @@ class MarketBlender:
         Merges predictions with market data on game_id, then applies
         the appropriate blending method based on target type.
 
-        For WP: Devigs closing moneylines to get fair market probability,
-        then blends model_prob with fair_ml_prob_home in log-odds space.
+        For WP: converts the pre-lock spread to a market win probability through the BOUND
+        converter, then blends model_prob with it in log-odds space.
 
         For ATS: Blends model_spread with market spread linearly.
 
@@ -543,8 +769,7 @@ class MarketBlender:
                 game_id and the target-specific column (model_prob, model_spread,
                 or model_total).
             market_df: DataFrame with market odds. Must contain game_id and
-                the relevant market columns (ml_home/ml_away for WP,
-                spread for ATS, total for O/U).
+                the relevant market columns (spread for WP and ATS, total for O/U).
             target: One of "wp", "ats", "ou".
 
         Returns:
@@ -572,21 +797,6 @@ class MarketBlender:
             raise ValueError(msg)
 
         return result
-
-    def _ensure_week_season_columns(self, merged: pd.DataFrame) -> pd.DataFrame:
-        """Ensure week and season columns exist by extracting from game_id.
-
-        Game ID format: {season}_W{week}_{away}@{home}
-        """
-        if "season" not in merged.columns:
-            merged = merged.copy()
-            merged["season"] = merged["game_id"].str.split("_").str[0].astype(int)
-        if "week" not in merged.columns:
-            merged = merged.copy()
-            merged["week"] = (
-                merged["game_id"].str.split("_").str[1].str.lstrip("W").astype(int)
-            )
-        return merged
 
     def unblended_wp_predictions(self, predictions_df: pd.DataFrame) -> pd.DataFrame:
         """The model's OWN win probabilities, explicitly unblended.
@@ -619,6 +829,10 @@ class MarketBlender:
         * the conversion uses ``self.market_probability_slope_beta`` and NOTHING else --
           no "newest converter directory" lookup, no module default. A blender with no
           bound converter refuses, naming the missing binding.
+
+        This is a SERVING path: it converts with the bound serving slope. A HISTORICAL tuning
+        row must never come through here -- the tuner reads the out-of-fold market column
+        instead (Plan 33.2-24).
 
         Raises:
             MarketProbabilityUnavailable: when no converter is bound, when the pre-lock
@@ -680,23 +894,7 @@ class MarketBlender:
         )
         model_prob = np.asarray(result["model_prob"].to_numpy(), dtype=np.float64)
 
-        if self._dynamic_weights is not None and "game_id" in merged.columns:
-            merged = self._ensure_week_season_columns(merged)
-            blended = np.empty_like(model_prob, dtype=np.float64)
-            for (season_val, week_val), group_idx in merged.groupby(
-                ["season", "week"]
-            ).groups.items():
-                local_idx = np.isin(merged.index, group_idx)
-                blended[local_idx] = self.blend_wp(
-                    np.asarray(model_prob[local_idx], dtype=np.float64),
-                    np.asarray(market_prob[local_idx], dtype=np.float64),
-                    week=int(week_val),
-                    season=int(season_val),
-                )
-        else:
-            blended = self.blend_wp(model_prob, market_prob)
-
-        result["model_prob"] = blended
+        result["model_prob"] = self.blend_wp(model_prob, market_prob)
 
         self.logger.info(
             "Blended WP predictions",
@@ -722,29 +920,10 @@ class MarketBlender:
             self.logger.warning("No valid spread data for ATS blending")
             return
 
-        model_spread = result.loc[valid_mask, "model_spread"].values
-        market_spread = merged.loc[valid_mask, "spread"].values
-
-        if self._dynamic_weights is not None and "game_id" in merged.columns:
-            merged = self._ensure_week_season_columns(merged)
-            valid_merged = merged.loc[valid_mask]
-            blended = np.empty_like(model_spread, dtype=np.float64)
-            for (season_val, week_val), group_idx in valid_merged.groupby(
-                ["season", "week"]
-            ).groups.items():
-                local_idx = np.isin(valid_merged.index, group_idx)
-                blended[local_idx] = self.blend_ats(
-                    np.asarray(model_spread[local_idx], dtype=np.float64),
-                    np.asarray(market_spread[local_idx], dtype=np.float64),
-                    week=int(week_val),
-                    season=int(season_val),
-                )
-        else:
-            blended = self.blend_ats(
-                np.asarray(model_spread, dtype=np.float64),
-                np.asarray(market_spread, dtype=np.float64),
-            )
-        result.loc[valid_mask, "model_spread"] = blended
+        result.loc[valid_mask, "model_spread"] = self.blend_ats(
+            np.asarray(result.loc[valid_mask, "model_spread"].values, dtype=np.float64),
+            np.asarray(merged.loc[valid_mask, "spread"].values, dtype=np.float64),
+        )
 
         self.logger.info(
             "Blended ATS predictions",
@@ -768,29 +947,10 @@ class MarketBlender:
             self.logger.warning("No valid total data for O/U blending")
             return
 
-        model_total = result.loc[valid_mask, "model_total"].values
-        market_total = merged.loc[valid_mask, "total"].values
-
-        if self._dynamic_weights is not None and "game_id" in merged.columns:
-            merged = self._ensure_week_season_columns(merged)
-            valid_merged = merged.loc[valid_mask]
-            blended = np.empty_like(model_total, dtype=np.float64)
-            for (season_val, week_val), group_idx in valid_merged.groupby(
-                ["season", "week"]
-            ).groups.items():
-                local_idx = np.isin(valid_merged.index, group_idx)
-                blended[local_idx] = self.blend_ou(
-                    np.asarray(model_total[local_idx], dtype=np.float64),
-                    np.asarray(market_total[local_idx], dtype=np.float64),
-                    week=int(week_val),
-                    season=int(season_val),
-                )
-        else:
-            blended = self.blend_ou(
-                np.asarray(model_total, dtype=np.float64),
-                np.asarray(market_total, dtype=np.float64),
-            )
-        result.loc[valid_mask, "model_total"] = blended
+        result.loc[valid_mask, "model_total"] = self.blend_ou(
+            np.asarray(result.loc[valid_mask, "model_total"].values, dtype=np.float64),
+            np.asarray(merged.loc[valid_mask, "total"].values, dtype=np.float64),
+        )
 
         self.logger.info(
             "Blended O/U predictions",
@@ -799,252 +959,229 @@ class MarketBlender:
         )
 
     # -----------------------------------------------------------------------
-    # Weight tuning via grid search
+    # Weight tuning: one fixed weight per target, on each model's own outcome loss
     # -----------------------------------------------------------------------
 
     def tune_weights(
         self,
-        tuning_predictions: dict[str, pd.DataFrame],
-        tuning_odds: pd.DataFrame,
-        weight_range: tuple[float, float] = (0.50, 0.70),
-        weight_step: float = 0.01,
+        tuning_frames: Mapping[str, pd.DataFrame],
+        weight_grid: np.ndarray = BLEND_WEIGHT_GRID,
     ) -> TuningResult:
-        """Tune per-target blend weights via grid search on pre-backtest data.
+        """Fit ONE fixed weight per target by grid search on each model's own outcome loss.
 
-        For each target, sweeps weight candidates in the given range and
-        selects the weight that maximizes mean CLV on the tuning predictions.
+        THE OBJECTIVE IS THE GAME, NOT A CLOSING LINE. For every candidate weight the blend of
+        the model's out-of-sample prediction with the market's PRE-LOCK opinion is scored
+        against the realized outcome in the target's own primary metric
+        (:data:`BLEND_OBJECTIVE_BY_TARGET`), and the weight with the lowest loss wins. The
+        retired tuner maximised closing-line value instead: a closing line did not exist at
+        the lock (D33.2-03), and scoring a blend against the very line it blends with rewards
+        whichever end of the range the search is allowed to reach.
 
-        TEMPORAL ISOLATION: Raises ValueError if any prediction season
-        exceeds max(TUNING_SEASONS) to prevent holdout data leakage.
+        THE WP MARKET SIDE IS READ, NEVER CONVERTED HERE. Each WP row carries
+        ``market_prob_oof`` -- its season's prior-only converter slope applied through
+        ``models.market_probability.oof_market_probability`` -- and this method reads that
+        column. It does not convert a spread, does not call ``market_home_win_probability``
+        and does not route a row through :meth:`blend_predictions`, because those use the
+        BOUND serving slope, which was fitted partly on these games' own outcomes.
+
+        Ties between grid points resolve to the FIRST (lowest) weight, deterministically --
+        where a "tie" is judged within a relative tolerance of 1e-12, because two weights that
+        score identically in exact arithmetic can differ in the last bit after rounding, and a
+        choice decided by rounding noise is not a choice (:func:`_first_minimum`).
 
         Args:
-            tuning_predictions: Dict mapping target ("wp", "ats", "ou") to
-                DataFrame of model predictions for tuning period.
-            tuning_odds: DataFrame with game_id, spread, total, ml_home, ml_away.
-            weight_range: (min_weight, max_weight) for grid search.
-            weight_step: Step size for weight candidates.
+            tuning_frames: Target -> one row per game carrying ``season`` and that target's
+                :data:`BLEND_TUNING_COLUMNS`. Built by ``models.blending_data.
+                build_tuning_frames``.
+            weight_grid: The candidate weights, in [0, 1].
 
         Returns:
-            TuningResult with optimal weights, per-target CLV, grid, seasons, counts.
+            The :class:`TuningResult`. ``self.config.weights`` is updated to the fit.
 
         Raises:
-            ValueError: If holdout seasons detected in tuning predictions.
+            BlendTuningError: when a frame is empty, lacks a column, carries a null, or holds
+                a season no owned pre-lock line covers.
         """
-        max_tuning_season = max(TUNING_SEASONS)
-
-        # -- Temporal isolation check --
-        for target, df in tuning_predictions.items():
-            if "season" not in df.columns:
-                continue
-            max_season = int(df["season"].max())
-            if max_season > max_tuning_season:
-                msg = (
-                    f"Holdout data detected in tuning predictions: "
-                    f"season {max_season} in target '{target}'"
-                )
-                raise ValueError(msg)
-
-        # Build weight candidates
-        candidates = np.arange(
-            weight_range[0], weight_range[1] + weight_step / 2, weight_step
-        )
-        # Round to avoid floating point drift
-        candidates = np.round(candidates, 4)
-
-        # Collect all tuning seasons
-        all_seasons: set[int] = set()
-        for df in tuning_predictions.values():
-            if "season" in df.columns:
-                all_seasons.update(df["season"].unique().tolist())
-
-        per_target_clv: dict[str, float] = {}
-        per_target_grid: dict[str, list[tuple[float, float]]] = {}
+        candidates = np.round(np.asarray(weight_grid, dtype=float), 4)
+        objective_by_target: dict[str, str] = {}
+        loss_by_target: dict[str, float] = {}
+        market_only: dict[str, float] = {}
+        model_only: dict[str, float] = {}
+        grid_by_target: dict[str, list[tuple[float, float]]] = {}
+        seasons_by_target: dict[str, list[int]] = {}
         n_games: dict[str, int] = {}
-        optimal_weights: dict[str, float] = {}
+        season_best: dict[str, dict[int, float]] = {}
+        fitted: dict[str, float] = {}
 
-        # Weight attribute mapping: target -> BlendWeights attribute name
-        weight_attrs = {
-            "wp": "wp_model_weight",
-            "ats": "ats_model_weight",
-            "ou": "ou_model_weight",
-        }
+        for target, frame in tuning_frames.items():
+            model_col, market_col, outcome_col = self._require_tuning_frame(
+                target, frame
+            )
+            model = frame[model_col].to_numpy(dtype=float)
+            market = frame[market_col].to_numpy(dtype=float)
+            outcome = frame[outcome_col].to_numpy(dtype=float)
 
-        for target, preds_df in tuning_predictions.items():
-            grid: list[tuple[float, float]] = []
-
-            # Merge predictions with odds
-            merged = preds_df.merge(tuning_odds, on="game_id", how="inner")
-            n_games[target] = len(merged)
-
-            if merged.empty:
-                self.logger.warning(
-                    "No merged games for target during tuning",
-                    target=target,
+            grid = [
+                (
+                    float(weight),
+                    _outcome_loss(
+                        target,
+                        _blend_values(
+                            target,
+                            model,
+                            market,
+                            float(weight),
+                            self.config.clip_min,
+                            self.config.clip_max,
+                        ),
+                        outcome,
+                    ),
                 )
-                per_target_clv[target] = 0.0
-                per_target_grid[target] = []
-                optimal_weights[target] = weight_range[0]
-                continue
+                for weight in candidates
+            ]
+            best_index = _first_minimum([loss for _, loss in grid])
+            best_weight, best_loss = grid[best_index]
 
-            for w in candidates:
-                mean_clv = self._compute_mean_clv_for_weight(target, merged, float(w))
-                grid.append((float(w), mean_clv))
-
-            # Select the weight with highest mean CLV
-            best_weight, best_clv = max(grid, key=lambda x: x[1])
-            per_target_clv[target] = best_clv
-            per_target_grid[target] = grid
-            optimal_weights[target] = best_weight
+            fitted[target] = best_weight
+            objective_by_target[target] = BLEND_OBJECTIVE_BY_TARGET[target]
+            loss_by_target[target] = best_loss
+            market_only[target] = _outcome_loss(
+                target,
+                _blend_values(
+                    target,
+                    model,
+                    market,
+                    0.0,
+                    self.config.clip_min,
+                    self.config.clip_max,
+                ),
+                outcome,
+            )
+            model_only[target] = _outcome_loss(
+                target,
+                _blend_values(
+                    target,
+                    model,
+                    market,
+                    1.0,
+                    self.config.clip_min,
+                    self.config.clip_max,
+                ),
+                outcome,
+            )
+            grid_by_target[target] = grid
+            seasons = sorted({int(season) for season in frame["season"]})
+            seasons_by_target[target] = seasons
+            n_games[target] = len(frame)
+            season_best[target] = {
+                season: self._best_weight_on(
+                    target, frame[frame["season"] == season], candidates
+                )
+                for season in seasons
+            }
 
             self.logger.info(
-                "Weight tuning complete for target",
+                "Fixed blend weight fitted",
                 target=target,
-                optimal_weight=best_weight,
-                optimal_clv=best_clv,
-                n_candidates=len(candidates),
-                n_games=len(merged),
+                weight=best_weight,
+                objective=BLEND_OBJECTIVE_BY_TARGET[target],
+                loss=best_loss,
+                market_only_loss=market_only[target],
+                model_only_loss=model_only[target],
+                n_games=len(frame),
+                seasons=seasons,
             )
 
-        # Build optimized BlendWeights
-        tuned_weights = BlendWeights(
-            wp_model_weight=optimal_weights.get(
-                "wp", self.config.weights.wp_model_weight
-            ),
-            ats_model_weight=optimal_weights.get(
-                "ats", self.config.weights.ats_model_weight
-            ),
-            ou_model_weight=optimal_weights.get(
-                "ou", self.config.weights.ou_model_weight
-            ),
+        tuned = BlendWeights(
+            wp_model_weight=fitted.get("wp", self.config.weights.wp_model_weight),
+            ats_model_weight=fitted.get("ats", self.config.weights.ats_model_weight),
+            ou_model_weight=fitted.get("ou", self.config.weights.ou_model_weight),
         )
-
-        # Update self.config with tuned weights
-        self.config.weights = tuned_weights
-
-        # Log comparison with defaults
-        default_weights = BlendWeights()
-        for target in optimal_weights:
-            attr = weight_attrs.get(target, "")
-            if attr:
-                self.logger.info(
-                    "Weight tuning comparison",
-                    target=target,
-                    default_weight=getattr(default_weights, attr),
-                    tuned_weight=getattr(tuned_weights, attr),
-                    clv_at_tuned=per_target_clv.get(target, 0.0),
-                )
+        self.config.weights = tuned
 
         result = TuningResult(
-            weights=tuned_weights,
-            per_target_clv=per_target_clv,
-            per_target_grid=per_target_grid,
-            tuning_seasons=sorted(all_seasons),
+            weights=tuned,
+            objective_by_target=objective_by_target,
+            loss_by_target=loss_by_target,
+            market_only_loss_by_target=market_only,
+            model_only_loss_by_target=model_only,
+            grid_by_target=grid_by_target,
+            seasons_by_target=seasons_by_target,
             n_games=n_games,
+            season_best_weight_by_target=season_best,
         )
+        for target in result.boundary_targets:
+            # A FINDING, stated loudly rather than clipped away by a narrower grid.
+            self.logger.warning(
+                "Blend weight fitted at a BOUNDARY: one side of the blend adds nothing "
+                "on this corpus",
+                target=target,
+                weight=fitted[target],
+            )
         return result
 
-    def _compute_mean_clv_for_weight(
-        self,
-        target: str,
-        merged: pd.DataFrame,
-        weight: float,
+    def _require_tuning_frame(
+        self, target: str, frame: pd.DataFrame
+    ) -> tuple[str, str, str]:
+        """Refuse a tuning frame that cannot be scored honestly; return its column triple."""
+        if target not in BLEND_TUNING_COLUMNS:
+            msg = f"Unknown target: {target}. Must be 'wp', 'ats', or 'ou'."
+            raise BlendTuningError(msg)
+        columns = BLEND_TUNING_COLUMNS[target]
+        missing = [c for c in ("game_id", "season", *columns) if c not in frame.columns]
+        if missing:
+            msg = f"the {target} tuning frame is missing {missing}"
+            raise BlendTuningError(msg)
+        if frame.empty:
+            msg = (
+                f"the {target} tuning frame is EMPTY; a weight fitted on no games is a "
+                "number that means nothing, so none is fitted."
+            )
+            raise BlendTuningError(msg)
+        nulls = [c for c in columns if bool(frame[c].isna().any())]
+        if nulls:
+            msg = (
+                f"the {target} tuning frame carries nulls in {nulls}; a tuning row must be "
+                "complete -- a missing line or outcome is excluded upstream, never filled."
+            )
+            raise BlendTuningError(msg)
+        foreign = sorted(
+            {int(s) for s in frame["season"]} - {int(s) for s in OWNED_LINE_SEASONS}
+        )
+        if foreign:
+            msg = (
+                f"the {target} tuning frame holds season(s) {foreign}, which no owned "
+                f"pre-lock line covers (owned: {list(OWNED_LINE_SEASONS)}). A row from such "
+                "a season can only have come from another store -- refusing rather than "
+                "tuning on it."
+            )
+            raise BlendTuningError(msg)
+        return columns
+
+    def _best_weight_on(
+        self, target: str, frame: pd.DataFrame, candidates: np.ndarray
     ) -> float:
-        """Compute mean CLV for a single weight candidate on merged data.
-
-        Args:
-            target: "wp", "ats", or "ou".
-            merged: Predictions merged with odds (has both model and market columns).
-            weight: Model weight to evaluate.
-
-        Returns:
-            Mean CLV across all games at this weight.
-        """
-        if target == "wp":
-            return self._compute_wp_clv_for_weight(merged, weight)
-        if target == "ats":
-            return self._compute_ats_clv_for_weight(merged, weight)
-        if target == "ou":
-            return self._compute_ou_clv_for_weight(merged, weight)
-        return 0.0
-
-    def _compute_wp_clv_for_weight(self, merged: pd.DataFrame, weight: float) -> float:
-        """Compute mean probability CLV for WP at a given weight."""
-        valid = merged.dropna(subset=["ml_home", "ml_away", "model_prob"])
-        if valid.empty:
-            return 0.0
-
-        # Build temporary blender with this weight
-        tmp_config = BlendConfig(
-            weights=BlendWeights(wp_model_weight=weight),
-            clip_min=self.config.clip_min,
-            clip_max=self.config.clip_max,
-        )
-        tmp_blender = MarketBlender(config=tmp_config)
-
-        # Compute fair market probabilities for devigging
-        home_raw = valid["ml_home"].apply(lambda ml: moneyline_to_probability(int(ml)))
-        away_raw = valid["ml_away"].apply(lambda ml: moneyline_to_probability(int(ml)))
-        fair_home = (home_raw / (home_raw + away_raw)).values
-
-        # Blend model prob with market fair prob
-        model_prob = valid["model_prob"].values
-        blended = tmp_blender.blend_wp(
-            np.asarray(model_prob, dtype=np.float64),
-            np.asarray(fair_home, dtype=np.float64),
-        )
-
-        # Compute probability CLV for each game
-        clvs = []
-        for i, idx in enumerate(valid.index):
-            result = compute_probability_clv(
-                model_prob=float(blended[i]),
-                closing_ml_home=float(valid.at[idx, "ml_home"]),
-                closing_ml_away=float(valid.at[idx, "ml_away"]),
-                side="home",
+        """The grid weight minimising *target*'s loss on *frame* alone."""
+        model_col, market_col, outcome_col = BLEND_TUNING_COLUMNS[target]
+        model = frame[model_col].to_numpy(dtype=float)
+        market = frame[market_col].to_numpy(dtype=float)
+        outcome = frame[outcome_col].to_numpy(dtype=float)
+        losses = [
+            _outcome_loss(
+                target,
+                _blend_values(
+                    target,
+                    model,
+                    market,
+                    float(weight),
+                    self.config.clip_min,
+                    self.config.clip_max,
+                ),
+                outcome,
             )
-            clvs.append(result["probability_clv"])
-
-        return float(np.mean(clvs)) if clvs else 0.0
-
-    def _compute_ats_clv_for_weight(self, merged: pd.DataFrame, weight: float) -> float:
-        """Compute mean line CLV for ATS at a given weight."""
-        valid = merged.dropna(subset=["spread", "model_spread"])
-        if valid.empty:
-            return 0.0
-
-        model_spread = valid["model_spread"].values
-        market_spread = valid["spread"].values
-        blended = weight * model_spread + (1 - weight) * market_spread
-
-        clvs = [
-            compute_line_clv(
-                model_value=float(blended[i]),
-                closing_value=float(market_spread[i]),
-                direction="spread",
-            )
-            for i in range(len(blended))
+            for weight in candidates
         ]
-        return float(np.mean(clvs)) if clvs else 0.0
-
-    def _compute_ou_clv_for_weight(self, merged: pd.DataFrame, weight: float) -> float:
-        """Compute mean line CLV for O/U at a given weight."""
-        valid = merged.dropna(subset=["total", "model_total"])
-        if valid.empty:
-            return 0.0
-
-        model_total = valid["model_total"].values
-        market_total = valid["total"].values
-        blended = weight * model_total + (1 - weight) * market_total
-
-        clvs = [
-            compute_line_clv(
-                model_value=float(blended[i]),
-                closing_value=float(market_total[i]),
-                direction="total",
-            )
-            for i in range(len(blended))
-        ]
-        return float(np.mean(clvs)) if clvs else 0.0
+        return float(candidates[_first_minimum(losses)])
 
     # -----------------------------------------------------------------------
     # Edge threshold calibration
@@ -1201,29 +1338,8 @@ class MarketBlender:
         target: str,
         merged: pd.DataFrame,
     ) -> np.ndarray:
-        """Get per-row blend weights for edge computation.
-
-        Returns an array of weights, one per row of merged.
-        For static mode, all rows get the same weight.
-        For dynamic mode, weight varies by (season, week).
-        """
-        weight_attr_map = {
-            "wp": "wp_model_weight",
-            "ats": "ats_model_weight",
-            "ou": "ou_model_weight",
-        }
-        if self._dynamic_weights is not None and "game_id" in merged.columns:
-            merged_wk = self._ensure_week_season_columns(merged)
-            weights = np.empty(len(merged_wk))
-            for (season_val, week_val), group_idx in merged_wk.groupby(
-                ["season", "week"]
-            ).groups.items():
-                local_mask = np.isin(merged_wk.index, group_idx)
-                weights[local_mask] = self._dynamic_weights.get_weight(
-                    target, int(week_val), int(season_val)
-                )
-            return weights
-        static_weight = getattr(self.config.weights, weight_attr_map[target])
+        """The fixed per-target blend weight, one entry per row of *merged*."""
+        static_weight = getattr(self.config.weights, _WEIGHT_ATTR_BY_TARGET[target])
         return np.full(len(merged), static_weight)
 
     def _compute_edges(
@@ -1232,6 +1348,11 @@ class MarketBlender:
         merged: pd.DataFrame,
     ) -> np.ndarray:
         """Compute edge magnitudes for a target on merged predictions+odds.
+
+        The WP branch still devigs a closing moneyline. It feeds the edge-threshold
+        calibration and the weekly flag-rate diagnostic, and moving it onto the pre-lock
+        converter is Plan 33.2-26's (``CLOSING-LINE-AUDIT.md``, the blend edge-threshold
+        calibration row).
 
         Args:
             target: "wp", "ats", or "ou".
@@ -1255,22 +1376,10 @@ class MarketBlender:
             fair_home = (home_raw / (home_raw + away_raw)).values
             model_prob = valid["model_prob"].values
 
-            if self._dynamic_weights is not None and "game_id" in valid.columns:
-                valid_wk = self._ensure_week_season_columns(valid)
-                blended = np.empty_like(model_prob, dtype=np.float64)
-                for (s, w), gidx in valid_wk.groupby(["season", "week"]).groups.items():
-                    local = np.isin(valid_wk.index, gidx)
-                    blended[local] = self.blend_wp(
-                        np.asarray(model_prob[local], dtype=np.float64),
-                        np.asarray(fair_home[local], dtype=np.float64),
-                        week=int(w),
-                        season=int(s),
-                    )
-            else:
-                blended = self.blend_wp(
-                    np.asarray(model_prob, dtype=np.float64),
-                    np.asarray(fair_home, dtype=np.float64),
-                )
+            blended = self.blend_wp(
+                np.asarray(model_prob, dtype=np.float64),
+                np.asarray(fair_home, dtype=np.float64),
+            )
             edges = np.abs(blended - fair_home)
             # Reindex to match merged
             result = np.zeros(len(merged))
@@ -1315,73 +1424,120 @@ class MarketBlender:
         self,
         tuning_result: TuningResult,
         artifacts_dir: Path = Path("artifacts"),
+        *,
+        provenance: BlendProvenance,
+        update_latest: bool = False,
     ) -> Path:
-        """Save blend weights and metadata as JSON artifacts.
+        """Write ONE new ``blend_{timestamp}/blend_weights.json`` carrying the whole record.
 
-        Creates artifacts/blend_{timestamp}/ with blend_weights.json
-        containing weights, CLV, provenance metadata, and tuning config.
-        Updates artifacts/latest.json with "blend" key.
+        The payload holds the fitted weights, the tuning record, the provenance
+        (:class:`BlendProvenance`) and the converter binding this blender carries -- all in
+        the one file :meth:`from_artifacts` opens. No ``metadata.json`` is written beside it:
+        two files would be two answers about one artifact's provenance.
+
+        ``artifacts/latest.json`` IS NOT TOUCHED BY DEFAULT. It is the production swap
+        surface, and until Plan 33.2-24 this method rewrote it unconditionally after writing
+        the payload -- so a fit meant to produce a CANDIDATE silently deployed it. The flag
+        mirrors ``models.artifacts.save_model_artifact``'s D24-08 ``update_latest`` exactly:
+        the manifest is rewritten only when the caller says so. Plan 33.2-25's batched swap
+        is the one writer of the ``blend`` pointer this phase.
 
         Args:
-            tuning_result: TuningResult from tune_weights.
+            tuning_result: The :class:`TuningResult` from :meth:`tune_weights`.
             artifacts_dir: Root directory for artifacts.
+            provenance: What the blend was fitted on. REQUIRED: a blend artifact that cannot
+                name its gold, its source models and its corpus is one nobody can audit.
+            update_latest: Rewrite ``latest.json``'s ``blend`` pointer to the new directory.
 
         Returns:
             Path to the created artifact directory.
-        """
-        timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
-        dir_prefix = "blend_dynamic" if self._dynamic_weights else "blend"
-        artifact_dir = artifacts_dir / f"{dir_prefix}_{timestamp}"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        # Build JSON payload
-        payload: dict = {
-            "blender_version": "2.0" if self._dynamic_weights else "1.0",
-            "weights": {
-                "wp": tuning_result.weights.wp_model_weight,
-                "ats": tuning_result.weights.ats_model_weight,
-                "ou": tuning_result.weights.ou_model_weight,
-            },
+        Raises:
+            MarketProbabilityBindingError: when no converter is bound -- such a blend could
+                never convert a spread, so it could never serve WP.
+            FileExistsError: when the timestamped directory already exists; an artifact id
+                names exactly one payload.
+        """
+        if (
+            self.market_probability_artifact_id is None
+            or self.market_probability_slope_beta is None
+        ):
+            msg = (
+                "refusing to write a blend artifact with no converter bound: without "
+                "market_probability_artifact_id and market_probability_slope_beta the "
+                "blend could never convert a pre-lock spread, so it could never serve WP."
+            )
+            raise MarketProbabilityBindingError(msg)
+
+        timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
+        artifact_dir = artifacts_dir / f"{BLEND_ARTIFACT_PREFIX}_{timestamp}"
+        artifact_dir.mkdir(parents=True, exist_ok=False)
+
+        weights = {
+            target: getattr(tuning_result.weights, attr)
+            for target, attr in _WEIGHT_ATTR_BY_TARGET.items()
+        }
+        payload: dict[str, Any] = {
+            "blender_version": BLENDER_VERSION,
+            "blend_shape": "one fixed model weight per target",
+            "weights": weights,
+            # Carried from this blender's config so from_artifacts round-trips them, exactly
+            # as before. The fixed-weight fit does NOT calibrate them: the threshold
+            # derivation is Plan 33.2-26's, and the source is stated rather than implied.
             "edge_thresholds": {
                 "wp": self.config.edge_thresholds.wp_threshold,
                 "ats": self.config.edge_thresholds.ats_threshold,
                 "ou": self.config.edge_thresholds.ou_threshold,
             },
-            "per_target_clv": tuning_result.per_target_clv,
-            "tuning_seasons": tuning_result.tuning_seasons,
-            "n_games": tuning_result.n_games,
+            "edge_thresholds_source": (
+                "the blender's configured thresholds; not calibrated by the fixed-weight "
+                "fit -- the 2026 threshold derivation is Plan 33.2-26's"
+            ),
+            "objective": dict(tuning_result.objective_by_target),
+            "loss_at_weight": dict(tuning_result.loss_by_target),
+            "loss_market_only": dict(tuning_result.market_only_loss_by_target),
+            "loss_model_only": dict(tuning_result.model_only_loss_by_target),
+            "boundary_weights": list(tuning_result.boundary_targets),
+            "weight_grid": {
+                "min": float(BLEND_WEIGHT_GRID[0]),
+                "max": float(BLEND_WEIGHT_GRID[-1]),
+                "step": 0.01,
+            },
+            "tuning_seasons": {
+                t: list(seasons)
+                for t, seasons in tuning_result.seasons_by_target.items()
+            },
+            "n_games": dict(tuning_result.n_games),
+            "season_best_weight": {
+                t: {str(season): weight for season, weight in best.items()}
+                for t, best in tuning_result.season_best_weight_by_target.items()
+            },
             "tuned_at": datetime.now(tz=UTC).isoformat(),
-            "weight_range": [0.50, 0.70],
-            "weight_step": 0.01,
+            **provenance.to_payload(),
+            "market_probability_artifact_id": self.market_probability_artifact_id,
+            "market_probability_slope_beta": self.market_probability_slope_beta,
         }
 
-        # Include dynamic section when dynamic weights are configured
-        if self._dynamic_weights is not None:
-            payload["dynamic"] = self._dynamic_weights.to_dict()
-
-        weights_path = artifact_dir / "blend_weights.json"
-        weights_path.write_text(json.dumps(payload, indent=2))
-
-        # Update latest.json manifest. latest.json is the sole production swap surface, so the
-        # write must be atomic -- a partial write (crash/disk-full mid-write) would corrupt it
-        # and break all model loading (WR-02). Reuse the single atomic-write helper that
-        # update_manifest uses so there is one implementation.
+        # The ONE atomic-write helper the manifest writers use, so there is one
+        # implementation of an atomic JSON write in this repository.
         from models.artifacts import _atomic_write_json
 
-        latest_path = artifacts_dir / "latest.json"
-        if latest_path.exists():
-            manifest = json.loads(latest_path.read_text())
-        else:
-            manifest = {}
-        manifest["blend"] = artifact_dir.name
-        _atomic_write_json(latest_path, manifest)
+        _atomic_write_json(artifact_dir / BLEND_PAYLOAD_FILENAME, payload)
+
+        if update_latest:
+            latest_path = artifacts_dir / "latest.json"
+            manifest = (
+                json.loads(latest_path.read_text()) if latest_path.exists() else {}
+            )
+            manifest["blend"] = artifact_dir.name
+            _atomic_write_json(latest_path, manifest)
 
         self.logger.info(
-            "Saved blend artifacts",
+            "Saved blend artifact",
             artifact_dir=str(artifact_dir),
-            weights=payload["weights"],
+            weights=weights,
+            update_latest=update_latest,
         )
-
         return artifact_dir
 
     @classmethod
@@ -1394,7 +1550,7 @@ class MarketBlender:
 
         Reads blend_weights.json from the artifact directory (latest or
         specific version) and returns a new MarketBlender configured
-        with the loaded weights.
+        with the loaded weights, its converter binding and its provenance.
 
         Args:
             artifacts_dir: Root directory for artifacts.
@@ -1406,6 +1562,7 @@ class MarketBlender:
         Raises:
             FileNotFoundError: If artifacts not found.
             KeyError: If 'blend' not in latest.json.
+            RetiredDynamicBlendError: If the payload carries the retired ``dynamic`` section.
         """
         if version is None:
             latest_path = artifacts_dir / "latest.json"
@@ -1419,15 +1576,26 @@ class MarketBlender:
             version = manifest["blend"]
 
         artifact_dir = artifacts_dir / version
-        weights_path = artifact_dir / "blend_weights.json"
+        weights_path = artifact_dir / BLEND_PAYLOAD_FILENAME
 
         if not weights_path.exists():
             msg = f"blend_weights.json not found in {artifact_dir}"
             raise FileNotFoundError(msg)
 
         data = json.loads(weights_path.read_text())
-        weights_data = data["weights"]
 
+        if "dynamic" in data:
+            msg = (
+                f"blend artifact {version!r} carries a 'dynamic' section: it is the retired "
+                "week-varying blend (D33.2-10), fitted on synthetic predictions over "
+                "2010-2017 closing lines. Refusing it rather than reading it as a static "
+                "blend, which would publish a number neither the retired rule nor the new "
+                "one chose. The replacement is a fixed-weight 'blend_*' artifact, installed "
+                "by the production swap (Plan 33.2-25)."
+            )
+            raise RetiredDynamicBlendError(msg)
+
+        weights_data = data["weights"]
         blend_weights = BlendWeights(
             wp_model_weight=weights_data["wp"],
             ats_model_weight=weights_data["ats"],
@@ -1450,19 +1618,13 @@ class MarketBlender:
             edge_thresholds=edge_thresholds,
         )
 
-        # Load dynamic weights if present (D-23: auto-detect)
-        dynamic_weights = None
-        dynamic_data = data.get("dynamic")
-        if dynamic_data is not None:
-            dynamic_weights = DynamicBlendWeights.from_dict(dynamic_data)
-
         converter_id, converter_slope = cls._read_converter_binding(data, artifacts_dir)
 
         return cls(
             config=config,
-            dynamic_weights=dynamic_weights,
             market_probability_artifact_id=converter_id,
             market_probability_slope_beta=converter_slope,
+            provenance=BlendProvenance.from_payload(data),
         )
 
     @staticmethod
@@ -1477,9 +1639,8 @@ class MarketBlender:
         live without adding a fifth ``latest.json`` pointer (SPEC R13 fixes it at four).
         Plan 33.2-24 writes the two keys read here.
 
-        An ABSENT binding loads unchanged and returns ``(None, None)``: the live incumbent
-        ``blend_dynamic_20260606_020635`` carries neither key, and nothing that loads
-        today's blend may break at load time. The refusal happens later, at the blend
+        An ABSENT binding loads unchanged and returns ``(None, None)``: nothing that loads a
+        converter-less blend may break at load time. The refusal happens later, at the blend
         itself, where a market opinion would have had to be invented.
 
         Raises:

@@ -4,11 +4,16 @@ Tests wiring between MarketBlender and BacktestEngine, BettingSimulator
 schema compatibility with blended predictions, report blend delta
 rendering, backward compatibility, and JSON export with blending key.
 
-Also contains TestDynamicComparison (Plan 13-04) for side-by-side
-comparison, per-target gating, and comparison report generation.
-
 All heavy components (BacktestEngine.run, trainer training) are mocked.
 Tests verify the WIRING, not model quality.
+
+DELETED BY RULING (Plan 33.2-24 Task 2, D33.2-10): the ``TestDynamicComparison`` cases that
+drove ``backtest.tune._gate_per_target`` (five), ``_generate_comparison_report`` (two) and the
+per-target ``mode_by_target`` update (one). They tested the fixed-versus-DYNAMIC comparison on a
+closing-line CLV metric; with the week-varying shape retired there is no second mode to gate,
+and the metric itself is dead under D33.2-03. The one case that asserted something about the
+SURVIVING path -- post-hoc ``blend_predictions`` equals a manual ``blend_wp`` on the bound
+converter -- is kept, as ``TestPostHocBlendingEquivalence``.
 """
 
 from __future__ import annotations
@@ -25,18 +30,7 @@ from backtest.engine import BacktestConfig, BacktestResults
 from backtest.report import BacktestReporter
 from backtest.run import export_summary_json
 from backtest.simulation import BettingSimulator, SimulationResults
-from backtest.tune import _gate_per_target, _generate_comparison_report
-
-# The season span a report describes is now PASSED IN rather than written into the
-# methodology prose as the literal "2021-2024" (review WR-14): a report that names a
-# window the run did not use is a report that lies about its own population.
-_SPAN = "2024-2025"
-from models.blending import (
-    BlendConfig,
-    DynamicBlendWeights,
-    MarketBlender,
-    SigmoidParams,
-)
+from models.blending import BlendConfig, MarketBlender
 
 # ---------------------------------------------------------------------------
 # Synthetic data factories
@@ -522,186 +516,12 @@ class TestExportSummaryJsonBlending:
 
 
 # ---------------------------------------------------------------------------
-# Test: Dynamic comparison, per-target gating, and comparison report (13-04)
+# Test: post-hoc blending is the production blend
 # ---------------------------------------------------------------------------
 
 
-class TestDynamicComparison:
-    """Tests for _gate_per_target, _generate_comparison_report, and
-    post-hoc blending equivalence (Plan 13-04)."""
-
-    # -- _gate_per_target tests --
-
-    def test_gate_per_target_passes_when_dynamic_better(self) -> None:
-        static_clv = {"wp": -0.02, "ats": 0.80, "ou": 45.0}
-        dynamic_clv = {"wp": -0.01, "ats": 0.90, "ou": 46.0}
-        bet_counts = {"wp": 200, "ats": 180, "ou": 190}
-        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
-        for target in ("wp", "ats", "ou"):
-            assert result[target]["passed"] is True
-            assert "bet_count" in result[target]
-
-    def test_gate_per_target_rejects_when_dynamic_worse(self) -> None:
-        static_clv = {"wp": -0.01, "ats": 1.00, "ou": 46.0}
-        dynamic_clv = {"wp": -0.03, "ats": 0.80, "ou": 44.0}
-        bet_counts = {"wp": 200, "ats": 180, "ou": 190}
-        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
-        for target in ("wp", "ats", "ou"):
-            assert result[target]["passed"] is False
-
-    def test_gate_per_target_mixed_outcome(self) -> None:
-        static_clv = {"wp": -0.02, "ats": 1.00, "ou": 45.0}
-        dynamic_clv = {"wp": -0.01, "ats": 0.80, "ou": 46.0}
-        bet_counts = {"wp": 200, "ats": 180, "ou": 190}
-        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
-        assert result["wp"]["passed"] is True
-        assert result["ats"]["passed"] is False
-        assert result["ou"]["passed"] is True
-
-    def test_gate_per_target_equal_clv_passes(self) -> None:
-        """Per D-19: dynamic CLV must match or beat static CLV."""
-        static_clv = {"wp": -0.02, "ats": 1.00, "ou": 45.0}
-        dynamic_clv = {"wp": -0.02, "ats": 1.00, "ou": 45.0}
-        bet_counts = {"wp": 200, "ats": 180, "ou": 190}
-        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
-        for target in ("wp", "ats", "ou"):
-            assert result[target]["passed"] is True
-
-    def test_gate_per_target_has_required_keys(self) -> None:
-        """Each gating entry must have all expected keys."""
-        static_clv = {"wp": 0.01, "ats": 0.02, "ou": 0.03}
-        dynamic_clv = {"wp": 0.02, "ats": 0.01, "ou": 0.04}
-        bet_counts = {"wp": 100, "ats": 100, "ou": 100}
-        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
-        required_keys = {
-            "passed",
-            "static_clv",
-            "dynamic_clv",
-            "delta",
-            "relative_delta_pct",
-            "bet_count",
-            "reason",
-        }
-        for target in ("wp", "ats", "ou"):
-            assert set(result[target].keys()) == required_keys
-
-    # -- _generate_comparison_report tests --
-
-    def test_generate_comparison_report(self, tmp_path: Path) -> None:
-        dynamic_weights = DynamicBlendWeights(
-            wp=SigmoidParams(midpoint=0.5, steepness=0.8),
-            ats=SigmoidParams(midpoint=0.4, steepness=1.0),
-            ou=SigmoidParams(midpoint=0.6, steepness=0.5),
-            mode_by_target={"wp": "dynamic", "ats": "static", "ou": "dynamic"},
-        )
-        static_results = {
-            "headline_clv": {"wp": -0.02, "ats": 1.00, "ou": 45.0},
-            "per_season_clv": {
-                "wp": {2021: -0.03, 2022: -0.01},
-                "ats": {2021: 0.90, 2022: 1.10},
-                "ou": {2021: 44.0, 2022: 46.0},
-            },
-        }
-        dynamic_results = {
-            "headline_clv": {"wp": -0.01, "ats": 0.80, "ou": 46.0},
-            "per_season_clv": {
-                "wp": {2021: -0.02, 2022: 0.00},
-                "ats": {2021: 0.70, 2022: 0.90},
-                "ou": {2021: 45.0, 2022: 47.0},
-            },
-        }
-        gating = _gate_per_target(
-            static_results["headline_clv"],
-            dynamic_results["headline_clv"],
-            {"wp": 200, "ats": 180, "ou": 190},
-        )
-        output_path = tmp_path / "comparison_dynamic_vs_static.md"
-        _generate_comparison_report(
-            static_results=static_results,
-            dynamic_results=dynamic_results,
-            gating=gating,
-            dynamic_weights=dynamic_weights,
-            output_path=output_path,
-            backtest_span=_SPAN,
-        )
-        assert output_path.exists()
-        content = output_path.read_text(encoding="utf-8")
-        assert "# Dynamic vs Static Blend Weight Comparison" in content
-        assert "PASS" in content or "FAIL" in content
-        assert "Sigmoid Parameters" in content
-        assert "Bet Count" in content
-
-    def test_generate_comparison_report_per_season_breakdown(
-        self, tmp_path: Path
-    ) -> None:
-        dynamic_weights = DynamicBlendWeights(
-            wp=SigmoidParams(midpoint=0.5, steepness=0.8),
-            ats=SigmoidParams(midpoint=0.4, steepness=1.0),
-            ou=SigmoidParams(midpoint=0.6, steepness=0.5),
-        )
-        static_results = {
-            "headline_clv": {"wp": 0.01, "ats": 0.02, "ou": 0.03},
-            "per_season_clv": {
-                "wp": {2021: 0.01, 2022: 0.02, 2023: 0.00, 2024: 0.01},
-                "ats": {2021: 0.02, 2022: 0.03, 2023: 0.01, 2024: 0.02},
-                "ou": {2021: 0.03, 2022: 0.04, 2023: 0.02, 2024: 0.03},
-            },
-        }
-        dynamic_results = {
-            "headline_clv": {"wp": 0.02, "ats": 0.03, "ou": 0.04},
-            "per_season_clv": {
-                "wp": {2021: 0.02, 2022: 0.03, 2023: 0.01, 2024: 0.02},
-                "ats": {2021: 0.03, 2022: 0.04, 2023: 0.02, 2024: 0.03},
-                "ou": {2021: 0.04, 2022: 0.05, 2023: 0.03, 2024: 0.04},
-            },
-        }
-        gating = _gate_per_target(
-            static_results["headline_clv"],
-            dynamic_results["headline_clv"],
-            {"wp": 250, "ats": 240, "ou": 260},
-        )
-        output_path = tmp_path / "comparison_dynamic_vs_static.md"
-        _generate_comparison_report(
-            static_results=static_results,
-            dynamic_results=dynamic_results,
-            gating=gating,
-            dynamic_weights=dynamic_weights,
-            output_path=output_path,
-            backtest_span=_SPAN,
-        )
-        content = output_path.read_text(encoding="utf-8")
-        assert "Per-Season CLV Breakdown" in content
-        assert "2021" in content
-        assert "2022" in content
-        assert "2023" in content
-        assert "2024" in content
-
-    # -- mode_by_target gating test --
-
-    def test_mode_by_target_updated_after_gating(self) -> None:
-        """After gating where ATS fails, mode_by_target reflects the result."""
-        dynamic_weights = DynamicBlendWeights(
-            wp=SigmoidParams(midpoint=0.5, steepness=0.8),
-            ats=SigmoidParams(midpoint=0.4, steepness=1.0),
-            ou=SigmoidParams(midpoint=0.6, steepness=0.5),
-            mode_by_target={"wp": "dynamic", "ats": "dynamic", "ou": "dynamic"},
-        )
-        # Simulate gating: wp passes, ats fails, ou passes
-        gating = _gate_per_target(
-            static_clv={"wp": -0.02, "ats": 1.00, "ou": 45.0},
-            dynamic_clv={"wp": -0.01, "ats": 0.80, "ou": 46.0},
-            bet_counts={"wp": 200, "ats": 180, "ou": 190},
-        )
-        # Apply gating to mode_by_target (same pattern as run_comparison)
-        for target in ("wp", "ats", "ou"):
-            dynamic_weights.mode_by_target[target] = (
-                "dynamic" if gating[target]["passed"] else "static"
-            )
-        assert dynamic_weights.mode_by_target == {
-            "wp": "dynamic",
-            "ats": "static",
-            "ou": "dynamic",
-        }
+class TestPostHocBlendingEquivalence:
+    """Post-hoc ``blend_predictions`` equals a manual ``blend_wp`` on the bound converter."""
 
     # -- Post-hoc blending equivalence test --
 

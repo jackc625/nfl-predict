@@ -54,8 +54,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from models.blending import BLEND_TUNING_COLUMNS
 from models.market_probability import (
     OWNED_LINE_SEASONS,
+    oof_market_probability,
     timeline_spread_to_home_fav_margin,
 )
 from utils import get_logger
@@ -75,6 +77,24 @@ OWNED_TIMELINE_TABLE: str = "odds_timeline"
 #: Why a scheduled game is absent from the tuning frame. It is the ONE reason this loader
 #: can give: the game has no line timed at or before its own lock.
 EXCLUSION_NO_PRELOCK_LINE: str = "no_prelock_line"
+
+#: Why a game WITH a pre-lock line is absent from the WP fit ALONE: its season has no
+#: prior-fold converter slope, so its market probability cannot be computed out of fold. It
+#: is never converted with the serving slope instead (see
+#: :func:`attach_oof_market_probability`). The ATS and O/U fits keep it: they blend the line
+#: itself and never touch the converter.
+EXCLUSION_NO_PRIOR_FOLD_CONVERTER: str = "no_prior_fold_converter"
+
+#: Every exclusion class, in the order a readout publishes them.
+EXCLUSION_REASONS: tuple[str, ...] = (
+    EXCLUSION_NO_PRELOCK_LINE,
+    EXCLUSION_NO_PRIOR_FOLD_CONVERTER,
+)
+
+#: The columns a target's walk-forward predictions arrive in. ``actual`` is each trainer's
+#: OWN target column (``home_win`` / ``home_margin`` / ``total_points``), so the blend is
+#: scored in the model's own metric on the model's own labels.
+_PREDICTION_COLUMNS: tuple[str, ...] = ("game_id", "season", "prediction", "actual")
 
 #: The two ways a game ends up with no pre-lock line, recorded per row so the readout's
 #: breakdown is read off the data rather than re-derived: the timeline has no row for the
@@ -339,76 +359,152 @@ def load_tuning_period_data(
 
 
 # ---------------------------------------------------------------------------
-# Retired with the week-varying blend by Plan 33.2-24 Task 2, together with their readers
-# in models/blending.py and backtest/tune.py. They are the 2010-2017 closing-line window and
-# the synthetic-prediction noise profile the dynamic sigmoid was fitted on.
+# The tuning frames: corpus x walk-forward predictions x out-of-fold market
 # ---------------------------------------------------------------------------
 
-TUNING_SEASONS: list[int] = list(range(2010, 2018))
-"""The retired closing-line tuning window (2010-2017). Removed in Task 2."""
 
-MIN_NOISE_SAMPLE_COUNT = 30
-"""Minimum games per week for the retired noise profile. Removed in Task 2."""
+@dataclass(frozen=True)
+class BlendTuningFrames:
+    """One tuning frame per target, plus the rows the WP fit alone had to drop.
 
-
-def extract_noise_profile(
-    baselines_dir: Path | None = None,
-    min_sample_count: int = MIN_NOISE_SAMPLE_COUNT,
-) -> dict[str, pd.DataFrame]:
-    """Per-week model-vs-closing-market error statistics. Removed in Task 2.
-
-    Used only by the retired dynamic blend tuning to synthesize predictions for the
-    2010-2017 closing-line window.
+    Attributes:
+        frames: ``{wp, ats, ou}`` -> one row per game, carrying ``game_id``, ``season``,
+            ``week`` and that target's ``models.blending.BLEND_TUNING_COLUMNS``.
+        excluded: The WP-only :data:`EXCLUSION_NO_PRIOR_FOLD_CONVERTER` rows
+            (:data:`EXCLUDED_COLUMNS`).
     """
-    if baselines_dir is None:
-        baselines_dir = Path("data/baselines/v2.0")
 
-    if not baselines_dir.exists():
-        msg = (
-            f"Baselines directory not found: {baselines_dir}. "
-            "Run backtest first to generate baseline predictions."
-        )
-        raise FileNotFoundError(msg)
+    frames: dict[str, pd.DataFrame]
+    excluded: pd.DataFrame
 
-    profiles: dict[str, pd.DataFrame] = {}
-    target_configs = {
-        "wp": ("predictions_wp.parquet", "model_prob", "fair_closing_prob"),
-        "ats": ("predictions_ats.parquet", "model_spread", "spread"),
-        "ou": ("predictions_ou.parquet", "model_total", "total"),
-    }
 
-    for target, (filename, model_col, market_col) in target_configs.items():
-        parquet_path = baselines_dir / filename
-        if not parquet_path.exists():
+def attach_oof_market_probability(
+    frame: pd.DataFrame,
+    walk_forward_slopes: dict[str, float] | dict[int, float],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The WP market side of every HISTORICAL row, out of fold, and the rows that have none.
+
+    WHY OUT OF FOLD. The converter artifact carries two outputs because history and serving
+    need different things (Plan 33.2-21): ``slope_beta``, fitted over EVERY owned season,
+    which serving binds; and ``walk_forward_slopes``, per season ``S`` a slope fitted on
+    seasons strictly before ``S``. A historical row converted with ``slope_beta`` would be
+    priced by a slope fitted partly on that row's own outcome -- in-sample leakage that
+    flatters the market side and biases the fitted weight, invisibly, because the number
+    still looks like a probability. So every row here goes through ``oof_market_probability``
+    with its own season's prior-only slope, and ``slope_beta`` converts nothing.
+
+    A row whose season has no prior fold (the first owned season -- 2020 on today's corpus,
+    for which ``oof_market_probability`` refuses by design) is returned in the excluded set
+    under :data:`EXCLUSION_NO_PRIOR_FOLD_CONVERTER`. It is never filled with ``slope_beta``,
+    a neighbouring season's slope or anything else.
+
+    Args:
+        frame: Corpus rows carrying ``season`` and ``market_spread`` (home-margin scale).
+        walk_forward_slopes: The converter artifact's ``walk_forward_slopes``.
+
+    Returns:
+        ``(rows, excluded)``: the convertible rows with a ``market_prob_oof`` column, and the
+        excluded rows (:data:`EXCLUDED_COLUMNS`).
+    """
+    covered = {int(season) for season in walk_forward_slopes}
+    convertible = frame["season"].astype(int).isin(covered)
+
+    rows = frame.loc[convertible].copy()
+    rows["market_prob_oof"] = oof_market_probability(
+        rows.assign(home_fav_margin=rows["market_spread"]), walk_forward_slopes
+    )
+
+    dropped = frame.loc[~convertible].copy()
+    dropped["reason"] = EXCLUSION_NO_PRIOR_FOLD_CONVERTER
+    dropped["detail"] = [
+        f"season {int(season)} has no prior-fold converter slope"
+        for season in dropped["season"]
+    ]
+    for column in ("week", "game_type"):
+        if column not in dropped.columns:
+            dropped[column] = pd.NA
+    excluded = dropped.loc[:, list(EXCLUDED_COLUMNS)].reset_index(drop=True)
+    return rows.reset_index(drop=True), excluded
+
+
+def build_tuning_frames(
+    corpus_frame: pd.DataFrame,
+    predictions: dict[str, pd.DataFrame],
+    walk_forward_slopes: dict[str, float] | dict[int, float],
+) -> BlendTuningFrames:
+    """Join the owned pre-lock corpus to each model's walk-forward predictions.
+
+    Every corpus game must carry a prediction for every target: a game silently dropped here
+    would be an exclusion nobody counted. The market side per target:
+
+    * WP -- ``market_prob_oof``, the out-of-fold converter probability
+      (:func:`attach_oof_market_probability`); first-owned-season rows leave the WP fit ONLY;
+    * ATS -- ``market_spread``, the pre-lock line itself on the home-margin scale;
+    * O/U -- ``market_total``, the pre-lock total itself.
+
+    ATS and O/U never pass through the converter, so they keep the FULL corpus -- the
+    per-target difference in row counts is a decision, not a defect.
+
+    Args:
+        corpus_frame: :attr:`PrelockTuningCorpus.frame`.
+        predictions: ``{wp, ats, ou}`` -> ``game_id``, ``season``, ``prediction``,
+            ``actual``.
+        walk_forward_slopes: The converter artifact's ``walk_forward_slopes``.
+
+    Returns:
+        The :class:`BlendTuningFrames`.
+
+    Raises:
+        TuningCorpusError: when a target's predictions miss a corpus game, repeat one, or
+            disagree with the corpus about a game's season.
+    """
+    frames: dict[str, pd.DataFrame] = {}
+    excluded = pd.DataFrame(columns=list(EXCLUDED_COLUMNS))
+
+    for target, (model_col, market_col, outcome_col) in BLEND_TUNING_COLUMNS.items():
+        if target not in predictions:
+            msg = f"no walk-forward predictions were supplied for {target!r}"
+            raise TuningCorpusError(msg)
+        preds = predictions[target]
+        _require(preds, _PREDICTION_COLUMNS, f"{target} predictions")
+        preds = preds.loc[:, list(_PREDICTION_COLUMNS)].copy()
+        preds["game_id"] = preds["game_id"].astype(str)
+        assert_one_row_per_game(preds)
+
+        missing = sorted(set(corpus_frame["game_id"]) - set(preds["game_id"]))
+        if missing:
             msg = (
-                f"{filename} not found in {baselines_dir}. "
-                "Run backtest first to generate baseline predictions."
+                f"{len(missing)} owned pre-lock game(s) have no {target} walk-forward "
+                f"prediction, e.g. {missing[:10]}. Refusing rather than dropping them: a "
+                "game silently lost here is an exclusion nobody counted."
             )
-            raise FileNotFoundError(msg)
+            raise TuningCorpusError(msg)
 
-        df = pd.read_parquet(parquet_path)
-        df["week"] = df["game_id"].str.extract(r"_W(\d+)_")[0].astype(int)
-        df["season"] = df["game_id"].str.split("_").str[0].astype(int)
-        df["error"] = df[model_col] - df[market_col]
-        max_week = df["season"].apply(lambda s: 17 if s <= 2020 else 18)
-        df = df[df["week"] <= max_week]
+        joined = corpus_frame.merge(
+            preds.rename(columns={"season": "prediction_season"}),
+            on="game_id",
+            how="inner",
+        )
+        disagree = joined.loc[
+            joined["season"].astype(int) != joined["prediction_season"].astype(int),
+            "game_id",
+        ]
+        if not disagree.empty:
+            msg = (
+                f"{target} predictions disagree with the corpus about the season of "
+                f"{sorted(disagree)[:10]}"
+            )
+            raise TuningCorpusError(msg)
 
-        season_mean = float(df["error"].mean())
-        season_std = float(df["error"].std())
-        stats = df.groupby("week")["error"].agg(["mean", "std", "count"]).reset_index()
-        stats["count"] = stats["count"].astype(int)
-        for idx in stats.index:
-            count = stats.at[idx, "count"]
-            if count < min_sample_count:
-                blend_weight = count / min_sample_count
-                stats.at[idx, "mean"] = (
-                    blend_weight * stats.at[idx, "mean"]
-                    + (1 - blend_weight) * season_mean
-                )
-                stats.at[idx, "std"] = (
-                    blend_weight * stats.at[idx, "std"]
-                    + (1 - blend_weight) * season_std
-                )
-        profiles[target] = stats
+        if target == "wp":
+            joined, excluded = attach_oof_market_probability(
+                joined, walk_forward_slopes
+            )
 
-    return profiles
+        frames[target] = (
+            joined.rename(columns={"prediction": model_col, "actual": outcome_col})
+            .loc[:, ["game_id", "season", "week", model_col, market_col, outcome_col]]
+            .sort_values("game_id", ignore_index=True)
+        )
+
+    return BlendTuningFrames(frames=frames, excluded=excluded)
