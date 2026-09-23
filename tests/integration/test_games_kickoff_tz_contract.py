@@ -23,6 +23,26 @@ The three facts pinned here, each of which was FALSE or unverified before:
    UTC instant shifts its stored hour by one across the November EDT-to-EST boundary.
    Per season, so one surviving cohort cannot hide inside an aggregate.
 
+THE COHORT HANDLE IS GONE, AND THAT IS WHY FACT 2 MOVED (Plan 33.2-20)
+-----------------------------------------------------------------------
+``shifted_mask`` finds the stale cohort by ``created_at == 2025-09-28 14:47:59``,
+the instant of the one bad ingest run. MEASURED 2026-09-22: it now matches ZERO
+rows. Silver ``games`` has been re-ingested through the corrected path since --
+Plan 33.2-09's venue corrections, Plan 33.2-12's kickoff-hour repair and the live
+2026 capture -- and ``upsert_silver`` re-stamps ``created_at`` on every row it
+writes. Every ``created_at`` in the store is now one of 24 per-season stamps from
+2026-09-14 06:43 plus one 2026-09-19 15:37 stamp for the 272 live 2026 rows.
+
+That is the cohort MEMBERSHIP evaporating, not the staleness returning, and it was
+the membership node that caught it -- which is exactly what a non-vacuity control
+is for. The consequence is stated rather than absorbed: ``cohort_is_stale`` returns
+False on an empty cohort, so the two cohort-staleness nodes below now pass
+VACUOUSLY and say so. The load-bearing guard is fact 3, the DST correlation, which
+reads the WHOLE frame per season and therefore covers a superset of the cohort --
+25 of 25 seasons, none failing. The idempotency trap the membership node guards is
+a property of the TOOL, so it is re-asserted against a synthetic frame that carries
+the marker; a synthetic frame cannot be re-ingested away.
+
 READ-ONLY: nothing here writes under ``data/``. Skips cleanly when the data is absent.
 """
 
@@ -129,21 +149,98 @@ class TestNoRowIsStale:
     """The cohort's kickoffs are true instants."""
 
     def test_the_parquet_cohort_is_not_stale(self, games_parquet: pd.DataFrame) -> None:
+        """PASSES VACUOUSLY TODAY -- the cohort is empty (see the module docstring).
+
+        Kept rather than deleted: the day a re-ingest re-creates a cohort carrying
+        that ``created_at``, this is the node that judges it. The non-vacuous
+        staleness guard meanwhile is ``TestDstCorrelationHoldsPerSeason``, which
+        reads the whole frame.
+        """
         assert cohort_is_stale(games_parquet) is False
 
     def test_the_duckdb_cohort_is_not_stale(self, games_duckdb: pd.DataFrame) -> None:
+        """Same vacuity, same reason, same standing value."""
         assert cohort_is_stale(games_duckdb) is False
 
-    def test_cohort_membership_is_deliberately_preserved(
+    def test_the_cohort_handle_was_re_ingested_away_and_the_guard_moved(
         self, games_parquet: pd.DataFrame
     ) -> None:
-        """Guards the idempotency trap.
+        """RE-ANCHORED (Plan 33.2-20): the handle is gone, so its absence is stated.
 
-        The tool shifts ``kickoff_et`` and never ``created_at``, so the cohort KEEPS
-        its 1,926 rows after a successful run. Anything that keys "already done" on
-        cohort emptiness will never fire and will double-shift on a re-run.
+        Was ``test_cohort_membership_is_deliberately_preserved``, asserting the cohort
+        still holds its 1,926 rows. It does not: ``shifted_mask`` keys on
+        ``created_at == 2025-09-28 14:47:59`` and every row has been re-ingested since
+        (Plan 33.2-09's venue corrections, Plan 33.2-12's kickoff-hour repair, the live
+        2026 capture), each write re-stamping ``created_at``. Re-anchoring the count to
+        0 alone would record a number and lose the point, so THREE things are asserted:
+
+        1. the handle really is gone -- no row carries the marker;
+        2. the store carries real re-ingest stamps rather than nulls, so "gone" means
+           re-ingested and not erased;
+        3. the guard the old node stood for is intact somewhere it cannot evaporate --
+           the DST correlation covers every season in the frame, which is a SUPERSET
+           of the cohort it replaced.
         """
-        assert int(shifted_mask(games_parquet).sum()) == EXPECTED_SHIFTED_ROWS
+        created = pd.to_datetime(games_parquet["created_at"], utc=True)
+        assert int(shifted_mask(games_parquet).sum()) == 0, (
+            "the stale-ingest cohort is back. It was re-ingested away by Phase 33.2; "
+            f"a row carrying the {EXPECTED_SHIFTED_ROWS}-row cohort's stamp means "
+            "something restored the pre-correction ingest."
+        )
+        assert int(created.isna().sum()) == 0, (
+            "created_at is null somewhere, so the cohort marker is unmatched because "
+            "the stamp was ERASED rather than replaced by a later ingest"
+        )
+        assert created.nunique() > 1, (
+            "every row shares one created_at, which is the single-bad-run shape the "
+            "cohort marker was built to find"
+        )
+
+        correlation = dst_correlation_holds(games_parquet)
+        # The probe keys seasons as strings; compared in one representation so the
+        # assertion is about coverage rather than about a type.
+        covered = {str(season) for season in correlation}
+        seasons = {str(season) for season in games_parquet["season"].unique()}
+        assert covered == seasons, (
+            f"the DST correlation covers {sorted(covered)} but the frame "
+            f"holds {sorted(seasons)}. It is the non-vacuous replacement for the "
+            "cohort check, so a season it cannot judge is a season with no guard."
+        )
+        assert not [season for season, ok in correlation.items() if not ok]
+
+    def test_the_idempotency_trap_is_still_a_property_of_the_tool(self) -> None:
+        """The claim the membership node really made, asserted where it cannot evaporate.
+
+        The trap: the normalization shifts ``kickoff_et`` and never ``created_at``, so
+        a run does NOT empty the cohort, and anything keying "already done" on cohort
+        emptiness would double-shift on a re-run. That is a property of the TOOL, not
+        of production data, so it is driven on a synthetic frame carrying the marker --
+        which no re-ingest can take away.
+        """
+        from scripts.normalize_games_kickoff_tz import SHIFTED_COHORT_CREATED_AT
+
+        frame = pd.DataFrame(
+            {
+                "game_id": ["2023_W12_AAA@BBB", "2023_W13_CCC@DDD"],
+                "season": [2023, 2023],
+                "kickoff_et": pd.to_datetime(
+                    ["2023-11-24 15:00:00+00:00", "2023-12-03 13:00:00+00:00"],
+                    utc=True,
+                ),
+                "created_at": [SHIFTED_COHORT_CREATED_AT, SHIFTED_COHORT_CREATED_AT],
+            }
+        )
+        assert int(shifted_mask(frame).sum()) == 2, "fixture sanity"
+
+        shifted = normalize_kickoffs(frame)
+
+        assert int(shifted_mask(shifted).sum()) == 2, (
+            "a run emptied the cohort, so `already normalized` could be keyed on "
+            "cohort emptiness -- and the second --apply would shift every row again"
+        )
+        assert not shifted["kickoff_et"].equals(frame["kickoff_et"]), (
+            "the tool moved no kickoff, so the assertion above is vacuous"
+        )
 
     def test_no_kickoff_reads_earlier_than_the_earliest_real_window(
         self, games_parquet: pd.DataFrame

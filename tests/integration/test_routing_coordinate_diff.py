@@ -445,8 +445,32 @@ class TestTheNeutralSiteDisclosureIsRepaired:
             for row in _schedules().itertuples()
             if str(row.location) == NEUTRAL_LOCATION
         )
+        # SCOPED TO THE FEED'S OWN WINDOW (Plan 33.2-20). The feed is PINNED at
+        # FIRST_SEASON..LAST_SEASON and the disclosure is a record about exactly that
+        # population; silver has since been extended forward by the live 2026 capture.
+        # Comparing an extended store against a pinned feed reported a disagreement in a
+        # season the feed does not cover, which is not a disagreement about anything.
+        # The rows BEYOND the window are asserted below rather than dropped, so the
+        # scoping cannot hide a row.
+        in_window = silver["season"].between(FIRST_SEASON, LAST_SEASON)
         silver_by_season = Counter(
-            int(season) for season in silver.loc[silver["neutral_site"], "season"]
+            int(season)
+            for season in silver.loc[silver["neutral_site"] & in_window, "season"]
+        )
+        beyond = int((silver["neutral_site"] & ~in_window).sum())
+        assert beyond == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_2026, (
+            f"{beyond} neutral-site rows sit beyond the pinned feed window "
+            f"{FIRST_SEASON}-{LAST_SEASON}; the live 2026 capture recorded "
+            f"{phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_2026}. They are outside "
+            "this disclosure's population, and they are counted here so that being "
+            "outside it is a stated fact rather than a silent exclusion."
+        )
+        assert {
+            int(season)
+            for season in silver.loc[silver["neutral_site"] & ~in_window, "season"]
+        } <= {LAST_SEASON + 1}, (
+            "a neutral-site row sits beyond the feed window in a season that is not "
+            "the one the live capture added"
         )
 
         assert silver_by_season == feed_by_season, (

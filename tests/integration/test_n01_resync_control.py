@@ -113,9 +113,24 @@ def _require_live_gold() -> None:
 class TestClause1TheSilverGamesDuckDbCopy:
     """The stale copy grew by EXACTLY the divergence measured before anything re-synced it."""
 
-    def test_the_duckdb_copy_grew_by_exactly_the_divergence_measured_beforehand(self):
+    def test_the_duckdb_copy_caught_up_and_has_stayed_caught_up(self):
+        """RE-ANCHORED (Plan 33.2-20): the delta is no longer the re-sync's alone.
+
+        This asserted ``db_rows_after - N01_DB_ROWS_BEFORE == N01_DIVERGENCE_BEFORE``,
+        i.e. that the DuckDB copy grew by EXACTLY the 207-row divergence Plan 30-04
+        measured. It measured 479, because the live 2026 capture has since appended 272
+        rows to BOTH copies (207 + 272 = 479). The subtraction was only ever a proxy
+        for the real claim -- the stale copy caught up and is no longer behind -- and a
+        proxy that counts every later write as if it were the re-sync stops being one
+        the moment anything else writes.
+
+        So the claim is asserted DIRECTLY: the DuckDB copy is not behind the parquet,
+        and the recorded catch-up is still accounted for as arithmetic. The fail-closed
+        premise (a zero recorded divergence voids the control) is untouched.
+        """
         _require_live_silver_games()
         db_rows_after = len(load_dataframe("games", layer="silver", source="db"))
+        parquet_rows = len(load_dataframe("games", layer="silver", source="parquet"))
 
         assert N01_DIVERGENCE_BEFORE > 0, (
             "THE CONTROL IS FAIL-CLOSED BY DESIGN. A zero recorded divergence voids it: "
@@ -123,12 +138,17 @@ class TestClause1TheSilverGamesDuckDbCopy:
             "this control able to pass by doing nothing. Do not edit the tracked constant "
             "to make this test green."
         )
-        assert db_rows_after - N01_DB_ROWS_BEFORE == N01_DIVERGENCE_BEFORE, (
-            f"the DuckDB copy of silver games went {N01_DB_ROWS_BEFORE} -> {db_rows_after}, "
-            f"a delta of {db_rows_after - N01_DB_ROWS_BEFORE}, against the "
-            f"{N01_DIVERGENCE_BEFORE}-row divergence Plan 30-04 measured BEFORE the re-sync "
-            "and pinned in tests/phase30_state.py. The expected value comes from the tracked "
-            "manifest, never from outputs/n01/divergence_before.json, which is gitignored."
+        assert db_rows_after == parquet_rows, (
+            f"the DuckDB copy holds {db_rows_after} rows against the parquet's "
+            f"{parquet_rows}. N-01 was a mirror that fell behind; a copy that is behind "
+            "again makes every upsert_silver write invisible to the pipeline."
+        )
+        appended_since = db_rows_after - N01_DB_ROWS_BEFORE - N01_DIVERGENCE_BEFORE
+        assert appended_since >= 0, (
+            f"the DuckDB copy holds {db_rows_after} rows, FEWER than the "
+            f"{N01_DB_ROWS_BEFORE} it held before the re-sync plus the "
+            f"{N01_DIVERGENCE_BEFORE} rows the re-sync brought it. A store cannot lose "
+            "rows it already had, so this is a copy that went backwards."
         )
 
     def test_the_duckdb_and_parquet_id_sets_are_now_equal(self):
@@ -145,14 +165,25 @@ class TestClause1TheSilverGamesDuckDbCopy:
             "divergence keeps making upsert_silver writes invisible to the pipeline."
         )
 
-    def test_the_authoritative_parquet_row_count_is_unchanged(self):
+    def test_the_re_sync_never_moved_the_authoritative_parquet(self):
+        """RE-ANCHORED (Plan 33.2-20): the re-sync did not write it; later ingests did.
+
+        This asserted the parquet still holds exactly its pre-re-sync row count. It
+        holds more, because the live 2026 capture ingested 272 games into it -- through
+        ``upsert_silver``, not through the re-sync, which writes the parquet not at all
+        (``save_to_parquet=False``). The claim the assertion was making is that the
+        re-sync brought the STALE copy up and left the AUTHORITATIVE one alone, and the
+        durable form of that is a FLOOR: the parquet never lost a row to the re-sync.
+        A parquet that shrank below the pre-re-sync count would still fail here.
+        """
         _require_live_silver_games()
         parquet_rows = len(load_dataframe("games", layer="silver", source="parquet"))
 
-        assert parquet_rows == N01_PARQUET_ROWS_BEFORE, (
+        assert parquet_rows >= N01_PARQUET_ROWS_BEFORE, (
             f"the parquet is the AUTHORITATIVE copy and the re-sync writes it not at all "
             f"(save_to_parquet=False). It reads {parquet_rows} against the tracked "
-            f"{N01_PARQUET_ROWS_BEFORE}."
+            f"{N01_PARQUET_ROWS_BEFORE} it held before -- fewer rows than it started "
+            "with, which no ingest produces."
         )
 
     def test_the_scratch_capture_never_supersedes_the_tracked_manifest(self):
@@ -323,9 +354,12 @@ class TestTheDivergenceMeasurementItself:
             "rows present only in DuckDB would be a different and worse defect than N-01, "
             "which was a mirror that fell BEHIND"
         )
-        assert (
-            measured["parquet_rows"] == measured["db_rows"] == N01_PARQUET_ROWS_BEFORE
-        )
+        # RE-ANCHORED (Plan 33.2-20): the two copies must AGREE, which is the divergence
+        # claim; the count itself is no longer the pre-re-sync one, because the live 2026
+        # capture ingested 272 games into both. Asserted as a floor for the same reason
+        # as the parquet node above.
+        assert measured["parquet_rows"] == measured["db_rows"]
+        assert measured["parquet_rows"] >= N01_PARQUET_ROWS_BEFORE
 
     def test_the_measurement_reads_through_the_storage_layer_not_the_files(self):
         from scripts import resync_games_duckdb
@@ -493,6 +527,32 @@ class TestEvery2021To2024ValueIsByteIdentical:
 
     THIS IS NOT A TOLERANCE. Every other column is compared by exact hash equality and
     any movement at all blocks the phase.
+
+    THIS CONTROL IS SPENT, AND BOTH NODES BELOW ARE DELIBERATELY LEFT RED (Plan
+    33.2-20). It proved its claim ONCE, at Plan 30-08, against gold that no longer
+    exists: Phase 33.2's nine-rung p332_ ladder replaced the 2021-2024 values on
+    purpose, rung by rung, each with a declared cause, a digest bracket and a
+    per-column per-season attribution (steps 8b/8c/8d/8e and rungs 1-9 removed the
+    market family, re-normalized on lock order, blanked unscorable cells and dropped
+    eight never-populated columns). So this class now reports both a changed COLUMN SET
+    and moved VALUES, correctly.
+
+    IT IS NOT RE-ANCHORED HERE, and the reason is this class's own instruction: "do not
+    re-capture the BEFORE digests". Re-capturing them would compare today's gold against
+    today's gold, which is true by construction and proves nothing -- the same circularity
+    the module's frozen-band and forensic-copy reasoning rejects elsewhere. There is no
+    honest measurement available: the object the expected values describe is gone.
+
+    WHAT REPLACED IT, and it is strictly more: the p332_ attribution modules
+    (``tests/integration/test_p332_rung*_attribution.py``, ``..._step*_attribution.py``)
+    assert per rung WHICH columns moved, in WHICH seasons, against a fingerprint document
+    taken before that rung ran -- a byte-identity claim per step rather than one across a
+    phase. Those are green.
+
+    ROUTED to Plan 33.2-23 (the re-fit on corrected gold), which is the next plan to
+    freeze a gold baseline and can therefore take a fresh BEFORE/AFTER pair honestly.
+    Until it does, these two nodes are on the expected-failure list with their reason,
+    never re-captured and never skipped.
     """
 
     def test_every_data_column_reproduces_its_pre_resync_digest_exactly(self):

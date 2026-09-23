@@ -368,9 +368,19 @@ class TestLiveSilverGames:
             "upsert_silver write since it invisible to the whole pipeline, silently. "
             "Re-sync with `python -m scripts.resync_games_duckdb --apply`."
         )
-        assert entry["db_rows"] == entry["parquet_rows"] == N01_PARQUET_ROWS_BEFORE, (
-            "both copies must now hold the parquet's pre-re-sync row count -- the "
-            "re-sync brought the STALE copy up, it did not move the authoritative one"
+        # RE-ANCHORED (Plan 33.2-20). This pinned both copies to the parquet's
+        # PRE-re-sync count. The live 2026 capture has since ingested 272 games into
+        # the parquet -- through upsert_silver, not through the re-sync, which writes
+        # the parquet not at all -- so the count moved for a reason that is not a
+        # divergence. The claim was that the re-sync brought the STALE copy up and left
+        # the AUTHORITATIVE one alone, and the durable form is: the two AGREE, and the
+        # authoritative copy never went below what it held before. A copy that fell
+        # behind again, or a parquet that lost rows, still fails.
+        assert entry["db_rows"] == entry["parquet_rows"]
+        assert entry["parquet_rows"] >= N01_PARQUET_ROWS_BEFORE, (
+            f"the authoritative parquet reads {entry['parquet_rows']} against the "
+            f"{N01_PARQUET_ROWS_BEFORE} it held before the re-sync -- fewer rows than "
+            "it started with, which no ingest produces"
         )
         assert entry["only_in_parquet_count"] == 0
         assert entry["only_in_duckdb_count"] == 0, (
