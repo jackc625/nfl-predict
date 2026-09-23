@@ -178,6 +178,32 @@ GROUP_COVERAGE: dict[str, str] = {
     ),
 }
 
+# THE COVERAGE FLOOR ALONE, WITHOUT THE MEASURED WINDOW (Plan 33.2-22).
+#
+# ``GROUP_COVERAGE`` above welds two different things into one string: the group's upstream
+# DATA-COVERAGE FLOOR, which is a fact about the world and does not move, and the window the
+# PHASE-28 GRID was measured on, which is a fact about one run. That was harmless while every
+# caller measured 2021-2024. It stopped being harmless the moment the re-measurement ran over
+# 2023-2024: the emitted ``coverage_span`` would have told a reader the verdict was measured
+# on a window it was not measured on, inside the very document whose job is to say what was
+# measured. It is the WR-13 defect ``_span`` was introduced for, in a second place.
+#
+# ``GROUP_COVERAGE`` itself is left byte-unchanged -- it is the Phase-28 published record, and
+# ``tests/integration/test_signal_lift.py`` pins its line_movement entry. The floors below are
+# its first half, and the measured window is DERIVED from the config that actually ran.
+GROUP_COVERAGE_FLOOR: dict[str, str] = {
+    "injury": "injuries 2009+",
+    "snap": "snaps 2013+",
+    "situational": "full history",
+    "line_movement": (
+        "odds-timeline 2020-06-06+ (the stored 2020 rows were re-keyed in place by quick task "
+        "260816-u0e and now carry real trajectories, while 2018-2019 predate the archive floor "
+        "and carry neutral defaults)"
+    ),
+    "weather_unsupplied": "no forecast supplies these inputs; zero columns in gold",
+    "market": "removed from every model's inputs at p332_ rung 9 (D33.2-03)",
+}
+
 # The walk-forward measurement window (matches config/gate.toml [gate.seasons].holdout + diagnose).
 MEASURE_WINDOW = "2021-2024"
 
@@ -635,6 +661,20 @@ def screen_config_excluding_spent_hold(
         hp_val_seasons=list(partition.hp_val),
         holdout_seasons=list(partition.holdout),
     )
+
+
+def coverage_span_for(group: str, config: TemporalSplitConfig, objective: str) -> str:
+    """The group's coverage label, with its measured window DERIVED under the new objective.
+
+    Under ``OBJECTIVE_CLOSING_CLV`` this returns ``GROUP_COVERAGE``'s entry byte-for-byte, so
+    every Phase-28/29/30 caller and every record they produced is unchanged. Under
+    ``OBJECTIVE_OUTCOME_LOSS`` the floor is composed with the window the RUN actually measured,
+    so the emitted label cannot claim a window that was never scored.
+    """
+    if objective != OBJECTIVE_OUTCOME_LOSS:
+        return GROUP_COVERAGE.get(group, "full history")
+    floor = GROUP_COVERAGE_FLOOR.get(group, "full history")
+    return f"{floor} (measured {_span(config)})"
 
 
 def _scored_seasons(config: TemporalSplitConfig) -> set[int]:
@@ -1232,7 +1272,7 @@ def run_signal_lift_screen(
         decision = decide_group_keep(per_target)
         measurable_targets = [t for t, r in per_target.items() if r["measurable"]]
         groups_out[group] = {
-            "coverage_span": GROUP_COVERAGE.get(group, "full history"),
+            "coverage_span": coverage_span_for(group, config, objective),
             "per_target": per_target,
             "decision": decision,
             "measurability": {

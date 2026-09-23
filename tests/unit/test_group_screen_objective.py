@@ -402,6 +402,47 @@ class TestTheDefaultObjectiveIsUnchanged:
             assert cell["clv_column"] == signal_lift.CLV_COLUMN_FOR[target]
 
 
+class TestTheCoverageLabelNamesTheWindowThatRan:
+    """A published span must not claim a window the run never scored."""
+
+    def test_the_outcome_loss_label_derives_its_window_from_the_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(signal_lift, "_TRAINER_FOR", _stub_trainer_for())
+        _no_parquet(monkeypatch)
+        result = signal_lift.run_signal_lift_screen(
+            gold_by_target=_gold_by_target(),
+            config=_CONFIG,
+            groups=("injury",),
+            baseline_exclude_groups=signal_lift.ALL_REGISTERED_GROUPS,
+            objective="outcome_loss",
+        )
+        span = result["groups"]["injury"]["coverage_span"]
+        assert "injuries 2009+" in span, span
+        assert "measured 2021-2022" in span, (
+            "the coverage label must name the window the RUN measured (the config's holdout), "
+            f"not the Phase-28 literal: {span!r}"
+        )
+        assert "2021-2024" not in span
+
+    def test_the_default_path_keeps_the_phase28_label_byte_for_byte(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(signal_lift, "_TRAINER_FOR", _stub_trainer_for())
+        odds = pd.DataFrame({"game_id": ["x"], "ml_home": [-110], "ml_away": [-110]})
+        result = signal_lift.run_signal_lift_screen(
+            gold_by_target=_gold_by_target(),
+            closing_odds_df=odds,
+            config=_CONFIG,
+            groups=("injury",),
+            baseline_exclude_groups=signal_lift.ALL_REGISTERED_GROUPS,
+        )
+        assert (
+            result["groups"]["injury"]["coverage_span"]
+            == signal_lift.GROUP_COVERAGE["injury"]
+        )
+
+
 # ---------------------------------------------------------------------------
 # THE PLANTED VIOLATION
 # ---------------------------------------------------------------------------
