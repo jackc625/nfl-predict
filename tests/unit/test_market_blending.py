@@ -39,6 +39,22 @@ from models.blending import (
 )
 
 # ---------------------------------------------------------------------------
+# One fixed weight: the blend methods take no week or season (Plan 33.2-24 Task 2b)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("method", ["blend_wp", "blend_ats", "blend_ou"])
+def test_the_blend_methods_take_no_week_or_season(method: str) -> None:
+    """The weight no longer varies by week, so a week or season parameter would be a hook."""
+    import inspect
+
+    parameters = list(inspect.signature(getattr(MarketBlender, method)).parameters)
+    assert parameters[:1] == ["self"]  # non-vacuity: the signature was read
+    assert "week" not in parameters
+    assert "season" not in parameters
+
+
+# ---------------------------------------------------------------------------
 # BlendWeights tests
 # ---------------------------------------------------------------------------
 
