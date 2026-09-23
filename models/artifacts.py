@@ -4,6 +4,9 @@ Provides:
 - save_model_artifact: Save model, metadata, features, and optional calibrator
 - load_model_artifact: Load artifact by target and optional version
 - get_latest_artifact_path: Get path to latest artifact for a target
+- update_manifest: The PER-TARGET production swapper (one manifest key per call)
+- replace_manifest: The BATCHED production swapper (all four keys, one write, SPEC R13)
+- ARTIFACT_VALIDATORS: The per-kind loadability registry replace_manifest validates through
 
 Artifact directory structure:
     artifacts/
@@ -22,6 +25,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -151,8 +156,9 @@ def save_model_artifact(
 
     Updating the latest.json manifest is now OPT-IN via update_latest (D24-08).
     By default the manifest is NOT touched: writing artifacts/latest.json is a
-    production deploy, and the only sanctioned production swapper is
-    update_manifest (invoked by scripts/promote_models on a passing gate). A
+    production deploy, and the only sanctioned production swappers are
+    update_manifest (invoked by scripts/promote_models on a passing gate) and
+    its batched sibling replace_manifest (the four-artifact swap, SPEC R13). A
     plain train run -- including a staging re-fit -- must never auto-swap the
     served model. Pass update_latest=True only when the caller deliberately
     wants this artifact registered as the latest for its target (e.g. a
@@ -254,10 +260,12 @@ def update_manifest(
     version: str,
     artifacts_dir: Path = Path("artifacts"),
 ) -> None:
-    """Register an artifact version as the latest for a target (sole swapper).
+    """Register an artifact version as the latest for a target (per-target swapper).
 
-    This is the ONLY sanctioned writer of production artifacts/latest.json
-    (D24-08). It performs a per-key update on the existing manifest --
+    This is the sanctioned PER-TARGET writer of production artifacts/latest.json
+    (D24-08); its batched sibling, :func:`replace_manifest`, installs a whole
+    four-artifact bundle in one write (SPEC R13, Plan 33.2-25) and is the only
+    other writer. It performs a per-key update on the existing manifest --
     manifest[target] = version -- so every other key survives untouched. In
     particular the "blend" pointer and any non-promoted target keep their
     current value (Pitfall 4: never rewrite the whole manifest from a subset of
@@ -375,6 +383,344 @@ def load_model_artifact(
         "params": params,
         "artifact_dir": artifact_dir,
     }
+
+
+# ---------------------------------------------------------------------------
+# THE BATCHED FOUR-POINTER SWAP (Plan 33.2-25, SPEC R13)
+#
+# ``update_manifest`` above is per-target BY DESIGN: it writes one key and leaves every
+# other key untouched, which is exactly right for the gate path, where only the targets
+# that passed may move. Installing a whole corrected bundle through it, though, takes FOUR
+# writes -- and a failure between any two of them leaves ``latest.json`` naming a mix of
+# old and new models, which SPEC R13 forbids ("written only once all four exist, never a
+# mix"). ``replace_manifest`` is the batched writer that sits BESIDE it, not instead of it.
+# ---------------------------------------------------------------------------
+
+#: The four manifest keys a production bundle carries, in manifest order (SPEC R13).
+BUNDLE_MANIFEST_KEYS: tuple[str, ...] = ("wp", "ats", "ou", "blend")
+
+#: The three of them that name a MODEL artifact (the fourth names the blend).
+_MODEL_MANIFEST_KEYS: tuple[str, ...] = ("wp", "ats", "ou")
+
+
+class ArtifactProvenanceError(Exception):
+    """An artifact loads, but what it records about itself cannot be installed.
+
+    Raised by an :data:`ARTIFACT_VALIDATORS` entry when a model records a different target
+    than the manifest key it is mapped to, when an artifact records no gold generation, or
+    when a blend carries no provenance or no converter binding.
+    """
+
+
+class ArtifactBundleInvalidError(Exception):
+    """A proposed production bundle failed validation, so ``latest.json`` was not written.
+
+    Carries EVERY failure found, keyed by the manifest key (or by the name of the
+    cross-artifact check) that failed, so one run names every defect rather than the first.
+
+    WHY ``Exception`` AND NOT ``ValueError`` / ``KeyError``. Several call sites in this
+    repository catch those types and degrade quietly (see
+    ``models.blending.MarketProbabilityUnavailable``); a refused production swap degraded
+    into "carry on" is the silent half-swap this refusal exists to prevent.
+
+    Attributes:
+        failures: ``{key: reason}`` for every failing key or check.
+    """
+
+    def __init__(self, failures: Mapping[str, str]) -> None:
+        self.failures: dict[str, str] = dict(failures)
+        lines = "\n".join(
+            f"  - {key}: {reason}" for key, reason in self.failures.items()
+        )
+        super().__init__(
+            "refusing the production swap: artifacts/latest.json was NOT written because "
+            f"{len(self.failures)} check(s) failed:\n{lines}"
+        )
+
+
+@dataclass(frozen=True)
+class ArtifactFacts:
+    """What one validated artifact records about itself, read through its serving loader.
+
+    Attributes:
+        key: The manifest key the artifact was validated under.
+        version: The artifact directory name.
+        gold_generation_digest: The gold generation it was fitted on -- from a model's
+            ``metadata.json``, or from the blend's ``blend_weights.json`` provenance.
+        recorded_target: A model's recorded target (None for the blend).
+        source_artifact_ids: The blend's ``{wp, ats, ou}`` source models (None for a model).
+        market_probability_artifact_id: The converter the blend is bound to (None for a
+            model).
+    """
+
+    key: str
+    version: str
+    gold_generation_digest: str
+    recorded_target: str | None = None
+    source_artifact_ids: dict[str, str] | None = None
+    market_probability_artifact_id: str | None = None
+
+
+#: ``(version, artifacts_dir) -> ArtifactFacts``. A validator LOADS the artifact through the
+#: loader the serving path uses and raises if it cannot, so a directory that exists but does
+#: not load is a failure, never a pass.
+ArtifactValidator = Callable[[str, Path], ArtifactFacts]
+
+
+def _model_validator(target: str) -> ArtifactValidator:
+    """The validator for one model key: it must LOAD, and record this target and a gold.
+
+    ``load_model_artifact`` is the serving path's own loader, so a directory holding a
+    ``metadata.json`` but no ``model.pkl`` or ``feature_list.json`` fails here exactly as it
+    would fail in production -- existence is not loadability.
+    """
+
+    def validate_model(version: str, artifacts_dir: Path) -> ArtifactFacts:
+        # The metadata key is read from its ONE declaration, beside the code that writes it,
+        # so the writer and this reader cannot drift apart by a typo. Imported lazily: the
+        # training module is heavy and this module is imported by lightweight readers.
+        from models.train import GOLD_GENERATION_DIGEST_METADATA_KEY
+
+        loaded = load_model_artifact(
+            target, version=version, artifacts_dir=artifacts_dir
+        )
+        metadata = loaded["metadata"]
+        recorded_target = metadata.get("target")
+        if recorded_target != target:
+            msg = (
+                f"{version!r} records target {recorded_target!r} but is mapped to "
+                f"{target!r}: installing it would serve one target's model as another's."
+            )
+            raise ArtifactProvenanceError(msg)
+        digest = metadata.get(GOLD_GENERATION_DIGEST_METADATA_KEY)
+        if not digest:
+            msg = (
+                f"{version!r} records no {GOLD_GENERATION_DIGEST_METADATA_KEY!r} in its "
+                "metadata.json: an artifact that cannot name the gold it was fitted on "
+                "cannot be checked against the rest of the bundle."
+            )
+            raise ArtifactProvenanceError(msg)
+        return ArtifactFacts(
+            key=target,
+            version=version,
+            gold_generation_digest=str(digest),
+            recorded_target=str(recorded_target),
+        )
+
+    return validate_model
+
+
+def _validate_blend_artifact(version: str, artifacts_dir: Path) -> ArtifactFacts:
+    """The blend validator: it must LOAD through ``MarketBlender.from_artifacts``.
+
+    A blend directory holds ONLY ``blend_weights.json`` (``save_blend_artifacts`` writes
+    nothing else and ``from_artifacts`` opens nothing else), so its provenance is read from
+    that one payload -- never from a ``metadata.json`` invented for a validator to open,
+    which would give the blend two files that could disagree about its own provenance.
+
+    ``from_artifacts`` already refuses the retired ``dynamic`` section
+    (``RetiredDynamicBlendError``, D33.2-10) and a converter binding whose directory is
+    absent or whose slope disagrees (``MarketProbabilityBindingError``). What it tolerates
+    for backwards compatibility -- a payload with no provenance, or no binding at all -- is
+    refused HERE: neither can be installed as the blend that serves.
+    """
+    # Imported lazily: the blender pulls in pandas and scipy, and this module is imported by
+    # lightweight readers that never swap anything.
+    from models.blending import MarketBlender
+
+    blender = MarketBlender.from_artifacts(artifacts_dir, version=version)
+    provenance = blender.provenance
+    if provenance is None or not provenance.gold_generation_digest:
+        msg = (
+            f"{version!r} carries no provenance in its blend_weights.json, so it cannot name "
+            "the gold or the source models it was tuned on."
+        )
+        raise ArtifactProvenanceError(msg)
+    if blender.market_probability_artifact_id is None:
+        msg = (
+            f"{version!r} is bound to no converter, so it could never convert a pre-lock "
+            "spread and could never serve win probability."
+        )
+        raise ArtifactProvenanceError(msg)
+    return ArtifactFacts(
+        key="blend",
+        version=version,
+        gold_generation_digest=provenance.gold_generation_digest,
+        source_artifact_ids=dict(provenance.source_artifact_ids),
+        market_probability_artifact_id=blender.market_probability_artifact_id,
+    )
+
+
+#: ONE per-kind loadability registry, keyed by manifest key. A model artifact and a blend
+#: artifact do not share a required-file set (``model.pkl`` + ``metadata.json`` +
+#: ``feature_list.json`` against ``blend_weights.json`` alone), which is why a single
+#: "has a metadata.json" rule could not validate a four-artifact bundle -- it would have
+#: rejected every blend (reviews round ``f924749``, Codex HIGH).
+ARTIFACT_VALIDATORS: dict[str, ArtifactValidator] = {
+    "wp": _model_validator("wp"),
+    "ats": _model_validator("ats"),
+    "ou": _model_validator("ou"),
+    "blend": _validate_blend_artifact,
+}
+
+
+def _unsafe_version_reason(version: object) -> str | None:
+    """Why *version* is not a plain directory name under the artifacts root, or None."""
+    if not isinstance(version, str) or not version:
+        return f"{version!r} is not a non-empty artifact directory name"
+    if version in (".", "..") or Path(version).name != version:
+        return (
+            f"{version!r} is not a plain directory name: a manifest pointer names a "
+            "directory directly under the artifacts root and may not reach outside it"
+        )
+    return None
+
+
+def _add_failure(failures: dict[str, str], key: str, reason: str) -> None:
+    """Record *reason* under *key*, keeping any reason already recorded there."""
+    failures[key] = f"{failures[key]}; {reason}" if key in failures else reason
+
+
+def _cross_check_bundle(
+    mapping: Mapping[str, str],
+    facts: Mapping[str, ArtifactFacts],
+    artifacts_dir: Path,
+) -> dict[str, str]:
+    """The checks no single artifact can make about itself. Returns ``{check: reason}``."""
+    failures: dict[str, str] = {}
+
+    digests = {key: fact.gold_generation_digest for key, fact in facts.items()}
+    if len(set(digests.values())) != 1:
+        recorded = ", ".join(f"{key}={digest}" for key, digest in digests.items())
+        _add_failure(
+            failures,
+            "gold_generation_digest",
+            "the bundle's artifacts were fitted on DIFFERENT golds "
+            f"({recorded}); four artifacts on two golds is the mixed manifest R13 forbids, "
+            "one level down",
+        )
+
+    blend = facts["blend"]
+    expected_sources = {key: mapping[key] for key in _MODEL_MANIFEST_KEYS}
+    if blend.source_artifact_ids != expected_sources:
+        _add_failure(
+            failures,
+            "blend",
+            f"{blend.version!r} was tuned on source models {blend.source_artifact_ids}, "
+            f"but this bundle installs {expected_sources}: the blend would serve beside "
+            "models whose predictions it never saw",
+        )
+
+    converter_id = blend.market_probability_artifact_id
+    if converter_id is None or not (artifacts_dir / converter_id).is_dir():
+        _add_failure(
+            failures,
+            "blend",
+            f"its converter {converter_id!r} does not resolve to a directory under "
+            f"{artifacts_dir}",
+        )
+
+    return failures
+
+
+def replace_manifest(
+    mapping: Mapping[str, str],
+    artifacts_dir: Path = Path("artifacts"),
+) -> None:
+    """Install a whole four-artifact bundle into ``latest.json`` in ONE atomic write.
+
+    WHY THIS EXISTS. ``update_manifest`` is per-target by design, so four pointers take
+    four writes, and a failure between them leaves ``latest.json`` naming a mix of old and
+    new artifacts -- which SPEC R13 forbids. This validates the WHOLE bundle first and only
+    then writes once.
+
+    WHY ``scripts/promote_models --promote`` IS NOT REUSED. It runs the per-target deploy
+    gate, and R13 removes the gate for this swap by owner ruling: the corrected artifacts
+    replace today's UNCONDITIONALLY, and no pre-correction model or gate baseline is used
+    as a comparator.
+
+    The order is the point of the function:
+
+    1. Every key must have a registered validator and every one of the four bundle keys
+       must be present. Every value is validated through :data:`ARTIFACT_VALIDATORS`, which
+       LOADS it through the serving path's own loader. Every failure is collected.
+    2. The collected facts are cross-checked: all four gold generation digests EQUAL, the
+       blend's source models EQUAL to the three model ids in this same mapping, and the
+       blend's converter resolving to a directory.
+    3. Only then is the existing manifest read, the mapping applied over it -- keys NOT in
+       the mapping survive with their current values, the whole-manifest-rewrite-from-a-
+       subset failure ``update_manifest``'s docstring warns about (Pitfall 4) -- and the
+       result written ONCE through :func:`_atomic_write_json`, so a crash leaves either the
+       old manifest or the new one, never a partial file.
+
+    Args:
+        mapping: ``{manifest_key: artifact_directory_name}`` for all four bundle keys.
+        artifacts_dir: Root directory containing the artifacts and ``latest.json``.
+
+    Raises:
+        ArtifactBundleInvalidError: naming EVERY failing key or check. ``latest.json`` is
+            not touched.
+    """
+    failures: dict[str, str] = {}
+
+    for key in mapping:
+        if key not in ARTIFACT_VALIDATORS:
+            _add_failure(
+                failures,
+                key,
+                f"no validator is registered for manifest key {key!r} (registered: "
+                f"{sorted(ARTIFACT_VALIDATORS)}), so it cannot be proven loadable",
+            )
+    for key in BUNDLE_MANIFEST_KEYS:
+        if key not in mapping:
+            _add_failure(
+                failures,
+                key,
+                "missing from the mapping: latest.json is written only once ALL FOUR "
+                "artifacts exist (SPEC R13)",
+            )
+
+    facts: dict[str, ArtifactFacts] = {}
+    for key, version in mapping.items():
+        validator = ARTIFACT_VALIDATORS.get(key)
+        if validator is None:
+            continue
+        unsafe = _unsafe_version_reason(version)
+        if unsafe is not None:
+            _add_failure(failures, key, unsafe)
+            continue
+        try:
+            facts[key] = validator(version, artifacts_dir)
+        # Deliberately broad, and NOT a swallow: a loader can fail in many ways (a missing
+        # file, a bad pickle, a malformed payload, a refused binding), every one of them is
+        # recorded here by type and message, and all of them are re-raised together below.
+        # Narrowing this would turn an unlisted failure into a first-only crash that hides
+        # the other keys' defects.
+        except Exception as exc:  # noqa: BLE001 - every failure is COLLECTED and re-raised
+            _add_failure(
+                failures,
+                key,
+                f"{version!r} did not validate: {type(exc).__name__}: {exc}",
+            )
+
+    if failures:
+        raise ArtifactBundleInvalidError(failures)
+
+    cross_failures = _cross_check_bundle(mapping, facts, artifacts_dir)
+    if cross_failures:
+        raise ArtifactBundleInvalidError(cross_failures)
+
+    latest_path = artifacts_dir / "latest.json"
+    manifest = json.loads(latest_path.read_text()) if latest_path.exists() else {}
+    manifest.update(mapping)
+    _atomic_write_json(latest_path, manifest)
+
+    logger.info(
+        "Replaced the production bundle in latest.json",
+        mapping=dict(mapping),
+        gold_generation_digest=facts["blend"].gold_generation_digest,
+        untouched_keys=sorted(set(manifest) - set(mapping)),
+    )
 
 
 def get_latest_artifact_path(
