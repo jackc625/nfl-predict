@@ -528,31 +528,32 @@ class TestEvery2021To2024ValueIsByteIdentical:
     THIS IS NOT A TOLERANCE. Every other column is compared by exact hash equality and
     any movement at all blocks the phase.
 
-    THIS CONTROL IS SPENT, AND BOTH NODES BELOW ARE DELIBERATELY LEFT RED (Plan
-    33.2-20). It proved its claim ONCE, at Plan 30-08, against gold that no longer
-    exists: Phase 33.2's nine-rung p332_ ladder replaced the 2021-2024 values on
-    purpose, rung by rung, each with a declared cause, a digest bracket and a
-    per-column per-season attribution (steps 8b/8c/8d/8e and rungs 1-9 removed the
-    market family, re-normalized on lock order, blanked unscorable cells and dropped
-    eight never-populated columns). So this class now reports both a changed COLUMN SET
-    and moved VALUES, correctly.
+    BOTH NODES BELOW ARE NAMED DELIBERATE TRIPWIRES AND MUST STAY RED. They are two of
+    the five in ``tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS`` -- "the five reds
+    that MUST STAY RED ... a phase that turned one of these green would have erased a
+    disclosure, not fixed a defect". They were NOT re-anchored by Plan 33.2-20's data-pin
+    sweep, and could not have been.
 
-    IT IS NOT RE-ANCHORED HERE, and the reason is this class's own instruction: "do not
-    re-capture the BEFORE digests". Re-capturing them would compare today's gold against
-    today's gold, which is true by construction and proves nothing -- the same circularity
-    the module's frozen-band and forensic-copy reasoning rejects elsewhere. There is no
-    honest measurement available: the object the expected values describe is gone.
+    WHAT THEY DISCLOSE TODAY (measured 2026-09-22, recorded because a tripwire nobody
+    reads is a tripwire nobody heeds). The control proved its claim ONCE, at Plan 30-08,
+    against gold that no longer exists: Phase 33.2's nine-rung p332_ ladder replaced the
+    2021-2024 values ON PURPOSE, rung by rung, each with a declared cause, a digest
+    bracket and a per-column per-season attribution -- the market family removed, the
+    normalization re-ordered on lock instants, unscorable cells blanked, eight
+    never-populated columns dropped. So this class now reports both a changed COLUMN SET
+    and moved VALUES, correctly, and that report IS the disclosure.
 
-    WHAT REPLACED IT, and it is strictly more: the p332_ attribution modules
-    (``tests/integration/test_p332_rung*_attribution.py``, ``..._step*_attribution.py``)
-    assert per rung WHICH columns moved, in WHICH seasons, against a fingerprint document
-    taken before that rung ran -- a byte-identity claim per step rather than one across a
-    phase. Those are green.
+    WHY NOT RE-ANCHORED, in this class's own words: "do not re-capture the BEFORE
+    digests". Re-capturing them would compare today's gold against today's gold, which is
+    true by construction and proves nothing -- the same circularity the frozen-band and
+    forensic-copy reasoning rejects elsewhere. There is no honest measurement available:
+    the object the expected values describe is gone, and saying so is the point.
 
-    ROUTED to Plan 33.2-23 (the re-fit on corrected gold), which is the next plan to
-    freeze a gold baseline and can therefore take a fresh BEFORE/AFTER pair honestly.
-    Until it does, these two nodes are on the expected-failure list with their reason,
-    never re-captured and never skipped.
+    WHAT CARRIES THE LIVE CLAIM INSTEAD, and it is strictly more: the p332_ attribution
+    modules (``tests/integration/test_p332_rung*_attribution.py``,
+    ``..._step*_attribution.py``) assert per rung WHICH columns moved, in WHICH seasons,
+    against a fingerprint document taken before that rung ran -- a byte-identity claim per
+    step rather than one across a phase. Those are green.
     """
 
     def test_every_data_column_reproduces_its_pre_resync_digest_exactly(self):
