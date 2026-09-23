@@ -162,17 +162,45 @@ class MarketAnchorFeaturesCalculator:
         self.snapshot_hour = 18  # Hour (6 PM ET)
 
     def identify_opening_lines(self, odds_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Identify opening lines from historical odds data.
+        """Identify opening lines: the EARLIEST-CAPTURED odds well before kickoff.
 
-        Opening lines are defined as the earliest available odds
-        that are at least 24 hours before kickoff.
+        AN OPENING LINE IS ORDERED BY WHEN THE QUOTE WAS RECORDED, NEVER BY ITS LABEL
+        (Plan 33.2-20, D33.2-01 and the owner ruling of 2026-09-22). This method used to
+        read ``snapshot_ts`` as the time a line was known: it computed
+        ``kickoff_et - snapshot_ts`` for the 24-hour fence and sorted each (game,
+        sportsbook) group by ``snapshot_ts`` to pick the earliest quote. Every stored
+        2018-2025 ``snapshot_ts`` is MANUFACTURED -- 2018-2024 is one constant per season
+        (``YYYY-09-19 18:00 ET``, which falls AFTER 210 week-1 and week-2 games were
+        played) and 2025 is the retired preceding-Friday freeze -- so "earliest" was
+        being decided by a label nobody observed, and for a whole season's rows the label
+        is IDENTICAL, making the ordering arbitrary rather than merely wrong.
+
+        It now reads :data:`MARKET_CAPTURE_TIME_COLUMN`, the same recorded capture time
+        :func:`admissible_market_rows` admits on and :meth:`select_snapshot_lines_at_lock`
+        already orders by. A row with NO recorded capture time is not an early row whose
+        time is unknown -- it is a row whose time is unknown, full stop -- so it is
+        DROPPED rather than assumed early, exactly as the admission fence drops it.
+
+        WHY THIS PATH IS STILL HERE AT ALL. Its caller
+        (:meth:`build_market_anchor_features`, reached from
+        ``pipeline/steps.py::step_build_market_anchors``) writes silver
+        ``market_anchor_features``, which no production code reads and which is not on
+        disk today; and since Plan 33.2-14's fence zero stored 2002-2025 rows are
+        admitted, so this method currently receives an EMPTY frame. Retiring the whole
+        dead path -- the step, its registry entry, this method, the deprecated
+        ``build_market_anchor_features`` and ``scripts/build_market_anchors.py`` -- is a
+        ~500-line deletion inside the step registry Plan 33.2-27 is about to rewrite for
+        the daily cadence, and is routed there. What is fixed HERE is the defect: a
+        manufactured label read as an information time, which is the one thing this phase
+        exists to remove, and which must not sit in the tree waiting for the day someone
+        feeds this method a populated frame.
 
         Args:
-            odds_df: DataFrame with historical odds
+            odds_df: Stored odds rows, carrying ``game_id``, ``sportsbook``,
+                :data:`MARKET_CAPTURE_TIME_COLUMN` and the line columns.
 
         Returns:
-            DataFrame with opening line data
+            DataFrame with opening line data, one row per (game, sportsbook).
         """
         logger.info("Identifying opening lines", total_records=len(odds_df))
 
@@ -180,35 +208,41 @@ class MarketAnchorFeaturesCalculator:
             # Load games data to get kickoff times
             games_df = load_dataframe("games", layer="silver")
 
-            # Coerce snapshot_ts to a tz-aware (UTC) datetime. On-disk
-            # odds_snapshot stores snapshot_ts as an ISO STRING (object dtype --
-            # _normalize_parquet_datetime_columns string-formats it), so the raw
-            # column cannot be subtracted from the tz-aware datetime kickoff_et.
-            # The canonical build_features path already coerces (see
-            # build_features below); this deprecated path did not, which crashed
-            # build_market_anchors.py with "unsupported operand -: Timestamp and
-            # str" for every season. (FIX-01, D-13)
-            #
-            # THROUGH THE ONE PARSE PATH, not a bare pd.to_datetime (WR-01). The bare
-            # call infers its format from the FIRST element and coerces every row in
-            # the other spelling to NaT: measured on live silver, 1,855 of 2,140 rows
-            # (the "2024-09-19T18:00:00-04:00" spelling) were destroyed by the version
-            # that used to be here. NaT then fails the >= min_opening_hours fence, so
-            # 87% of games silently lost their odds and fell through to neutral market
-            # defaults. build_features was fixed in Plan 31-xx; these two deprecated
-            # methods were not, and pipeline/steps.py::step_build_market_anchors calls
-            # them on every scheduled run.
             odds_df = odds_df.copy()
-            odds_df["snapshot_ts"] = self._parse_snapshot_column(odds_df["snapshot_ts"])
+            if MARKET_CAPTURE_TIME_COLUMN not in odds_df.columns:
+                logger.warning(
+                    "No recorded capture time column; no line can open a market",
+                    column=MARKET_CAPTURE_TIME_COLUMN,
+                )
+                return pd.DataFrame()
+
+            # THE RECORDED CAPTURE TIME, tz-aware UTC. `utc=True` is a CONVERSION of an
+            # already-aware instant, never a relabel of a naive one: the column is
+            # written aware by every path that fills it, and a naive value here would be
+            # a writer defect to fix rather than a value to localize (D33.2-01).
+            captured = pd.to_datetime(odds_df[MARKET_CAPTURE_TIME_COLUMN], utc=True)
+            odds_df["_captured_at"] = captured
+            # A row with no recorded capture time is DROPPED, not assumed early -- the
+            # same rule admissible_market_rows applies. Assuming it early is precisely
+            # how a line nobody timed would become an "opening" line.
+            undated = int(captured.isna().sum())
+            if undated:
+                logger.info(
+                    "Dropping odds rows with no recorded capture time",
+                    rows=undated,
+                    column=MARKET_CAPTURE_TIME_COLUMN,
+                )
+            odds_df = odds_df.loc[captured.notna()]
 
             # Merge with games to get kickoff times
             odds_with_kickoff = odds_df.merge(
                 games_df[["game_id", "kickoff_et"]], on="game_id", how="left"
             )
 
-            # Calculate hours before kickoff (both operands tz-aware now)
+            # Hours before kickoff, measured from when the quote was RECORDED (both
+            # operands tz-aware)
             odds_with_kickoff["hours_before_kickoff"] = (
-                odds_with_kickoff["kickoff_et"] - odds_with_kickoff["snapshot_ts"]
+                odds_with_kickoff["kickoff_et"] - odds_with_kickoff["_captured_at"]
             ).dt.total_seconds() / 3600
 
             # Filter to odds that are at least min_opening_hours before kickoff
@@ -226,15 +260,17 @@ class MarketAnchorFeaturesCalculator:
             for (game_id, sportsbook), group in early_odds.groupby(
                 ["game_id", "sportsbook"]
             ):
-                # Sort by snapshot time (earliest first)
-                group_sorted = group.sort_values("snapshot_ts")
+                # The earliest RECORDED CAPTURE, not the earliest label
+                group_sorted = group.sort_values("_captured_at")
                 opening_line = group_sorted.iloc[0]
 
                 opening_lines.append(
                     {
                         "game_id": game_id,
                         "sportsbook": sportsbook,
-                        "opening_snapshot_ts": opening_line["snapshot_ts"],
+                        # RENAMED from opening_snapshot_ts, which named the label this
+                        # method no longer reads. Nothing consumed the old name.
+                        "opening_captured_at": opening_line["_captured_at"],
                         "hours_before_kickoff": opening_line["hours_before_kickoff"],
                         # Opening odds
                         "opening_ml_home": opening_line.get("ml_home"),

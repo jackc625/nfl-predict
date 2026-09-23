@@ -237,7 +237,7 @@ class TestTheDeprecatedPathUsesTheSameOneParse:
 
     The snapshot method was renamed ``select_snapshot_lines_at_lock`` by Plan 33.2-02, which
     also deleted its one-global-Friday cutoff: each game is now cut at its own day-before lock
-    (D33.2-01). The parse property below is unchanged.
+    (D33.2-01). Its parse property below is unchanged.
 
     ``build_features`` was fixed above, but the two DEPRECATED methods were not -- and they
     are the ones the scheduled run reaches. ``pipeline/steps.py::step_build_market_anchors``
@@ -245,6 +245,18 @@ class TestTheDeprecatedPathUsesTheSameOneParse:
     on 2026-09-09: the bare parse NaT'd 1,855 of 2,140 rows, and a NaT fails both the
     ``>= min_opening_hours`` fence and the ``<= cutoff`` one, so 87% of games lost their odds
     and fell through to ``_default_market_features`` with no count and no warning.
+
+    ``identify_opening_lines`` NO LONGER READS ``snapshot_ts`` AT ALL (Plan 33.2-20). It
+    ordered opening lines by that manufactured label -- one constant per season for
+    2018-2024, so "earliest" was decided by a value that is IDENTICAL across a whole
+    season's rows and that falls after 210 of the games it labels. It now reads the
+    recorded capture time, the same column the admission fence and
+    ``select_snapshot_lines_at_lock`` already use. The two-spelling parse property was a
+    property of the ``snapshot_ts`` parse, so for THIS method it is superseded rather than
+    dropped: the equivalent claims -- the population is driven by a real recorded time, a
+    row with no recorded time is dropped rather than assumed early, and an unreadable time
+    is refused rather than silently coerced -- are asserted below on the column that now
+    decides the answer.
     """
 
     _GAMES = pd.DataFrame(
@@ -273,17 +285,85 @@ class TestTheDeprecatedPathUsesTheSameOneParse:
 
         monkeypatch.setattr(module, "load_dataframe", _dispatch)
 
-    def test_both_spellings_survive_identify_opening_lines(
+    def test_a_recorded_capture_time_drives_the_opening_line_population(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._patch(monkeypatch)
+        """Both games keep an opening line when both carry a real capture time.
 
-        opening = MarketAnchorFeaturesCalculator().identify_opening_lines(_odds_frame())
+        SUPERSEDES ``test_both_spellings_survive_identify_opening_lines`` (Plan 33.2-20).
+        That asserted both ``snapshot_ts`` spellings survived the method's own parse; the
+        method no longer parses ``snapshot_ts``. The claim it was protecting -- that no
+        game silently falls through to the neutral market default -- is asserted here on
+        the column that now decides it, and the emitted time is asserted to BE the
+        recorded capture rather than the label.
+        """
+        self._patch(monkeypatch)
+        captured = _captured_odds_frame()
+
+        opening = MarketAnchorFeaturesCalculator().identify_opening_lines(captured)
 
         assert set(opening["game_id"]) == {"2018_W03_LAC@LA", "2025_W01_DAL@PHI"}, (
-            "a game vanished from the opening-line population. Under the bare parse the "
-            "space-separated spelling became NaT, NaT >= min_opening_hours is False, and "
-            "the game silently fell through to the neutral market default."
+            "a game vanished from the opening-line population, so it would fall through "
+            "to the neutral market default with no count and no warning"
+        )
+        assert "opening_snapshot_ts" not in opening.columns, (
+            "the emitted column still names the manufactured label"
+        )
+        emitted = dict(zip(opening["game_id"], opening["opening_captured_at"]))
+        expected = dict(zip(captured["game_id"], captured["created_at"]))
+        assert emitted == expected, (
+            "the opening line's time is not the recorded capture time it was chosen by"
+        )
+
+    def test_a_row_with_no_recorded_capture_time_is_dropped_not_assumed_early(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unknown time is never assumed early -- the admission fence's own rule.
+
+        This is the half that makes the node above non-vacuous: without it, a method
+        that admitted EVERY row would also pass it.
+        """
+        self._patch(monkeypatch)
+        undated = _captured_odds_frame()
+        undated.loc[0, "created_at"] = pd.NaT
+
+        opening = MarketAnchorFeaturesCalculator().identify_opening_lines(undated)
+
+        assert set(opening["game_id"]) == {"2025_W01_DAL@PHI"}, (
+            "a row with no recorded capture time opened a market. An unknown time is "
+            "not an early one, and assuming it early is exactly how a quote nobody "
+            "timed becomes an 'opening' line"
+        )
+
+    def test_the_earliest_capture_wins_even_when_the_labels_disagree(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE DEFECT ITSELF: the label must not decide which quote opened the market.
+
+        Two quotes for one game from one book. The one captured EARLIER carries the
+        LATER label -- which is the shape the stored 2018-2024 rows have, where every
+        row of a season shares one manufactured stamp and any ordering by it is
+        arbitrary. Ordering by the label picks the wrong quote; ordering by the capture
+        picks the right one.
+        """
+        self._patch(monkeypatch)
+        two = pd.concat([_captured_odds_frame().iloc[[0]]] * 2, ignore_index=True)
+        two["created_at"] = [
+            pd.Timestamp("2018-09-01 12:00:00", tz="UTC"),
+            pd.Timestamp("2018-09-02 12:00:00", tz="UTC"),
+        ]
+        two["snapshot_ts"] = [TZ_AWARE_SPELLING, LEGACY_SPELLING]
+        two["spread"] = [-3.0, -9.0]
+
+        opening = MarketAnchorFeaturesCalculator().identify_opening_lines(two)
+
+        assert len(opening) == 1
+        assert opening.iloc[0]["opening_spread"] == -3.0, (
+            "the opening line is the quote with the earlier LABEL, not the earlier "
+            "recorded capture -- which is the defect this method was fixed for"
+        )
+        assert opening.iloc[0]["opening_captured_at"] == pd.Timestamp(
+            "2018-09-01 12:00:00", tz="UTC"
         )
 
     def test_both_spellings_survive_select_snapshot_lines_at_lock(
@@ -303,14 +383,22 @@ class TestTheDeprecatedPathUsesTheSameOneParse:
 
         assert set(snapshots["game_id"]) == {"2018_W03_LAC@LA", "2025_W01_DAL@PHI"}
 
-    def test_an_unparseable_snapshot_is_refused_rather_than_silently_dropped(
+    def test_an_unparseable_capture_time_is_refused_rather_than_silently_dropped(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The deprecated path now REFUSES what it cannot read, like the fixed one."""
+        """The deprecated path REFUSES what it cannot read, on the column that decides.
+
+        SUPERSEDES the ``snapshot_ts`` version (Plan 33.2-20). The refusal property is
+        unchanged and has simply followed the method to the column it now reads: a value
+        that cannot be read as an instant must raise, never be coerced to NaT and
+        silently drop the row -- which is how 87% of games once lost their odds without
+        a count or a warning.
+        """
         import features.market_anchors as module
 
-        broken = _odds_frame()
-        broken.loc[1, "snapshot_ts"] = "not-a-timestamp"
+        broken = _captured_odds_frame()
+        broken["created_at"] = broken["created_at"].astype(object)
+        broken.loc[1, "created_at"] = "not-a-timestamp"
         monkeypatch.setattr(
             module,
             "load_dataframe",
