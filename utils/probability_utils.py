@@ -1,4 +1,25 @@
-"""Probability and odds conversion utilities."""
+"""Probability and odds conversion utilities.
+
+TWO CONVERTERS WERE DELETED HERE (Plan 33.2-21, D33.2-09). Recorded rather than silently
+dropped, because a reader who remembers them should be able to find out where they went.
+
+``convert_spread_to_moneyline`` turned a spread into a win probability through a hardcoded
+``1 / (1 + exp(-spread * 0.25))``. That 0.25 is roughly 65% steeper than the owned pre-lock
+spreads support: MEASURED over 1,342 graded 2020-2024 games the no-intercept slope is
+0.1512, so at a +7 spread the deleted function claimed 0.85 where the data says 0.73. A
+converter that steep manufactures an apparent edge at EVERY spread -- the exact failure
+D33.2-11's two-test rule exists to catch. It had zero call sites.
+
+``convert_total_to_over_under_ml`` (a "2% per point" linear rule, equally unfitted) had zero
+call sites too and went with it.
+
+The replacement is ``models.market_probability`` -- FITTED, walk-forward, on lines owned
+before each game's lock, and carrying a versioned artifact with its slope, its training
+seasons, its input digest and its fit time. It lives under ``models/`` and not here on
+purpose: a fitted model input sitting in ``utils/`` as a free function looks like
+arithmetic, which is precisely how the 0.25 constant came to sit unquestioned in this file.
+One answer on disk (D30-02).
+"""
 
 import math
 
@@ -183,66 +204,6 @@ def kelly_bet_size(
     bet_fraction = max(bet_fraction, 0)  # No negative bets
 
     return bet_fraction * bankroll
-
-
-def convert_spread_to_moneyline(spread: float, total: float = 45.0) -> tuple[int, int]:
-    """
-    Convert point spread to approximate moneyline odds.
-
-    Args:
-        spread: Point spread (positive = home favorite)
-        total: Game total (for context)
-
-    Returns:
-        Tuple of (home_ml, away_ml)
-    """
-    # Empirical relationship between spread and moneyline
-    # This is a rough approximation
-    if abs(spread) < 0.5:
-        return -110, -110
-
-    # Use a sigmoid-like function to convert spread to probability
-    home_prob = 1 / (1 + math.exp(-spread * 0.25))
-    away_prob = 1 - home_prob
-
-    try:
-        home_ml = probability_to_moneyline(home_prob)
-        away_ml = probability_to_moneyline(away_prob)
-        return home_ml, away_ml
-    except ValueError:
-        # Fallback for extreme cases
-        return -110, -110
-
-
-def convert_total_to_over_under_ml(
-    total: float, market_total: float
-) -> tuple[int, int]:
-    """
-    Convert predicted total to over/under moneyline odds.
-
-    Args:
-        total: Predicted game total
-        market_total: Market's total line
-
-    Returns:
-        Tuple of (over_ml, under_ml)
-    """
-    if abs(total - market_total) < 0.5:
-        return -110, -110
-
-    # Simple linear relationship
-    diff = total - market_total
-    over_prob = 0.5 + (diff * 0.02)  # 2% per point difference
-    over_prob = max(0.1, min(0.9, over_prob))  # Clamp to reasonable range
-
-    under_prob = 1 - over_prob
-
-    try:
-        over_ml = probability_to_moneyline(over_prob)
-        under_ml = probability_to_moneyline(under_prob)
-        return over_ml, under_ml
-    except ValueError:
-        return -110, -110
 
 
 def american_to_decimal(american_odds: int) -> float:

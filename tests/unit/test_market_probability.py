@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+
 from models.market_probability import (
     PLAUSIBLE_SLOPE_RANGE,
     REQUIRED_ARTIFACT_FIELDS,
