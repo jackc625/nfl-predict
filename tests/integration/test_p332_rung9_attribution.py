@@ -344,19 +344,42 @@ class TestTheLiveGold:
         assert "total_points" in set(self._frame("features_ou").columns)
 
     def test_every_matrix_still_carries_every_game(self) -> None:
-        """The row filters moved to columns that are non-null on every game in gold."""
-        for matrix in fg.GOLD_MATRICES:
-            assert len(self._frame(matrix)) == PREDICTED_ROWS, matrix
+        """No matrix drops a game the others keep -- whatever the live row count is.
+
+        THIS NODE DOES NOT PIN 6,499. It did, and that was the premise error
+        ``74afaaf`` corrected for step 8e one rung earlier: a rung's test must not
+        assert a LIVE artifact that later work legitimately moves, or it goes red for
+        a reason that has nothing to do with the rung. Plan 33.2-20's clean
+        production build added the 17 played 2026 games (6,499 -> 6,516), which this
+        node predates; nothing about rung 9 changed.
+
+        Rung 9's OWN row claim -- 6,499 before and after, because the ats and ou row
+        filters moved from the removed line-derived targets to ``home_margin`` and
+        ``total_points`` -- is asserted against this rung's two fingerprint DOCUMENTS
+        in ``test_the_widths_fell_as_declared_and_rows_held``, which no later build
+        can move. What stays true of LIVE gold for as long as those filters hold is
+        the EQUALITY: every matrix carries the same games, so a filter that started
+        dropping rows on one target would still be caught here.
+        """
+        measured = {matrix: len(self._frame(matrix)) for matrix in fg.GOLD_MATRICES}
+        assert len(set(measured.values())) == 1, measured
+        assert min(measured.values()) > 0, measured
 
     def test_the_width_pin_agrees_with_the_built_gold(self) -> None:
+        """The pin equals the live matrices -- whatever LATER work has moved it to.
+
+        The ``PREDICTED_WIDTHS`` clause was removed here for the same reason
+        ``74afaaf`` removed it from step 8e's live node: rung 9's own width claim
+        (193/194/193 -> 188/188/187) is asserted against its fingerprint DOCUMENTS
+        in ``test_the_widths_fell_as_declared_and_rows_held``, and the live pin is
+        owned by ``tests/unit/test_data_qa_gold_width.py``. Rung 9 happens to be the
+        last rung, so the two agree today; the re-fit's gold step (Plan 33.2-23) may
+        move the width, and this node must not go red when it does.
+        """
         measured = {
             matrix: self._frame(matrix).shape[1] for matrix in GOLD_FEATURE_MATRICES
         }
         assert measured == dict(GOLD_FEATURE_MATRICES)
-        assert (
-            tuple(GOLD_FEATURE_MATRICES[m] for m in fg.GOLD_MATRICES)
-            == PREDICTED_WIDTHS
-        )
 
 
 @pytest.mark.skipif(
