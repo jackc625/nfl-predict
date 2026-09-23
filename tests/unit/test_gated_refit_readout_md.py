@@ -64,6 +64,7 @@ ASCII only, no emoji (CLAUDE.md).
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import tomllib
@@ -78,6 +79,7 @@ from backtest.group_gate_constants import (
     VERDICT_UNDETERMINED,
 )
 from backtest.ou_monetization import CONTAMINATED_VOCAB
+from tests.phase30_state import GROUP_VERDICT_FILE_SHA256, MEASUREMENT_COMMIT
 
 # Repo root resolved from this file: tests/unit/test_gated_refit_readout_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -247,14 +249,40 @@ def _verdict_cells_for(content: str, group: str) -> list[str]:
 
 
 def _ratified_verdicts() -> dict[str, str]:
-    """Return {group -> verdict} from the committed ratified Stage-1 verdict document."""
-    assert VERDICT_TOML.is_file(), (
-        f"missing the committed ratified verdict document: {VERDICT_TOML}. It is TRACKED (it is "
-        "the Phase-30 measurement commit's only path), so its absence means the checkout is "
-        "broken, not that the check should be skipped."
+    """Return {group -> verdict} from the RATIFIED Phase-30 Stage-1 verdict document.
+
+    READ FROM ITS IMMUTABLE GIT BLOB (Plan 33.2-22, D33.2-15), at
+    ``tests.phase30_state.MEASUREMENT_COMMIT``, and digest-checked against
+    ``GROUP_VERDICT_FILE_SHA256`` over newline-normalized bytes.
+
+    It used to read the WORKING-TREE ``config/group_gate_verdict.toml``, which was the right
+    place while that file WAS the Phase-30 ratified document. From Phase 33.2 the working-tree
+    file is the RE-MEASURED verdict -- the same frozen rule re-run on corrected gold under an
+    outcome-loss objective, anchored by its own ``P332_22_*`` witness. GATED-REFIT-READOUT.md
+    is the PHASE-30 record and must keep being checked against the PHASE-30 document; the
+    re-measured verdict is published in ``GROUP-VERDICT-READOUT.md`` and guarded there.
+
+    ``VERDICT_TOML`` is retained above and is still read by the tests that are about the LIVE
+    file. Nothing here was relaxed: the same bytes are parsed, from the one place they cannot
+    change.
+    """
+    if _git_history_is_unavailable():
+        pytest.skip(SHALLOW_SKIP_MESSAGE)
+    blob = _git(
+        "cat-file", "blob", f"{MEASUREMENT_COMMIT}:config/group_gate_verdict.toml"
     )
-    with VERDICT_TOML.open("rb") as handle:
-        document = tomllib.load(handle)
+    assert blob.returncode == 0, (
+        f"git could not read the ratified verdict document at {MEASUREMENT_COMMIT}: "
+        f"{blob.stderr}. It is the Phase-30 measurement commit's only path, so this means the "
+        "checkout is broken, not that the check should be skipped."
+    )
+    raw = blob.stdout.encode("utf-8") if isinstance(blob.stdout, str) else blob.stdout
+    normalized = raw.replace(b"\r\n", b"\n")
+    assert hashlib.sha256(normalized).hexdigest() == GROUP_VERDICT_FILE_SHA256, (
+        "the ratified Phase-30 verdict at MEASUREMENT_COMMIT no longer matches its anchor. "
+        "That document is history and cannot change."
+    )
+    document = tomllib.loads(normalized.decode("utf-8"))
     return {
         group: entry["verdict"]
         for group, entry in document["stage1"]["verdicts"].items()

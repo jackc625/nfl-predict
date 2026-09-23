@@ -1370,18 +1370,54 @@ class TestTheMeasurementWindowIsStated:
         assert "1999" not in render_verdict_toml(result)
 
     def test_the_committed_verdict_is_still_byte_identical_to_its_anchor(self) -> None:
-        """The whole point of keeping the field off the block, asserted directly."""
+        """The whole point of keeping the field off the block, asserted directly.
+
+        REPOINTED at the ratified document's IMMUTABLE GIT BLOB (Plan 33.2-22, D33.2-15).
+        This node used to read the WORKING-TREE ``config/group_gate_verdict.toml``, which was
+        the right place to read it while that file WAS the Phase-30 ratified document. From
+        Phase 33.2 the working-tree file is the RE-MEASURED verdict -- the same frozen rule
+        re-run on corrected gold under an outcome-loss objective, anchored by its own
+        ``P332_22_*`` witness -- while the Phase-30 document remains exactly what it was, in
+        history, at ``tests.phase30_state.MEASUREMENT_COMMIT``.
+
+        This is not a weakening. The SAME bytes are pinned against the SAME digest; only the
+        place they are read from moved, from a file the phase is required to overwrite to the
+        commit that can never change. And the guard can no longer be satisfied by the new
+        verdict, because it never looks at it.
+        """
         import hashlib
 
-        from tests.phase30_state import GROUP_VERDICT_FILE_SHA256
+        from tests.phase30_state import GROUP_VERDICT_FILE_SHA256, MEASUREMENT_COMMIT
 
-        verdict_path = (
-            Path(__file__).resolve().parents[2] / "config" / "group_gate_verdict.toml"
+        repo_root = Path(__file__).resolve().parents[2]
+
+        def _git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", *args], cwd=repo_root, capture_output=True, check=False
+            )
+
+        # The same shallow / non-git probe the other ancestry guards use: in a `--depth=1`
+        # clone the blob simply is not present, and that is not a tampering finding.
+        if _git("rev-parse", "--git-dir").returncode != 0:
+            pytest.skip("not a git checkout, so the ratified blob cannot be read")
+        shallow = _git("rev-parse", "--is-shallow-repository")
+        if shallow.returncode != 0 or shallow.stdout.decode().strip() == "true":
+            pytest.skip(
+                "shallow checkout: the ratified blob's commit may be truncated away"
+            )
+
+        blob = _git(
+            "cat-file", "blob", f"{MEASUREMENT_COMMIT}:config/group_gate_verdict.toml"
         )
-        normalized = verdict_path.read_bytes().replace(b"\r\n", b"\n")
+        assert blob.returncode == 0, (
+            f"git could not read the ratified verdict at {MEASUREMENT_COMMIT}: "
+            f"{blob.stderr.decode(errors='replace')}"
+        )
+        normalized = blob.stdout.replace(b"\r\n", b"\n")
 
         assert hashlib.sha256(normalized).hexdigest() == GROUP_VERDICT_FILE_SHA256, (
-            "config/group_gate_verdict.toml no longer matches its ratified anchor. It is "
-            "the measurement document and must not be edited; if the generator's output "
-            "changed, the change belongs off the rendered block."
+            "the RATIFIED Phase-30 verdict at MEASUREMENT_COMMIT no longer matches its "
+            "anchor. That document is history and cannot change; a mismatch here means the "
+            "history was rewritten or the anchor was re-pinned, never that the file was "
+            "legitimately edited."
         )
