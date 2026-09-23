@@ -30,7 +30,12 @@ input for any target (D33.2-03, enforced in gold by Plan 33.2-19's rung 9).
 
 The converter named above is fitted on the owned `odds_timeline` -- the Phase-29 purchase, and the only
 store in this repository whose lines carry a **real capture time**. That store covers **2020-2024 only**,
-and after the per-game lock join and the tie drop it supplies **1,342 graded games**.
+and after the per-game lock join and the tie drop it supplies **1,344 graded games**. (It supplied
+1,342 until Plan 33.2-24's step 24b: the ingest had filed the two 2024 Christmas Day games under
+week-16 ids no game carries, so their pre-lock lines joined nothing. The ingest now keys every
+captured line to its scheduled game, the 16 stored rows were re-keyed under a digest bracket, and
+the converter was re-fitted on the repaired corpus as `market_probability_20260923_195443`; Plan
+33.2-21's `market_probability_20260923_025709` stays on disk unchanged.)
 
 It does not cover 2018-2019 (The Odds API's historical data begins 2020-06, so those seasons are
 unbuyable at any price) and it does not cover 2025 (the forward-capture path has never run). The

@@ -71,6 +71,7 @@ from models.trainers.wp_trainer import WPTrainer
 from tests.phase33_state import (
     P332_23_REFIT_ARTIFACT_IDS,
     P332_23_REFIT_GOLD_GENERATION,
+    P332_24B_CONVERTER_ARTIFACT_ID,
 )
 from utils import get_logger
 
@@ -89,10 +90,14 @@ __all__ = [
     "walk_forward_predictions",
 ]
 
-#: The converter the blend binds (Plan 33.2-21, ``market_probability_20260923_025709``:
-#: slope_beta 0.1512435881109338 over 1,342 graded 2020-2024 games). Named ONCE; the blend
-#: records it and ``MarketBlender.from_artifacts`` cross-checks it against the directory.
-BLEND_CONVERTER_ARTIFACT_ID: str = "market_probability_20260923_025709"
+#: The converter the blend binds, READ from its recorded slot -- never re-derived from a
+#: directory listing. Plan 33.2-24 step 24b re-fitted it on the repaired owned corpus
+#: (``P332_24B_CONVERTER_ARTIFACT_ID``: 1,344 graded games, two 2024 Christmas games the
+#: ingest had filed a week early now included). Was: the literal
+#: ``market_probability_20260923_025709`` (Plan 33.2-21, 1,342 games), which stays on disk
+#: untouched. Named ONCE; the blend records it and ``MarketBlender.from_artifacts``
+#: cross-checks it against the directory.
+BLEND_CONVERTER_ARTIFACT_ID: str = P332_24B_CONVERTER_ARTIFACT_ID
 
 #: The targets, in the order everything here is reported.
 BLEND_TARGETS: tuple[str, ...] = ("wp", "ats", "ou")

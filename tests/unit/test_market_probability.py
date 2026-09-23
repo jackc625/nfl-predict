@@ -377,15 +377,24 @@ class TestTheOwnedCorpus:
     def test_the_reader_reproduces_the_measured_owned_corpus(self) -> None:
         if not Path("data/silver/odds_timeline.parquet").exists():
             pytest.skip("owned odds_timeline is not present in this checkout")
+        from tests.phase33_state import (
+            P332_24B_CONVERTER_MARGIN_WIN_CORRELATION,
+            P332_24B_CONVERTER_N_GAMES,
+        )
+
         frame = load_owned_prelock_lines()
-        # MEASURED 2026-09-15 and re-measured 2026-09-22: 1,346 of 1,408 scheduled
-        # 2020-2024 games carry a snapshot at or before their lock; 1,342 after ties.
-        assert len(frame) == 1342
+        # Was: 1,342 games and +0.3922 (measured 2026-09-15 / 2026-09-22), while the two
+        # 2024 Christmas games sat under week-16 ids no game carries. Plan 33.2-24 step 24b
+        # re-keyed them in the store and re-measured: 1,344 graded games, +0.3930.
+        assert len(frame) == P332_24B_CONVERTER_N_GAMES == 1344
+        assert {"2024_W17_KC@PIT", "2024_W17_BAL@HOU"} <= set(frame["game_id"])
         assert set(frame["season"]) == {2020, 2021, 2022, 2023, 2024}
         correlation = float(
             np.corrcoef(frame["home_fav_margin"], frame["home_win"])[0, 1]
         )
-        assert correlation == pytest.approx(0.3922, abs=5e-4)
+        assert correlation == pytest.approx(
+            P332_24B_CONVERTER_MARGIN_WIN_CORRELATION, abs=1e-9
+        )
 
     def test_the_fitted_slope_lands_in_the_plausible_band(self) -> None:
         if not Path("data/silver/odds_timeline.parquet").exists():

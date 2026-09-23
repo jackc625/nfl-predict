@@ -18356,3 +18356,55 @@ P332_24B_ODDS_TIMELINE_FILE_SHA256_BEFORE: str = (
 P332_24B_ODDS_TIMELINE_FILE_SHA256_AFTER: str = (
     "cab6efa1e955e2fbd3dbd9ee35e2a34d5e258caad0e08604001ed852267a53ca"
 )
+
+# ---------------------------------------------------------------------------
+# STEP 24b (b): THE CONVERTER RE-FIT ON THE REPAIRED OWNED CORPUS.
+#
+# APPENDED by Plan 33.2-24's step 24b on 2026-09-23, AFTER the fit. Plan 33.2-21's
+# converter market_probability_20260923_025709 is untouched and stays on disk: an artifact
+# id names one payload forever. It was fitted on 1,342 games because the two Christmas
+# games were unjoinable; this one is fitted on 1,344.
+#
+# WHAT WAS RUN. `python -m models.market_probability --fit` -- exactly Plan 33.2-21's
+# procedure (load_owned_prelock_lines, fit_market_probability, save_market_probability
+# _artifact) -- with the thread pool now pinned inside run_production_fit, inside the
+# artifacts/ digest bracket outputs/p332_24b_artifacts_before.json. Two no-write fits in two
+# separate processes beforehand produced the identical slope, walk-forward slopes and input
+# digest to the last bit.
+#
+# WHAT MOVED. Only slope_beta (0.1512435881109338 -> 0.1515880384520448). Every
+# walk-forward slope is IDENTICAL to Plan 33.2-21's: both added games are 2024 games, and a
+# season's walk-forward slope is fitted on strictly earlier seasons, so no out-of-fold
+# conversion the blend tuning reads could change. Both games were won by the road favourite.
+# ---------------------------------------------------------------------------
+
+#: The re-fitted converter. The blend re-fit binds it, and the swap reaches it only through
+#: the blend's recorded provenance (the converter is not a latest.json pointer).
+P332_24B_CONVERTER_ARTIFACT_ID: str = "market_probability_20260923_195443"
+
+#: The serving slope, exactly as the artifact records it.
+P332_24B_CONVERTER_SLOPE_BETA: float = 0.1515880384520448
+
+#: The prior-only walk-forward slopes, unchanged from Plan 33.2-21's fit.
+P332_24B_CONVERTER_WALK_FORWARD_SLOPES: tuple[tuple[int, float], ...] = (
+    (2021, 0.1585544928247305),
+    (2022, 0.13565760892720727),
+    (2023, 0.14295249329630708),
+    (2024, 0.14272758499022406),
+)
+
+#: Graded games the serving slope was fitted on: Plan 33.2-21's 1,342 plus the two
+#: re-keyed Christmas games.
+P332_24B_CONVERTER_N_GAMES: int = 1344
+
+#: sha256 over the canonical fit rows (models.market_probability._input_digest).
+P332_24B_CONVERTER_INPUT_DIGEST: str = (
+    "5bf8677ae6d1251706f06fcb1fada761ff30225cf4471d57c7ebc1eb22c6d2ab"
+)
+
+#: corr(home_fav_margin, home_win) over the 1,344 fit rows, measured 2026-09-23 (was
+#: +0.3922 over 1,342). Positive: the one sign flip still holds.
+P332_24B_CONVERTER_MARGIN_WIN_CORRELATION: float = 0.39304229866642654
+
+#: The thread count the fit was pinned to (config.tuning_preregistration).
+P332_24B_CONVERTER_THREAD_LIMIT: int = 1

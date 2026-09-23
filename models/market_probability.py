@@ -745,8 +745,19 @@ def run_production_fit(
     and the plan that introduces it brackets that write with a
     ``tests/data_boundary.py`` digest snapshot. ``artifacts/latest.json`` is NOT touched:
     the converter is bound on the blend side, not through the manifest (SPEC R13).
+
+    THE THREAD PIN (Plan 33.2-24 step 24b, the owner's rule for every fit that produces a
+    published number). The Newton steps reduce over the corpus through numpy's dot, which
+    a multi-threaded BLAS may sum in a thread-count-dependent order; the pool is pinned to
+    ``config.tuning_preregistration.PINNED_THREAD_COUNT`` -- the SAME value the blend fit
+    and the model re-fits use -- so the slope's last bits are a function of the data alone.
     """
-    fit = fit_market_probability(load_owned_prelock_lines(silver_dir))
+    from threadpoolctl import threadpool_limits
+
+    from config.tuning_preregistration import PINNED_THREAD_COUNT
+
+    with threadpool_limits(limits=PINNED_THREAD_COUNT):
+        fit = fit_market_probability(load_owned_prelock_lines(silver_dir))
     return save_market_probability_artifact(fit, artifacts_dir=artifacts_dir)
 
 
@@ -775,6 +786,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"N_GAMES= {payload['n_games']}")  # noqa: T201
     print(f"TRAINING_SEASONS= {payload['training_seasons']}")  # noqa: T201
     print(f"WALK_FORWARD_SLOPES= {payload['walk_forward_slopes']}")  # noqa: T201
+    print(f"INPUT_DIGEST= {payload['input_digest']}")  # noqa: T201
+    from config.tuning_preregistration import PINNED_THREAD_COUNT
+
+    print(f"THREAD_LIMIT= {PINNED_THREAD_COUNT}")  # noqa: T201
     return 0
 
 

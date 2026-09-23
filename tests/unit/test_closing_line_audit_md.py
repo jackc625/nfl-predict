@@ -202,8 +202,12 @@ class TestTheDocument:
         coverage = audit_text.split("## What history the fit actually has")[1].split(
             "## The vocabulary", maxsplit=1
         )[0]
+        from tests.phase33_state import P332_24B_CONVERTER_N_GAMES
+
         assert "2020-2024" in coverage
-        assert "1,342" in coverage
+        # Was: "1,342". Plan 33.2-24 step 24b re-fitted the converter on the repaired
+        # corpus, so the document states the count the live converter was fitted on.
+        assert f"{P332_24B_CONVERTER_N_GAMES:,}" in coverage
         assert "no genuine capture time" in coverage
         for absent_season in ("2018-2019", "2025"):
             assert absent_season in coverage
