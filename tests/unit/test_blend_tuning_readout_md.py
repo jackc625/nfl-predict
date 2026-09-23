@@ -24,6 +24,10 @@ Christmas games, once filed a week early in the owned timeline, back in the corp
 assertion read ``P332_24_*``, which stays byte-unchanged as the record of the first fit, and
 ``TestTheFirstFitStaysOnTheRecord`` holds the document to naming it too.
 
+STEP 25b. The models were re-fitted with the snap coverage flag left out and the blend re-tuned
+on them, so the current-blend assertions read ``P332_25B_*`` (was ``P332_24B_*``, byte-unchanged
+and still read by the first-fit class and for the corpus's named games, which did not change).
+
 It asserts RULINGS and COUNT RELATIONSHIPS, never a re-derived point estimate.
 
 ASCII only, no emoji (CLAUDE.md).
@@ -95,8 +99,8 @@ def documented_excluded_count(text: str | None = None) -> dict[str, int] | None:
 
 
 def state_manifest_excluded_count() -> dict[str, int] | None:
-    """The ``{class: games}`` mapping ``tests/phase33_state.P332_24B_EXCLUDED_COUNTS`` records."""
-    recorded = getattr(phase33_state, "P332_24B_EXCLUDED_COUNTS", None)
+    """The ``{class: games}`` mapping ``tests/phase33_state.P332_25B_EXCLUDED_COUNTS`` records."""
+    recorded = getattr(phase33_state, "P332_25B_EXCLUDED_COUNTS", None)
     if recorded is None:
         return None
     return {str(cls): int(games) for cls, games in recorded}
@@ -182,23 +186,23 @@ class TestTheExclusionCountIdentity:
 
 class TestThePublishedWeights:
     def test_the_weights_table_equals_the_manifest(self) -> None:
-        assert documented_weights() == dict(phase33_state.P332_24B_BLEND_WEIGHTS)
+        assert documented_weights() == dict(phase33_state.P332_25B_BLEND_WEIGHTS)
 
     def test_the_boundary_weights_are_the_manifests(self) -> None:
         boundary = sorted(
             target
-            for target, weight in phase33_state.P332_24B_BLEND_WEIGHTS
+            for target, weight in phase33_state.P332_25B_BLEND_WEIGHTS
             if weight in (0.0, 1.0)
         )
-        assert boundary == sorted(phase33_state.P332_24B_BOUNDARY_WEIGHT_TARGETS)
+        assert boundary == sorted(phase33_state.P332_25B_BOUNDARY_WEIGHT_TARGETS)
 
     def test_the_readout_names_the_artifact_the_manifest_records(self) -> None:
-        assert f"`{phase33_state.P332_24B_BLEND_ARTIFACT_ID}`" in _read_readout()
+        assert f"`{phase33_state.P332_25B_BLEND_ARTIFACT_ID}`" in _read_readout()
 
 
 @pytest.fixture(scope="module")
 def blend_payload() -> dict:
-    path = ARTIFACTS / phase33_state.P332_24B_BLEND_ARTIFACT_ID / "blend_weights.json"
+    path = ARTIFACTS / phase33_state.P332_25B_BLEND_ARTIFACT_ID / "blend_weights.json"
     if not path.is_file():
         pytest.skip(
             f"evidence-backed skip: {path} is absent from this checkout (artifacts/ is "
@@ -212,18 +216,18 @@ class TestTheArtifactIsTheSameAnswer:
         assert blend_payload["excluded_counts"] == state_manifest_excluded_count()
 
     def test_its_weights_equal_the_manifest(self, blend_payload: dict) -> None:
-        assert blend_payload["weights"] == dict(phase33_state.P332_24B_BLEND_WEIGHTS)
+        assert blend_payload["weights"] == dict(phase33_state.P332_25B_BLEND_WEIGHTS)
 
     def test_its_gold_digest_is_the_refit_generation(self, blend_payload: dict) -> None:
         assert (
             blend_payload["gold_generation_digest"]
-            == phase33_state.P332_24B_BLEND_GOLD_GENERATION
-            == phase33_state.P332_23_REFIT_GOLD_GENERATION
+            == phase33_state.P332_25B_BLEND_GOLD_GENERATION
+            == phase33_state.P332_25B_REFIT_GOLD_GENERATION
         )
 
     def test_its_source_ids_are_the_recorded_refit(self, blend_payload: dict) -> None:
         assert blend_payload["source_artifact_ids"] == dict(
-            phase33_state.P332_24B_BLEND_SOURCE_ARTIFACT_IDS
+            phase33_state.P332_25B_BLEND_SOURCE_ARTIFACT_IDS
         )
 
     def test_its_corpus_and_converter_are_the_manifests(
@@ -231,19 +235,19 @@ class TestTheArtifactIsTheSameAnswer:
     ) -> None:
         assert (
             blend_payload["tuning_corpus"]["rows"]
-            == phase33_state.P332_24B_TUNING_CORPUS_ROWS
+            == phase33_state.P332_25B_TUNING_CORPUS_ROWS
         )
-        assert blend_payload["n_games"] == dict(phase33_state.P332_24B_TUNING_GAMES)
+        assert blend_payload["n_games"] == dict(phase33_state.P332_25B_TUNING_GAMES)
         assert (
             blend_payload["market_probability_artifact_id"]
-            == phase33_state.P332_24B_BLEND_CONVERTER_ARTIFACT_ID
+            == phase33_state.P332_25B_BLEND_CONVERTER_ARTIFACT_ID
         )
         assert (
-            blend_payload["thread_limit"] == phase33_state.P332_24B_BLEND_THREAD_LIMIT
+            blend_payload["thread_limit"] == phase33_state.P332_25B_BLEND_THREAD_LIMIT
         )
 
     def test_it_is_one_payload_file(self) -> None:
-        directory = ARTIFACTS / phase33_state.P332_24B_BLEND_ARTIFACT_ID
+        directory = ARTIFACTS / phase33_state.P332_25B_BLEND_ARTIFACT_ID
         if not directory.is_dir():
             pytest.skip("the blend artifact is absent from this checkout")
         assert sorted(p.name for p in directory.iterdir()) == ["blend_weights.json"]

@@ -280,7 +280,8 @@ class TestNoPreCorrectionComparator:
     def test_the_timestamped_ids_are_exactly_the_four_installed(self) -> None:
         documented = set(_TIMESTAMPED_ID.findall(_read()))
         installed = {
-            artifact_id for _key, artifact_id in phase33_state.P332_25_SWAP_ARTIFACT_IDS
+            artifact_id
+            for _key, artifact_id in phase33_state.P332_25B_SWAP_ARTIFACT_IDS
         }
         assert documented == installed
 
@@ -295,7 +296,7 @@ class TestNoPreCorrectionComparator:
         old_wp = dict(phase33_state.P332_25_PRE_SWAP_LATEST_JSON)["wp"]
         planted = _read().replace("| 2024 | 285 |", f"| 2024 | 285 | {old_wp} |", 1)
         assert planted != _read(), "the planted edit did not apply"
-        installed = {v for _k, v in phase33_state.P332_25_SWAP_ARTIFACT_IDS}
+        installed = {v for _k, v in phase33_state.P332_25B_SWAP_ARTIFACT_IDS}
         assert set(_TIMESTAMPED_ID.findall(planted)) != installed
 
 
@@ -305,10 +306,12 @@ class TestNoPreCorrectionComparator:
 
 
 class TestTheFourIdsAreTheRecordedOnes:
-    def test_the_swap_slot_is_the_refit_plus_the_step_24b_blend(self) -> None:
-        assert dict(phase33_state.P332_25_SWAP_ARTIFACT_IDS) == {
-            **dict(phase33_state.P332_23_REFIT_ARTIFACT_IDS),
-            "blend": phase33_state.P332_24B_BLEND_ARTIFACT_ID,
+    def test_the_swap_slot_is_the_refit_plus_its_blend(self) -> None:
+        # Was: P332_25_SWAP == P332_23 models + the step-24b blend. Step 25b re-fitted the
+        # models with the snap coverage flag left out and re-tuned the blend on them.
+        assert dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS) == {
+            **dict(phase33_state.P332_25B_REFIT_ARTIFACT_IDS),
+            "blend": phase33_state.P332_25B_BLEND_ARTIFACT_ID,
         }
 
     def test_the_artifact_table_maps_each_key_to_its_recorded_id(self) -> None:
@@ -319,7 +322,7 @@ class TestTheFourIdsAreTheRecordedOnes:
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             if line.startswith("|") and cells[0] in ("wp", "ats", "ou", "blend"):
                 table[cells[0]] = cells[1].strip("`")
-        assert table == dict(phase33_state.P332_25_SWAP_ARTIFACT_IDS)
+        assert table == dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)
 
     def test_it_names_the_recorded_gold_generation(self) -> None:
         assert phase33_state.P332_25_SWAP_GOLD_GENERATION in _read()
@@ -346,7 +349,7 @@ class TestThePreSwapRecordIsReversible:
 
     def test_the_swap_moves_every_pointer_and_no_key(self) -> None:
         before = dict(phase33_state.P332_25_PRE_SWAP_LATEST_JSON)
-        after = dict(phase33_state.P332_25_SWAP_ARTIFACT_IDS)
+        after = dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)
         assert list(before) == list(after) == ["wp", "ats", "ou", "blend"]
         assert all(before[key] != after[key] for key in before)
 
@@ -407,10 +410,10 @@ class TestTheFoldOrdering:
 
 
 class TestThePublishedRulingsAreTheRecord:
-    def test_the_blend_weights_are_the_step_24b_record(self) -> None:
+    def test_the_blend_weights_are_the_step_25b_record(self) -> None:
         rows = _target_rows(_read(), "## 5. Results")
         assert {t: float(cells[0]) for t, cells in rows.items()} == dict(
-            phase33_state.P332_24B_BLEND_WEIGHTS
+            phase33_state.P332_25B_BLEND_WEIGHTS
         )
 
     def test_the_margin_verdicts_are_the_plan_23_record(self) -> None:
@@ -427,10 +430,10 @@ class TestThePublishedRulingsAreTheRecord:
             assert cells[5] == ("yes" if cleared else "no"), target
             assert arm in cells[6], target
 
-    def test_the_feature_counts_are_the_plan_23_record(self) -> None:
+    def test_the_feature_counts_are_the_step_25b_record(self) -> None:
         rows = _target_rows(_read(), "## 8. The feature sets")
         assert {t: int(cells[0]) for t, cells in rows.items()} == dict(
-            phase33_state.P332_23_REFIT_FEATURE_COUNTS
+            phase33_state.P332_25B_REFIT_FEATURE_COUNTS
         )
         assert {t: int(cells[1]) for t, cells in rows.items()} == {
             "wp": 0,
@@ -445,7 +448,7 @@ class TestThePublishedRulingsAreTheRecord:
 
 
 def _metadata(target: str) -> dict:
-    artifact_id = dict(phase33_state.P332_25_SWAP_ARTIFACT_IDS)[target]
+    artifact_id = dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)[target]
     path = ARTIFACTS / artifact_id / "metadata.json"
     if not path.is_file():
         pytest.skip(
@@ -505,7 +508,7 @@ class TestTheArtifactsAreTheSameAnswer:
         )
 
     def test_the_blend_records_the_swap_gold(self) -> None:
-        blend_id = dict(phase33_state.P332_25_SWAP_ARTIFACT_IDS)["blend"]
+        blend_id = dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)["blend"]
         path = ARTIFACTS / blend_id / "blend_weights.json"
         if not path.is_file():
             pytest.skip(f"evidence-backed skip: {path} is absent from this checkout")

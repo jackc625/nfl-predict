@@ -4,8 +4,9 @@ Run via: python -m backtest.tune
 
 WHAT IT DOES (Plan 33.2-24, D33.2-10)
 -------------------------------------
-1. Reads the three CORRECTED model artifacts (Plan 33.2-23's re-fit, ids recorded in
-   ``tests.phase33_state.P332_23_REFIT_ARTIFACT_IDS``) for their recipe: parameters, excluded
+1. Reads the three CORRECTED model artifacts (step 25b's re-fit with the snap coverage flag
+   left out, ids recorded in ``tests.phase33_state.P332_25B_REFIT_ARTIFACT_IDS``; was Plan
+   33.2-23's ``P332_23_REFIT_ARTIFACT_IDS``) for their recipe: parameters, excluded
    feature groups and the gold generation they were fitted on. It reads NO pre-correction
    artifact, NOT ``artifacts/latest.json`` and NOT the incumbent blend.
 2. Loads the owned pre-lock tuning corpus (``models.blending_data.load_tuning_period_data``):
@@ -69,9 +70,9 @@ from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WPTrainer
 from tests.phase33_state import (
-    P332_23_REFIT_ARTIFACT_IDS,
-    P332_23_REFIT_GOLD_GENERATION,
     P332_24B_CONVERTER_ARTIFACT_ID,
+    P332_25B_REFIT_ARTIFACT_IDS,
+    P332_25B_REFIT_GOLD_GENERATION,
 )
 from utils import get_logger
 
@@ -155,7 +156,7 @@ def blend_source_artifact_ids() -> dict[str, str]:
     ``artifacts/latest.json`` still names the dead pre-correction models until Plan
     33.2-25's swap, and a directory listing would silently pick whatever was written last.
     """
-    return dict(P332_23_REFIT_ARTIFACT_IDS)
+    return dict(P332_25B_REFIT_ARTIFACT_IDS)
 
 
 def read_source_recipes(
@@ -351,7 +352,7 @@ def run_blend_tuning(
     *,
     source_artifact_ids: dict[str, str] | None = None,
     converter_artifact_id: str = BLEND_CONVERTER_ARTIFACT_ID,
-    recorded_gold_generation: str = P332_23_REFIT_GOLD_GENERATION,
+    recorded_gold_generation: str = P332_25B_REFIT_GOLD_GENERATION,
     predictions_fn: Callable[[str, SourceRecipe, list[int]], pd.DataFrame]
     | None = None,
     gold_generation_fn: Callable[[], str] | None = None,

@@ -1,7 +1,8 @@
 # BLEND-TUNING-READOUT.md -- one fixed blend weight per target, tuned on lines we owned
 
 **Phase 33.2, Plan 33.2-24. Owner decisions D33.2-03, D33.2-09, D33.2-10. Measured 2026-09-23;
-re-fitted the same day in step 24b, after two mis-filed games were repaired (section 9).**
+re-fitted the same day in step 24b, after two mis-filed games were repaired (section 9), and
+re-tuned again after the models were re-fitted without the snap coverage flag (section 10).**
 
 **Built on re-measured past seasons; not clean evidence.** Only the 2026 season, recorded live
 under the day-before 6 PM ET lock, counts (D33.2-07). What follows sets how much of the market's
@@ -36,11 +37,11 @@ carries no moneyline at all.
 
 | Target | Weight | Loss minimised | Loss at the weight | Market alone (w=0) | Model alone (w=1) | Games | Seasons |
 |---|---|---|---|---|---|---|---|
-| WP | 0.00 | log loss | 0.613530 | 0.613530 | 0.644597 | 1,093 | 2021-2024 |
-| ATS | 0.00 | mean absolute error (points) | 9.795252 | 9.795252 | 10.445867 | 1,348 | 2020-2024 |
-| O/U | 0.12 | mean absolute error (points) | 10.286055 | 10.290987 | 10.874359 | 1,348 | 2020-2024 |
+| WP | 0.00 | log loss | 0.613530 | 0.613530 | 0.645234 | 1,093 | 2021-2024 |
+| ATS | 0.00 | mean absolute error (points) | 9.795252 | 9.795252 | 10.462824 | 1,348 | 2020-2024 |
+| O/U | 0.13 | mean absolute error (points) | 10.285894 | 10.290987 | 10.846197 | 1,348 | 2020-2024 |
 
-The blend artifact is `blend_20260923_195755`. The weights were searched over every hundredth
+The blend artifact is `blend_20260923_212418`. The weights were searched over every hundredth
 from 0.00 to 1.00, and each target's weight is the one that made the blend's predictions closest
 to what actually happened, measured in that model's own metric: log loss for win probability,
 average absolute miss in points for the spread and the total.
@@ -54,13 +55,13 @@ said this.
 
 The reason is visible in the models' own predictions. On the 1,348 owned games, the spread
 model's predictions line up with the market's spread closely (correlation 0.77) and track the
-real margin less well than the spread does (0.33 against 0.45). Whatever the model knows, the
+real margin less well than the spread does (0.34 against 0.45). Whatever the model knows, the
 market already priced in, and the market knows more besides. The win model's predictions track
 the result at 0.30. These are the corrected models -- no betting line among their inputs
 (D33.2-03), default settings because no search beat its random baseline (Plan 33.2-23) -- and on
 lines owned before the lock they add nothing the market did not already carry.
 
-**For the total, the model gets a small weight, 0.12, and it barely matters.** It improves the
+**For the total, the model gets a small weight, 0.13, and it barely matters.** It improves the
 average miss by 0.005 points over the market alone -- far smaller than the gap between one season
 and the next. No significance test was run on it and none is claimed.
 
@@ -68,9 +69,9 @@ Seen season by season, the weight each season would have chosen on its own:
 
 | Target | 2020 | 2021 | 2022 | 2023 | 2024 |
 |---|---|---|---|---|---|
-| WP | (not tuned) | 0.25 | 0.00 | 0.00 | 0.18 |
-| ATS | 0.00 | 0.00 | 0.00 | 0.00 | 0.24 |
-| O/U | 0.00 | 0.46 | 0.00 | 0.00 | 0.40 |
+| WP | (not tuned) | 0.26 | 0.00 | 0.00 | 0.18 |
+| ATS | 0.00 | 0.00 | 0.00 | 0.00 | 0.15 |
+| O/U | 0.00 | 0.55 | 0.00 | 0.19 | 0.20 |
 
 Most seasons choose the market alone. The fixed weight is one number across all of them, which
 is what D33.2-10 rules; a week-varying or season-varying shape may return only with evidence
@@ -91,8 +92,9 @@ time, the later-recorded one is used, and a game can never contribute two rows. 
 in for a missing line.
 
 **The model side: the corrected models' real walk-forward predictions.** The three corrected
-models are the Plan 33.2-23 re-fit -- `wp_20260923_115808`, `ats_20260923_124120` and
-`ou_20260923_133813` -- read by their recorded ids, not through the production pointer. Each
+models are the step-25b re-fit (Plan 33.2-23's default settings, with the snap coverage flag left
+out) -- `wp_20260923_172144`, `ats_20260923_172148` and `ou_20260923_172152` -- read by their
+recorded ids, not through the production pointer. Each
 season was predicted by refitting that model's recipe as if the season were the latest one
 finished, using the project's one season-partition rule:
 
@@ -119,7 +121,8 @@ have let each game's own result shape the market side it is compared against.
 **Reproducibility.** Every fit was pinned to one processor thread and the value is recorded in
 the artifact. The whole fit was run twice in two separate processes -- once as a dry run that
 wrote nothing, once for real -- and produced identical weights, losses and per-season weights to
-the last digit; the step-24b re-fit did the same again, and so did its converter. The gold both runs read is generation
+the last digit; the step-24b re-fit did the same again, and so did its converter. The step-25b re-tune ran once,
+pinned the same way. The gold both runs read is generation
 `484397642530db5b28c49d9234ecfb90e3860783f1b1b41766ab6151a1522597`, the same generation the three
 models were fitted on; the fit refuses to run on any other.
 
@@ -221,10 +224,27 @@ models both missed by a lot. The conversion slopes used for the historical win-p
 did not change at all: each is fitted only on seasons before the one it converts, and both added
 games are 2024 games.
 
+## 10. Step 25b: the models re-fitted without the snap coverage flag
+
+The owner ruled the `snap` feature family out, but the rule defining the family did not list its
+coverage flag (`home_snap_coverage` / `away_snap_coverage`), so the flag stayed in and was the
+total model's top input. The flag was removed with its family, the three models were re-fitted on
+the same gold with the same default settings, and the blend was re-tuned on them exactly as above
+(same corpus, same converter). The blend in section 2 (`blend_20260923_212418`) replaces
+`blend_20260923_195755` for the production swap.
+
+| | Step 24b | Step 25b |
+|---|---|---|
+| Weights (WP / ATS / O/U) | 0.00 / 0.00 / 0.12 | 0.00 / 0.00 / 0.13 |
+| Corpus games (WP / ATS / O/U) | 1,093 / 1,348 / 1,348 | 1,093 / 1,348 / 1,348 |
+
+Only the total's weight moved, by one step of the grid; win probability and the spread still
+publish the market alone.
+
 ---
 
-*Generated from the step-24b run of `python -m backtest.tune` on 2026-09-23.*
-*The artifact it wrote is `artifacts/blend_20260923_195755/blend_weights.json`; its witness is the*
-*`P332_24B_*` block in `tests/phase33_state.py` (the first fit's `P332_24_*` block is kept*
-*unchanged), and `tests/unit/test_blend_tuning_readout_md.py` holds this document's exclusion*
+*Generated from the step-25b run of `python -m backtest.tune` on 2026-09-23.*
+*The artifact it wrote is `artifacts/blend_20260923_212418/blend_weights.json`; its witness is the*
+*`P332_25B_*` block in `tests/phase33_state.py` (the earlier fits' `P332_24_*` / `P332_24B_*` blocks*
+*are kept unchanged), and `tests/unit/test_blend_tuning_readout_md.py` holds this document's exclusion*
 *counts equal to that witness.*

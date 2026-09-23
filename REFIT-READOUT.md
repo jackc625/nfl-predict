@@ -17,8 +17,9 @@ number stated plainly.
 ## 1. What was re-fitted, on what, and why nothing is compared with the old models
 
 **What.** All three models -- win probability (WP), the spread (ATS) and the total (O/U) -- were
-fitted again from scratch (Plan 33.2-23), and the blend that mixes each model with the betting
-market was tuned again (Plan 33.2-24, re-fitted in its step 24b).
+fitted again from scratch (Plan 33.2-23, then re-fitted once more on the same settings with the
+`snap` family's coverage flag left out, section 8), and the blend that mixes each model with the
+betting market was tuned again against those models (Plan 33.2-24's procedure).
 
 **On what.** The corrected feature tables ("gold") that this phase rebuilt: every input now carries
 only information that existed by 6 PM Eastern on the day before its game's kickoff; past weather is
@@ -37,10 +38,10 @@ document names none of them (section 9).
 
 | Key | Artifact | What it is | Gold generation it records |
 |---|---|---|---|
-| wp | `wp_20260923_115808` | win probability, logistic regression with a fitted calibration | `484397642530...1522597` in `metadata.json` |
-| ats | `ats_20260923_124120` | spread (final home margin), XGBoost regression | `484397642530...1522597` in `metadata.json` |
-| ou | `ou_20260923_133813` | total points, XGBoost regression | `484397642530...1522597` in `metadata.json` |
-| blend | `blend_20260923_195755` | one fixed model weight per target, market for the rest | `484397642530...1522597` in `blend_weights.json` |
+| wp | `wp_20260923_172144` | win probability, logistic regression with a fitted calibration | `484397642530...1522597` in `metadata.json` |
+| ats | `ats_20260923_172148` | spread (final home margin), XGBoost regression | `484397642530...1522597` in `metadata.json` |
+| ou | `ou_20260923_172152` | total points, XGBoost regression | `484397642530...1522597` in `metadata.json` |
+| blend | `blend_20260923_212418` | one fixed model weight per target, market for the rest | `484397642530...1522597` in `blend_weights.json` |
 
 The blend is bound to the spread-to-win-probability converter `market_probability_20260923_195443`
 (the converter is not a production pointer; the blend names it inside its own payload, and the
@@ -100,11 +101,11 @@ between the stated probability and what happened (0 would be perfect).
 
 | Season | Games | Picked the winner | Average probability miss |
 |---|---|---|---|
-| 2024 | 285 | 0.663158 | 0.440661 |
-| 2025 | 285 | 0.645614 | 0.453986 |
+| 2024 | 285 | 0.666667 | 0.441823 |
+| 2025 | 285 | 0.645614 | 0.453850 |
 
 Across both seasons the calibration error -- how far the stated probabilities sit from the rates at
-which those games were actually won -- is 0.084447.
+which those games were actually won -- is 0.085562.
 
 **Spread** -- the average miss on the final home margin, in points; the larger typical miss (root
 mean square); and R-squared, the share of the game-to-game variation in margins the model accounted
@@ -112,15 +113,15 @@ for (0 means no better than guessing that season's average margin for every game
 
 | Season | Games | Average miss (points) | Root-mean-square miss (points) | R-squared |
 |---|---|---|---|---|
-| 2024 | 285 | 10.176606 | 13.229005 | 0.160931 |
-| 2025 | 285 | 10.191667 | 12.916051 | 0.164791 |
+| 2024 | 285 | 10.073375 | 13.154046 | 0.170413 |
+| 2025 | 285 | 10.313471 | 13.027124 | 0.150364 |
 
 **Total** -- the same three measures for total points scored.
 
 | Season | Games | Average miss (points) | Root-mean-square miss (points) | R-squared |
 |---|---|---|---|---|
-| 2024 | 285 | 10.273930 | 13.262077 | -0.011985 |
-| 2025 | 285 | 11.339479 | 14.075710 | -0.036726 |
+| 2024 | 285 | 10.214895 | 13.206984 | -0.003595 |
+| 2025 | 285 | 11.059475 | 13.872577 | -0.007019 |
 
 **What the total model's R-squared says, plainly.** It is below zero in both seasons: guessing that
 season's own average total for every game would have missed by slightly less, in squared terms. The
@@ -141,14 +142,14 @@ for the models. The blend weight itself is one number per target chosen on these
 
 | Target | Weight kept on the model | Loss measured | Market alone | Model alone | Loss at the weight | Games | Seasons |
 |---|---|---|---|---|---|---|---|
-| WP | 0.00 | log loss | 0.613530 | 0.644597 | 0.613530 | 1,093 | 2021-2024 |
-| ATS | 0.00 | average miss, points | 9.795252 | 10.445867 | 9.795252 | 1,348 | 2020-2024 |
-| O/U | 0.12 | average miss, points | 10.290987 | 10.874359 | 10.286055 | 1,348 | 2020-2024 |
+| WP | 0.00 | log loss | 0.613530 | 0.645234 | 0.613530 | 1,093 | 2021-2024 |
+| ATS | 0.00 | average miss, points | 9.795252 | 10.462824 | 9.795252 | 1,348 | 2020-2024 |
+| O/U | 0.13 | average miss, points | 10.290987 | 10.846197 | 10.285894 | 1,348 | 2020-2024 |
 
 **The finding, plainly.** For win probability and for the spread, the market's pre-lock opinion alone
 did better than any mix with the corrected model, so the weight kept on the model is exactly zero and
 the published blended number for those two targets IS the market's opinion. For the total, the model
-earns a small share, 0.12, which improves the average miss by 0.005 points -- noise-sized, and no
+earns a small share, 0.13, which improves the average miss by 0.005 points -- noise-sized, and no
 significance is claimed. Games left out, and why, are listed in `BLEND-TUNING-READOUT.md` section 5.
 
 ## 6. Results: the random-baseline margin
@@ -171,7 +172,8 @@ winner could be kept -- and what happens if it is not.
 random choice by more than twice the measured noise has found noise, so each model ships on the
 trainer's standard settings and the miss is published per target (owner ruling 2026-09-23,
 `fall-back-to-defaults`). For win probability the two searches landed on the same score to six
-decimal places.
+decimal places. The later re-fit without the snap coverage flag (section 8) used the same standard
+settings; the search was not run again.
 
 ## 7. What the models lost when the betting lines left -- expected before, observed after
 
@@ -194,9 +196,9 @@ The largest loss was expected on the total.
 
 | Target | Observed |
 |---|---|
-| WP | Picked the winner in 0.663158 (2024) and 0.645614 (2025) of games. Against the market's pre-lock opinion it added nothing: the blend keeps weight 0.00 on it. |
-| ATS | R-squared 0.160931 and 0.164791: it carries some of the margin on its own. Against the market it added nothing: weight 0.00. |
-| O/U | R-squared -0.011985 and -0.036726: on its own it is no better than a season-average guess. The blend keeps weight 0.12 on it for a 0.005-point gain. |
+| WP | Picked the winner in 0.666667 (2024) and 0.645614 (2025) of games. Against the market's pre-lock opinion it added nothing: the blend keeps weight 0.00 on it. |
+| ATS | R-squared 0.170413 and 0.150364: it carries some of the margin on its own. Against the market it added nothing: weight 0.00. |
+| O/U | R-squared -0.003595 and -0.007019: on its own it is no better than a season-average guess. The blend keeps weight 0.13 on it for a 0.005-point gain. |
 
 **Read plainly: the expectation held.** Every model lost one of its top-ranked inputs, and the total
 model -- which lost its single most important input -- is the one left with the least to say. Once
@@ -222,37 +224,32 @@ list; `tests/unit/test_no_market_in_artifacts.py` checks the written lists, not 
 All three models also exclude the three feature families the re-measured group verdict dropped
 (`injury`, `situational`, `snap`; owner ruling 2026-09-23).
 
-**One open finding, put to the owner.** The total model's feature list contains
-`home_snap_coverage`, and it is that model's second most important input. It is the on/off flag,
-added by Plan 33.2-17, that says whether snap-count data existed for the game -- in practice largely
-a marker for "2013 or later". The `snap` family was dropped, but the rule that defines the family names only
-its continuity, concentration and position-share columns, not this flag, so the flag stayed in. The
-`injury` family's definition, by contrast, does include its own coverage flags. Whether the flag
-should leave with its family -- which would mean re-measuring the group verdict and re-fitting --
-is an owner decision, raised at the swap checkpoint rather than decided here.
+**The snap coverage flag** (`home_snap_coverage` / `away_snap_coverage`) was removed with its family:
+the `snap` family's definition now includes it, and the three models and the blend were re-fitted without it.
 
 The lists as written:
 
-- **WP (20):** apparent_temp_f, away_abs_timezone_diff_hours, away_elo,
+- **WP (20):** away_abs_timezone_diff_hours, away_def_rolling_success_rate, away_elo,
   away_off_rolling_opp_adj_epa_per_play, away_off_rolling_opp_adj_pass_epa, away_short_rest,
   both_short_rest, hfa_used, home_def_rolling_opp_adj_epa_per_play,
   home_def_rolling_opp_adj_pass_epa, home_elo, home_off_rolling_success_rate, home_short_rest,
   is_divisional, passing_difficulty, passing_efficiency, scoring_reduction, thursday_game,
   turnover_multiplier, wind_mph.
-- **ATS (25):** apparent_temp_f, away_def_rolling_opp_adj_epa_per_play, away_elo_percentile,
-  away_off_rolling_opp_adj_pass_epa, away_off_rolling_rush_success_rate,
-  away_off_rolling_success_rate, away_westward_travel, cold_impact_score, elo_diff, elo_prob_away,
-  elo_prob_home, home_elo_rank, home_off_rolling_opp_adj_epa_per_play,
-  home_off_rolling_opp_adj_pass_epa, home_off_rolling_opp_adj_rush_epa, home_weather_advantage,
-  is_snow, kicking_difficulty, precip_light, precip_prob, temp_cold, venue_outdoor,
-  venue_retractable, weather_severity_score, wind_impact_score.
-- **O/U (25):** apparent_temp_f, away_elo_percentile, away_off_rolling_neutral_pass_rate,
-  away_off_rolling_opp_adj_epa_per_play, away_off_rolling_pass_success_rate,
-  away_off_rolling_success_rate, away_off_rolling_third_down_conversion_rate, away_qb_adjustment,
-  away_short_rest, both_short_rest, home_off_rolling_cpoe, home_off_rolling_opp_adj_epa_per_play,
-  home_short_rest, home_snap_coverage, home_weather_advantage, is_snow, kicking_difficulty,
-  precip_prob, scoring_reduction, short_week, venue_indoor, venue_outdoor, weather_severity_score,
-  wind_high, wind_mph.
+- **ATS (25):** away_def_rolling_opp_adj_epa_per_play, away_eastward_travel, away_elo_percentile,
+  away_off_rolling_opp_adj_pass_epa, away_off_rolling_pass_success_rate,
+  away_off_rolling_rush_success_rate, away_off_rolling_success_rate, away_short_rest, elo_diff,
+  elo_prob_away, elo_prob_home, home_def_rolling_opp_adj_epa_per_play, home_elo_percentile,
+  home_elo_rank, home_elo_uncertainty, home_off_rolling_opp_adj_epa_per_play,
+  home_off_rolling_opp_adj_pass_epa, home_off_rolling_opp_adj_rush_epa, home_rest_days,
+  home_weather_advantage, is_snow, passing_efficiency, precip_moderate, season_progress,
+  venue_outdoor.
+- **O/U (25):** away_elo_percentile, away_off_rolling_neutral_pass_rate,
+  away_off_rolling_pass_success_rate, away_off_rolling_success_rate, away_qb_adjustment,
+  away_short_rest, ball_handling_difficulty, home_off_rolling_cpoe,
+  home_off_rolling_opp_adj_epa_per_play, home_off_rolling_opp_adj_pass_epa, home_qb_adjustment,
+  home_short_rest, home_weather_advantage, passing_difficulty, precip_prob, scoring_reduction,
+  short_week, temp_mild, temp_very_cold, venue_outdoor, venue_retractable, weather_severity_score,
+  wind_impact_score, wind_mph, wind_severe.
 
 ## 9. What is NOT here, and why
 
@@ -282,7 +279,7 @@ accuracy or profitability.
 
 ---
 
-*Every figure is read from `artifacts/{wp_20260923_115808,ats_20260923_124120,ou_20260923_133813}/metadata.json`,*
-*`artifacts/blend_20260923_195755/blend_weights.json` and the `P332_23_*` / `P332_24B_*` / `P332_25_*`*
+*Every figure is read from `artifacts/{wp_20260923_172144,ats_20260923_172148,ou_20260923_172152}/metadata.json`,*
+*`artifacts/blend_20260923_212418/blend_weights.json` and the `P332_23_*` / `P332_25_*` / `P332_25B_*`*
 *slots of `tests/phase33_state.py`. `tests/unit/test_refit_readout_md.py` holds this document to those*
 *records.*

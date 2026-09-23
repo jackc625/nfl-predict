@@ -18577,3 +18577,136 @@ P332_25_PRE_SWAP_LATEST_JSON_TEXT: str = (
 P332_25_PRE_SWAP_LATEST_JSON_SHA256: str = (
     "9115c8d76532820e6b77dfecc7903f10c911bfc30e02a15cb6c3a33dbc602cfb"
 )
+
+# ---------------------------------------------------------------------------
+# STEP 25b (a): THE THREE MODELS RE-FITTED WITH THE SNAP COVERAGE FLAG LEFT OUT.
+#
+# APPENDED on 2026-09-23, before Plan 33.2-25's swap. Every earlier slot is byte-unchanged.
+#
+# WHY. The owner ruled the `snap` family out, but backtest.signal_lift._is_snap_col named
+# only the family's continuity / concentration / position-share columns, not the
+# home_/away_snap_coverage flag Plan 33.2-17 later added to the snap builder. So the flag
+# stayed in, and it was the O/U model's top input. The predicate now includes it (the
+# injury family already included its own coverage flags); the situational family has no
+# coverage flag, so it needed nothing.
+#
+# WHAT WAS RUN. `uv run python -m scripts.train_models --all-targets --no-tune --no-clv
+# --gold-generation <P332_20_CLEAN_BUILD_GOLD_GENERATION> --thread-limit 1
+# --exclude-groups injury,situational,snap --exclude-groups-provenance verdict` -- the
+# trainers' standard default settings (the owner's fall-back-to-defaults ruling; the
+# 1,000-trial search was NOT re-run), the ratified verdict's three groups, one thread.
+# A control run of the same command with the OLD predicate, into a scratch directory,
+# reproduced Plan 33.2-23's three feature lists and season results exactly, so every
+# difference below is the two flags leaving the candidate pool (the selector ranks
+# against the whole pool, so WP's and ATS's lists moved too although neither held it).
+# Because --tune was not passed, the metadata carries no group_verdict_digest and no
+# tuning_study_tag; the exclusion list equals config/group_gate_verdict.toml's.
+# ---------------------------------------------------------------------------
+
+#: ``(target, artifact_id)`` for the three re-fitted models. Supersedes
+#: P332_23_REFIT_ARTIFACT_IDS as what the blend is tuned on and the swap installs.
+P332_25B_REFIT_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
+    ("wp", "wp_20260923_172144"),
+    ("ats", "ats_20260923_172148"),
+    ("ou", "ou_20260923_172152"),
+)
+
+#: The gold generation all three were trained on (unchanged).
+P332_25B_REFIT_GOLD_GENERATION: str = P332_20_CLEAN_BUILD_GOLD_GENERATION
+
+#: Selected feature count per target (unchanged counts, different members).
+P332_25B_REFIT_FEATURE_COUNTS: tuple[tuple[str, int], ...] = (
+    ("wp", 20),
+    ("ats", 25),
+    ("ou", 25),
+)
+
+#: The columns the snap family now covers in gold: 20 before, plus the two flags.
+P332_25B_SNAP_FAMILY_COLUMN_COUNT: int = 22
+
+#: The OpenMP thread count the run was pinned to.
+P332_25B_REFIT_THREAD_LIMIT: int = 1
+
+# ---------------------------------------------------------------------------
+# STEP 25b (b): THE BLEND RE-TUNED ON THE THREE RE-FITTED MODELS, AND THE SWAP IT FEEDS.
+#
+# APPENDED on 2026-09-23, AFTER the fit. `python -m backtest.tune` -- exactly step 24b's
+# procedure, thread-pinned at 1 inside run_blend_tuning, binding the same converter
+# (P332_24B_CONVERTER_ARTIFACT_ID), over the same owned pre-lock corpus -- now reading the
+# P332_25B_REFIT_ARTIFACT_IDS models. It wrote exactly one directory; artifacts/latest.json
+# byte-unchanged (sha256 P332_25_PRE_SWAP_LATEST_JSON_SHA256).
+#
+# WHAT MOVED. O/U 0.12 -> 0.13. WP and ATS stay at 0.00 (market alone). Corpus, games and
+# exclusions are identical to step 24b's (1,348; WP 1,093; 60 / 255).
+#
+# THIS SLOT SUPERSEDES P332_25_SWAP_ARTIFACT_IDS AS THE FOUR POINTERS THE SWAP INSTALLS.
+# P332_25_SWAP_ARTIFACT_IDS stays byte-unchanged as the record of what the swap would have
+# installed before the flag was found; P332_25_PRE_SWAP_LATEST_JSON* still describes the
+# manifest the swap replaces.
+# ---------------------------------------------------------------------------
+
+#: The blend artifact this step wrote.
+P332_25B_BLEND_ARTIFACT_ID: str = "blend_20260923_212418"
+
+#: The fitted weight per target: the model's share of the blend, 0.00 = market alone.
+P332_25B_BLEND_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("wp", 0.0),
+    ("ats", 0.0),
+    ("ou", 0.13),
+)
+
+#: The targets whose weight landed EXACTLY on a boundary of the grid.
+P332_25B_BOUNDARY_WEIGHT_TARGETS: tuple[str, ...] = ("wp", "ats")
+
+#: The owned pre-lock corpus and the rows each target's fit used (unchanged from 24b).
+P332_25B_TUNING_CORPUS_ROWS: int = 1348
+P332_25B_TUNING_GAMES: tuple[tuple[str, int], ...] = (
+    ("wp", 1093),
+    ("ats", 1348),
+    ("ou", 1348),
+)
+
+#: The excluded count PER CLASS (unchanged from 24b).
+P332_25B_EXCLUDED_COUNTS: tuple[tuple[str, int], ...] = (
+    ("no_prelock_line", 60),
+    ("no_prior_fold_converter", 255),
+)
+
+#: Each target's loss at its weight, market alone and model alone, as the artifact records.
+P332_25B_LOSS_AT_WEIGHT: tuple[tuple[str, float], ...] = (
+    ("wp", 0.6135302593965576),
+    ("ats", 9.795252225519288),
+    ("ou", 10.28589351891764),
+)
+P332_25B_LOSS_MARKET_ONLY: tuple[tuple[str, float], ...] = (
+    ("wp", 0.6135302593965576),
+    ("ats", 9.795252225519288),
+    ("ou", 10.290986646884273),
+)
+P332_25B_LOSS_MODEL_ONLY: tuple[tuple[str, float], ...] = (
+    ("wp", 0.6452337107302899),
+    ("ats", 10.462823581382997),
+    ("ou", 10.84619696416204),
+)
+
+#: The gold generation the blend recorded -- the one the three models cite.
+P332_25B_BLEND_GOLD_GENERATION: str = P332_20_CLEAN_BUILD_GOLD_GENERATION
+
+#: The source models the blend's predictions came from.
+P332_25B_BLEND_SOURCE_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
+    P332_25B_REFIT_ARTIFACT_IDS
+)
+
+#: The converter the blend binds (unchanged: step 24b's).
+P332_25B_BLEND_CONVERTER_ARTIFACT_ID: str = P332_24B_CONVERTER_ARTIFACT_ID
+
+#: The OpenMP thread count the fit was pinned to.
+P332_25B_BLEND_THREAD_LIMIT: int = 1
+
+#: ``(manifest_key, artifact_id)`` exactly as the swap writes them into latest.json.
+P332_25B_SWAP_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
+    ("wp", "wp_20260923_172144"),
+    ("ats", "ats_20260923_172148"),
+    ("ou", "ou_20260923_172152"),
+    ("blend", "blend_20260923_212418"),
+)

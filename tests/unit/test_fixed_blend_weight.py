@@ -859,6 +859,9 @@ class TestTheEndToEndFit:
 
     def test_the_production_source_ids_are_the_recorded_refit(self) -> None:
         from backtest.tune import blend_source_artifact_ids
-        from tests.phase33_state import P332_23_REFIT_ARTIFACT_IDS
 
-        assert blend_source_artifact_ids() == dict(P332_23_REFIT_ARTIFACT_IDS)
+        # Was: P332_23_REFIT_ARTIFACT_IDS. Step 25b re-fitted the models with the snap
+        # coverage flag left out; the blend is tuned on those.
+        from tests.phase33_state import P332_25B_REFIT_ARTIFACT_IDS
+
+        assert blend_source_artifact_ids() == dict(P332_25B_REFIT_ARTIFACT_IDS)
