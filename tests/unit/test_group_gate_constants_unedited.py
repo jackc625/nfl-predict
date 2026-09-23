@@ -72,6 +72,7 @@ REQUIRED_REMEASUREMENT_KEYS = (
     "measured_at",
     "supersedes_commit",
     "closing_line_used",
+    "thread_limit",
 )
 
 
@@ -264,3 +265,57 @@ class TestTheRemeasuredVerdictDocument:
         stage1 = self._document()["stage1"]
         assert stage1["frozen_rule_module"] == FROZEN_RULE_RELPATH
         assert stage1["preregistration_commit"] == PRE_REGISTRATION_COMMIT
+
+    def test_the_recorded_thread_limit_is_the_one_the_script_pins(self) -> None:
+        """A verdict whose thread count is unrecorded is a verdict nobody can reproduce."""
+        from scripts.remeasure_group_verdict import REMEASUREMENT_THREAD_LIMIT
+
+        assert self._document()["remeasurement"]["thread_limit"] == (
+            REMEASUREMENT_THREAD_LIMIT
+        )
+
+
+class TestTheMeasurementPinsItsThreadCount:
+    """The screen's XGBoost legs answer differently at different thread counts.
+
+    MEASURED 2026-09-22: at 12 threads all three groups came back DROP; under the 8-thread cap
+    the repo-root ``conftest.py`` applies to every pytest session, all three came back
+    UNDETERMINED, with every ATS and O/U delta different and every WP delta identical. A
+    measurement that writes a verdict cannot be left in that state, so ``remeasure`` pins the
+    pool. These are STRUCTURAL checks -- they assert the pin is applied where the fits happen,
+    without paying for two full screens.
+    """
+
+    def test_remeasure_applies_the_thread_pin_around_the_screen(self) -> None:
+        import inspect
+
+        from scripts.remeasure_group_verdict import remeasure
+
+        source = inspect.getsource(remeasure)
+        assert "threadpool_limits" in source, (
+            "remeasure does not apply a thread pin, so its verdict depends on how many cores "
+            "the machine running it happens to have"
+        )
+        assert "REMEASUREMENT_THREAD_LIMIT" in source, (
+            "the pin must read the NAMED limit, never a literal"
+        )
+
+    def test_the_pin_is_one_so_it_is_reproducible_on_any_machine(self) -> None:
+        from scripts.remeasure_group_verdict import REMEASUREMENT_THREAD_LIMIT
+
+        assert REMEASUREMENT_THREAD_LIMIT == 1, (
+            "a pin above 1 is honourable only on a machine with that many cores, which makes "
+            "the measurement reproducible on some machines and not others -- the same defect "
+            "class as a raw-byte digest that holds only on the platform it was pinned on"
+        )
+
+    def test_threadpoolctl_is_a_declared_dependency(self) -> None:
+        """It was already installed as a scikit-learn dependency; now it is imported directly."""
+        import tomllib as _tomllib
+
+        with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
+            declared = _tomllib.load(handle)["project"]["dependencies"]
+        assert any(dep.startswith("threadpoolctl") for dep in declared), (
+            "scripts/remeasure_group_verdict.py imports threadpoolctl directly, so it must be "
+            "a declared dependency rather than an implicitly-relied-on transitive one"
+        )

@@ -31,6 +31,12 @@ dependencies = [
     # Modeling and ML
     "scikit-learn>=1.8.0,<2",
     "xgboost>=3.2.0,<4",
+    # Already present as a scikit-learn dependency; DECLARED here because
+    # scripts/remeasure_group_verdict.py imports it directly, to pin the OpenMP thread count
+    # of a measurement whose XGBoost legs otherwise answer differently at different thread
+    # counts. Nothing was installed to add this line -- an implicitly-relied-on transitive
+    # dependency is the thing being fixed.
+    "threadpoolctl>=3.5.0,<4",
     # API and Web UI
     "fastapi>=0.115.0,<1",
     "uvicorn[standard]>=0.34.0,<1",

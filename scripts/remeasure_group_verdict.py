@@ -38,6 +38,33 @@ point of a pre-registered rule is that nobody re-derives it.
 leg. That is the correct behaviour and needs no change: the baseline pin is derived from the
 registry precisely so a later-registered group is excluded automatically.
 
+THE THREAD PIN, AND WHY A MEASUREMENT NEEDS ONE
+-----------------------------------------------
+MEASURED 2026-09-22, while building this script's anti-rot guard: the screen's ATS and O/U
+legs return DIFFERENT answers at different OpenMP thread counts, and the difference is large
+enough to move a VERDICT. At 12 threads all three groups came back DROP; at 8 threads -- the
+cap the repo-root ``conftest.py`` applies to every pytest session -- all three came back
+UNDETERMINED. The WP leg, which is a LogisticRegression, was bit-identical throughout; the two
+XGBoost legs were not. The mechanism is the feature SELECTION: a fold's fitted importances
+shift by a hair with the reduction order, which moves which columns clear
+``SelectFromModel``'s threshold, which flips a cell between MEASURED and EXCLUDED.
+
+This repository has met this before. Four harness-reproduction test classes were deleted on
+2026-09-12 because "a situational-OU delta measured 0.0074 / 0.4424 / 0.4784 at 4 / 1 / 8 BLAS
+threads" -- the same defect, then handled by deleting the check. That is not available here:
+this run WRITES a verdict that shapes the corrected re-fit, so "it depends on the machine" is
+not a limitation to note, it is a defect to close.
+
+So the re-measurement PINS its thread count at :data:`REMEASUREMENT_THREAD_LIMIT` = 1 and
+RECORDS it in the written document. One thread is the only setting reproducible on ANY machine:
+a pin of 8 is reproducible only where there are eight cores to pin. The cost is small and
+measured -- a single leg goes from about 3 s to about 5 s -- and the pin is applied through
+``threadpoolctl``, at RUNTIME, so it holds whether or not numerical libraries were already
+imported (an environment variable set at module import is too late inside a test process).
+
+The pin is NOT a production change. It wraps this measurement only; no trainer's ``n_jobs``
+moves, and the re-fit in Plan 33.2-23 is untouched by it.
+
 THE DOCUMENT THIS WRITES
 ------------------------
 ``config/group_gate_verdict.toml``, in ONE write, from ONE generator. The VALUES come from
@@ -62,6 +89,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from threadpoolctl import threadpool_limits
 
 from backtest.ev_chain_constants import HOLD_SEASONS_P31
 from backtest.group_gate import decide_group_verdicts, render_verdict_toml
@@ -90,6 +118,12 @@ GOLD_PATH_FOR = {
 #: The plan and the owner decision this re-measurement executes.
 PLAN_ID = "33.2-22"
 DECISION_ID = "D33.2-15"
+
+#: THE THREAD PIN. See the module docstring: the screen's XGBoost legs return different answers
+#: at different OpenMP thread counts, by enough to move a verdict, so a measurement that does
+#: not pin this is a measurement nobody else can reproduce. ONE is the only value reproducible
+#: on any machine -- a pin of 8 needs eight cores to honour it.
+REMEASUREMENT_THREAD_LIMIT: int = 1
 
 
 def load_gold() -> dict[str, pd.DataFrame]:
@@ -120,18 +154,22 @@ def remeasure(gold_by_target: dict[str, pd.DataFrame] | None = None) -> dict[str
     gold_by_target = gold_by_target or load_gold()
     config = screen_config_excluding_spent_hold(gold_by_target)
 
-    screen = run_signal_lift_screen(
-        gold_by_target=gold_by_target,
-        # No closing-odds frame is passed, and under the outcome objective one would RAISE.
-        closing_odds_df=None,
-        config=config,
-        targets=GRID_TARGETS,
-        groups=GRID_GROUPS,
-        # THE PIN, passed explicitly, exactly as run_group_gate passes it: each group is
-        # measured incremental to the NON-SIGNAL CORE, not to a deny-list of three names.
-        baseline_exclude_groups=ALL_REGISTERED_GROUPS,
-        objective=OBJECTIVE_OUTCOME_LOSS,
-    )
+    # THE THREAD PIN, applied at RUNTIME so it holds inside an already-warm process too.
+    # Without it this function returns a different verdict on a 12-core machine than it does
+    # under the pytest thread cap -- see the module docstring's measurement.
+    with threadpool_limits(limits=REMEASUREMENT_THREAD_LIMIT):
+        screen = run_signal_lift_screen(
+            gold_by_target=gold_by_target,
+            # No closing-odds frame is passed, and under the outcome objective one would RAISE.
+            closing_odds_df=None,
+            config=config,
+            targets=GRID_TARGETS,
+            groups=GRID_GROUPS,
+            # THE PIN, passed explicitly, exactly as run_group_gate passes it: each group is
+            # measured incremental to the NON-SIGNAL CORE, not to a deny-list of three names.
+            baseline_exclude_groups=ALL_REGISTERED_GROUPS,
+            objective=OBJECTIVE_OUTCOME_LOSS,
+        )
     result = decide_group_verdicts(screen)
     # RESOLVED from git by the same function run_group_gate uses, never transcribed. It is
     # cross-checked against the Phase-30 witness below, so a divergence is loud rather than
@@ -187,6 +225,9 @@ def _banner(result: dict[str, Any], measured_at: str) -> list[str]:
         "#                   lift, and a closing line may not feed a fit decision (D33.2-03).",
         f"#   the SEASONS   : {list(config.holdout_seasons)}, derived from the committed",
         f"#                   partition rule minus the spent hold {list(HOLD_SEASONS_P31)}",
+        f"#   the THREADS   : pinned at {REMEASUREMENT_THREAD_LIMIT}. The XGBoost legs return",
+        "#                   different answers at different thread counts, by enough to move a",
+        "#                   verdict, so an unpinned run is one nobody else can reproduce.",
         "#",
         f"# The Phase-30 document it supersedes is recoverable byte-for-byte at {MEASUREMENT_COMMIT}.",
         "# The two statistics are in DIFFERENT UNITS and are compared only through their",
@@ -219,6 +260,10 @@ def _remeasurement_table(result: dict[str, Any], measured_at: str) -> list[str]:
         f"hp_val_seasons = {_toml_int_list(sorted(config.hp_val_seasons))}",
         f"holdout_seasons = {_toml_int_list(sorted(config.holdout_seasons))}",
         f"excluded_hold_seasons = {_toml_int_list(sorted(HOLD_SEASONS_P31))}",
+        "# The OpenMP thread count this measurement was pinned to. It is recorded because the",
+        "# screen's XGBoost legs return different answers at different thread counts -- by",
+        "# enough to move a verdict -- so a run that did not pin this could not be reproduced.",
+        f"thread_limit = {int(REMEASUREMENT_THREAD_LIMIT)}",
         f"gold_generation_digest = {_toml_string(P332_20_CLEAN_BUILD_GOLD_GENERATION)}",
         f"frozen_rule_commit = {_toml_string(PRE_REGISTRATION_COMMIT)}",
         f"supersedes_commit = {_toml_string(MEASUREMENT_COMMIT)}",
