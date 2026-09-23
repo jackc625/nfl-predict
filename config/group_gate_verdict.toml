@@ -18,12 +18,15 @@
 #                   lift, and a closing line may not feed a fit decision (D33.2-03).
 #   the SEASONS   : [2023, 2024], derived from the committed
 #                   partition rule minus the spent hold [2025]
+#   the THREADS   : pinned at 1. The XGBoost legs return
+#                   different answers at different thread counts, by enough to move a
+#                   verdict, so an unpinned run is one nobody else can reproduce.
 #
 # The Phase-30 document it supersedes is recoverable byte-for-byte at 68eb6425eb379701bf1b9d1937feb8c520877394.
 # The two statistics are in DIFFERENT UNITS and are compared only through their
 # VERDICTS; see GROUP-VERDICT-READOUT.md for the before/after.
 #
-# Measured 2026-09-23T03:42:15+00:00.
+# Measured 2026-09-23T04:06:48+00:00.
 #
 # ASCII only, no emoji (CLAUDE.md hard constraint).
 # =============================================================================
@@ -52,12 +55,12 @@ alpha = 0.050000000000000003
 mde_power = 0.80000000000000004
 correction_method = "benjamini-hochberg"
 bh_denominator_rule = "full-grid"
-bh_denominator = 5
+bh_denominator = 6
 measure_window = "2023-2024"
 anchor = "BaseTrainer.train_and_evaluate(tune=False)"
 baseline_excludes = ["snap", "injury", "situational", "line_movement", "weather_unsupplied", "market"]
-bh_family = ["injury/ou", "injury/wp", "situational/ats", "snap/ats", "snap/ou"]
-bh_rank_order = ["snap/ou", "situational/ats", "snap/ats", "injury/wp", "injury/ou"]
+bh_family = ["injury/ats", "injury/ou", "injury/wp", "situational/ats", "snap/ats", "snap/ou"]
+bh_rank_order = ["snap/ou", "snap/ats", "injury/ou", "injury/wp", "situational/ats", "injury/ats"]
 # scipy's adjusted q-values are a DISPLAY column only; the binding decision is the
 # vendored inclusive step-up in the frozen rule module.
 q_values_are_display_only = true
@@ -66,16 +69,15 @@ fix_cycle_levers = ["D25-05 feature-selection train-window widening (widen the S
 # Cells EXCLUDED from the BH family, with the pre-registered reason. Every exclusion
 # reduces m, so this table is what makes the denominator above auditable.
 [stage1.excluded_cells]
-"injury/ats" = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
 "situational/ou" = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
 "situational/wp" = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
 "snap/wp" = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
 
 [stage1.verdicts.injury]
 verdict = "DROP"
-reason = "DROP: no positive point estimate on any measured target (a delta of exactly 0.0 is not positive). Measured targets: ['ou', 'wp']."
+reason = "DROP: no positive point estimate on any measured target (a delta of exactly 0.0 is not positive). Measured targets: ['ats', 'ou', 'wp']."
 coverage_span = "injuries 2009+ (measured 2023-2024)"
-measured_targets = ["ou", "wp"]
+measured_targets = ["ats", "ou", "wp"]
 positive_targets = []
 rejected_positive_targets = []
 rejected_negative_targets = []
@@ -111,26 +113,26 @@ delta_ci95_lo = -0.013433412794088502
 delta_ci95_hi = 0.0070917536178159331
 bh_rejected = false
 bh_rank = 4
-q_display = 0.68023171175283381
+q_display = 0.72100204699318882
 mde = 0.01466333221177943
 selection_churn = false
 
 [stage1.cells.injury.ats]
 clv_column = "absolute_error"
-measured = false
-exclusion_reason = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
+measured = true
+exclusion_reason = ""
 n_paired = 570
 n_group_columns = 12
-n_group_columns_selected = 0
-delta_mean = 0.047026626553321092
-delta_p = 0.61512263277335999
-delta_ci95_lo = -0.13658666848629725
-delta_ci95_hi = 0.23063992159293945
+n_group_columns_selected = 1
+delta_mean = -0.030812541890497272
+delta_p = 0.75406727840862975
+delta_ci95_lo = -0.22390128226366168
+delta_ci95_hi = 0.16227619848266711
 bh_rejected = false
-bh_rank = 0
-q_display = nan
-mde = 0.26234941920897997
-selection_churn = true
+bh_rank = 6
+q_display = 0.75406727840862975
+mde = 0.27588807706850954
+selection_churn = false
 
 [stage1.cells.injury.ou]
 clv_column = "absolute_error"
@@ -138,15 +140,15 @@ measured = true
 exclusion_reason = ""
 n_paired = 570
 n_group_columns = 12
-n_group_columns_selected = 3
-delta_mean = -0.0081562644556949018
-delta_p = 0.9352212545824824
-delta_ci95_lo = -0.20517233991436923
-delta_ci95_hi = 0.18885981100297944
+n_group_columns_selected = 2
+delta_mean = -0.088877580876935994
+delta_p = 0.44752354226790697
+delta_ci95_lo = -0.31854937358206525
+delta_ci95_hi = 0.14079421182819324
 bh_rejected = false
-bh_rank = 5
-q_display = 0.9352212545824824
-mde = 0.28149951211464969
+bh_rank = 3
+q_display = 0.72100204699318882
+mde = 0.32815848880591575
 selection_churn = false
 
 [stage1.cells.snap.wp]
@@ -172,15 +174,15 @@ measured = true
 exclusion_reason = ""
 n_paired = 570
 n_group_columns = 20
-n_group_columns_selected = 6
-delta_mean = -0.097727345335378982
-delta_p = 0.38099217532892016
-delta_ci95_lo = -0.31666121071053427
-delta_ci95_hi = 0.12120652003977632
+n_group_columns_selected = 5
+delta_mean = -0.13915345490207537
+delta_p = 0.23700720612418311
+delta_ci95_lo = -0.37004481203415562
+delta_ci95_hi = 0.091737902230004859
 bh_rejected = false
-bh_rank = 3
-q_display = 0.63498695888153367
-mde = 0.31281597780790193
+bh_rank = 2
+q_display = 0.71102161837254929
+mde = 0.32990102067992572
 selection_churn = false
 
 [stage1.cells.snap.ou]
@@ -189,15 +191,15 @@ measured = true
 exclusion_reason = ""
 n_paired = 570
 n_group_columns = 20
-n_group_columns_selected = 3
-delta_mean = -0.10546943932248835
-delta_p = 0.30257158254762673
-delta_ci95_lo = -0.30622827574274791
-delta_ci95_hi = 0.095289397097771192
+n_group_columns_selected = 5
+delta_mean = -0.17308203044690584
+delta_p = 0.14992228972569155
+delta_ci95_lo = -0.40887674693208326
+delta_ci95_hi = 0.06271268603827157
 bh_rejected = false
 bh_rank = 1
-q_display = 0.63498695888153367
-mde = 0.28684722489491454
+q_display = 0.71102161837254929
+mde = 0.33690701378178906
 selection_churn = false
 
 [stage1.cells.situational.wp]
@@ -224,14 +226,14 @@ exclusion_reason = ""
 n_paired = 570
 n_group_columns = 6
 n_group_columns_selected = 2
-delta_mean = -0.12348549143296846
-delta_p = 0.30506693203684804
-delta_ci95_lo = -0.35975473246475048
-delta_ci95_hi = 0.11278374959881356
+delta_mean = -0.063871915215266903
+delta_p = 0.60083503916099068
+delta_ci95_lo = -0.30351887686541223
+delta_ci95_hi = 0.17577504643487846
 bh_rejected = false
-bh_rank = 2
-q_display = 0.63498695888153367
-mde = 0.33758502154356496
+bh_rank = 5
+q_display = 0.72100204699318882
+mde = 0.34241115922758514
 selection_churn = false
 
 [stage1.cells.situational.ou]
@@ -241,14 +243,14 @@ exclusion_reason = "no column of this group was selected by this target's own fe
 n_paired = 570
 n_group_columns = 6
 n_group_columns_selected = 0
-delta_mean = -0.014434058206123219
-delta_p = 0.8993197175228419
-delta_ci95_lo = -0.23841220847756728
-delta_ci95_hi = 0.20954409206532082
+delta_mean = -0.053285083436129387
+delta_p = 0.61470912034737302
+delta_ci95_lo = -0.26109107876723353
+delta_ci95_hi = 0.15452091189497474
 bh_rejected = false
 bh_rank = 0
 q_display = nan
-mde = 0.32002332743136158
+mde = 0.29691631083411385
 selection_churn = true
 
 
@@ -266,10 +268,14 @@ selection_seasons = [2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011,
 hp_val_seasons = [2022]
 holdout_seasons = [2023, 2024]
 excluded_hold_seasons = [2025]
+# The OpenMP thread count this measurement was pinned to. It is recorded because the
+# screen's XGBoost legs return different answers at different thread counts -- by
+# enough to move a verdict -- so a run that did not pin this could not be reproduced.
+thread_limit = 1
 gold_generation_digest = "484397642530db5b28c49d9234ecfb90e3860783f1b1b41766ab6151a1522597"
 frozen_rule_commit = "dc4d1c0c09ed3b4f5835c801e991aa945f23b479"
 supersedes_commit = "68eb6425eb379701bf1b9d1937feb8c520877394"
-measured_at = "2026-09-23T03:42:15+00:00"
+measured_at = "2026-09-23T04:06:48+00:00"
 # No closing-odds frame was loaded or passed anywhere in this run; under the outcome
 # objective one would have raised ClosingLineInScreenError before any leg ran.
 closing_line_used = false
