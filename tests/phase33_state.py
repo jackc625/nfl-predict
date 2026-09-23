@@ -17822,3 +17822,49 @@ P332_20_VENUE_ROOF_MOVING_GAMES: tuple[tuple[str, str, str, str, str], ...] = (
     ("2025_W10_ATL@IND", "IND00", "retractable", "BER00", "outdoor"),
     ("2025_W11_WAS@MIA", "MIA00", "outdoor", "MAD01", "retractable"),
 )
+
+# THE ELO SNAPSHOT ANCHOR, RE-ANCHORED WITH ITS CAUSE CHAIN (Plan 33.2-20).
+# ELO_ARTIFACT_DIGESTS is append-once and is byte-unchanged: it records the bytes the Plan
+# 33-13 re-derivation produced, and that record is still true of that instant. The file has
+# moved TWICE since, each time under an owner ruling and a digest bracket, and the anchor's
+# own failure message asks for exactly that -- "find what wrote it before re-anchoring
+# anything". Both writers are named below.
+#
+# THE BYTE ANCHOR IS THE WEAK HALF, and that is why a second one is recorded beside it. A
+# parquet file's bytes move when the same rows are rewritten, so a byte anchor on a live
+# store re-breaks on every legitimate append and says nothing about whether the DERIVED
+# HISTORY changed. P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256 is a CONTENT digest of the
+# 2002-2025 slice -- every column, sorted by game_id, rendered as CSV at ten decimal places
+# -- so a forward append cannot move it and a single changed rating must. That is the
+# question the anchor was always asking.
+P332_20_ELO_SNAPSHOT_DIGEST_AFTER_2026_CAPTURE: str = (
+    "87c8afc70c5af46196b2d0cdbd82011b3cfc55e6d95b3f5cb9ffee60d409af20"
+)
+
+#: The ordered chain of writes between the Plan 33-13 anchor and the digest above. Each
+#: entry is (commit, ruling, what it did). A re-anchor with no chain is a re-pin.
+P332_20_ELO_SNAPSHOT_ANCHOR_CAUSES: tuple[tuple[str, str, str], ...] = (
+    (
+        "bfe3b24",
+        "D33.2-22 / owner-approved 2026-09-21",
+        "the production re-sort into canonical (season, kickoff_et, game_id) order: "
+        "values identical keyed on game_id in both stores, 3,784 of 6,531 positions "
+        "moved, per-team inversions 30 -> 0",
+    ),
+    (
+        "the live 2026 capture",
+        "Phase 33-18 live append",
+        "32 appended rows -- 17 real snapshots for the played 2026 games and 15 "
+        "provisional rows for the unplayed remainder of week 2",
+    ),
+)
+
+#: A CONTENT digest of the canonical 2002-2025 slice: sha256 of the frame sorted by
+#: game_id and rendered `to_csv(index=False, float_format="%.10f", lineterminator="\n")`.
+#: MEASURED 2026-09-22 over 6,499 rows and 12 columns. Unlike the byte anchor this is
+#: stable across a parquet rewrite and across any forward append, so it answers the
+#: question the byte anchor exists to ask without going stale every time the live path runs.
+P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256: str = (
+    "e259a2194f21b137455e6d6653c393b68e79e377a5cb47ce5c197d63d7e7eae3"
+)
+P332_20_ELO_CANONICAL_SLICE_ROWS: int = 6499

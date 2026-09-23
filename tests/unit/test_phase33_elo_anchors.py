@@ -48,8 +48,56 @@ from tests.phase33_state import (
     ELO_RATING_BAND_OBSERVED,
     ELO_RATING_BAND_PRE_RUN_POOLED,
     ELO_REDERIVATION_EXPECTED_CHANGED_FILES,
+    P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256,
+    P332_20_ELO_CANONICAL_SLICE_ROWS,
+    P332_20_ELO_SNAPSHOT_ANCHOR_CAUSES,
+    P332_20_ELO_SNAPSHOT_DIGEST_AFTER_2026_CAPTURE,
     PLAN_33_2_05_ELO_DELETED_ARTIFACTS,
 )
+
+# The one surviving anchored artifact, and the ONE path whose live digest has moved since
+# the Plan 33-13 re-derivation. Named rather than indexed so a reordering of the anchor
+# tuple cannot silently change which file the re-anchor below applies to.
+SNAPSHOT_ARTIFACT = "data/silver/elo_game_snapshots.parquet"
+
+
+def _live_anchor(relative_path: str) -> str:
+    """The digest the file on disk is expected to carry TODAY.
+
+    RE-ANCHOR (Plan 33.2-20). ``ELO_ARTIFACT_DIGESTS`` records the bytes the Plan 33-13
+    re-derivation wrote and is append-once, so it is not edited. The snapshot table has
+    been rewritten twice since, each time under an owner ruling and a digest bracket --
+    ``P332_20_ELO_SNAPSHOT_ANCHOR_CAUSES`` names both -- which is precisely the
+    "find what wrote it before re-anchoring anything" the failure message below demands.
+    Every other anchored path is either deleted by ruling or unmoved, and keeps its
+    original anchor.
+    """
+    if relative_path == SNAPSHOT_ARTIFACT:
+        return P332_20_ELO_SNAPSHOT_DIGEST_AFTER_2026_CAPTURE
+    return dict(ELO_ARTIFACT_DIGESTS)[relative_path]
+
+
+def _canonical_slice_digest(path: Path) -> tuple[int, str]:
+    """``(rows, sha256)`` of the 2002-2025 slice, canonicalized so it cannot drift.
+
+    Sorted by ``game_id``, every column, rendered as CSV at ten decimal places. A
+    forward append cannot move this and a parquet rewrite cannot move this; a single
+    changed rating must. That is the question the byte anchor was always asking, asked
+    in a form a live store can keep answering.
+    """
+    import hashlib
+
+    import pandas as pd
+
+    frame = pd.read_parquet(path)
+    canonical = (
+        frame.loc[frame["season"] <= 2025].sort_values("game_id").reset_index(drop=True)
+    )
+    payload = canonical.to_csv(
+        index=False, float_format="%.10f", lineterminator="\n"
+    ).encode("utf-8")
+    return len(canonical), hashlib.sha256(payload).hexdigest()
+
 
 # The Elo generation is five artifacts, and the anchor set is judged as a SET:
 # anchoring four of five would leave the fifth free to move inside a "verified"
@@ -92,6 +140,7 @@ def test_each_elo_artifact_matches_its_committed_anchor(relative_path, expected_
         return
     _skip_if_absent(path)
 
+    expected_digest = _live_anchor(relative_path)
     actual = digest_file(path)
 
     assert not is_stat_signature(actual) and not is_stat_signature(expected_digest), (
@@ -107,8 +156,10 @@ def test_each_elo_artifact_matches_its_committed_anchor(relative_path, expected_
         f"  anchor   sha256 {expected_digest}\n"
         f"  on disk  sha256 {actual}\n"
         "The five Elo artifacts were re-derived once, under an owner ruling, with "
-        "the changed-file set declared beforehand. A move since then was not part "
-        "of that ruling: find what wrote it before re-anchoring anything."
+        "the changed-file set declared beforehand. Two further writes are on record "
+        "(P332_20_ELO_SNAPSHOT_ANCHOR_CAUSES), each with its own ruling and digest "
+        "bracket. A move beyond those was not part of any ruling: find what wrote it "
+        "before re-anchoring anything."
     )
 
 
@@ -154,7 +205,7 @@ def test_a_one_byte_change_moves_the_digest(tmp_path):
     returns a constant. The flip is done on a COPY under ``tmp_path``; the
     production artifact is never written.
     """
-    source = Path(ELO_ARTIFACT_DIGESTS[0][0])
+    source = Path(SNAPSHOT_ARTIFACT)
     _skip_if_absent(source)
 
     original = source.read_bytes()
@@ -163,7 +214,7 @@ def test_a_one_byte_change_moves_the_digest(tmp_path):
     intact = tmp_path / "intact.bin"
     intact.write_bytes(original)
     intact_digest = digest_file(intact)
-    assert intact_digest == ELO_ARTIFACT_DIGESTS[0][1], (
+    assert intact_digest == _live_anchor(SNAPSHOT_ARTIFACT), (
         "an untouched copy of the artifact does not reproduce its anchor, so the "
         "control cannot distinguish a flipped byte from a broken instrument."
     )
@@ -183,6 +234,94 @@ def test_a_one_byte_change_moves_the_digest(tmp_path):
     assert len(flipped_bytes) == len(original), (
         "the control changed the file's SIZE as well as its content, so it would "
         "also have been caught by a stat signature and proves less than intended."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The re-anchor itself is asserted, so it cannot be a bare re-pin (Plan 33.2-20).
+# ---------------------------------------------------------------------------
+
+
+def test_the_re_anchor_names_every_write_between_the_two_digests():
+    """A re-anchored digest with no cause chain is indistinguishable from a re-pin."""
+    causes = P332_20_ELO_SNAPSHOT_ANCHOR_CAUSES
+    assert causes, "the re-anchor records no cause, so it explains nothing"
+    for commit, ruling, what in causes:
+        assert commit and ruling and what, causes
+        assert len(what) > 40, (
+            f"the cause recorded for {commit} is too short to be an account of a "
+            f"production write: {what!r}"
+        )
+
+
+def test_the_original_anchor_is_kept_and_is_a_different_value():
+    """Append-once: the Plan 33-13 record stays, and the two must genuinely differ.
+
+    If they were equal the re-anchor would be describing a move that never happened,
+    and the cause chain above would be an account of nothing.
+    """
+    original = dict(ELO_ARTIFACT_DIGESTS)[SNAPSHOT_ARTIFACT]
+    assert original != P332_20_ELO_SNAPSHOT_DIGEST_AFTER_2026_CAPTURE
+    assert len(P332_20_ELO_SNAPSHOT_DIGEST_AFTER_2026_CAPTURE) == 64
+    assert set(P332_20_ELO_SNAPSHOT_DIGEST_AFTER_2026_CAPTURE) <= set(
+        "0123456789abcdef"
+    )
+
+
+def test_only_the_snapshot_table_is_re_anchored():
+    """Every other anchored path keeps the anchor the re-derivation committed."""
+    for name, digest in ELO_ARTIFACT_DIGESTS:
+        if name == SNAPSHOT_ARTIFACT:
+            continue
+        assert _live_anchor(name) == digest, name
+
+
+def test_the_canonical_2002_2025_slice_still_hashes_to_its_recorded_content():
+    """The DURABLE anchor: a forward append cannot move it, a changed rating must.
+
+    This is the half a byte digest on a live store cannot give. The 2026 capture
+    rewrote the whole parquet, so the byte anchor moved for a reason that says nothing
+    about whether the derived history changed -- and it will move again on the next
+    append. The content digest of the 2002-2025 slice answers the real question, and
+    MEASURED 2026-09-22 across every write this phase made, the history has not moved.
+    """
+    path = Path(SNAPSHOT_ARTIFACT)
+    _skip_if_absent(path)
+    rows, digest = _canonical_slice_digest(path)
+    assert rows == P332_20_ELO_CANONICAL_SLICE_ROWS, (
+        f"the 2002-2025 slice holds {rows} rows, not {P332_20_ELO_CANONICAL_SLICE_ROWS}"
+    )
+    assert digest == P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256, (
+        "the canonical 2002-2025 Elo slice no longer hashes to its recorded content.\n"
+        f"  recorded sha256 {P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256}\n"
+        f"  measured sha256 {digest}\n"
+        "Unlike the byte anchor above this CANNOT be moved by a forward append or a "
+        "parquet rewrite, so a move here means a derived rating in the history "
+        "changed."
+    )
+
+
+def test_the_content_digest_would_catch_a_changed_rating(tmp_path):
+    """CONTROL: without it, the digest above could be insensitive to the values."""
+    import pandas as pd
+
+    path = Path(SNAPSHOT_ARTIFACT)
+    _skip_if_absent(path)
+    frame = pd.read_parquet(path)
+    _rows, intact = _canonical_slice_digest(path)
+
+    tampered = frame.copy()
+    target = tampered.index[tampered["season"] <= 2025][0]
+    tampered.loc[target, "home_elo_pre"] = (
+        float(tampered.loc[target, "home_elo_pre"]) + 0.0001
+    )
+    planted = tmp_path / "planted.parquet"
+    tampered.to_parquet(planted)
+
+    _planted_rows, moved = _canonical_slice_digest(planted)
+    assert moved != intact, (
+        "nudging one pre-game rating by 0.0001 did not move the content digest, so "
+        "the anchor above is insensitive to the values it claims to pin"
     )
 
 
