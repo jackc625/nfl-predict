@@ -17934,3 +17934,87 @@ P332_20_DISPLAY_NULLS_AFTER_CLEAN_BUILD: tuple[tuple[str, int], ...] = (
 #: `Input X contains NaN` -- is now asserted at the TRAINER, where the treatment lives.
 P332_20_WP_FEATURE_COLUMNS: int = 175
 P332_20_WP_FEATURE_COLUMNS_WITH_NULLS: int = 160
+
+# ---------------------------------------------------------------------------
+# THE RE-MEASURED FEATURE-GROUP VERDICT, AND ITS WITNESS.
+#
+# APPENDED by Plan 33.2-22 Task 3 on 2026-09-23, AFTER the verdict's last write and in a
+# STRICTLY LATER commit than the single-file commit that wrote it (Plan 33.2-08's
+# <owned_protocol_witness> W1/W3/W5).
+#
+# WHAT WAS RE-MEASURED, AND WHAT WAS NOT. D33.2-15 required the Phase-30 feature-group
+# keep/drop verdicts to be re-taken on corrected gold, because the verdict in
+# config/group_gate_verdict.toml is read VERBATIM at every re-fit
+# (scripts/promote_models.py) and was derived on 2021-2024 gold carrying fabricated Elo,
+# hindsight weather and an inverted coverage flag. The FROZEN RULE in
+# backtest/group_gate_constants.py is byte-unchanged and its last-modifying commit is still
+# tests.phase30_state.PRE_REGISTRATION_COMMIT -- what changed is the INPUT it ran on, the
+# OBJECTIVE it optimised and the SEASONS it scored.
+#
+# THE OBJECTIVE CHANGED BECAUSE A CLOSING LINE MAY NOT FEED A FIT DECISION (D33.2-03).
+# Phase 30 chose groups by paired closing-line CLV lift. Choosing which feature families a
+# model is FITTED on is a fit decision, so the re-measurement judges each group by that
+# model's own out-of-sample loss -- WP log loss, ATS and O/U absolute error -- with no
+# market line of any timing. The pre-registered rule "re-derives no metric" by its own
+# docstring, so the metric belongs to backtest/signal_lift.py and changing it edited no
+# frozen byte.
+#
+# THE SPENT 2025 HOLD WAS NOT SCORED. The screen's config is DERIVED from the committed
+# season-partition rule over the gold's completed seasons minus
+# backtest.ev_chain_constants.HOLD_SEASONS_P31.
+#
+# THE THREAD PIN IS PART OF THE MEASUREMENT, not an implementation detail. MEASURED
+# 2026-09-22: the screen's XGBoost legs return different answers at different OpenMP thread
+# counts, by enough to move a verdict (12 threads -> all three DROP; the 8-thread pytest cap
+# -> all three UNDETERMINED, with every WP delta identical and every ATS/O-U delta
+# different). scripts/remeasure_group_verdict.py now pins the pool at 1 and records it, so
+# the run reproduces on any machine rather than on this one.
+# ---------------------------------------------------------------------------
+
+#: The verdict's last-modifying commit, measured AFTER its last write.
+P332_22_GROUP_VERDICT_COMMIT: str = "8b7a95b07f5ec0dade6fc1c26d880b0945192cbd"
+
+#: sha256 of config/group_gate_verdict.toml's NEWLINE-NORMALIZED bytes -- every CRLF folded
+#: to LF before hashing, the same discipline tests.phase30_state.GROUP_VERDICT_FILE_SHA256
+#: uses and for the same reason: this repository has core.autocrlf=true and no
+#: .gitattributes, so a raw-byte digest would hold only on the platform it was pinned on.
+P332_22_GROUP_VERDICT_FILE_SHA256: str = (
+    "06e147083ad2d11026a45d2587b75851a95ff2306465b997e13ebee8dc949112"
+)
+
+#: The measurement instant the document itself records.
+P332_22_GROUP_VERDICT_MEASURED_AT: str = "2026-09-23T04:06:48+00:00"
+
+#: The gold it was measured on -- the same generation Plan 33.2-20's clean build produced and
+#: Plan 33.2-23's re-fit trains on. Stated as its own name rather than a second copy of the
+#: digest string, so the two cannot drift.
+P332_22_GOLD_GENERATION_DIGEST: str = P332_20_CLEAN_BUILD_GOLD_GENERATION
+
+#: The frozen rule's commit. EQUAL to tests.phase30_state.PRE_REGISTRATION_COMMIT: the rule
+#: was re-run, never re-written.
+P332_22_FROZEN_RULE_COMMIT: str = "dc4d1c0c09ed3b4f5835c801e991aa945f23b479"
+
+#: The objective the re-measurement optimised.
+P332_22_OBJECTIVE: str = "outcome_loss"
+
+#: The OpenMP thread count the measurement was pinned to. See the block comment above.
+P332_22_THREAD_LIMIT: int = 1
+
+#: The seasons scored -- the derived partition's holdout after the spent hold is removed.
+P332_22_MEASURED_SEASONS: tuple[int, ...] = (2023, 2024)
+
+#: The verdict, per group, and the Phase-30 verdict it supersedes. Recorded as a pair so a
+#: flip is a fact in committed source and not only a row in a readout.
+P332_22_VERDICTS: tuple[tuple[str, str, str], ...] = (
+    # (group, phase-30 verdict, re-measured verdict)
+    ("injury", "DROP", "DROP"),
+    ("snap", "KEEP", "DROP"),
+    ("situational", "KEEP", "DROP"),
+)
+
+#: The root excluded_groups key scripts/promote_models.py reads verbatim at every re-fit.
+P332_22_EXCLUDED_GROUPS: tuple[str, ...] = ("injury", "situational", "snap")
+
+#: The BH family size and the paired sample per cell, for the record.
+P332_22_BH_DENOMINATOR: int = 6
+P332_22_N_PAIRED_PER_CELL: int = 570
