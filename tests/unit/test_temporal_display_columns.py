@@ -46,6 +46,41 @@ The contract these tests pin:
   reach over an artifact already on disk, so the residue -- the retained O/U
   model that consumes three of the six -- is pinned by name and count rather
   than wished away.
+
+WHAT PHASE 33.2 MOVED, AND WHY NOTHING HERE WAS RELAXED (Plan 33.2-20)
+----------------------------------------------------------------------
+Every anchor below was measured on rung-4 PHASE-30 gold. Three independent
+Phase-33.2 causes moved them, and the re-anchor keeps them apart because they are
+separate facts, each recorded in ``tests/phase33_state`` beside the Phase-30 slots
+rather than instead of them.
+
+1. ``raw_precip_mm`` LEFT GOLD. p332_ rung 4 (Plan 33.2-12, SPEC R6) replaced the
+   ERA5 reanalysis with the archived day-before FORECAST, and a forecast reports a
+   probability, never observed millimetres -- so ``precip_mm`` and its display
+   sibling leave every matrix through the ``weather_unsupplied`` registry group.
+   ``DISPLAY_ONLY_COLUMNS`` still names SIX and that is correct: it is the
+   CONSUMER's exclusion list, and a column absent from gold is excluded trivially
+   rather than wrongly. The tests below now distinguish "named for exclusion" from
+   "present in gold" instead of conflating them, and assert the difference is
+   exactly ``raw_precip_mm``.
+2. THE WEATHER VALUES ARE DIFFERENT DATA. A forecast is not a reanalysis, so every
+   distinct count and null count moved. The nulls are now the 1,030 fixed-roof
+   domes plus the 74 uncovered games -- except ``raw_weather_severity``, a
+   COMPOSITE that is a genuine 0.0 for a covered dome, so only the 74 are null.
+   That is Ruling J's split, seen on the display siblings.
+3. THE CLEAN BUILD ADDED THE 17 PLAYED 2026 GAMES (6,499 -> 6,516).
+
+AND ONE ASSERTION WAS SUPERSEDED BY AN OWNER RULING, not re-anchored.
+``test_the_wp_feature_set_is_free_of_nan`` pinned gold to carry no NaN in any WP
+feature column. The owner ruled twice on 2026-09-22 that a value nothing honest can
+fill stays BLANK -- p332_ step 7b (a within-season gap is filled only from games
+ended by the gap's own lock) and step 8d (a cell whose expanding statistic could not
+be formed is blank, never the neutral 0.0) -- so 160 of the 175 WP feature columns
+now carry NaN, 93,864 cells, deliberately. Those rulings rest on the models taking a
+blank NATIVELY, and for WP that is the in-fold imputer plus ``_was_missing``
+indicator in ``models/trainers/wp_trainer.py``. The claim the assertion was really
+making -- that a WP fit does not raise ``Input X contains NaN`` -- is therefore
+asserted at the TRAINER, where the treatment lives, rather than deleted.
 """
 
 from __future__ import annotations
@@ -57,6 +92,7 @@ import pandas as pd
 import pytest
 
 from models.temporal import TemporalSplitConfig, WalkForwardSplitter
+from tests import phase33_state
 from utils.feature_columns import (
     DISPLAY_ONLY_COLUMNS,
     NORMALIZATION_IDENTIFIER_COLUMNS,
@@ -116,6 +152,15 @@ _RAW_HUMIDITY_NAN_ROWS = 6214
 # make this anchor stale without the claim itself being re-examined.
 _GOLD_ROWS = 6499
 _GOLD_2025_ROWS = 285
+
+# RE-ANCHORED (Plan 33.2-20). The Phase-30 constants above are kept as the record of
+# the gold they measured; the live assertions read the slots below. See the module
+# docstring for the three causes.
+_LIVE_GOLD_ROWS = phase33_state.P332_20_GOLD_ROWS_AFTER_CLEAN_BUILD
+_DISPLAY_COLUMNS_IN_GOLD = frozenset(phase33_state.P332_20_DISPLAY_COLUMNS_IN_GOLD)
+_DISPLAY_COLUMNS_NOT_IN_GOLD = frozenset(
+    phase33_state.P332_20_DISPLAY_COLUMNS_NOT_IN_GOLD
+)
 
 # Measured on the accepted rung-4 gold, identically in all three matrices. Every one
 # is > 1, so the six are NOT constant after the Phase-30 rebuild -- which is what
@@ -320,6 +365,19 @@ class TestRealGold:
     def test_exactly_the_six_display_columns_leave_the_feature_set(
         self, table: str, target_col: str
     ) -> None:
+        """Every display column PRESENT in gold is excluded, and nothing else is.
+
+        RE-ANCHORED (Plan 33.2-20), not relaxed. This compared against all six names
+        and measured five, because rung 4 removed ``raw_precip_mm`` from gold with
+        ``precip_mm`` -- a forecast has no observed millimetres. A column that is not
+        in the frame cannot be subtracted from the frame's own numeric columns, so
+        the six-name comparison was asking gold a question about a column gold no
+        longer has.
+
+        The claim is unchanged and is now stated exactly: the excluded set equals the
+        display columns THE FRAME CARRIES, the absent ones are named rather than
+        absorbed, and ``kept - naive`` is still empty so nothing is smuggled in.
+        """
         frame = pd.read_parquet(_GOLD_DIR / f"{table}.parquet")
         splitter = _splitter(target_col=target_col)
 
@@ -331,36 +389,122 @@ class TestRealGold:
             if c not in naive_exclude
         }
 
-        assert naive - kept == DISPLAY_ONLY_COLUMNS
+        in_gold = DISPLAY_ONLY_COLUMNS & set(frame.columns)
+        assert in_gold == _DISPLAY_COLUMNS_IN_GOLD, sorted(in_gold)
+        assert DISPLAY_ONLY_COLUMNS - in_gold == _DISPLAY_COLUMNS_NOT_IN_GOLD, (
+            "the set of display columns gold no longer carries has changed. Since "
+            "rung 4 it is exactly raw_precip_mm; a second absentee means another "
+            "column left gold and nobody said so."
+        )
+        assert naive - kept == in_gold
         assert kept - naive == set()
 
-    def test_the_wp_feature_set_is_free_of_nan(self) -> None:
-        """The concrete failure that blocked the Stage-1 orchestrator."""
+    def test_the_wp_fit_survives_the_nan_the_owner_rulings_put_in_gold(self) -> None:
+        """SUPERSEDED BY A RULING, and re-stated where the treatment now lives.
+
+        This asserted that no WP feature column carries NaN -- the concrete failure
+        that blocked the Stage-1 orchestrator was ``ValueError: Input X contains NaN``
+        out of the WP ``LogisticRegression``. The owner ruled twice on 2026-09-22 that
+        a value nothing honest can fill stays BLANK (p332_ steps 7b and 8d), so gold
+        now carries NaN in 160 of 175 WP feature columns BY DESIGN. Re-anchoring the
+        count would pin a number that says nothing; deleting the node would drop the
+        only guard on the failure it was written for.
+
+        So the claim moves to where the rulings put the treatment: the WP pipeline's
+        in-fold median imputer with its ``_was_missing`` indicator. A NaN-carrying
+        frame is driven through it here. If that pair is ever removed, this fails with
+        the original error, which is exactly the coverage the old assertion gave.
+        """
         frame = pd.read_parquet(_GOLD_DIR / "features_wp.parquet")
         splitter = _splitter()
-        assert not frame[splitter._feature_cols(frame)].isna().to_numpy().any()
+        columns = splitter._feature_cols(frame)
+        features = frame[columns]
+
+        measured_columns = len(columns)
+        with_nulls = int((features.isna().sum() > 0).sum())
+        assert measured_columns == phase33_state.P332_20_WP_FEATURE_COLUMNS
+        assert with_nulls == phase33_state.P332_20_WP_FEATURE_COLUMNS_WITH_NULLS, (
+            f"{with_nulls} of {measured_columns} WP feature columns carry NaN; the "
+            "clean build measured "
+            f"{phase33_state.P332_20_WP_FEATURE_COLUMNS_WITH_NULLS}. The blanks are "
+            "the owner's step-7b and step-8d rulings, so a move here is a change to "
+            "what those rulings left blank, not a leak."
+        )
+        assert with_nulls > 0, (
+            "non-vacuity: with no NaN in the frame the pipeline assertion below would "
+            "pass against a pipeline that cannot handle one"
+        )
+
+        from models.trainers.wp_trainer import (
+            MISSING_INDICATOR_SUFFIX,
+            WP_PIPELINE_STEP_NAMES,
+            WPTrainer,
+        )
+
+        pipeline = WPTrainer()._create_model({})
+        assert tuple(pipeline.named_steps) == WP_PIPELINE_STEP_NAMES
+        assert "imputer" in pipeline.named_steps
+        assert "missing_indicator" in pipeline.named_steps
+        assert MISSING_INDICATOR_SUFFIX == "_was_missing"
+
+        sample = features.head(200).to_numpy(dtype=float)
+        labels = frame["home_win"].head(200).to_numpy(dtype=int)
+        assert bool(pd.isna(sample).any()), "fixture sanity: the sample carries NaN"
+        # The original failure was an exception, so the assertion is that fitting
+        # RETURNS. A bare fit that raises fails this node with that exception.
+        pipeline.fit(sample, labels)
+        assert pipeline.predict_proba(sample).shape == (len(sample), 2)
 
     def test_raw_humidity_pct_was_excluded_not_imputed(self) -> None:
-        """Proof the CONSUMER was fixed and the DATA was left alone."""
-        frame = pd.read_parquet(_GOLD_DIR / "features_wp.parquet")
-        assert len(frame) == _GOLD_ROWS
-        assert int(frame["raw_humidity_pct"].isna().sum()) == _RAW_HUMIDITY_NAN_ROWS
+        """Proof the CONSUMER was fixed and the DATA was left alone.
 
-        # The same claim, stated so it survives a legitimate row addition: the column is
-        # NaN in every season the upstream weather table does not cover, and populated in
-        # the one season it does. Rung 4 added 236 season-2025 rows and moved the NaN
-        # count by zero, which is what "excluded, not imputed" actually means.
-        outside_2025 = frame["season"] != 2025
-        assert int(outside_2025.sum()) == _RAW_HUMIDITY_NAN_ROWS
-        assert bool(frame.loc[outside_2025, "raw_humidity_pct"].isna().all())
-        assert int((~outside_2025).sum()) == _GOLD_2025_ROWS
-        assert not bool(frame.loc[~outside_2025, "raw_humidity_pct"].isna().any())
+        RE-ANCHORED (Plan 33.2-20), and the CLAIM is unchanged: the column is null
+        wherever there is no reading and is imputed nowhere. What moved is where
+        "no reading" falls. At Phase 30 the upstream table covered season 2025 alone,
+        so the null set was "every season but 2025". Since p332_ rung 4 and step 4b
+        the source is the day-before forecast over the whole history, so the null set
+        is the population weather cannot describe: the 1,030 fixed-roof domes plus the
+        74 uncovered games.
+
+        That is asserted as an IDENTITY rather than as a count -- a row is null here
+        exactly when its weather family is absent -- so a legitimate row addition
+        cannot make it stale, and a single imputed cell still fails it.
+        """
+        frame = pd.read_parquet(_GOLD_DIR / "features_wp.parquet")
+        assert len(frame) == _LIVE_GOLD_ROWS
+        nulls = dict(phase33_state.P332_20_DISPLAY_NULLS_AFTER_CLEAN_BUILD)
+        assert int(frame["raw_humidity_pct"].isna().sum()) == nulls["raw_humidity_pct"]
+
+        # The identity: null exactly where no observation applies. `weather_coverage`
+        # 0.0 is an uncovered game and `weather_affects_game` 0.0 a fixed-roof dome;
+        # neither has a humidity reading, and every other row does.
+        absent = (frame["weather_coverage"] == 0.0) | (
+            frame["weather_affects_game"] == 0.0
+        )
+        assert bool(frame.loc[absent, "raw_humidity_pct"].isna().all()), (
+            "a game with no observation carries a humidity value, so something "
+            "imputed it"
+        )
+        assert not bool(frame.loc[~absent, "raw_humidity_pct"].isna().any()), (
+            "a game WITH an observation carries no humidity, so the passthrough "
+            "dropped a reading it had"
+        )
+        assert int(absent.sum()) == nulls["raw_humidity_pct"]
 
     @pytest.mark.parametrize("table", ["features_wp", "features_ats", "features_ou"])
     def test_the_display_columns_are_still_present_in_gold(self, table: str) -> None:
-        """Exclusion happens at the consumer; no column is dropped from gold."""
+        """Exclusion happens at the consumer; no column is dropped BY THE EXCLUSION.
+
+        RE-ANCHORED (Plan 33.2-20). The claim is that the model-feature exclusion does
+        not reach gold, and it still holds. ``raw_precip_mm`` is nevertheless gone --
+        removed by rung 4's registry group because a forecast has no observed
+        millimetres, which is a DATA decision and not this exclusion -- so the
+        assertion names the one absentee instead of asserting a superset that is no
+        longer true. An unexplained sixth absentee still fails.
+        """
         frame = pd.read_parquet(_GOLD_DIR / f"{table}.parquet")
-        assert set(frame.columns) >= DISPLAY_ONLY_COLUMNS
+        assert set(frame.columns) >= _DISPLAY_COLUMNS_IN_GOLD
+        assert DISPLAY_ONLY_COLUMNS - set(frame.columns) == _DISPLAY_COLUMNS_NOT_IN_GOLD
 
     @pytest.mark.parametrize("table", ["features_wp", "features_ats", "features_ou"])
     def test_display_columns_are_not_constant_on_live_gold(self, table: str) -> None:
@@ -377,13 +521,24 @@ class TestRealGold:
         Measuring the FIXTURE alone is what let the stale claim through, so this
         reads LIVE gold. The anchors are exact, not tolerances: a legitimate
         weather backfill (D30-DEFER-09) must move them deliberately.
+
+        RE-ANCHORED (Plan 33.2-20) for a legitimate change of exactly that kind, and
+        the rationale is UNCHANGED: p332_ rung 4 replaced the ERA5 reanalysis with the
+        archived day-before forecast, so these are different measurements of different
+        things and every distinct count moved. The counts went UP on every column
+        (e.g. raw_temp_f 15 -> 100), which is the forecast carrying real per-game
+        variation where the reanalysis had been broadcast from fourteen rows. The
+        falsified "all six are constant" claim is NOT restored.
         """
         frame = pd.read_parquet(_GOLD_DIR / f"{table}.parquet")
 
         measured = {
-            name: int(frame[name].nunique()) for name in sorted(DISPLAY_ONLY_COLUMNS)
+            name: int(frame[name].nunique())
+            for name in sorted(_DISPLAY_COLUMNS_IN_GOLD)
         }
-        assert measured == _LIVE_GOLD_DISPLAY_NUNIQUE, (
+        assert measured == dict(
+            phase33_state.P332_20_DISPLAY_NUNIQUE_AFTER_CLEAN_BUILD
+        ), (
             f"{table}: display-column distributions moved. utils/feature_columns.py "
             "argues the exclusion from SCALE (un-normalized, un-neutralised nulls), "
             "not from constancy -- re-read that rationale before re-anchoring, and "
@@ -397,20 +552,39 @@ class TestRealGold:
                 "but it does mean this anchor and the module rationale are stale."
             )
 
-    def test_only_raw_humidity_pct_carries_nulls_on_live_gold(self) -> None:
-        """The un-neutralised-null half of the scale argument, measured."""
+    def test_the_display_columns_carry_nulls_exactly_where_weather_is_absent(
+        self,
+    ) -> None:
+        """The un-neutralised-null half of the scale argument, measured.
+
+        RE-ANCHORED (Plan 33.2-20), and the un-neutralised-null claim is STRONGER than
+        before: at Phase 30 only ``raw_humidity_pct`` carried nulls, so the argument
+        rested on one column. Since rung 4 four of the five carry them, and the fifth
+        does not for a stated reason -- ``raw_weather_severity`` is a COMPOSITE and a
+        covered dome genuinely scores 0.0 there, which is Ruling J's split seen on the
+        display siblings. Both populations are asserted, so a change to either fails.
+        """
         frame = pd.read_parquet(_GOLD_DIR / "features_ats.parquet")
         nulls = {
-            name: int(frame[name].isna().sum()) for name in sorted(DISPLAY_ONLY_COLUMNS)
+            name: int(frame[name].isna().sum())
+            for name in sorted(_DISPLAY_COLUMNS_IN_GOLD)
         }
-        assert nulls == {
-            "raw_humidity_pct": _RAW_HUMIDITY_NAN_ROWS,
-            "raw_precip_mm": 0,
-            "raw_precip_prob": 0,
-            "raw_temp_f": 0,
-            "raw_weather_severity": 0,
-            "raw_wind_mph": 0,
-        }
+        recorded = dict(phase33_state.P332_20_DISPLAY_NULLS_AFTER_CLEAN_BUILD)
+        assert nulls == recorded
+
+        # The four MEASUREMENTS are null for the domes AND the uncovered games; the
+        # composite only for the uncovered ones. Stated as the arithmetic, so the
+        # difference between the two populations cannot be re-pinned away.
+        uncovered = int((frame["weather_coverage"] == 0.0).sum())
+        domes = int((frame["weather_affects_game"] == 0.0).sum())
+        assert recorded["raw_weather_severity"] == uncovered
+        for name in (
+            "raw_humidity_pct",
+            "raw_precip_prob",
+            "raw_temp_f",
+            "raw_wind_mph",
+        ):
+            assert recorded[name] == uncovered + domes, name
 
 
 @pytest.mark.skipif(
@@ -437,6 +611,22 @@ class TestDeployedArtifactResidue:
     was missing was any recorded statement of it. These tests are that record:
     the residue is pinned EXACTLY, so a NEW offender fails and the known one
     cannot quietly become permanent-by-forgetting.
+
+    BOTH NODES BELOW ARE RED AND ARE DELIBERATELY NOT RE-ANCHORED HERE (Plan
+    33.2-20). They pin a property of DEPLOYED MODEL ARTIFACTS, not of data, and the
+    standing owner ruling is that the pre-correction models are dead: every artifact
+    ``artifacts/latest.json`` names was fitted on gold this phase has since replaced
+    column by column. MEASURED 2026-09-22: the manifest now names the Phase-33 re-fit
+    (``wp_20260914_221745`` / ``ats_20260914_221751`` / ``ou_20260914_221756``), NOT
+    the Phase-30 ``ou_20260326_163930`` this anchor records, so the measured residue
+    is ``{}`` -- and pinning it to ``{}`` would anchor a property of artifacts that
+    Plan 33.2-23's re-fit is about to replace, which is exactly the re-pin the data
+    sweep refuses to make elsewhere.
+
+    ROUTED to Plan 33.2-23 (the re-fit on corrected gold), with the rest of the
+    dead-model family. The honest re-anchor is the one that plan can make: measure the
+    residue of the artifacts it actually promotes, against the display columns that
+    actually reach them, and record THAT.
     """
 
     @staticmethod

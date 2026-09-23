@@ -17868,3 +17868,69 @@ P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256: str = (
     "e259a2194f21b137455e6d6653c393b68e79e377a5cb47ce5c197d63d7e7eae3"
 )
 P332_20_ELO_CANONICAL_SLICE_ROWS: int = 6499
+
+# THE DISPLAY-ONLY COLUMN RECORD, RE-ANCHORED AFTER THE CLEAN BUILD (Plan 33.2-20).
+# The Plan 30-15 / Plan 30-08 anchors in tests/unit/test_temporal_display_columns.py
+# describe rung-4 Phase-30 gold. THREE separate Phase-33.2 causes moved them, and they are
+# recorded separately because they are separate facts:
+#
+# (1) raw_precip_mm LEFT GOLD. p332_ rung 4 (Plan 33.2-12, SPEC R6) replaced the ERA5
+#     observations with the archived day-before FORECAST, and a forecast reports a
+#     probability, never observed millimetres. precip_mm and raw_precip_mm therefore leave
+#     every matrix through the weather_unsupplied registry group. DISPLAY_ONLY_COLUMNS
+#     still names six, and correctly: it is the CONSUMER's exclusion list, and a column
+#     absent from gold is excluded trivially rather than wrongly.
+# (2) THE WEATHER VALUES THEMSELVES ARE DIFFERENT DATA. A forecast is not a reanalysis, so
+#     every display column's distinct count and null count moved; the nulls are now the
+#     fixed-roof domes plus the uncovered games rather than "every season but 2025".
+# (3) THE CLEAN BUILD ADDED THE 17 PLAYED 2026 GAMES, 6,499 -> 6,516.
+#
+# MEASURED 2026-09-22 on the clean build's gold, identically in all three matrices.
+P332_20_DISPLAY_COLUMNS_IN_GOLD: tuple[str, ...] = (
+    "raw_humidity_pct",
+    "raw_precip_prob",
+    "raw_temp_f",
+    "raw_weather_severity",
+    "raw_wind_mph",
+)
+#: Named for exclusion but NOT present in gold since rung 4. Recorded so the gap between
+#: the consumer's list and the matrices is a stated fact rather than a silent difference.
+P332_20_DISPLAY_COLUMNS_NOT_IN_GOLD: tuple[str, ...] = ("raw_precip_mm",)
+
+P332_20_GOLD_ROWS_AFTER_CLEAN_BUILD: int = 6516
+
+P332_20_DISPLAY_NUNIQUE_AFTER_CLEAN_BUILD: tuple[tuple[str, int], ...] = (
+    ("raw_humidity_pct", 775),
+    ("raw_precip_prob", 106),
+    ("raw_temp_f", 100),
+    ("raw_weather_severity", 280),
+    ("raw_wind_mph", 23),
+)
+
+#: Null counts per display column. The four MEASUREMENTS are null for the 1,030 fixed-roof
+#: domes plus the 74 uncovered games (1,104); raw_weather_severity is a COMPOSITE and is a
+#: genuine 0.0 for a covered dome, so only the 74 uncovered games are null -- the same
+#: Ruling J split the weather-constancy module asserts, seen on the display siblings.
+P332_20_DISPLAY_NULLS_AFTER_CLEAN_BUILD: tuple[tuple[str, int], ...] = (
+    ("raw_humidity_pct", 1104),
+    ("raw_precip_prob", 1104),
+    ("raw_temp_f", 1104),
+    ("raw_weather_severity", 74),
+    ("raw_wind_mph", 1104),
+)
+
+#: THE WP FEATURE SET CARRIES NaN BY DESIGN NOW, which is why the Plan 30-15 "free of NaN"
+#: assertion could not survive. The owner ruled twice on 2026-09-22 that a value nothing
+#: honest can fill stays BLANK -- p332_ step 7b (a within-season gap is filled only from
+#: games ended by the gap's own lock, or left blank) and step 8d (a cell whose expanding
+#: statistic could not be formed is blank, never the neutral 0.0) -- and the coverage-
+#: flagged families carry NaN before their first covered season. MEASURED: 160 of the 175
+#: WP feature columns carry at least one NaN, 93,864 cells in all.
+#:
+#: The rulings rest on the models taking a blank NATIVELY, and for WP that is the in-fold
+#: `_ImputeAndCarryRaw` + `_FoldRawIntoMissingIndicator` pair in models/trainers/wp_trainer.py,
+#: which median-imputes inside each fold and appends a `<column>_was_missing` indicator.
+#: So the claim the old assertion was really making -- the WP fit does not raise
+#: `Input X contains NaN` -- is now asserted at the TRAINER, where the treatment lives.
+P332_20_WP_FEATURE_COLUMNS: int = 175
+P332_20_WP_FEATURE_COLUMNS_WITH_NULLS: int = 160
