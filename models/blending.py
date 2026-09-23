@@ -242,138 +242,6 @@ class BlendWeights:
 
 
 @dataclass
-class SigmoidParams:
-    """Sigmoid parameters for a single target's dynamic blend weight.
-
-    Attributes:
-        midpoint: Normalized week fraction (week/max_week) at sigmoid midpoint.
-            Must be in [0.0, 1.0].
-        steepness: How quickly weight transitions from low to high.
-            Must be in [0.1, 1.5] -- matches Optuna search range to prevent
-            artifacts the tuner would never produce.
-    """
-
-    midpoint: float
-    steepness: float
-
-    def __post_init__(self) -> None:
-        if not (0.0 <= self.midpoint <= 1.0):
-            msg = f"midpoint={self.midpoint} must be in [0.0, 1.0]"
-            raise ValueError(msg)
-        if not (0.1 <= self.steepness <= 1.5):
-            msg = f"steepness={self.steepness} must be in [0.1, 1.5]"
-            raise ValueError(msg)
-
-
-@dataclass
-class DynamicBlendWeights:
-    """Week-dependent blend weights via sigmoid schedule (per D-01, D-02, D-03).
-
-    Each target gets an independent sigmoid:
-        weight(t) = low + (high - low) / (1 + exp(-steepness * (t - midpoint)))
-    where t = week / max_week (normalized week fraction per D-04).
-
-    Attributes:
-        wp: Sigmoid parameters for Win Probability target.
-        ats: Sigmoid parameters for Against the Spread target.
-        ou: Sigmoid parameters for Over/Under target.
-        low: Minimum weight (early season). Fixed at 0.30 per D-03.
-        high: Maximum weight (late season). Fixed at 0.80 per D-03.
-        mode_by_target: Per-target mode after gating.
-    """
-
-    wp: SigmoidParams
-    ats: SigmoidParams
-    ou: SigmoidParams
-    low: float = 0.30
-    high: float = 0.80
-    mode_by_target: dict[str, str] = field(
-        default_factory=lambda: {
-            "wp": "dynamic",
-            "ats": "dynamic",
-            "ou": "dynamic",
-        }
-    )
-
-    def get_weight(self, target: str, week: int, season: int) -> float:
-        """Compute sigmoid blend weight for a specific target, week, season.
-
-        Raises:
-            ValueError: If week < 1.
-        """
-        if week < 1:
-            msg = f"week must be >= 1, got {week}"
-            raise ValueError(msg)
-        max_week = 17 if season <= 2020 else 18  # D-05
-        t = min(week, max_week) / max_week  # D-04 + playoff clamping
-        params: SigmoidParams = getattr(self, target)
-        return float(
-            self.low
-            + (self.high - self.low)
-            / (1 + np.exp(-params.steepness * (t - params.midpoint)))
-        )
-
-    def to_dict(self) -> dict:
-        """Serialize to dict for JSON artifact persistence."""
-        return {
-            "wp": {"midpoint": self.wp.midpoint, "steepness": self.wp.steepness},
-            "ats": {"midpoint": self.ats.midpoint, "steepness": self.ats.steepness},
-            "ou": {"midpoint": self.ou.midpoint, "steepness": self.ou.steepness},
-            "low": self.low,
-            "high": self.high,
-            "mode_by_target": self.mode_by_target,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> DynamicBlendWeights:
-        """Deserialize from dict with schema validation.
-
-        Raises:
-            ValueError: If required fields are missing or values are invalid.
-        """
-        required_targets = ("wp", "ats", "ou")
-        for t in required_targets:
-            if t not in data:
-                msg = f"Invalid dynamic blend weights: missing target '{t}'"
-                raise ValueError(msg)
-            t_data = data[t]
-            if (
-                not isinstance(t_data, dict)
-                or "midpoint" not in t_data
-                or "steepness" not in t_data
-            ):
-                msg = (
-                    f"Invalid dynamic blend weights: target '{t}' "
-                    f"must have 'midpoint' and 'steepness'"
-                )
-                raise ValueError(msg)
-        try:
-            return cls(
-                wp=SigmoidParams(
-                    midpoint=float(data["wp"]["midpoint"]),
-                    steepness=float(data["wp"]["steepness"]),
-                ),
-                ats=SigmoidParams(
-                    midpoint=float(data["ats"]["midpoint"]),
-                    steepness=float(data["ats"]["steepness"]),
-                ),
-                ou=SigmoidParams(
-                    midpoint=float(data["ou"]["midpoint"]),
-                    steepness=float(data["ou"]["steepness"]),
-                ),
-                low=float(data.get("low", 0.30)),
-                high=float(data.get("high", 0.80)),
-                mode_by_target=data.get(
-                    "mode_by_target",
-                    {"wp": "dynamic", "ats": "dynamic", "ou": "dynamic"},
-                ),
-            )
-        except (TypeError, ValueError) as e:
-            msg = f"Invalid dynamic blend weights: {e}"
-            raise ValueError(msg) from e
-
-
-@dataclass
 class EdgeThresholds:
     """Per-target edge thresholds for bet flagging.
 
@@ -652,10 +520,11 @@ class MarketBlender:
         self,
         model_prob: np.ndarray,
         market_prob: np.ndarray,
-        week: int | None = None,
-        season: int | None = None,
     ) -> np.ndarray:
         """Blend WP predictions in log-odds space at the fixed WP weight.
+
+        There is no week or season parameter: the weight does not vary through the season
+        (D33.2-10), so a parameter that selected one would be a hook for a retired shape.
 
         Clips both inputs to [clip_min, clip_max] before applying logit
         to prevent NaN/inf from boundary probabilities. The blended
@@ -664,14 +533,10 @@ class MarketBlender:
         Args:
             model_prob: Model's predicted win probabilities.
             market_prob: Market's fair win probabilities.
-            week: Unused. The weight no longer varies by week; the parameter leaves with its
-                one production caller in Plan 33.2-24 Task 2b.
-            season: Unused, for the same reason.
 
         Returns:
             Blended win probabilities in [0, 1].
         """
-        del week, season
         return _blend_values(
             "wp",
             model_prob,
@@ -685,8 +550,6 @@ class MarketBlender:
         self,
         model_spread: np.ndarray,
         market_spread: np.ndarray,
-        week: int | None = None,
-        season: int | None = None,
     ) -> np.ndarray:
         """Blend ATS predictions in spread-point space (linear interpolation).
 
@@ -702,13 +565,10 @@ class MarketBlender:
             market_spread: Market's spreads on the SAME home-margin scale, POSITIVE when the
                 home team is favored (corr with ml_home -0.9506, corr with realized home margin
                 +0.4517, measured over 2140 stored rows).
-            week: Unused; leaves with its caller in Plan 33.2-24 Task 2b.
-            season: Unused; leaves with its caller in Plan 33.2-24 Task 2b.
 
         Returns:
             Blended spreads.
         """
-        del week, season
         return _blend_values(
             "ats",
             model_spread,
@@ -722,21 +582,16 @@ class MarketBlender:
         self,
         model_total: np.ndarray,
         market_total: np.ndarray,
-        week: int | None = None,
-        season: int | None = None,
     ) -> np.ndarray:
         """Blend O/U predictions in total-point space (linear interpolation).
 
         Args:
             model_total: Model's predicted game totals.
             market_total: Market's totals.
-            week: Unused; leaves with its caller in Plan 33.2-24 Task 2b.
-            season: Unused; leaves with its caller in Plan 33.2-24 Task 2b.
 
         Returns:
             Blended totals.
         """
-        del week, season
         return _blend_values(
             "ou",
             model_total,

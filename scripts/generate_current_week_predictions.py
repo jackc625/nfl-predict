@@ -25,7 +25,12 @@ sys.path.insert(0, str(project_root))
 
 from backtest.ou_divergence import dedupe_odds_by_book_preference
 from models.artifacts import load_model_artifact
-from models.blending import MarketBlender
+from models.blending import (
+    MarketBlender,
+    MarketProbabilityUnavailable,
+    home_fav_margin_from_prelock_spread,
+)
+from models.market_probability import market_home_win_probability
 from utils import get_logger
 from utils.edge_tier import edge_tier
 from utils.probability_utils import moneyline_to_probability
@@ -390,15 +395,24 @@ def apply_blending(
     market: pd.DataFrame,
     artifacts_dir: Path,
     no_blend: bool,
-    season: int,
-    week: int,
 ) -> pd.DataFrame:
-    """Apply market blending if blend artifacts exist.
+    """Apply market blending if a blend artifact is deployed.
 
-    Adds blended_wp, blended_ats, blended_ou columns. Sets them to NaN
-    when blending is not applied. ``season``/``week`` are passed to the blender
-    so dynamic-mode targets resolve their week-of-season weight; static-mode
-    targets ignore them.
+    Adds blended_wp, blended_ats, blended_ou columns, NaN where blending does not apply.
+    ONE fixed weight per target (D33.2-10): the week-varying schedule is retired, so neither
+    the season nor the week reaches the blender any more.
+
+    THE WP MARKET SIDE IS THE SPREAD (D33.2-09, LOCKED). It is the pre-lock spread converted
+    through the converter slope BOUND on the loaded blender -- the slope
+    ``MarketBlender.from_artifacts`` already cross-checked against the named converter
+    directory, so the converter is NOT re-resolved here. This is SERVING, so the final serving
+    slope is the right one; the out-of-fold rule binds history only. A game with a moneyline
+    but no spread gets NO blended WP: the moneyline is not a fallback yardstick. It is still
+    carried in the market frame for pricing, settlement and CLV (D33.2-11).
+
+    Raises:
+        RetiredDynamicBlendError: when the deployed blend is the retired dynamic incumbent.
+        MarketProbabilityUnavailable: when the deployed blend has no converter bound.
     """
     predictions["blended_wp"] = np.nan
     predictions["blended_ats"] = np.nan
@@ -410,7 +424,6 @@ def apply_blending(
 
     try:
         blender = MarketBlender.from_artifacts(artifacts_dir)
-        has_blend = True
         logger.info(
             "Blend artifacts found, applying market blending",
             wp_weight=blender.config.weights.wp_model_weight,
@@ -418,66 +431,55 @@ def apply_blending(
             ou_weight=blender.config.weights.ou_model_weight,
         )
     except (KeyError, FileNotFoundError) as exc:
-        has_blend = False
+        # ONLY "no blend deployed" is caught. ``RetiredDynamicBlendError`` (a ValueError) is
+        # DELIBERATELY left to propagate: the retired dynamic incumbent must fail this run
+        # loudly rather than fall back to unblended predictions nobody chose (Plan 33.2-24).
         logger.info(
             "No blend artifacts found, using raw model predictions", reason=str(exc)
         )
-
-    if not has_blend:
         return predictions
 
-    # Merge with market data for blending
     merged = predictions.merge(market, on="game_id", how="left", suffixes=("", "_mkt"))
 
-    # WP blending: need fair market probability from moneylines
-    ml_cols_present = "ml_home" in merged.columns and "ml_away" in merged.columns
-    if ml_cols_present:
-        valid_ml = merged["ml_home"].notna() & merged["ml_away"].notna()
-        if valid_ml.any():
-            home_raw = merged.loc[valid_ml, "ml_home"].apply(
-                lambda ml: moneyline_to_probability(int(ml))
+    # WP: the spread through the BOUND converter.
+    if "spread" in merged.columns:
+        valid_wp = merged["spread"].notna() & merged["wp_prob"].notna()
+        if valid_wp.any():
+            if blender.market_probability_slope_beta is None:
+                msg = (
+                    "the deployed blend has no converter bound, so the pre-lock spread "
+                    "cannot be converted into the WP market probability. Refusing rather "
+                    "than publishing unblended WP as if it were blended."
+                )
+                raise MarketProbabilityUnavailable(msg)
+            market_probs = market_home_win_probability(
+                home_fav_margin_from_prelock_spread(
+                    merged.loc[valid_wp, "spread"].to_numpy(dtype=float)
+                ),
+                blender.market_probability_slope_beta,
             )
-            away_raw = merged.loc[valid_ml, "ml_away"].apply(
-                lambda ml: moneyline_to_probability(int(ml))
-            )
-            market_probs = (home_raw / (home_raw + away_raw)).values
-            model_probs = merged.loc[valid_ml, "wp_prob"].values
-
-            blended_wp = blender.blend_wp(
-                np.asarray(model_probs, dtype=np.float64),
+            predictions.loc[valid_wp, "blended_wp"] = blender.blend_wp(
+                merged.loc[valid_wp, "wp_prob"].to_numpy(dtype=np.float64),
                 np.asarray(market_probs, dtype=np.float64),
-                week=week,
-                season=season,
             )
-            predictions.loc[valid_ml, "blended_wp"] = blended_wp
 
     # ATS blending
     if "spread" in merged.columns:
         valid_spread = merged["spread"].notna()
         if valid_spread.any():
-            model_spreads = merged.loc[valid_spread, "ats_prediction"].values
-            market_spreads = merged.loc[valid_spread, "spread"].values
-            blended_ats = blender.blend_ats(
-                np.asarray(model_spreads, dtype=np.float64),
-                np.asarray(market_spreads, dtype=np.float64),
-                week=week,
-                season=season,
+            predictions.loc[valid_spread, "blended_ats"] = blender.blend_ats(
+                merged.loc[valid_spread, "ats_prediction"].to_numpy(dtype=np.float64),
+                merged.loc[valid_spread, "spread"].to_numpy(dtype=np.float64),
             )
-            predictions.loc[valid_spread, "blended_ats"] = blended_ats
 
     # O/U blending
     if "total" in merged.columns:
         valid_total = merged["total"].notna()
         if valid_total.any():
-            model_totals = merged.loc[valid_total, "ou_prediction"].values
-            market_totals = merged.loc[valid_total, "total"].values
-            blended_ou = blender.blend_ou(
-                np.asarray(model_totals, dtype=np.float64),
-                np.asarray(market_totals, dtype=np.float64),
-                week=week,
-                season=season,
+            predictions.loc[valid_total, "blended_ou"] = blender.blend_ou(
+                merged.loc[valid_total, "ou_prediction"].to_numpy(dtype=np.float64),
+                merged.loc[valid_total, "total"].to_numpy(dtype=np.float64),
             )
-            predictions.loc[valid_total, "blended_ou"] = blended_ou
 
     n_blended = predictions["blended_wp"].notna().sum()
     logger.info("Applied market blending", n_blended=int(n_blended))
@@ -676,10 +678,8 @@ def generate_and_write(
     if "ml_away" in combined.columns:
         combined.rename(columns={"ml_away": "market_ml_away"}, inplace=True)
 
-    # 6. Apply market blending (uses the blend artifact, dynamic or static)
-    combined = apply_blending(
-        combined, market_df, artifacts_dir, no_blend, season, week
-    )
+    # 6. Apply market blending (the deployed fixed-weight blend artifact)
+    combined = apply_blending(combined, market_df, artifacts_dir, no_blend)
 
     # 7. Write outputs
     pred_path = write_predictions(combined, season, week, output_dir)

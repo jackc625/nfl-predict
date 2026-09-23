@@ -142,7 +142,16 @@ def _ats_edge(tmp_path: Path, ats_prediction: float, spread: float | None) -> fl
             stmt = statement.strip()
             if stmt:
                 conn.execute(stmt)
-        _load_predictions(conn, tmp_path / "outputs", tmp_path / "silver")
+        # An EMPTY artifacts root, named explicitly: this test is about the ATS edge, and it
+        # must not read the production blend through the working directory. (Plan 33.2-24:
+        # the live manifest still names the retired dynamic blend, which the cache now
+        # refuses by name -- a refusal this test has no business depending on either way.)
+        _load_predictions(
+            conn,
+            tmp_path / "outputs",
+            tmp_path / "silver",
+            artifacts_root=tmp_path / "artifacts",
+        )
         row = conn.execute(
             "SELECT ats_edge, ats_confidence FROM predictions"
         ).fetchone()

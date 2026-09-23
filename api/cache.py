@@ -1462,79 +1462,151 @@ def materialize_bet_tracker_blocks(
 # and that no call site feeds a per-bet EV into the edge band.
 
 
-def _blend_weight_array(
-    blend_data: dict[str, Any],
-    target: str,
-    season: pd.Series,
-    week: pd.Series,
-) -> np.ndarray:
-    """Per-row model weight for *target*, honouring the DEPLOYED dynamic schedule (WR-03).
+class RetiredDynamicBlendError(ValueError):
+    """The deployed blend payload still carries the retired week-varying ``dynamic`` section.
 
-    The cache used to read only ``blend_data["weights"]`` and apply ONE scalar per target to every
-    game. The deployed artifact ``blend_dynamic_20260606_020635`` carries a ``dynamic`` section
-    with ``mode_by_target = {"wp": "dynamic", "ats": "dynamic", "ou": "dynamic"}``, which
-    ``MarketBlender.from_artifacts`` auto-detects and applies as a per-week sigmoid. The
-    current-week CSV went through that path and the cache did not, so ``/``, ``/games/{id}`` and
-    both export endpoints published a DIFFERENT ``blended_*`` for the same game than the CSV --
-    and the one on the website was the one the deployed blend config says is wrong. Measured on
-    the live artifact: WP 0.5917 static against 0.5241 at week 1 and 0.6686 at week 18.
+    THE CACHE'S OWN COPY OF ``models.blending.RetiredDynamicBlendError``, same name, same
+    meaning: ``api/cache.py`` may not import ``models`` (UIAP-01), so it cannot raise the model
+    one. Reading such a payload as a fixed-weight blend would publish a number neither the
+    retired rule nor the new one chose (D33.2-10, Plan 33.2-24).
 
-    The schedule is pure arithmetic and is reproduced here rather than imported, so UIAP-01's "no
-    model import in the request path" is untouched. It mirrors
-    ``models.blending.DynamicBlendWeights.get_weight`` exactly, including the pre-2021 17-week era
-    (D-05) and the playoff clamp (D-04):
-
-        max_week = 17 if season <= 2020 else 18
-        t        = min(week, max_week) / max_week
-        weight   = low + (high - low) / (1 + exp(-steepness * (t - midpoint)))
-
-    A row whose target is not in dynamic mode, or whose season/week cannot be read, falls back to
-    the STATIC weight for that target -- the same value this function returned for every row
-    before. Falling back per row rather than for the whole frame keeps one unusable week from
-    silently restaticizing the entire cache.
-
-    Args:
-        blend_data: The parsed ``blend_weights.json``.
-        target: One of ``wp`` / ``ats`` / ``ou``.
-        season: The season of each row.
-        week: The week of each row.
-
-    Returns:
-        One weight per row, aligned with *season* / *week*.
+    WHY A ``ValueError`` AND NOT A ``KeyError``. ``_load_predictions`` catches
+    ``(FileNotFoundError, KeyError)`` around the blend and writes NULL blended columns
+    SILENTLY. A refusal raised as either type would be swallowed into exactly that silent
+    no-blend; a ``ValueError`` escapes, so the window between the blend re-tune and the
+    production swap (Plan 33.2-25) fails LOUDLY on the website as it does in the CSV.
     """
-    static = float(blend_data["weights"][target])
-    weights = np.full(len(season), static, dtype=float)
 
-    dynamic = blend_data.get("dynamic")
-    if not isinstance(dynamic, dict):
-        return weights
-    if dynamic.get("mode_by_target", {}).get(target) != "dynamic":
-        return weights
-    params = dynamic.get(target)
-    if not isinstance(params, dict):
-        return weights
 
-    season_num = pd.to_numeric(season, errors="coerce").to_numpy(dtype="float64")
-    week_num = pd.to_numeric(week, errors="coerce").to_numpy(dtype="float64")
-    usable = np.isfinite(season_num) & np.isfinite(week_num) & (week_num >= 1)
-    if not usable.any():
-        return weights
+class MissingConverterBindingError(Exception):
+    """The deployed blend names no spread-to-probability converter, so WP cannot be blended.
 
-    low = float(dynamic.get("low", 0.30))
-    high = float(dynamic.get("high", 0.80))
-    midpoint = float(params["midpoint"])
-    steepness = float(params["steepness"])
+    The cache's counterpart of the model path's named refusal
+    (``models.blending.MarketProbabilityUnavailable``): the WP market side comes from the
+    SPREAD through the fitted converter (D33.2-09), and a blend payload without
+    ``market_probability_slope_beta`` has nothing to convert it with. Not a ``KeyError``, for
+    the same reason as :class:`RetiredDynamicBlendError`.
+    """
 
-    max_week = np.where(season_num[usable] <= 2020, 17.0, 18.0)
-    t = np.minimum(week_num[usable], max_week) / max_week
-    weights[usable] = low + (high - low) / (1.0 + np.exp(-steepness * (t - midpoint)))
-    return weights
+
+def _market_home_win_probability(spread: Any, beta: float) -> np.ndarray:
+    """The market's home win probability from the spread: ``sigmoid(beta * home_fav_margin)``.
+
+    REPRODUCED, NOT IMPORTED (UIAP-01): this mirrors
+    ``models.market_probability.market_home_win_probability`` with the same formula, and
+    ``models.blending.home_fav_margin_from_prelock_spread`` is the identity on the stored
+    ``spread`` -- which is on the home-margin scale, POSITIVE when the home team is favoured.
+    ``tests/unit/test_cache_dynamic_blend.py`` compares the two cell-for-cell, asserting the
+    sign on a favourite, an underdog and a pick'em, so a drift in either copy fails there.
+    """
+    margin = np.asarray(spread, dtype=float)
+    return 1.0 / (1.0 + np.exp(-float(beta) * margin))
+
+
+def _read_blend_artifact(artifacts_root: Path = Path("artifacts")) -> dict[str, Any]:
+    """The deployed blend payload, refused by name if it is not a fixed-weight blend.
+
+    Raises:
+        FileNotFoundError / KeyError: when no blend is deployed at all -- the pre-existing
+            "not available" cases the caller turns into NULL blended columns.
+        RetiredDynamicBlendError: when the payload carries a ``dynamic`` section.
+        MissingConverterBindingError: when the payload names no converter slope.
+    """
+    latest_path = artifacts_root / "latest.json"
+    if not latest_path.exists():
+        raise FileNotFoundError(f"latest.json not found in {artifacts_root}/")
+    manifest = json.loads(latest_path.read_text())
+    if "blend" not in manifest:
+        raise KeyError("'blend' not found in latest.json manifest")
+    blend_dir = artifacts_root / manifest["blend"]
+    weights_path = blend_dir / "blend_weights.json"
+    if not weights_path.exists():
+        raise FileNotFoundError(f"blend_weights.json not found in {blend_dir}")
+    blend_data = json.loads(weights_path.read_text())
+    if "dynamic" in blend_data:
+        msg = (
+            f"blend artifact {manifest['blend']!r} carries a 'dynamic' section: it is the "
+            "retired week-varying blend (D33.2-10). Refusing it rather than reading it as a "
+            "fixed-weight blend; the replacement is installed by the production swap."
+        )
+        raise RetiredDynamicBlendError(msg)
+    if "weights" not in blend_data:
+        raise KeyError("'weights' not found in blend_weights.json")
+    if blend_data.get("market_probability_slope_beta") is None:
+        msg = (
+            f"blend artifact {manifest['blend']!r} records no "
+            "market_probability_slope_beta, so the WP market side cannot be converted from "
+            "the spread (D33.2-09). Refusing rather than publishing a silent NULL WP blend."
+        )
+        raise MissingConverterBindingError(msg)
+    return blend_data
+
+
+def _apply_blend(merged: pd.DataFrame, blend_data: dict[str, Any]) -> None:
+    """Fill ``blended_wp`` / ``blended_ats`` / ``blended_ou`` in place -- ONE weight per target.
+
+    The arithmetic mirrors ``models.blending`` (UIAP-01 forbids importing it):
+
+    * WP blends in log-odds space, both sides clipped to [0.001, 0.999], with the market side
+      the SPREAD converted through the blend's bound slope (:func:`_market_home_win_probability`).
+      A game with no spread gets NO blended WP: the moneyline is not a fallback yardstick. The
+      moneyline is still captured and stored for pricing, settlement and CLV (D33.2-11); only
+      its role as the blend's market input ended.
+    * ATS / O/U interpolate linearly in point space against the market spread / total.
+
+    Each target reads ONE scalar from ``blend_data["weights"]`` -- the fixed weight the blend
+    re-tune wrote. The week-varying schedule this cache used to reproduce is retired
+    (D33.2-10), so there is no per-row weight to compute.
+    """
+    weights = blend_data["weights"]
+    clip_min, clip_max = 0.001, 0.999
+
+    valid_wp = merged["market_spread"].notna() & merged["wp_prob"].notna()
+    if valid_wp.any():
+        w = float(weights["wp"])
+        market_prob = _market_home_win_probability(
+            merged.loc[valid_wp, "market_spread"].to_numpy(dtype=float),
+            float(blend_data["market_probability_slope_beta"]),
+        )
+        model_clipped = np.clip(
+            merged.loc[valid_wp, "wp_prob"].to_numpy(dtype=float), clip_min, clip_max
+        )
+        market_clipped = np.clip(market_prob, clip_min, clip_max)
+        merged.loc[valid_wp, "blended_wp"] = expit(
+            w * logit(model_clipped) + (1 - w) * logit(market_clipped)
+        )
+
+    valid_spread = merged["market_spread"].notna()
+    if valid_spread.any():
+        w = float(weights["ats"])
+        merged.loc[valid_spread, "blended_ats"] = w * merged.loc[
+            valid_spread, "ats_prediction"
+        ].to_numpy(dtype=float) + (1 - w) * merged.loc[
+            valid_spread, "market_spread"
+        ].to_numpy(dtype=float)
+
+    valid_total = merged["market_total"].notna()
+    if valid_total.any():
+        w = float(weights["ou"])
+        merged.loc[valid_total, "blended_ou"] = w * merged.loc[
+            valid_total, "ou_prediction"
+        ].to_numpy(dtype=float) + (1 - w) * merged.loc[
+            valid_total, "market_total"
+        ].to_numpy(dtype=float)
+
+    logger.info(
+        "Computed blended predictions for cache",
+        blended_wp=int(valid_wp.sum()),
+        blended_ats=int(valid_spread.sum()),
+        blended_ou=int(valid_total.sum()),
+    )
 
 
 def _load_predictions(
     conn: duckdb.DuckDBPyConnection,
     outputs_dir: Path,
     silver_dir: Path,
+    artifacts_root: Path = Path("artifacts"),
 ) -> int:
     """Load predictions from backtest outputs into the predictions table.
 
@@ -1546,6 +1618,9 @@ def _load_predictions(
         conn: Active DuckDB connection.
         outputs_dir: Directory containing predictions_all.csv.
         silver_dir: Directory containing games.parquet.
+        artifacts_root: Where the deployed blend is read from. Defaults to the production
+            ``artifacts/`` exactly as before; a caller that must not read production (a
+            test) names its own root rather than inheriting the working directory's.
 
     Returns:
         Number of rows inserted.
@@ -1699,98 +1774,29 @@ def _load_predictions(
     merged["ats_confidence"] = edge_tier_series(merged["ats_edge"], "ats")
     merged["ou_confidence"] = edge_tier_series(merged["ou_edge"], "ou")
 
-    # Compute blended predictions from blend artifact JSON (UIAP-01: no model imports)
+    # Compute blended predictions from blend artifact JSON (UIAP-01: no model imports).
+    #
+    # ONE scalar weight per target (D33.2-10) and the WP market side from the SPREAD through
+    # the blend's bound converter (D33.2-09) -- the same arithmetic the current-week path
+    # applies through models.blending, so /, /games/{id} and both exports publish the same
+    # blended_* as the CSV (WR-03, tests/unit/test_cache_dynamic_blend.py).
+    #
+    # The except clause below catches ONLY "no blend deployed" (FileNotFoundError / KeyError),
+    # which it has always turned into NULL blended columns. RetiredDynamicBlendError and
+    # MissingConverterBindingError are DELIBERATELY not caught: a blend the cache refuses must
+    # fail the populate loudly, not publish a silent no-blend.
     merged["blended_wp"] = None
     merged["blended_ats"] = None
     merged["blended_ou"] = None
     try:
-        latest_path = Path("artifacts") / "latest.json"
-        if not latest_path.exists():
-            raise FileNotFoundError("latest.json not found in artifacts/")
-        manifest = json.loads(latest_path.read_text())
-        if "blend" not in manifest:
-            raise KeyError("'blend' not found in latest.json manifest")
-        blend_dir = Path("artifacts") / manifest["blend"]
-        weights_path = blend_dir / "blend_weights.json"
-        if not weights_path.exists():
-            raise FileNotFoundError(f"blend_weights.json not found in {blend_dir}")
-        blend_data = json.loads(weights_path.read_text())
-        # ``blend_data["weights"]`` is read PER TARGET inside _blend_weight_array, which returns
-        # the deployed DYNAMIC per-week weight when the artifact carries one and falls back to
-        # that static scalar otherwise (WR-03). Reading the scalar here and applying it to every
-        # game is what made the cache disagree with the current-week CSV.
-        if "weights" not in blend_data:
-            raise KeyError("'weights' not found in blend_weights.json")
-
-        # WP blending in log-odds space
-        valid_ml = merged["ml_home"].notna() & merged["ml_away"].notna()
-        if valid_ml.any():
-            home_raw = merged.loc[valid_ml, "ml_home"].apply(
-                lambda ml: moneyline_to_probability(int(ml))
-            )
-            away_raw = merged.loc[valid_ml, "ml_away"].apply(
-                lambda ml: moneyline_to_probability(int(ml))
-            )
-            fair_home = home_raw / (home_raw + away_raw)
-            clip_min, clip_max = 0.001, 0.999
-            model_clipped = np.clip(
-                merged.loc[valid_ml, "wp_prob"].values.astype(float), clip_min, clip_max
-            )
-            market_clipped = np.clip(fair_home.values.astype(float), clip_min, clip_max)
-            w = _blend_weight_array(
-                blend_data,
-                "wp",
-                merged.loc[valid_ml, "season"],
-                merged.loc[valid_ml, "week"],
-            )
-            blended_wp_vals = expit(
-                w * logit(model_clipped) + (1 - w) * logit(market_clipped)
-            )
-            merged.loc[valid_ml, "blended_wp"] = blended_wp_vals
-
-        # ATS blending (linear)
-        valid_spread = merged["market_spread"].notna()
-        if valid_spread.any():
-            w = _blend_weight_array(
-                blend_data,
-                "ats",
-                merged.loc[valid_spread, "season"],
-                merged.loc[valid_spread, "week"],
-            )
-            blended_ats_vals = w * merged.loc[
-                valid_spread, "ats_prediction"
-            ].values.astype(float) + (1 - w) * merged.loc[
-                valid_spread, "market_spread"
-            ].values.astype(float)
-            merged.loc[valid_spread, "blended_ats"] = blended_ats_vals
-
-        # O/U blending (linear)
-        valid_total = merged["market_total"].notna()
-        if valid_total.any():
-            w = _blend_weight_array(
-                blend_data,
-                "ou",
-                merged.loc[valid_total, "season"],
-                merged.loc[valid_total, "week"],
-            )
-            blended_ou_vals = w * merged.loc[
-                valid_total, "ou_prediction"
-            ].values.astype(float) + (1 - w) * merged.loc[
-                valid_total, "market_total"
-            ].values.astype(float)
-            merged.loc[valid_total, "blended_ou"] = blended_ou_vals
-
-        logger.info(
-            "Computed blended predictions for cache",
-            blended_wp=int(valid_ml.sum()),
-            blended_ats=int(valid_spread.sum()),
-            blended_ou=int(valid_total.sum()),
-        )
+        blend_data = _read_blend_artifact(artifacts_root)
     except (FileNotFoundError, KeyError) as e:
         logger.warning(
             "Blend artifacts not available, blended columns will be NULL",
             error=str(e),
         )
+    else:
+        _apply_blend(merged, blend_data)
 
     # Select final columns matching schema order
     final_cols = [
@@ -2497,7 +2503,11 @@ def populate_cache(
         logger.info("Betting bets loaded", count=bb_count)
 
         # Load predictions from backtest data into the predictions table
-        pred_table_count = _load_predictions(conn, outputs_dir, silver_dir)
+        # The blend is read from the SAME artifacts root as everything else populate_cache
+        # reads; it used to come from the working directory's artifacts/ regardless.
+        pred_table_count = _load_predictions(
+            conn, outputs_dir, silver_dir, artifacts_root=artifacts_dir
+        )
         logger.info("Predictions loaded into cache", count=pred_table_count)
 
         # Load game context from gold features + silver games
