@@ -1064,6 +1064,16 @@ class FeatureMatrixBuilder:
                 # against a lock per game, and a silver row for a game this build does
                 # not carry (a 2026 game under --through-season 2025) has no lock.
                 weather_df = weather_df[weather_df["game_id"].isin(games_df["game_id"])]
+                # THE FRAME FOLLOWS THE FENCE (Plan 33.2-20). The weather VALUES come off
+                # silver ``weather_features`` while the PROVENANCE is derived from silver
+                # ``weather`` through the one fence, so the two could disagree -- and on
+                # the first clean 2026 build they did, for one game whose forecast was
+                # captured two days AFTER it was played. A row whose forecast the fence
+                # cannot date now carries no measurement, through the same
+                # absent-observation shape the games abroad take.
+                weather_df = self.weather_calc.enforce_fence_on_feature_frame(
+                    weather_df, games_df
+                )
                 feature_sources["weather"] = weather_df
                 logger.info("Loaded weather features", records=len(weather_df))
             except _SOURCE_LOAD_ERRORS as e:

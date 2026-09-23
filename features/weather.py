@@ -2202,6 +2202,113 @@ class WeatherFeaturesCalculator:
         """What a forecast-less weather row must carry: see WEATHER_NO_INFORMATION_SIGNATURE."""
         return dict(WEATHER_NO_INFORMATION_SIGNATURE)
 
+    def enforce_fence_on_feature_frame(
+        self,
+        feature_frame: pd.DataFrame,
+        games_df: pd.DataFrame,
+        *,
+        weather_df: pd.DataFrame | None = None,
+        build_instant: datetime | None = None,
+    ) -> pd.DataFrame:
+        """The gold-feeding frame follows the SAME fence its provenance does.
+
+        THE TWO-ANSWERS DEFECT THIS CLOSES (Plan 33.2-20, found by the armed gate on the
+        first clean 2026 build). The weather VALUES that reach gold are read straight off
+        silver ``weather_features``, while the PROVENANCE is derived here from silver
+        ``weather`` through :func:`select_weather_row` -- the one fence. Two reads, two
+        answers, and nothing made them agree. MEASURED 2026-09-22 over all 6,771 games:
+        they disagreed for exactly ONE, ``2026_W02_DET@BUF``.
+
+        That one is a REAL POST-LOCK VALUE, not a bookkeeping mismatch. The game kicked
+        off 2026-09-17 20:15 ET; its silver weather row was captured 2026-09-19 15:37 UTC,
+        two days AFTER it was played, and carries no ``forecast_issue_time`` at all. The
+        fence correctly refuses to date it, so the provenance says ``no_information`` --
+        while ``weather_features`` carried ``temp_f`` 66.6, ``wind_mph`` 3.3 and
+        ``weather_coverage`` 1.0 for it. Gold would have learned that game's weather from
+        a reading taken after the whistle.
+
+        THE RULE, STATED ONCE: a game whose forecast the fence could not date carries NO
+        MEASUREMENT. Where a row contradicts its own fence, the whole weather family is
+        rewritten to the ABSENT-OBSERVATION shape -- every measurement NULL,
+        ``weather_coverage`` 0.0 -- which is the same NULL-plus-flag treatment Plan
+        33.2-12 gave the 56 games played abroad and ``2019_W18_BUF@HOU``. Applicability is
+        PRESERVED: an outdoor game stays outdoor (``weather_affects_game`` 1.0), because
+        what is absent is the observation, not the fact that weather applies.
+
+        IT IS DELIBERATELY NOT APPLIED TO EVERY ``no_information`` ROW. A dome is
+        ``no_information`` too, and its row is already correct: it reports no measurement
+        because there is none to report, alongside flags that say weather does not apply.
+        Rewriting those would change 1,345 rows of settled history to say something
+        slightly different about domes, which is not this fence's business. The rule bites
+        exactly where a measurement survived a fence the row failed.
+
+        Args:
+            feature_frame: The gold-feeding weather frame (silver ``weather_features``).
+            games_df: The build's games, for the fence.
+            weather_df: The silver weather frame; read from the store when ``None``.
+            build_instant: The fence's build-instant bound; ``None`` means now.
+
+        Returns:
+            *feature_frame* with any contradicting row rewritten. The SAME object when
+            there is nothing to rewrite, so a build with an honest frame is byte-for-byte
+            the build it was.
+        """
+        if len(feature_frame) == 0 or "game_id" not in feature_frame.columns:
+            return feature_frame
+
+        provenance = self.information_times(
+            games_df,
+            weather_df=weather_df,
+            feature_game_ids=frozenset(feature_frame["game_id"].astype(str)),
+            build_instant=build_instant,
+        )
+        undated = {
+            str(game_id)
+            for game_id, basis in zip(
+                provenance["game_id"], provenance["basis"], strict=True
+            )
+            if basis == InformationBasis.NO_INFORMATION.value
+        }
+        if not undated:
+            return feature_frame
+
+        signature = dict(WEATHER_NO_INFORMATION_SIGNATURE)
+        ids = feature_frame["game_id"].astype(str)
+        contradicts = pd.Series(False, index=feature_frame.index)
+        for column, declared in signature.items():
+            if column not in feature_frame.columns:
+                continue
+            values = feature_frame[column]
+            if declared is None:
+                contradicts |= values.notna()
+            else:
+                contradicts |= values.isna() | (values != declared)
+        offending = feature_frame.index[ids.isin(undated) & contradicts]
+        if len(offending) == 0:
+            return feature_frame
+
+        repaired = feature_frame.copy()
+        for index in offending:
+            outdoor = (
+                bool(repaired.at[index, "weather_affects_game"] == 1.0)
+                if ("weather_affects_game" in repaired.columns)
+                else True
+            )
+            absence = self._absent_observation_features(is_outdoor=outdoor)
+            for column, value in absence.items():
+                if column in repaired.columns:
+                    repaired.at[index, column] = value
+
+        logger.warning(
+            "A weather row carried a MEASUREMENT its own fence could not date, and was "
+            "rewritten to the absent-observation shape (every measurement NULL, coverage "
+            "0.0). A forecast captured after a game was played is not information that "
+            "existed at that game's lock.",
+            games=sorted(str(g) for g in ids.loc[offending]),
+            count=len(offending),
+        )
+        return repaired
+
     def information_times(
         self,
         games_df: pd.DataFrame,
