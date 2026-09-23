@@ -131,18 +131,11 @@ NOT_PINNED: list[dict[str, str]] = [
             "data/bronze/snaps_raw_bronze_*.parquet snapshot; same reason as injuries."
         ),
     },
-    {
-        "loader": "models/blending_data.py:110 nflreadpy.load_schedules",
-        "reason": (
-            "NOT WIRED, and this is the one honest gap in the pin. It reaches nflverse "
-            "live for the pre-2018 blend-weight tuning window. It operates on the POLARS "
-            "frame directly (filter/select before to_pandas), so routing it through the "
-            "pandas pin is a real refactor rather than a call-site swap. It does not "
-            "feed data/gold/ -- the blend weights it tunes are already frozen in the "
-            "deployed blend artifact -- so no gold column and no gate baseline depends "
-            "on it. Named here rather than left for a reader to discover."
-        ),
-    },
+    # The blend-tuning live schedule fetch (models/blending_data.py) that used to sit here as
+    # "the one honest gap in the pin" was DELETED by Plan 33.2-24 (D33.2-03 / D33.2-10): the
+    # blend is now tuned on the owned odds_timeline, already frozen on disk, and nothing in
+    # that module reaches nflverse. The entry is gone because the gap is gone; the sealed
+    # config/upstream_pin.json keeps it as the record of what was true when it was captured.
     {
         "loader": "tests/integration/test_audit_freshness.py nflreadpy.load_schedules",
         "reason": (

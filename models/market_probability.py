@@ -39,15 +39,18 @@ and says so in as many words: the walk-forward table supports the no-intercept f
 planner could reasonably have kept the intercept. Recorded here so a later reader knows
 which it was.
 
-THE SIGN FLIP HAPPENS ONCE, AT THE READER
------------------------------------------
+THE SIGN FLIP HAPPENS ONCE, IN ONE NAMED FUNCTION
+-------------------------------------------------
 ``odds_timeline`` stores the OPPOSITE sign from ``odds_snapshot`` and the live ingest
 (D33.2-23; measured corr between the two stores -0.9867). MEASURED on 1,342 graded
 2020-2024 games: corr(home_win, -timeline_spread) = +0.3922, corr(home_win,
-timeline_spread) = -0.3922. So ``home_fav_margin = -spread`` and the flip lives in
-:func:`load_owned_prelock_lines` alone -- never at a call site, never twice. A SECOND flip
-is not a silent error here: it drives the fitted slope negative, and
-:class:`ImplausibleMarketSlopeError` refuses it by name with the measured value in the
+timeline_spread) = -0.3922. So ``home_fav_margin = -spread``, and the flip lives in
+:func:`timeline_spread_to_home_fav_margin` alone -- never at a call site, never twice. The
+owned timeline has exactly two readers, :func:`load_owned_prelock_lines` (this fit) and
+``models.blending_data.select_prelock_lines`` (the blend's tuning corpus, Plan 33.2-24), and
+both call that one function, so the convention is known in ONE place rather than restated at
+each reader. A SECOND flip is not a silent error here: it drives the fitted slope negative,
+and :class:`ImplausibleMarketSlopeError` refuses it by name with the measured value in the
 message.
 
 TWO OUTPUTS, NOT ONE
@@ -128,6 +131,7 @@ __all__ = [
     "oof_market_probability",
     "run_production_fit",
     "save_market_probability_artifact",
+    "timeline_spread_to_home_fav_margin",
 ]
 
 #: Every artifact directory this module writes starts with this. The blend's binding
@@ -581,6 +585,23 @@ def oof_market_probability(
 # ---------------------------------------------------------------------------
 
 
+def timeline_spread_to_home_fav_margin(
+    spread: pd.Series | np.ndarray,
+) -> np.ndarray:
+    """The owned ``odds_timeline`` spread, flipped onto the home-margin scale. THE ONE FLIP.
+
+    ``odds_timeline`` stores the OPPOSITE sign from ``odds_snapshot`` and the live ingest
+    (D33.2-23). The returned values are POSITIVE when the home team is favoured -- the
+    ``home_fav_margin`` scale :func:`market_home_win_probability` documents and the scale the
+    ATS blend's market spread is on. MEASURED 2026-09-22 on the 1,342 graded games the
+    converter fits on: corr(home_fav_margin, home_win) = +0.3922, and -0.3922 unflipped.
+
+    Every reader of the owned timeline calls this rather than negating inline, so a reader
+    cannot silently disagree with another about the convention.
+    """
+    return -np.asarray(spread, dtype=float)
+
+
 def load_owned_prelock_lines(
     silver_dir: Path | str = Path("data/silver"),
 ) -> pd.DataFrame:
@@ -593,7 +614,7 @@ def load_owned_prelock_lines(
     2. derives each game's lock through ``utils.game_lock.lock_frame``, which IS the rule;
     3. keeps snapshots at or before that game's own lock (``<=``, at-lock admissible);
     4. takes the LAST such snapshot per game -- the most recent honest opinion;
-    5. FLIPS THE SIGN: ``home_fav_margin = -spread``. This is the one flip in the module.
+    5. FLIPS THE SIGN through :func:`timeline_spread_to_home_fav_margin`, the one flip.
        MEASURED 2026-09-22 on the 1,342 graded games this returns: corr(home_fav_margin,
        home_win) = +0.3922, and -0.3922 as stored (D33.2-23);
     6. drops ties, which the two-valued model has no place for.
@@ -632,8 +653,8 @@ def load_owned_prelock_lines(
         {
             "game_id": graded["game_id"].astype(str).to_numpy(),
             "season": graded["season"].astype(int).to_numpy(),
-            # THE ONE FLIP. See the module docstring and step 5 above.
-            "home_fav_margin": -graded["spread"].astype(float).to_numpy(),
+            # THE ONE FLIP, through the one named function. See step 5 above.
+            "home_fav_margin": timeline_spread_to_home_fav_margin(graded["spread"]),
             "home_win": (graded["home_score"] > graded["away_score"])
             .astype(int)
             .to_numpy(),
