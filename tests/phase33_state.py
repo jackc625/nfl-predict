@@ -18729,3 +18729,42 @@ P332_25B_SWAP_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
 P332_25_POST_SWAP_LATEST_JSON_SHA256: str = (
     "3f1cbe3d9c3f8190a2ca3a4fed21b11510dcfea2159c036fb23874f32c9e8830"
 )
+
+# ---------------------------------------------------------------------------
+# THE EV-CHAIN CORRECTION SUPERSEDING ee20773: THE CORRECTIVE COMMIT AND WHAT IT STAGED.
+#
+# APPENDED by Plan 33.2-29 Task 3 on 2026-09-23, in the WITNESS commit strictly after the
+# corrective commit it records (a commit cannot record its own sha). The name
+# EV_CHAIN_CORRECTIVE_COMMIT_SHA is a CONTRACT: Plan 33.2-26 Task 3 discovers corrective shas by
+# the token CORRECTIVE in the name. The record is STAGED, not live: DEFAULT_CHAIN_FIT_PATH still
+# resolves to the Phase-31 record until Plan 33.2-26 Task 3 repoints it with the cold-start bias.
+# Derived thread-pinned at 1, with historical WP bets priced at the -110 cut.
+# ---------------------------------------------------------------------------
+
+#: The corrective commit that staged the corrected EV chain superseding ee20773.
+EV_CHAIN_CORRECTIVE_COMMIT_SHA: str = "8c9675e07644af383a8bb7817e8f126fb149de12"
+
+#: The corrected run record and the sha256 of its bytes as derived (the file is gitignored).
+P332_29_CORRECTED_CHAIN_FIT_PATH: str = "outputs/p332/corrected_chain_fit.json"
+P332_29_CORRECTED_CHAIN_FIT_SHA256: str = (
+    "dffa646531a51e6fee155df43d8c3f6e294791a5c8a6914f621898ecf8ac5b46"
+)
+
+#: Per-target corrected EV floor; None would mean no honest floor (owner ruling 2026-09-23:
+#: no-bets-for-that-target). No target was refused.
+P332_29_CORRECTED_EV_FLOOR: tuple[tuple[str, float | None], ...] = (
+    ("wp", 0.0),
+    ("ats", 0.05),
+    ("ou", 0.0),
+)
+
+#: Per-target corrected frozen residual SD; WP fits none by design (D31-07).
+P332_29_CORRECTED_FROZEN_SD: tuple[tuple[str, float | None], ...] = (
+    ("wp", None),
+    ("ats", 13.446837941873182),
+    ("ou", 13.67472671184805),
+)
+
+#: The derivation window (the whole honest pre-lock corpus) and the WP sub-window.
+P332_29_DERIVATION_SEASONS: tuple[int, ...] = (2020, 2021, 2022, 2023, 2024)
+P332_29_WP_DERIVATION_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024)
