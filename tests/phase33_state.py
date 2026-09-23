@@ -17674,3 +17674,82 @@ P332_20_CLEAN_BUILD_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
 #: exactly this ONE.
 P332_20_CLEAN_BUILD_FIRST_ATTEMPT_REFUSED_ON: str = "2026_W02_DET@BUF"
 P332_20_CLEAN_BUILD_FENCED_WEATHER_ROWS: int = 1
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-20 CONTINUATION -- THE ONE-SWEEP RE-ANCHOR OF THE STALE DATA-DEPENDENT PINS.
+# APPENDED ONCE on 2026-09-22 in ONE block, after the clean production history build of
+# commit e644451. Nothing above this line was edited: every name below is new.
+#
+# WHAT THE SWEEP IS. The orchestrator routed (deferred-items.md, 2026-09-21) every red test
+# that pins a count or a digest measured on gold or silver this phase deliberately kept
+# moving, to be re-anchored ONCE after the clean build rather than at each rung. This is
+# that "after". Each value below was MEASURED on the post-build stores, and each carries the
+# REASON it moved. A pin is never re-anchored by relaxing its assertion.
+#
+# THE ONE CAUSE BEHIND ALMOST ALL OF IT. The clean build added the 17 PLAYED 2026 games to
+# gold (16 of week 1 plus 2026_W02_DET@BUF) and the live 2026 capture added 272 games and 32
+# Elo snapshot rows to silver. Every count below moves by exactly that, and the arithmetic is
+# stated rather than implied.
+
+# THE FIFTH HALF OF R5'S WEATHER RECORD, stated BESIDE the step-4b slot and never replacing
+# it (P332_14_GOLD_WEATHER_CONSTANCY_AFTER_STEP4B is byte-unchanged, as is the rung-4 slot
+# and Phase 33.1's pair). MEASURED 2026-09-22 on the clean build's gold.
+#
+# WHY THE TWO COUNTS MOVED, as arithmetic and not as a new number: the uncovered-weather
+# count went 57 -> 74 and the temperature/humidity null count 1,087 -> 1,104, and BOTH deltas
+# are exactly the 17 played 2026 games this build added. 57 + 17 = 74; 1,087 + 17 = 1,104.
+# MEASURED: all 17 of the 2026 rows in gold are uncovered and every pre-2026 count is
+# unchanged. Nothing about 2002-2025 moved -- the history slice is column-for-column
+# identical to the pre-build copy (P332_20_CLEAN_BUILD_HISTORY_COLUMNS_MOVED == 0).
+#
+# THE 17 ARE NOT ONE SHAPE, and that is on the record rather than averaged away:
+#   * 16 week-1 games have NO silver weather record at all (the live ingest captured no
+#     week-1 forecast), so they take the UNRECORDED-observation shape -- every measurement
+#     null AND weather_affects_game NULL, per the Plan 33-18 owner ruling W1 of 2026-09-15
+#     that a game nobody observed must not be recorded as a dome;
+#   * 2026_W02_DET@BUF has a record whose forecast the fence could not date, so it takes the
+#     ABSENT-observation shape -- every measurement null with applicability PRESERVED
+#     (weather_affects_game 1.0), which is the fix commit 753b7c7 made at its cause.
+#
+# WEATHER-NULL-LIST.md AGREES AND WAS NOT RE-COUNTED. That document is scoped 2002-2025 by
+# construction and its guard (tests/unit/test_weather_null_list_md.py, 20 passed) recomputes
+# 57 from silver over exactly that window. The 74 here is gold's count WITH 2026; the two
+# numbers describe different corpora and both are right. The document gained a paragraph
+# saying so rather than a number nobody could reproduce from it.
+P332_20_GOLD_WEATHER_CONSTANCY_AFTER_CLEAN_BUILD: dict[str, object] = {
+    "supersedes": "P332_14_GOLD_WEATHER_CONSTANCY_AFTER_STEP4B",
+    "supersedes_note": (
+        "stated beside the step-4b slot, never 'replaces' it: that slot records the gold of "
+        "p332_ step 4b over 2002-2025; this one the gold of Plan 33.2-20's clean production "
+        "history build, which is that same history plus the 17 played 2026 games"
+    ),
+    "populations": {
+        "ats_train_2015_2019": {"constant_columns": ()},
+        "wp_ou_train_2018_2019": {"constant_columns": ()},
+        "gate_holdout_2021_2024": {"constant_columns": ()},
+        "all_2002_2025": {"constant_columns": ()},
+    },
+    "ou_weather_features_constant": {
+        "ou_train_2018_2019": (0, 17),
+        "gate_holdout_2021_2024": (0, 17),
+    },
+    "weather_columns_counted": 47,
+    "weather_columns_in_gold": 45,
+    "dome_rows": 1030,
+    "absence_rows": 74,
+    "absence_rows_before_2026": 57,
+    "absence_rows_added_by_2026": 17,
+    "raw_temp_f_null_rows": 1104,
+    "raw_humidity_pct_null_rows": 1104,
+    "coverage_levels": (0.0, 1.0),
+    "raw_temp_f_at_65": 134,
+    "raw_temp_f_at_64": 109,
+    "raw_temp_f_at_66": 110,
+    "raw_temp_f_distinct": 100,
+}
+
+#: The 17 played 2026 games the clean build added to gold, split by the shape their absent
+#: weather takes. Recorded so the 16/1 split above is checkable rather than asserted.
+P332_20_GOLD_2026_ROWS: int = 17
+P332_20_GOLD_2026_UNRECORDED_WEATHER_ROWS: int = 16
+P332_20_GOLD_2026_FENCED_WEATHER_ROWS: int = 1

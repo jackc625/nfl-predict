@@ -70,6 +70,19 @@ alone (1,030), so the temperature-null floor reads the step-4b dome count rather
 33.1's 1,652, which counted closed retractable roofs as indoor and stays recorded as that
 phase's figure.
 
+THE FIFTH HALF: THE CLEAN PRODUCTION HISTORY BUILD (Plan 33.2-20). 2026 entered gold for the
+first time -- the 17 PLAYED games, 16 of week 1 plus ``2026_W02_DET@BUF`` -- so the LIVE
+assertions now read ``tests.phase33_state.P332_20_GOLD_WEATHER_CONSTANCY_AFTER_CLEAN_BUILD``,
+recorded beside the step-4b slot, which is left byte-unchanged and still asserted. TWO counts
+moved and BOTH move by exactly 17, which is why this is a re-anchor and not a new claim: the
+uncovered-weather count 57 -> 74 and the temperature/humidity null count 1,087 -> 1,104. All
+17 of the 2026 rows are uncovered and not one pre-2026 row changed, which is asserted here
+directly rather than inferred. The 17 take TWO shapes and the module says so: the 16 week-1
+games have no silver weather record at all (the live ingest captured no week-1 forecast) so
+they are the UNRECORDED shape with ``weather_affects_game`` NULL, per the Plan 33-18 owner
+ruling W1 that a game nobody observed must not be recorded as a dome; ``2026_W02_DET@BUF``
+has a record the fence could not date, so it is the ABSENT shape with applicability preserved.
+
 WHAT THIS MODULE DOES NOT CLAIM (SPEC R8). That any model is more accurate. No
 model was re-fit, no gate was run, and ``artifacts/latest.json`` is unchanged.
 This is a statement about what the columns CONTAIN.
@@ -106,9 +119,18 @@ BUILD_COMMAND = "uv run python scripts/build_features.py --all-seasons"
 #: The rung-4 AFTER record, stated beside the Phase 33.1 pair (kept as the record it is).
 RUNG4_AFTER = state.P332_12_GOLD_WEATHER_CONSTANCY_AFTER_RUNG4
 
-#: The LATEST AFTER record: p332_ step 4b's, stated beside the rung-4 slot. Live gold is
-#: asserted against this one.
-LATEST_AFTER = state.P332_14_GOLD_WEATHER_CONSTANCY_AFTER_STEP4B
+#: The step-4b AFTER record, stated beside the rung-4 slot and kept as the record it is.
+STEP4B_AFTER = state.P332_14_GOLD_WEATHER_CONSTANCY_AFTER_STEP4B
+
+#: The LATEST AFTER record: Plan 33.2-20's clean production history build, stated beside the
+#: step-4b slot. Live gold is asserted against this one.
+#:
+#: WHY IT MOVED, as arithmetic rather than as a new number: the clean build added the 17
+#: PLAYED 2026 games (16 of week 1 plus 2026_W02_DET@BUF), so the uncovered-weather count
+#: went 57 -> 74 and the temperature/humidity null count 1,087 -> 1,104. Both deltas are
+#: exactly 17, all 17 of the 2026 rows are uncovered, and every pre-2026 count is unchanged.
+#: The step-4b slot is byte-unchanged and still asserted as the record of its own gold.
+LATEST_AFTER = state.P332_20_GOLD_WEATHER_CONSTANCY_AFTER_CLEAN_BUILD
 
 
 def _gold(matrix: str) -> pd.DataFrame:
@@ -392,7 +414,21 @@ class TestTheCoverageFlagSaysWhatItMeasures:
             "what an ABSENT observation reads, and it is what this column "
             "carried on all 6,499 rows before the rung-3 rebuild"
         )
+        # 74 since Plan 33.2-20's clean build, and the delta from step 4b's 57 is EXACTLY
+        # the 17 played 2026 games it added -- all 17 of which are uncovered (16 week-1
+        # games have no weather record at all; 2026_W02_DET@BUF's forecast could not be
+        # dated by the fence). 57 + 17 = 74, and no pre-2026 game changed.
         assert int((frame[column] == 0.0).sum()) == int(LATEST_AFTER["absence_rows"])
+        assert (
+            int(LATEST_AFTER["absence_rows_before_2026"])
+            + int(LATEST_AFTER["absence_rows_added_by_2026"])
+        ) == int(LATEST_AFTER["absence_rows"])
+        assert int(LATEST_AFTER["absence_rows_before_2026"]) == int(
+            STEP4B_AFTER["absence_rows"]
+        ), "the step-4b record is superseded by a slot beside it, never edited"
+        assert int((frame.loc[frame["season"] < 2026, column] == 0.0).sum()) == int(
+            STEP4B_AFTER["absence_rows"]
+        ), "the 2002-2025 half of the corpus did not move at all"
 
 
 @pytest.mark.integration
@@ -449,10 +485,20 @@ class TestTheAfterSlotIsThePairAndNotAReplacement:
         )
 
         frame = _gold("features_ou")
-        # Live gold since step 4b: the 1,030 fixed-roof domes plus the 57 absences. The
-        # recorded 1,652 above is Phase 33.1's figure and stays as it is.
+        # Live gold since Plan 33.2-20's clean build: the 1,030 fixed-roof domes plus the
+        # 74 absences = 1,104. At step 4b it was 1,030 + 57 = 1,087, and the delta is
+        # exactly the 17 played 2026 games the clean build added -- no dome was added and
+        # no pre-2026 row moved. The recorded 1,652 above is Phase 33.1's figure and stays.
         assert int(frame["raw_humidity_pct"].isna().sum()) == int(
             LATEST_AFTER["raw_humidity_pct_null_rows"]
+        )
+        assert int(LATEST_AFTER["raw_humidity_pct_null_rows"]) == int(
+            LATEST_AFTER["dome_rows"]
+        ) + int(LATEST_AFTER["absence_rows"])
+        assert int(
+            frame.loc[frame["season"] < 2026, "raw_humidity_pct"].isna().sum()
+        ) == (int(STEP4B_AFTER["raw_humidity_pct_null_rows"])), (
+            "the 2002-2025 half of the corpus did not move at all"
         )
 
     def test_the_after_slot_does_not_claim_an_accuracy_improvement(self) -> None:

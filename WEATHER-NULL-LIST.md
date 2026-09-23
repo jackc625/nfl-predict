@@ -10,6 +10,8 @@ NULL-plus-flag games, 2002-2025: 57
 
 For scale: 5412 games carry a forecast and 1030 were played in a fixed-roof dome.
 
+**This document counts the 2002-2025 history only, and gold no longer does.** Plan 33.2-20's clean production build added the 17 played 2026 games, all of which reach gold with no forecast, so gold's uncovered-weather count is 74 where this list says 57. Both numbers are right and they describe different corpora: this list is the history the models train on, tied to silver over 2002-2025 by the guard named below. The 17 are not listed here because they are not the same fact -- 16 of them (2026 week 1) have no silver weather record at all, because the live ingest captured no week-1 forecast, and the seventeenth (`2026_W02_DET@BUF`) has a record whose forecast could not be dated, since it was captured two days after the game was played. The live capture cadence that produced both is Plans 33.2-27/28's; until it records a forecast issue time and stops capturing after kickoff, a 2026 game's weather is an honest unknown rather than a missing bulletin.
+
 ## By reason
 
 | Reason | Games |
