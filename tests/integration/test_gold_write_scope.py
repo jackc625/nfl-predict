@@ -33,14 +33,20 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 import data.storage as storage_mod
 from data.storage import ParquetManager
+from features.contextual import NO_PRIOR_GAME_SIGNATURE
+from features.injury import InjuryBuilder
+from features.qb_tracking import QBTracker
+from features.snaps import SnapCountBuilder
 from scripts.build_features import FeatureMatrixBuilder
 from tests import phase33_state
 
@@ -493,6 +499,15 @@ def _sandbox_team_form(games: pd.DataFrame) -> pd.DataFrame:
     team has an earlier game whose result was known at the target's lock (Plan 33.2-14's
     team-form provenance checks exactly that), and the first season's week-1 games have
     none -- a row there would be a value built from nothing.
+
+    IT CARRIES A SECOND METRIC (Plan 33.2-20), and that is not decoration. The
+    opponent-adjusted merge REPLACES the raw EPA columns: it drops
+    ``{side}_{off,def}_rolling_epa_per_play`` once the adjusted family lands. With
+    ``rolling_epa_per_play`` as the fixture's ONLY metric, team_form's entire arrival set
+    left the final matrices and the merge assertion refused the build -- correctly, on a
+    frame that was unrealistically thin. Production silver team form carries about twenty
+    rolling metrics and only the three raw EPA ones are replaced, so the sandbox now
+    carries a metric that SURVIVES, exactly as production does.
     """
     later = games[games["season"] == games["season"].max()]
     return pd.DataFrame(
@@ -503,12 +518,150 @@ def _sandbox_team_form(games: pd.DataFrame) -> pd.DataFrame:
                 "target_week": int(row.week),
                 "side": side,
                 "rolling_epa_per_play": 0.05 + (idx % 7) / 100,
+                "rolling_success_rate": 0.44 + (idx % 5) / 100,
             }
             for idx, row in enumerate(later.itertuples())
             for team in (row.home_team, row.away_team)
             for side in ("offense", "defense")
         ]
     ).drop_duplicates(subset=["team", "target_season", "target_week", "side"])
+
+
+#: The families a SYNTHETIC lake carries no source data for, and whose provenance
+#: therefore has to be DECLARED rather than derived from a silver table that is not there.
+#:
+#: ``contextual`` is in the list even though its supplier needs no silver table, because
+#: one of these tests builds from a games frame with the IDENTITY COLUMNS REMOVED -- that
+#: is its whole subject -- and a frame with no ``stadium_id`` cannot resolve a venue, so
+#: the real supplier refuses it by name (``UnknownStadiumError``). What that would be
+#: testing is venue resolution, which ``tests/unit/test_builder_lock_cutoffs.py`` owns;
+#: what THIS module tests is which columns reach a model matrix.
+DECLARED_ABSENT_FAMILIES: tuple[str, ...] = (
+    "contextual",
+    "qb_tracking",
+    "snaps",
+    "injury",
+)
+
+
+def _declared_absent_frame(
+    games: pd.DataFrame,
+    signature: Mapping[str, float | None],
+    *,
+    per_team: bool = False,
+) -> pd.DataFrame:
+    """One row per game (or per TEAM per game) at the builder's own declared unknown values.
+
+    The values come from the builder's ``no_information_signature()`` and are never
+    retyped here, so a builder that changes what its unknown looks like changes this
+    fixture with it rather than silently disagreeing with it.
+
+    Args:
+        games: The sandbox games frame.
+        signature: The builder's declared ``column -> value`` unknown.
+        per_team: Emit two rows per game carrying ``team``, the shape ``combine_features``
+            expects from the QB source.
+    """
+    if per_team:
+        frame = pd.DataFrame(
+            {
+                "game_id": [*games["game_id"], *games["game_id"]],
+                "team": [*games["home_team"], *games["away_team"]],
+            }
+        )
+    else:
+        frame = pd.DataFrame({"game_id": games["game_id"].to_numpy()})
+    for column, value in signature.items():
+        frame[column] = np.nan if value is None else value
+    return frame
+
+
+def _declared_absent_provenance(games: pd.DataFrame) -> pd.DataFrame:
+    """Every game undatable, with a NULL time -- exactly one row per game."""
+    return pd.DataFrame(
+        {
+            "game_id": games["game_id"].to_numpy(),
+            "basis": "no_information",
+            "information_time": pd.Series([None] * len(games), dtype="object"),
+        }
+    )
+
+
+def declare_absent_suppliers(builder, sources, monkeypatch) -> None:
+    """Point the data-less families' suppliers at their honest, CHECKED declaration.
+
+    NOT AN EXEMPTION, and the difference is the whole point. The gate still runs on each
+    of these sources: it checks two-way coverage against the lock frame, refuses a
+    duplicate or a missing row, and VALUE-CHECKS every declared ``no_information`` row
+    against the builder's own signature. What is stubbed is only where the provenance
+    comes from -- a synthetic lake has no silver snap_counts, injuries or play-by-play for
+    the real supplier to read.
+    """
+    from scripts.build_features import SUPPLIER_ATTRIBUTES
+
+    provenance = _declared_absent_provenance(sources["games"])
+    for family in DECLARED_ABSENT_FAMILIES:
+        supplier = getattr(builder, SUPPLIER_ATTRIBUTES[family])
+        monkeypatch.setattr(
+            supplier,
+            "information_times",
+            lambda games_df, _p=provenance, **kwargs: _p.copy(),
+        )
+
+
+def canonical_sandbox_schedule(games: pd.DataFrame) -> pd.DataFrame:
+    """The sandbox games under their CANONICAL ids (the sandbox's own ids are opaque).
+
+    ``features.opponent_adj`` resolves every play-by-play id through the project's one
+    converter, which cannot read ``2023_W01_G00``. The adjuster is therefore given the
+    same games under the ids the converter produces.
+    """
+    return games.assign(
+        game_id=[
+            f"{s}_W{w:02d}_{a}@{h}"
+            for s, w, a, h in zip(
+                games["season"],
+                games["week"],
+                games["away_team"],
+                games["home_team"],
+                strict=True,
+            )
+        ]
+    )
+
+
+def sandbox_per_game_stats(games: pd.DataFrame) -> pd.DataFrame:
+    """A flat per-game EPA pool for the sandbox's own games, one row per team per side.
+
+    PLAN 33.2-20: this replaces an EMPTY frame. An empty per-game pool leaves the
+    opponent-adjusted family checked as ``empty_unchecked`` and merged nowhere, and from
+    Plan 33.2-20 that refuses the build -- correctly, because gold written without the
+    family would be missing twelve columns with nothing saying so. The pool is flat (every
+    EPA 0.0) because these tests assert about COLUMN SETS and identity leakage, not about
+    adjustment values.
+    """
+    canonical = canonical_sandbox_schedule(games)
+    rows = []
+    for game in canonical.to_dict("records"):
+        pbp_id = (
+            f"{game['season']}_{game['week']:02d}_"
+            f"{game['away_team']}_{game['home_team']}"
+        )
+        for team in (game["home_team"], game["away_team"]):
+            for side in ("offense", "defense"):
+                rows.append(
+                    {
+                        "game_id": pbp_id,
+                        "season": game["season"],
+                        "week": game["week"],
+                        "team": team,
+                        "side": side,
+                        "epa_per_play": 0.0,
+                        "pass_epa_per_play": 0.0,
+                        "rush_epa_per_play": 0.0,
+                    }
+                )
+    return pd.DataFrame(rows)
 
 
 def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
@@ -554,16 +707,41 @@ def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
         }
     )
 
+    # PLAN 33.2-20: A SYNTHETIC LAKE'S DATA-LESS FAMILIES DECLARE THEMSELVES.
+    #
+    # These four used to be EMPTY frames here. From Plan 33.2-20 an empty source frame
+    # REFUSES the build -- ``_SOURCE_LOAD_ERRORS`` turns a FAILED load into an empty frame
+    # too, so a silent skip lets a broken source read as a clean pass -- and the merge
+    # assertion refuses a ``merged`` key that contributed no column either way.
+    #
+    # THE FIX IS NOT TO EXEMPT THEM. It is to say the true thing in the form the contract
+    # provides: this lake has no snap-count, injury or play-by-play data, so every game is
+    # the honest unknown. Each frame carries one row per game with every value at its own
+    # BUILDER'S declared ``no_information_signature`` value -- read from the builder, never
+    # retyped here -- and ``_declare_absent_suppliers`` gives each one an all-
+    # ``no_information`` provenance frame. The gate then checks them exactly as it checks
+    # every other source: two-way coverage, one row per game, and the declared values
+    # against the frame. Nothing is skipped and nothing is excused.
+    contextual = _declared_absent_frame(games, NO_PRIOR_GAME_SIGNATURE)
+    qb_tracking = _declared_absent_frame(
+        games, QBTracker().no_information_signature(), per_team=True
+    )
+    snap_builder = SnapCountBuilder()
+    snaps = _declared_absent_frame(games, snap_builder.no_information_signature())
+    injury = _declared_absent_frame(
+        games, InjuryBuilder(snap_builder=snap_builder).no_information_signature()
+    )
+
     sources = {
         "games": games,
         "team_form": team_form,
         "elo": elo,
-        "contextual": pd.DataFrame(),
+        "contextual": contextual,
         "weather": weather,
         "market": market,
-        "qb_tracking": pd.DataFrame(),
-        "snaps": pd.DataFrame(),
-        "injury": pd.DataFrame(),
+        "qb_tracking": qb_tracking,
+        "snaps": snaps,
+        "injury": injury,
     }
 
     if plant is not None:
@@ -576,8 +754,6 @@ def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
         # gate, which value-checks every game whose contextual builder read no prior
         # game against the declared no-information values. The planted frame carries
         # those values so the gate accepts it and the plant reaches combine_features.
-        from features.contextual import NO_PRIOR_GAME_SIGNATURE
-
         sources["contextual"] = pd.DataFrame(
             {
                 "game_id": games["game_id"],
@@ -650,12 +826,26 @@ def _build_into_sandbox(
     monkeypatch.setattr(
         builder, "load_all_feature_sources", lambda *a, **k: sources, raising=False
     )
+    # PLAN 33.2-20: a REAL per-game pool, not an empty frame. An empty pool leaves the
+    # opponent-adjusted family merged nowhere and reported ``empty_unchecked``, which the
+    # armed gate refuses -- correctly, since gold written without it would be twelve
+    # columns short with nothing saying so. The adjuster gets the sandbox games under their
+    # canonical ids, because it resolves every play-by-play id through the project's one
+    # converter and the sandbox's own ids are opaque to it.
+    from features.opponent_adj import OpponentAdjuster
+
+    builder.opponent_adj = OpponentAdjuster(
+        window=10,
+        min_opponent_games=4,
+        schedule_df=canonical_sandbox_schedule(seeded_games),
+    )
     monkeypatch.setattr(
         builder.team_form_calc,
         "get_per_game_stats",
-        lambda *a, **k: pd.DataFrame(),
+        lambda *a, **k: sandbox_per_game_stats(seeded_games),
         raising=False,
     )
+    declare_absent_suppliers(builder, sources, monkeypatch)
 
     matrices = builder.generate_feature_matrices(
         as_of_datetime=datetime(2030, 1, 1, tzinfo=UTC)

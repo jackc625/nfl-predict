@@ -25,33 +25,50 @@ and this module shows, end to end:
 
 The remaining twenty-seven plans of the phase expand horizontally from this slice.
 
-HOW NARROW THE PROOF IS -- READ THIS BEFORE QUOTING IT
-------------------------------------------------------
-This is NOT whole-build coverage and must never be quoted as such. Exactly ONE of the nine
-``feature_sources`` registry keys (``elo``) is checked against the lock; ``games`` is the
-base frame; of the other seven, those that loaded zero rows on this slice are reported
-``empty_unchecked`` and the rest ``unregistered``. The opponent-adjusted family is merged
-AFTER the Stage-1 loop, so it is out of the loop's reach entirely and is reported in its own
-``post_stage1_sources`` set. ``checked_sources == ("elo",)`` is the CORRECT result for this
-wave. Plans 33.2-12 .. 33.2-17 add the remaining suppliers, Plan 33.2-16 brings the
-opponent-adjusted family into the loop, and Plan 33.2-20 arms the refusal that turns every
-non-``checked`` set into a build failure.
+HOW WIDE THE PROOF IS -- READ THIS BEFORE QUOTING IT
+-----------------------------------------------------
+WAS NARROW, AND IS NO LONGER (Plan 33.2-20). At Plan 33.2-01 exactly ONE of the nine
+``feature_sources`` registry keys (``elo``) was checked here, ``games`` was skipped as the
+base frame, four keys loaded zero rows and were reported ``empty_unchecked``, and the
+opponent-adjusted family sat in its own ``post_stage1_sources`` set. ``checked_sources ==
+("elo",)`` was the CORRECT result for that wave, and this section said so at length.
+
+From Plan 33.2-20 this run checks all TEN declared sources -- the nine registry keys,
+``games`` among them, plus the opponent-adjusted family -- and every other set is EMPTY. It
+is now a whole-build proof for this slice, and the three sets being empty is the assertion
+rather than the caveat: an empty source, an unregistered source or an unchecked post-Stage-1
+family each REFUSE the build.
 
 WHY 2002, AND WHAT THE SLICE IS
 -------------------------------
 2002 is the only season whose Elo rows carry BOTH bases: week 1 comes from the synthetic 1500
 start state with no contributing game (``no_information``) and weeks 2 onward are dated
 (``per_row``), so mixed provenance is proved through the REAL build, not only in a unit
-fixture. It also predates the team-form, snap, injury and market coverage of the owned data,
-so those sources load ZERO rows against real data, exercising ``empty_unchecked`` with a
-genuine empty frame.
+fixture.
 
-The slice is the real 2002 rows of silver ``games``, ``elo_game_snapshots`` and
-``weather_features``, copied read-only. ``weather_features`` is in the slice because the
-build hard-requires its ``weather_severity_score`` column; without it the build stops on a
-``KeyError`` unrelated to this plan. The build emits the WP gold matrix only: the ATS and
-O/U targets are derived solely from market lines, and the owned odds data holds no 2002
-line, so there is no honest ATS or O/U matrix for 2002 to emit.
+THE SEEDING CHANGED WITH THE GATE, AND THE DISTINCTION IS THE POINT (Plan 33.2-20). The
+slice is the real 2002 rows of silver ``games``, ``elo_game_snapshots``,
+``weather_features``, ``weather``, ``team_form_features`` and ``team_game_stats``, copied
+read-only -- team form reaches back to 2002 since p332_ rung 8 widened its floor -- plus
+SCHEMA-ONLY copies of ``snap_counts``, ``injuries`` and ``odds_snapshot``, of which
+production genuinely holds no 2002 row (snaps start in 2013, injury reports in 2009, the
+stored odds in 2018).
+
+Those last three used to be absent from the sandbox altogether. That made ``load_dataframe``
+raise, ``_SOURCE_LOAD_ERRORS`` turn each failure into an EMPTY frame, and the build proceed
+with four sources contributing nothing -- which is exactly the shape Plan 33.2-20 turns into
+a refusal, because a FAILED load and an absent one are indistinguishable at the frame. With
+the table PRESENT and empty, each builder does its real job: it emits one row per game at
+its declared unknown values, and the gate VALUE-CHECKS that declaration. "The table is
+missing" and "the table has nothing for these games" are different facts, and only the
+second is true of 2002.
+
+``weather_features`` is in the slice because the build hard-requires its
+``weather_severity_score`` column; without it the build stops on a ``KeyError`` unrelated to
+this plan. All THREE gold matrices are emitted: p332_ rung 9 (Plan 33.2-19) removed the
+line-derived ``target_ats`` / ``target_ou`` and selects ATS and O/U on ``home_margin`` and
+``total_points``, both derived from the SCORES, which 2002 has. No market column reaches
+gold, which is asserted directly rather than inferred from an absent matrix.
 
 The sandbox root arrives through the ``TRACER_SANDBOX`` environment variable (a fresh
 temporary directory when it is unset), and ``data.storage``'s two module singletons are
@@ -103,7 +120,25 @@ SEEDED_TABLES: tuple[str, ...] = (
     "elo_game_snapshots",
     "weather_features",
     "weather",
+    # PLAN 33.2-20 added these two. Silver team form now reaches back to 2002 (p332_
+    # rung 8 widened its floor), and ``team_game_stats`` is what the opponent-adjusted
+    # family's per-game pool is built from.
+    "team_form_features",
+    "team_game_stats",
 )
+
+#: Tables the sandbox seeds with their real SCHEMA and ZERO rows, because production has
+#: no rows of them for this season at all -- snap counts start in 2013, injury reports in
+#: 2009 and the stored odds in 2018.
+#:
+#: WHY SEED THEM AT ALL (Plan 33.2-20). Without the table present, ``load_dataframe``
+#: raises, ``_SOURCE_LOAD_ERRORS`` turns the source into an EMPTY FRAME, and from this plan
+#: an empty source REFUSES the build. WITH the table present and empty, each builder does
+#: what it is designed to do: it emits one row per game carrying its declared unknown
+#: values, and the gate VALUE-CHECKS that declaration. The difference matters and is the
+#: whole point of the change -- "the table is missing" and "the table has nothing for these
+#: games" are different facts, and only the second is true of 2002.
+EMPTY_SEEDED_TABLES: tuple[str, ...] = ("snap_counts", "injuries", "odds_snapshot")
 
 #: The nine keys ``load_all_feature_sources`` populates (scripts/build_features.py).
 REGISTRY_KEYS: tuple[str, ...] = (
@@ -118,9 +153,22 @@ REGISTRY_KEYS: tuple[str, ...] = (
     "injury",
 )
 
-#: MEASURED on this slice (Plan 33.2-01 Task 3): which of the seven non-elo keys loaded
-#: zero rows, and which loaded rows but have no provenance supplier yet.
-EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = ("injury", "market", "snaps", "team_form")
+#: EMPTY NOW (Plan 33.2-20), and the change is the plan's whole subject.
+#:
+#: Was: ``("injury", "market", "snaps", "team_form")`` -- MEASURED on this slice by Plan
+#: 33.2-01, when four of the nine keys loaded ZERO rows because their silver tables were
+#: not in the sandbox at all and ``_SOURCE_LOAD_ERRORS`` turned each failed load into an
+#: empty frame. Plan 33.2-20 makes an empty source REFUSE the build, precisely because a
+#: FAILED load is indistinguishable from an absent one at the frame -- so a slice that
+#: reads as four empty sources is a slice nothing should be written from.
+#:
+#: The fix is not an exemption, it is the seeding: the sandbox now carries silver
+#: ``team_form_features`` and ``team_game_stats`` (real 2002 rows -- rung 8 widened team
+#: form's floor to 2002) and SCHEMA-ONLY copies of ``snap_counts``, ``injuries`` and
+#: ``odds_snapshot``, which production genuinely has no 2002 rows of. With the tables
+#: present, each builder emits one row per game at its declared unknown values and the gate
+#: VALUE-CHECKS that declaration, exactly as it does for every dated source.
+EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = ()
 #: Plan 33.2-12 registered ``weather`` (it owns the weather fence and its provenance), so
 #: it moved from the unregistered set to ``checked_sources``. Plan 33.2-13 registered
 #: ``qb_tracking`` (and ``injury``, which loads zero rows on this slice and so stays
@@ -136,11 +184,25 @@ EXPECTED_UNREGISTERED: tuple[str, ...] = ()
 #: floor); the 2001 games have no kickoff in silver games, cannot be timed and are never
 #: admitted, and the 2002 games are adjusted at their locks -- so the family has rows and is
 #: CHECKED.
+#: ALL TEN (Plan 33.2-20): the nine registry keys, ``games`` among them, plus the
+#: opponent-adjusted family. In LOOP ORDER -- ``games`` first because the Stage-1 loop
+#: reaches it first, then the eight builder keys in registry order, then the family, which
+#: is checked at its own post-Stage-1 merge site and so is appended last.
+#:
+#: ``games`` is here for the first time. It DEFINES the lock, so it cannot supply a
+#: non-circular information time; Plan 33.2-20 gives it the second declared basis with its
+#: VALUES checked against ``features.schedule_moves.facts_at_lock``, which lands it in
+#: ``checked_sources`` like any other key rather than being skipped in silence.
 EXPECTED_CHECKED: tuple[str, ...] = (
+    "games",
+    "team_form",
     "elo",
     "contextual",
     "weather",
+    "market",
     "qb_tracking",
+    "snaps",
+    "injury",
     "opponent_adj",
 )
 
@@ -174,16 +236,24 @@ def _seed(sandbox: Path) -> pd.DataFrame:
     games = pd.DataFrame()
     for table in SEEDED_TABLES:
         frame = pd.read_parquet(PRODUCTION_DATA_ROOT / "silver" / f"{table}.parquet")
-        season = (
-            frame["season"]
-            if "season" in frame.columns
-            else frame["game_id"].str[:4].astype(int)
-        )
+        if "season" in frame.columns:
+            season = frame["season"]
+        elif "target_season" in frame.columns:
+            season = frame["target_season"]
+        else:
+            season = frame["game_id"].str[:4].astype(int)
         frame = frame.loc[season == TRACER_SEASON].reset_index(drop=True)
         assert len(frame) > 0, f"production silver {table} has no {TRACER_SEASON} rows"
         save_dataframe(frame, table, layer="silver", replace_mode=True)
         if table == "games":
             games = frame
+
+    for table in EMPTY_SEEDED_TABLES:
+        frame = pd.read_parquet(PRODUCTION_DATA_ROOT / "silver" / f"{table}.parquet")
+        assert len(frame) > 0, (
+            f"production silver {table} is empty, so its schema is not"
+        )
+        save_dataframe(frame.iloc[0:0], table, layer="silver", replace_mode=True)
     return games
 
 
@@ -359,13 +429,44 @@ class TestTheSandboxBuild:
         assert len(wp) == len(tracer.games) == 267
         assert (tracer.sandbox / "gold" / "features_wp.parquet").exists()
 
-    def test_ats_and_ou_are_absent_because_2002_has_no_owned_market_line(
+    def test_all_three_matrices_are_built_because_their_targets_come_from_the_scores(
         self, tracer: TracerRun
     ) -> None:
-        """Their targets derive ONLY from market lines; no 2002 line exists to derive from."""
-        assert "ats" not in tracer.clean_matrices
-        assert "ou" not in tracer.clean_matrices
-        assert "market" in EXPECTED_EMPTY_UNCHECKED
+        """Was: ``test_ats_and_ou_are_absent_because_2002_has_no_owned_market_line``.
+
+        PREMISE CORRECTED TO THE MEASUREMENT, not relaxed. That test asserted the ATS and
+        O/U matrices were ABSENT for 2002, and its reason was true when it was written:
+        both were gated and row-filtered on ``target_ats`` / ``target_ou``, which subtract
+        a market line, and 2002 has no stored line at all.
+
+        p332_ rung 9 (Plan 33.2-19) REMOVED those two columns with their market parents and
+        selects each matrix on its trainer's own target instead -- ``home_margin`` for ATS
+        and ``total_points`` for O/U, both derived from the SCORES. 2002 has scores, so all
+        three matrices are built, and the market source is still the honest unknown: no
+        2002 game carries a line, and none of the five market columns reaches gold.
+
+        The subject the old test really carried -- that no 2002 gold value comes from a
+        market line -- is asserted directly below, which is stronger than inferring it from
+        an absent matrix.
+        """
+        assert set(tracer.clean_matrices) == {"wp", "ats", "ou"}
+        for name, matrix in tracer.clean_matrices.items():
+            assert len(matrix) == len(tracer.games) == 267, name
+            market_columns = [
+                column
+                for column in matrix.columns
+                if str(column).startswith("snapshot_")
+                or str(column) in {"spread_movement", "total_movement"}
+                or str(column) in {"target_ats", "target_ou"}
+            ]
+            assert market_columns == [], (
+                f"{name} carries market-derived column(s) {market_columns}. No 2002 game "
+                "has a stored line, and rung 9 removed every market column from gold."
+            )
+        # The market source is CHECKED (it emits one honest-unknown row per game) and it
+        # is merged NOWHERE -- its registry disposition is exactly `checked_not_merged`.
+        assert "market" in EXPECTED_CHECKED
+        assert "market" not in EXPECTED_EMPTY_UNCHECKED
 
 
 # ===========================================================================
@@ -465,9 +566,17 @@ class TestTheNarrowCoverageReport:
         assert tracer.clean_coverage is not None
         assert tracer.clean_coverage.post_stage1_sources == ()
 
-    def test_the_sets_partition_the_eight_non_games_keys(
+    def test_the_sets_partition_all_nine_registry_keys_and_the_family(
         self, tracer: TracerRun
     ) -> None:
+        """Was: ``..._partition_the_eight_non_games_keys``, which subtracted ``games``.
+
+        PREMISE CORRECTED TO THE MEASUREMENT. ``games`` was outside the partition because
+        the Stage-1 loop skipped it in silence -- it DEFINES the lock, so it cannot supply
+        a non-circular information time. Plan 33.2-20 gives it the SECOND declared basis
+        with its values checked against ``features.schedule_moves.facts_at_lock``, so it is
+        reported like any other key and the partition is over all nine plus the family.
+        """
         report = tracer.clean_coverage
         assert report is not None
         sets = (
@@ -477,9 +586,10 @@ class TestTheNarrowCoverageReport:
         )
         flat = [key for group in sets for key in group]
         assert len(flat) == len(set(flat)), "a key was counted twice"
-        # The eight non-games registry keys plus the opponent-adjusted family, which is not
-        # a registry key but is checked at its merge site since Plan 33.2-16.
-        assert set(flat) == (set(REGISTRY_KEYS) - {"games"}) | {"opponent_adj"}
+        # All nine registry keys plus the opponent-adjusted family, which is not a registry
+        # key but is checked at its merge site since Plan 33.2-16.
+        assert set(flat) == set(REGISTRY_KEYS) | {"opponent_adj"}
+        assert "games" in report.checked_sources
 
 
 # ===========================================================================

@@ -856,6 +856,7 @@ def _sandbox_build(monkeypatch, *, stats_editor=None, provenance_editor=None):
         _sandbox_silver_weather,
         _sandbox_sources,
         _sandbox_team_form,
+        declare_absent_suppliers,
     )
 
     base = Path(storage_mod._parquet_manager.base_path).resolve()
@@ -897,6 +898,12 @@ def _sandbox_build(monkeypatch, *, stats_editor=None, provenance_editor=None):
     monkeypatch.setattr(
         builder.team_form_calc, "get_per_game_stats", lambda *a, **k: stats
     )
+    # PLAN 33.2-20: this synthetic lake has no silver snap_counts, injuries or
+    # play-by-play, so those suppliers cannot derive a provenance frame -- and from this
+    # plan an empty source frame REFUSES the build. Each family is given its honest,
+    # CHECKED declaration instead: one row per game at its builder's own declared unknown
+    # values, and an all-``no_information`` provenance frame the gate still value-checks.
+    declare_absent_suppliers(builder, sources, monkeypatch)
     if provenance_editor is not None:
         honest = builder.opponent_adj.information_times
         monkeypatch.setattr(

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, cast
 
@@ -49,8 +49,17 @@ from utils import game_lock as _game_lock
 
 __all__ = [
     "DECLARED_GAME_DURATION",
+    "EXPECTED_CHECKED_SOURCES",
+    "GAMES_FACTS_CARRIED_UNRESOLVED",
+    "GAMES_FACTS_RESOLVED_BY_EVERY_BUILDER",
+    "KNOWN_UNRELATED_SCAN_TOKENS",
+    "MERGE_DISPOSITIONS",
+    "MERGE_DISPOSITION_BY_KEY",
+    "POST_STAGE1_FAMILY_DISPOSITIONS",
+    "POST_STAGE1_MERGE_DISPOSITION_BY_FAMILY",
     "PROVENANCE_COLUMNS",
     "PROVENANCE_NAME_MARKERS",
+    "REGISTRY_KEY_DISPOSITIONS",
     "CoverageReport",
     "InformationBasis",
     "InformationTimeGate",
@@ -59,6 +68,7 @@ __all__ = [
     "SourceCheckState",
     "UndatedSourceError",
     "build_lock_frame",
+    "derive_post_stage1_gap",
     "refuse_provenance_columns",
 ]
 
@@ -80,6 +90,166 @@ PROVENANCE_NAME_MARKERS: tuple[str, ...] = ("information_time", "provenance")
 
 #: How many offending game ids a refusal names before summarising the rest.
 _MAX_NAMED = 10
+
+
+# ---------------------------------------------------------------------------
+# PLAN 33.2-20: THE GATE, ARMED.
+#
+# Until this plan the gate checked WHATEVER WAS REGISTERED. From here it checks that
+# EVERYTHING IS REGISTERED. A ``feature_sources`` key with no provenance supplier is a
+# hard refusal at build time, so no source can be added later and quietly escape the
+# check.
+#
+# WHY THE LEDGER IS A DICT AND NOT A COMMENT. The registration state used to live in a
+# prose comment beside ``scripts.build_features.SUPPLIER_ATTRIBUTES`` that was rewritten
+# from memory at each plan. Two keys went missing from it that way: ``team_form``
+# entirely, and ``games`` undisposed -- and nobody held the nine-key list against the
+# registration ladder end to end. A dict the gate READS cannot drift from the registry,
+# because the gate asserts the two are equal in BOTH directions.
+# ---------------------------------------------------------------------------
+
+#: One row per ``scripts.build_features`` ``feature_sources`` key: its provenance
+#: supplier, or the disposition it carries. Exactly NINE entries, asserted equal to the
+#: live registry by :meth:`InformationTimeGate.assert_registry_is_fully_disposed`.
+REGISTRY_KEY_DISPOSITIONS: dict[str, str] = {
+    # ``games`` DEFINES the lock, so it cannot supply a per-game information time without
+    # circularity: the time it would report is derived from the same kickoff the lock is
+    # derived from, and such a check passes by construction. It therefore takes the OTHER
+    # declared basis -- no_information -- and pays the price that basis carries: its
+    # values are CHECKED (see ``InformationTimeGate.check_games``).
+    "games": (
+        "the no_information basis, VALUES CHECKED against "
+        "features.schedule_moves.facts_at_lock (Plan 33.2-20): games DEFINES the lock, "
+        "so it cannot supply a non-circular information time"
+    ),
+    "team_form": (
+        "supplier features.team_form.TeamFormCalculator.information_times "
+        "(Plan 33.2-14)"
+    ),
+    "elo": (
+        "supplier features.elo_features.EloFeatureBuilder.information_times "
+        "(Plan 33.2-01)"
+    ),
+    "contextual": "supplier features.contextual (Plan 33.2-14)",
+    "weather": (
+        "supplier features.weather (Plan 33.2-12, which owns the weather lock fence AND "
+        "its provenance supplier)"
+    ),
+    "market": (
+        "supplier features.market_anchors (Plan 33.2-14): a line counts only with a "
+        "recorded capture time at or before the lock"
+    ),
+    "qb_tracking": "supplier features.qb_tracking (Plan 33.2-13)",
+    "snaps": "supplier features.snaps (Plan 33.2-14)",
+    "injury": "supplier features.injury (Plan 33.2-13)",
+}
+
+#: The two merge dispositions, and there is no third.
+#:
+#: ``checked_not_merged`` IS NOT A WAY OUT OF THE CHECK. The key it names is gate-checked
+#: exactly like every other key; what differs is the ARRIVAL assertion, which is its
+#: INVERSE -- an empty arrival set and zero market-predicate columns in the final matrix.
+#: That is the difference between a disposition and an exemption: a disposition still
+#: carries an assertion, and failing it still refuses the build.
+MERGE_DISPOSITIONS: tuple[str, ...] = ("merged", "checked_not_merged")
+
+#: Every registry key's merge disposition. ``market`` is the ONLY ``checked_not_merged``
+#: key -- Plan 33.2-19 removed its merge seam under D33.2-03 and RETAINED its
+#: registration, so the gate keeps checking the lock-fenced selection that grading and
+#: CLV depend on while no market column reaches gold.
+MERGE_DISPOSITION_BY_KEY: dict[str, str] = {
+    "games": "merged",
+    "team_form": "merged",
+    "elo": "merged",
+    "contextual": "merged",
+    "weather": "merged",
+    "market": "checked_not_merged",
+    "qb_tracking": "merged",
+    "snaps": "merged",
+    "injury": "merged",
+}
+
+#: Families merged AFTER the Stage-1 loop. A SEPARATE dict because the family is not a
+#: ``feature_sources`` key and cannot become one without moving its merge -- which is
+#: exactly why Plan 33.2-01 gave it its own report set. An exact nine-key registry
+#: equality cannot see it at all.
+POST_STAGE1_FAMILY_DISPOSITIONS: dict[str, str] = {
+    "opponent_adj": (
+        "supplier features.opponent_adj, gate-registered at the post-Stage-1 merge site "
+        "(scripts.build_features.FeatureMatrixBuilder._merge_opponent_adjusted) by Plan "
+        "33.2-16"
+    ),
+}
+
+#: The post-Stage-1 families' merge dispositions, stated rather than assumed.
+POST_STAGE1_MERGE_DISPOSITION_BY_FAMILY: dict[str, str] = {"opponent_adj": "merged"}
+
+#: Exactly TEN names: the nine registry keys plus the opponent-adjusted family. A
+#: successful build must have checked every one of them.
+EXPECTED_CHECKED_SOURCES: frozenset[str] = frozenset(REGISTRY_KEY_DISPOSITIONS) | (
+    frozenset(POST_STAGE1_FAMILY_DISPOSITIONS)
+)
+
+# THE MEASURED BASELINE OF A SOURCE SCAN'S VOCABULARY -- NOT AN ALLOW-LIST ON THIS CHECK.
+#
+# tests/unit/test_no_check_exemptions.py parses this module, scripts/build_features.py and
+# scripts/validate_features.py looking for any identifier, parameter, call keyword,
+# definition name or path-building string constant that would downgrade a refusal to a
+# warning. MEASURED 2026-09-16 against the live tree, with the scan's node-shape
+# restriction applied, it returns exactly ONE hit, and that hit has nothing to do with
+# information time: ``discrete_indicators_exempt`` is a keyword argument in a structured-log
+# call at scripts/build_features.py:1154 that counts ``_is_discrete_indicator`` columns for
+# the z-scoring preserving set.
+#
+# The distinction matters and is stated rather than left to a reader: the information-time
+# check has NO allow-list, NO labelled exception and NO report-only mode, and gains none.
+# What follows is a shrink-only baseline on a SOURCE SCAN's vocabulary, bounded in BOTH
+# directions -- the scan asserts that nothing new appears AND that every token declared
+# here is still present, so the allowance can never outlive its subject and be reused to
+# cover a later hit.
+#
+# THE CONSTANT'S NAME IS DELIBERATELY OUTSIDE THE SCAN'S OWN VOCABULARY. This module is one
+# of the three the scan parses, and the scan reads ast.Name nodes, which include assignment
+# targets. MEASURED 2026-09-16: a constant named KNOWN_UNRELATED_EXEMPTION_TOKENS matches
+# the pattern through its own target and makes the hit set permanently non-empty -- the
+# declaration would invalidate the gate it serves. The tuple's MEMBERS are safe under
+# either name: a tuple is not an ast.Constant, so the string inside it is not in the
+# assignment-value subject.
+#
+# IT IS DECLARED HERE, IN A SOURCE MODULE, AND NOT IN THE TEST MODULE, for a second reason:
+# Task 1's own verify reads it at a boundary where tests/unit/test_no_check_exemptions.py
+# does not exist yet, and importing that module there would raise ModuleNotFoundError and
+# fail the gate on every run whether or not the work was done. One declaration, one home;
+# the test module imports it.
+KNOWN_UNRELATED_SCAN_TOKENS: tuple[str, ...] = ("discrete_indicators_exempt",)
+
+#: The schedule facts the ``games`` frame hands FORWARD UNRESOLVED -- into the gold
+#: ``week`` column, into the lock frame, and into every timing derived from the kickoff.
+#: A post-lock move of either is post-lock information travelling into gold, so it refuses.
+GAMES_FACTS_CARRIED_UNRESOLVED: tuple[str, ...] = ("kickoff_et", "week")
+
+#: The schedule fact EVERY builder resolves through ``features.schedule_moves.facts_at_lock``
+#: rather than reading off the games row: the venue, from which roof, surface, travel, time
+#: zone and the weather station all follow. A neutralised value here is the fact the build
+#: USES, so a difference from the stored row is expected and is NOT a refusal -- provided the
+#: move table explains it. An UNEXPLAINED difference still refuses.
+GAMES_FACTS_RESOLVED_BY_EVERY_BUILDER: tuple[str, ...] = ("stadium_id",)
+
+
+def derive_post_stage1_gap(checked_sources: Iterable[str]) -> tuple[str, ...]:
+    """The declared post-Stage-1 families NOT yet in *checked_sources*, sorted.
+
+    DERIVED, never a literal. A family whose merge-site gate check did not run -- because
+    the adjuster raised into the merge handler, say, or because the check was removed --
+    stays in this set and is refused BY NAME by
+    :meth:`InformationTimeGate.refuse_incomplete_coverage`. A literal tuple could be set
+    to ``()`` by the same edit that removed the check, which is the failure this shape
+    prevents.
+    """
+    checked = {str(name) for name in checked_sources}
+    return tuple(
+        sorted(name for name in POST_STAGE1_FAMILY_DISPOSITIONS if name not in checked)
+    )
 
 
 class InformationTimeViolation(Exception):
@@ -554,6 +724,333 @@ class InformationTimeGate:
                             "declared": expected,
                         },
                     )
+
+    # -- 6. THE GATE, ARMED (Plan 33.2-20) -------------------------------------------
+
+    @staticmethod
+    def assert_registry_is_fully_disposed(registry_keys: Iterable[str]) -> None:
+        """Every registry key has a ledger row, and every ledger row a registry key.
+
+        THE TWO-WAY REFUSAL. Until Plan 33.2-20 the gate checked whatever was registered;
+        from here it checks that everything IS registered, so a tenth source added later
+        cannot slip past by nobody remembering to look. The refusal names the DIRECTION,
+        because "the ledger and the registry disagree" is two different defects with two
+        different fixes: a new source needs a provenance supplier and a ledger row; a
+        retired source needs its row removed.
+
+        Args:
+            registry_keys: The LIVE ``feature_sources`` keys, including ``games``.
+
+        Raises:
+            ProvenanceCoverageError: naming each missing key in each direction.
+        """
+        live = {str(key) for key in registry_keys}
+        ledger = set(REGISTRY_KEY_DISPOSITIONS)
+        registered_without_a_row = sorted(live - ledger)
+        rows_without_a_key = sorted(ledger - live)
+        if not registered_without_a_row and not rows_without_a_key:
+            return
+        msg = (
+            "the feature-source registry and features.provenance."
+            "REGISTRY_KEY_DISPOSITIONS disagree. Registered with NO ledger row (a source "
+            f"that would escape the information-time check): {registered_without_a_row}. "
+            "Ledger rows with NO registry key (a disposition for a source that no longer "
+            f"exists): {rows_without_a_key}. A new source must supply information_times() "
+            "and carry a ledger row before it can be registered; this is a hard refusal, "
+            "not a convention."
+        )
+        raise ProvenanceCoverageError(
+            msg,
+            {
+                "registered_without_a_ledger_row": registered_without_a_row,
+                "ledger_rows_without_a_registry_key": rows_without_a_key,
+            },
+        )
+
+    @staticmethod
+    def assert_merge_dispositions(
+        final_matrices: Mapping[str, pd.DataFrame],
+        arrivals: Mapping[str, Iterable[str]],
+    ) -> None:
+        """Every declared source's merge disposition, asserted on the FINAL matrices.
+
+        REGISTRATION PROVES NOTHING ABOUT ARRIVAL. ``scripts.build_features.
+        combine_features`` has NO generic loop over ``feature_sources``, so a source that
+        is registered but never merged passes the gate and is then silently dropped from
+        gold -- the Phase-28 lesson the in-tree comment at that merge site records. This is
+        the assertion that notices.
+
+        It is DISPOSITION-AWARE, because "every source leaves a column in gold" rejects
+        CORRECT gold: ``market`` is registered precisely so the gate keeps checking its
+        lock-fenced selection, and it is merged NOWHERE. Its assertion is the INVERSE.
+
+        Arrival is taken from the per-merge-block record the builder keeps, never inferred
+        from a source frame's column names: ``team_form`` arrives RENAMED through
+        ``_get_team_features`` with ``home_``/``away_`` prefixes and ``qb_tracking``'s
+        ``qb_adjustment`` arrives as ``home_qb_adjustment`` / ``away_qb_adjustment``, so a
+        name match would reject correct gold for two more keys.
+
+        Args:
+            final_matrices: ``table name -> the matrix about to be written``.
+            arrivals: ``declared source name -> the columns that source's merge block
+                ADDED to the combined frame``.
+
+        Raises:
+            ProvenanceCoverageError: naming the key, its disposition and what was found.
+        """
+        from backtest.signal_lift import group_columns  # deferred: the model stack
+
+        lesson = (
+            "combine_features has NO generic loop over feature_sources, so registration "
+            "proves nothing about arrival"
+        )
+        dispositions = {
+            **MERGE_DISPOSITION_BY_KEY,
+            **POST_STAGE1_MERGE_DISPOSITION_BY_FAMILY,
+        }
+        failures: list[str] = []
+        details: dict[str, Any] = {"violation_type": "merge_disposition"}
+
+        for name, disposition in sorted(dispositions.items()):
+            if name not in arrivals:
+                failures.append(
+                    f"{name!r} ({disposition}) has NO arrival record at all, so the "
+                    "build never said what its merge block added -- " + lesson
+                )
+                continue
+            arrived = tuple(str(column) for column in arrivals[name])
+
+            if disposition == "checked_not_merged":
+                if arrived:
+                    failures.append(
+                        f"{name!r} is checked_not_merged but its merge block ADDED "
+                        f"{sorted(arrived)} -- a removed merge seam has returned"
+                    )
+                for table, matrix in sorted(final_matrices.items()):
+                    present = group_columns(matrix, name)
+                    if present:
+                        failures.append(
+                            f"{name!r} is checked_not_merged but {table} carries "
+                            f"{present}, matched by backtest.signal_lift."
+                            f"_GROUP_PREDICATE[{name!r}]"
+                        )
+                continue
+
+            if not arrived:
+                failures.append(
+                    f"{name!r} is merged but its merge block added NOTHING -- " + lesson
+                )
+                continue
+            for table, matrix in sorted(final_matrices.items()):
+                columns = set(map(str, matrix.columns))
+                if not columns & set(arrived):
+                    failures.append(
+                        f"{name!r} is merged and arrived as {sorted(arrived)}, but NONE "
+                        f"of those columns is in {table} -- " + lesson
+                    )
+
+        if failures:
+            details["failures"] = failures
+            msg = (
+                "merge-disposition violation(s) on the final feature matrices: "
+                + "; ".join(failures)
+            )
+            raise ProvenanceCoverageError(msg, details)
+
+    @staticmethod
+    def refuse_incomplete_coverage(report: CoverageReport) -> None:
+        """THE ONE final refusal, over Plan 33.2-01's four-set ``CoverageReport``.
+
+        Placed after the post-Stage-1 merge and before the first gold write. A build may
+        be written only when nothing was left unchecked in ANY of the three unchecked sets
+        and the checked set is EXACTLY the ten declared names -- the nine registry keys
+        plus the opponent-adjusted family, ``games`` among them once its ``facts_at_lock``
+        values check has passed.
+
+        An exact nine-key registry equality cannot express the tenth name: the family
+        enters after Stage 1 and is not a ``feature_sources`` key at all.
+
+        Raises:
+            ProvenanceCoverageError: naming every set that was not empty and every
+                declared name that went unchecked.
+        """
+        checked = set(report.checked_sources)
+        missing = sorted(EXPECTED_CHECKED_SOURCES - checked)
+        unexpected = sorted(checked - EXPECTED_CHECKED_SOURCES)
+        empty = sorted(report.empty_unchecked_sources)
+        unregistered = sorted(report.unregistered_sources)
+        post_stage1 = sorted(report.post_stage1_sources)
+
+        if not (missing or unexpected or empty or unregistered or post_stage1):
+            return
+
+        msg = (
+            "the information-time gate did not cover this build. EMPTY-UNCHECKED (a "
+            "source frame with zero rows -- which is also what a FAILED load becomes "
+            f"under _SOURCE_LOAD_ERRORS): {empty}. UNREGISTERED (a source with no "
+            f"provenance supplier): {unregistered}. POST-STAGE-1 UNCHECKED (a family "
+            f"merged after Stage 1 whose merge-site check did not run): {post_stage1}. "
+            f"DECLARED BUT NEVER CHECKED: {missing}. CHECKED BUT NOT DECLARED: "
+            f"{unexpected}. A build is written only when all ten declared sources "
+            f"({sorted(EXPECTED_CHECKED_SOURCES)}) were checked and nothing was left "
+            "over. There is no allow-list, no labelled exception and no report-only mode."
+        )
+        raise ProvenanceCoverageError(
+            msg,
+            {
+                "violation_type": "incomplete_coverage",
+                "empty_unchecked": empty,
+                "unregistered": unregistered,
+                "post_stage1_unchecked": post_stage1,
+                "declared_but_unchecked": missing,
+                "checked_but_undeclared": unexpected,
+                "expected_checked": sorted(EXPECTED_CHECKED_SOURCES),
+                "checked": sorted(checked),
+            },
+        )
+
+    def check_games(
+        self, games_df: pd.DataFrame, *, table_path: Any = None
+    ) -> SourceCheckState:
+        """The ``games`` key's disposition: the SECOND basis, with its VALUES checked.
+
+        THIS IS NOT A CARVE-OUT, AND IT MUST NOT BE READ AS ONE. ``games`` DEFINES the
+        lock: the information time it would report is derived from the same kickoff the
+        lock is derived from, so a per-row lock comparison would pass by construction and
+        prove nothing. It therefore takes the OTHER declared basis, ``no_information``, and
+        pays the price that basis carries everywhere else in this module -- its VALUES are
+        checked against something declared. There is no allow-list entry, no skip and no
+        labelled exception: ``games`` is checked by the second basis rather than the first,
+        and if the check fails the build refuses exactly as it does for any other key.
+
+        WHAT IT IS CHECKED AGAINST. D33.2-04 rules that weekday, rest, travel, venue, roof,
+        surface, divisional, bye, week and season progress are known at the lock, and Plan
+        33.2-10 recorded every emergency schedule move with its announcement time. So the
+        check is: for every game, the schedule facts the build USES equal
+        ``features.schedule_moves.facts_at_lock``.
+
+        The two halves of "the facts the build USES" are different, and the difference is
+        the whole content of the check:
+
+        * ``GAMES_FACTS_CARRIED_UNRESOLVED`` (``kickoff_et``, ``week``) travel from this
+          frame into gold's own ``week`` column and into the lock frame with nothing
+          resolving them. A post-lock move of either is post-lock information reaching
+          gold, and it RAISES naming the game and the field.
+        * ``GAMES_FACTS_RESOLVED_BY_EVERY_BUILDER`` (``stadium_id``) is never read off the
+          games row by a feature builder: ``features.contextual``, ``scripts.ingest_weather``
+          and ``scripts.weather_from_mos`` all resolve it through ``facts_at_lock``. A
+          neutralised venue is therefore the fact the build USES, and it is expected -- but
+          only when the move table EXPLAINS it. An unexplained difference still raises.
+
+        Args:
+            games_df: The build's base games frame.
+            table_path: The move table; a test points it at a temporary table.
+
+        Returns:
+            ``EMPTY_UNCHECKED`` for a zero-row frame, else ``CHECKED``.
+
+        Raises:
+            ProvenanceCoverageError: a game whose facts differ from the facts at its lock,
+                or a frame with no ``game_id``.
+            features.schedule_moves.ScheduleMoveTableError: the move table is malformed or
+                does not land on the facts this frame records.
+        """
+        from features.schedule_moves import facts_at_lock
+
+        if len(games_df) == 0:
+            self._empty.append("games")
+            return SourceCheckState.EMPTY_UNCHECKED
+
+        if "game_id" not in games_df.columns:
+            msg = (
+                "the games frame carries no 'game_id' column, so its schedule facts "
+                "cannot be checked against the facts at each game's lock"
+            )
+            raise ProvenanceCoverageError(msg, {"source": "games"})
+
+        kwargs = {} if table_path is None else {"table_path": table_path}
+        offending: list[str] = []
+        fields: set[str] = set()
+        examples: list[str] = []
+        compared = 0
+
+        for _, row in games_df.iterrows():
+            game_id = str(row["game_id"])
+            facts = facts_at_lock(row["game_id"], row, **kwargs)
+            compared += 1
+            differing: list[str] = []
+
+            for field in GAMES_FACTS_CARRIED_UNRESOLVED:
+                if field not in games_df.columns:
+                    continue
+                stored = row[field]
+                at_lock = facts.kickoff_et if field == "kickoff_et" else facts.week
+                if not _facts_agree(stored, at_lock):
+                    differing.append(field)
+
+            for field in GAMES_FACTS_RESOLVED_BY_EVERY_BUILDER:
+                if field not in games_df.columns:
+                    continue
+                if _facts_agree(row[field], facts.stadium_id):
+                    continue
+                # A difference here is legitimate ONLY when the move table explains it --
+                # every builder resolves the venue through facts_at_lock, so the resolved
+                # value IS the fact the build uses.
+                if not facts.neutralised:
+                    differing.append(field)
+
+            if differing:
+                offending.append(game_id)
+                fields.update(differing)
+                if len(examples) < _MAX_NAMED:
+                    examples.append(f"{game_id}: {sorted(differing)}")
+
+        if offending:
+            msg = (
+                f"{len(offending)} game(s) carry schedule facts that differ from the "
+                f"facts at their own lock: {examples}. The games source DEFINES the lock, "
+                "so it carries the no_information basis -- and that basis's price is that "
+                "its VALUES are checked, against features.schedule_moves.facts_at_lock. "
+                "This is a disposition, not an exemption: a mismatch refuses the build "
+                "exactly as a post-lock information time does for any other source."
+            )
+            raise ProvenanceCoverageError(
+                msg,
+                {
+                    "source": "games",
+                    "violation_type": "games_schedule_facts_at_lock",
+                    "game_ids": sorted(offending),
+                    "fields": sorted(fields),
+                    "games_compared": compared,
+                },
+            )
+
+        self._checked.append("games")
+        return SourceCheckState.CHECKED
+
+
+def _facts_agree(stored: Any, at_lock: Any) -> bool:
+    """True when a stored schedule fact and the fact at the lock are the SAME value.
+
+    Instants are compared as INSTANTS (both converted to UTC), never as wall clocks or
+    strings: ``facts_at_lock`` returns an America/New_York-localised kickoff while silver
+    stores UTC, and a naive textual comparison of those two would report every game as
+    differing. Two nulls agree; one null and one value do not.
+    """
+    stored_null, lock_null = _is_null(stored), _is_null(at_lock)
+    if stored_null or lock_null:
+        return stored_null and lock_null
+    if isinstance(stored, datetime) or isinstance(at_lock, datetime):
+        try:
+            return pd.Timestamp(stored).tz_convert("UTC") == pd.Timestamp(
+                at_lock
+            ).tz_convert("UTC")
+        except (TypeError, ValueError):
+            return False
+    try:
+        return int(stored) == int(at_lock)
+    except (TypeError, ValueError):
+        return str(stored) == str(at_lock)
 
 
 def _is_provenance_named(column: str) -> bool:

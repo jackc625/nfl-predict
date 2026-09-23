@@ -70,8 +70,10 @@ from features.provenance import (
     PROVENANCE_COLUMNS,
     CoverageReport,
     InformationTimeGate,
+    ProvenanceCoverageError,
     SourceCheckState,
     build_lock_frame,
+    derive_post_stage1_gap,
     refuse_provenance_columns,
 )
 from features.qb_tracking import QBTracker
@@ -201,6 +203,15 @@ _SEAM_REMOVED_GROUPS: frozenset[str] = frozenset({_LINE_MOVEMENT_GROUP, _MARKET_
 # source name ``features.opponent_adj.OPP_ADJ_SOURCE_NAME``), and reported in the ordinary
 # ``checked_sources`` / ``empty_unchecked_sources`` sets like any registry key. A family
 # added after Stage 1 without that check belongs back in this tuple, by name.
+#
+# NO LONGER THE REPORT'S SOURCE OF TRUTH (Plan 33.2-20). The CoverageReport's
+# ``post_stage1_sources`` is now DERIVED per build by
+# ``features.provenance.derive_post_stage1_gap`` -- the declared post-Stage-1 families not
+# yet in ``checked_sources`` -- rather than read from this literal. The reason is the
+# failure mode a literal cannot survive: the same edit that removed a merge-site gate check
+# would set this tuple to ``()``, and the build would report full coverage of a family
+# nothing checked. Derivation makes the gap a CONSEQUENCE of the check not running.
+# The constant remains as the documentation of the shape, and a test pins it empty.
 POST_STAGE1_SOURCES: tuple[str, ...] = ()
 
 # THE FEATURE-SOURCE REGISTRY the Stage-1 information-time loop walks: each
@@ -211,36 +222,47 @@ POST_STAGE1_SOURCES: tuple[str, ...] = ()
 # 33.2-12 .. 33.2-17 grow this set. Add a source HERE and ``_information_time_suppliers`` and
 # the cap both follow.
 #
-# THE NINE-KEY LEDGER (Plan 33.2-14). ``load_all_feature_sources`` puts exactly NINE keys in
-# the ``feature_sources`` registry: ``games`` plus the eight below. Every one is listed here
-# with the plan that supplies its provenance or with its recorded disposition, because the
-# defect this ledger prevents is the one that produced it -- a comment that enumerated "what
-# remains" from memory left ``team_form`` out, and nobody held the nine keys against the
-# registration ladder end to end:
+# THE REGISTRATION IS COMPLETE, AND FROM HERE IT IS A HARD REFUSAL (Plan 33.2-20).
 #
-#     games       -- disposition recorded by Plan 33.2-20 (it DEFINES the lock)
-#     team_form   -- registered by Plan 33.2-14 (the per-game frame laid out below)
-#     elo         -- registered by Plan 33.2-01
-#     contextual  -- registered by Plan 33.2-14
-#     weather     -- registered by Plan 33.2-12 (rung 4 owns the weather fence AND its supplier)
-#     market      -- registered by Plan 33.2-14, via features/market_anchors.py (a line counts
-#                    only with a recorded capture time at or before the lock; owner 2026-09-22)
-#     qb_tracking -- registered by Plan 33.2-13
-#     snaps       -- registered by Plan 33.2-14
-#     injury      -- registered by Plan 33.2-13
+# Every one of the nine ``feature_sources`` keys now has a provenance disposition, and the
+# TWO-WAY refusal is ARMED: ``features.provenance.REGISTRY_KEY_DISPOSITIONS`` is a dict the
+# gate READS, and ``InformationTimeGate.assert_registry_is_fully_disposed`` raises when its
+# key set differs from the live registry in EITHER direction. A future source must supply
+# ``information_times()`` and carry a ledger row BEFORE it can be registered. That is a
+# refusal, not a convention: a tenth key added without a row stops the build by name.
 #
-# plus ONE labelled NON-KEY EXTRA, deliberately not a tenth key:
+# THE LEDGER LIVES IN ``features/provenance.py``, NOT HERE, and the move is the point. This
+# comment used to BE the registration record, rewritten from memory at each plan, and two
+# keys went missing from it that way: ``team_form`` entirely, and ``games`` undisposed. A
+# comment cannot be read by the code it describes; a dict can, and is.
 #
-#     opponent_adj -- registered by Plan 33.2-16 AT ITS POST-STAGE-1 MERGE SITE
-#                     (``_merge_opponent_adjusted``); merged after Stage 1, so it is never in
-#                     ``feature_sources`` and never walked by the Stage-1 loop
+# THERE IS NO EXEMPTION MECHANISM OF ANY KIND. No allow-list. No labelled exception. No
+# report-only mode. No environment variable and no flag that downgrades a refusal to a
+# warning. A source is checked, or the build refuses and names it -- there is no third
+# outcome, and ``tests/unit/test_no_check_exemptions.py`` is the standing scan that keeps it
+# that way over the parsed trees of this module, ``features/provenance.py`` and
+# ``scripts/validate_features.py``.
 #
-# After Plan 33.2-16 the only registry key still without a supplier is ``games``, whose
-# disposition Plan 33.2-20 records before it arms the two-way refusal. Registration is STRUCTURAL
-# (``isinstance(builder, InformationTimeProvider)``), so this ledger is the RECORD, not the
-# switch. It is documentation; the binding nine-key instrument is Plan 33.2-20 Task 1's
-# ``features.provenance.REGISTRY_KEY_DISPOSITIONS``, a dict the gate reads and asserts equal to
-# the live registry in both directions.
+# TWO DISPOSITIONS ARE NOT EXEMPTIONS, and both say so where a reader meets them:
+#
+#     games   takes the SECOND declared basis (``no_information``) because it DEFINES the
+#             lock and so cannot supply a non-circular information time -- and it pays that
+#             basis's price: its VALUES are checked, against
+#             features.schedule_moves.facts_at_lock, per game
+#             (``InformationTimeGate.check_games``). A mismatch refuses the build exactly as
+#             a post-lock information time does for any other source.
+#     market  is ``checked_not_merged``: the source is built, registered and CHECKED like
+#             every other key, and Plan 33.2-19 removed only its MERGE seam under D33.2-03.
+#             Its arrival assertion is the INVERSE of the others -- an empty arrival set and
+#             zero market-predicate columns in any final matrix -- so it carries an
+#             assertion of its own rather than being excused from one.
+#
+# Registration is STRUCTURAL (``isinstance(builder, InformationTimeProvider)``), so the
+# mapping below is the wiring, not the switch. ``opponent_adj`` is deliberately NOT a tenth
+# key: it is merged AFTER the Stage-1 loop (``_merge_opponent_adjusted``), is checked by the
+# gate at that merge site (Plan 33.2-16), and is declared in
+# ``features.provenance.POST_STAGE1_FAMILY_DISPOSITIONS``. An exact nine-key equality cannot
+# see it, which is why the final refusal demands exactly TEN checked names.
 SUPPLIER_ATTRIBUTES: dict[str, str] = {
     "team_form": "team_form_calc",
     "elo": "elo_calc",
@@ -618,6 +640,30 @@ class FeatureMatrixBuilder:
         # row index. Reset on every ``handle_missing_data_and_outliers`` call; normalization
         # keeps these cells NaN instead of turning them into the neutral 0.0 z-score.
         self.imputation_left_blank: dict[str, pd.Index] = {}
+
+        # PLAN 33.2-20: what each merge block ADDED to the combined frame, keyed by the
+        # declared source name. Reset on every ``combine_features`` call and read by
+        # ``InformationTimeGate.assert_merge_dispositions`` on the FINAL matrices.
+        # RECORDED, never inferred: ``team_form`` and ``qb_tracking`` both arrive renamed,
+        # so a match against a source frame's own column names would reject correct gold.
+        self.merge_arrivals: dict[str, tuple[str, ...]] = {}
+
+    def _record_arrival(
+        self, source_name: str, before: Sequence[str], frame: pd.DataFrame
+    ) -> None:
+        """Record the columns *source_name*'s merge block added, as a set difference.
+
+        Called with the frame's columns as they stood BEFORE the block and the frame
+        AFTER it. Repeated calls for one key UNION, so a source merged in two steps (the
+        two QB merges, the team-form layout and its coverage flags) is recorded once and
+        completely. An empty result is a RECORD that the block added nothing, which is a
+        different fact from never having been called.
+        """
+        had = set(map(str, before))
+        added = {str(column) for column in frame.columns} - had
+        self.merge_arrivals[source_name] = tuple(
+            sorted(set(self.merge_arrivals.get(source_name, ())) | added)
+        )
 
     # ------------------------------------------------------------------
     # Ruling K1: the per-builder missing-preserving seam
@@ -1024,6 +1070,15 @@ class FeatureMatrixBuilder:
         # imputer can tell which games had ended by a gap's lock.
         self.imputation_timing = imputation_game_timing(games_df)
 
+        # ARRIVAL IS RECORDED HERE, PER MERGE BLOCK, AND NEVER INFERRED FROM A SOURCE
+        # FRAME'S COLUMN NAMES (Plan 33.2-20). Two sources arrive RENAMED -- ``team_form``
+        # through ``_get_team_features`` with ``home_``/``away_`` prefixes, and
+        # ``qb_tracking``'s ``qb_adjustment`` as ``home_qb_adjustment`` /
+        # ``away_qb_adjustment`` -- so a name match against the source frame would reject
+        # correct gold for both, the same false rejection the reviews found for ``market``.
+        # What each block ADDED is the only honest answer, and only the block knows it.
+        self.merge_arrivals = {}
+
         # Initialize combined features with game identifiers
         combined_features = games_df[
             ["game_id", "season", "week", "home_team", "away_team"]
@@ -1035,6 +1090,11 @@ class FeatureMatrixBuilder:
         if "away_score" in games_df.columns:
             combined_features["away_score"] = games_df["away_score"]
 
+        # ``games`` is the BASE frame, so its arrivals are the identity columns
+        # combine_features starts from -- which is why its merge disposition is ``merged``
+        # like any other key rather than a special case.
+        self._record_arrival("games", [], combined_features)
+
         # Merge each feature source
         feature_counts = {}
 
@@ -1042,6 +1102,7 @@ class FeatureMatrixBuilder:
         # out one row per game (Plan 33.2-14); a team-keyed frame (a caller that built
         # ``feature_sources`` by hand) is laid out here exactly as before.
         team_form_df = feature_sources.get("team_form", pd.DataFrame())
+        _before = list(combined_features.columns)
         if len(team_form_df) > 0 and "game_id" in team_form_df.columns:
             combined_features = combined_features.merge(
                 team_form_df, on="game_id", how="left"
@@ -1066,9 +1127,13 @@ class FeatureMatrixBuilder:
                 [col for col in combined_features.columns if "form_" in col]
             )
         combined_features = self._flag_source_limited_team_form(combined_features)
+        # The source-limited coverage flags are DERIVED from the team-form values laid out
+        # above, so they are team_form's arrivals too: the snapshot spans both steps.
+        self._record_arrival("team_form", _before, combined_features)
 
         # Elo features (game-level, already has home/away columns from EloFeatureBuilder)
         elo_df = feature_sources.get("elo", pd.DataFrame())
+        _before = list(combined_features.columns)
         if len(elo_df) > 0:
             from features.elo_features import ELO_FEATURE_COLUMNS
 
@@ -1081,9 +1146,11 @@ class FeatureMatrixBuilder:
             feature_counts["elo"] = len(
                 [col for col in combined_features.columns if "elo_" in col]
             )
+        self._record_arrival("elo", _before, combined_features)
 
         # Contextual features (game-level)
         contextual_df = feature_sources.get("contextual", pd.DataFrame())
+        _before = list(combined_features.columns)
         if len(contextual_df) > 0:
             merge_cols = ["game_id"]
             contextual_features = contextual_df.drop(
@@ -1095,9 +1162,11 @@ class FeatureMatrixBuilder:
             feature_counts["contextual"] = len(
                 [col for col in contextual_features.columns if col != "game_id"]
             )
+        self._record_arrival("contextual", _before, combined_features)
 
         # Weather features (game-level)
         weather_df = feature_sources.get("weather", pd.DataFrame())
+        _before = list(combined_features.columns)
         if len(weather_df) > 0:
             merge_cols = ["game_id"]
             weather_features = weather_df.drop(
@@ -1113,6 +1182,17 @@ class FeatureMatrixBuilder:
             feature_counts["weather"] = len(
                 [col for col in weather_features.columns if col != "game_id"]
             )
+        self._record_arrival("weather", _before, combined_features)
+
+        # ``market`` ARRIVES NOWHERE, and that is RECORDED rather than left absent (Plan
+        # 33.2-20). An absent record and an empty one are different facts -- "nobody said"
+        # against "the block added nothing" -- and only the second is this key's correct
+        # ``checked_not_merged`` state. The assertion for it is the INVERSE of every other
+        # key's: the arrival set must be empty AND no final matrix may carry a column
+        # matched by backtest.signal_lift._GROUP_PREDICATE["market"].
+        self._record_arrival(
+            "market", list(combined_features.columns), combined_features
+        )
 
         # -- THE MARKET MERGE SEAM IS GONE (Plan 33.2-19, p332_ rung 9, D33.2-03) --
         #
@@ -1142,6 +1222,7 @@ class FeatureMatrixBuilder:
 
         # QB adjustment features (one value per team per game)
         qb_df = feature_sources.get("qb_tracking", pd.DataFrame())
+        _before = list(combined_features.columns)
         if len(qb_df) > 0 and "qb_adjustment" in qb_df.columns:
             # Merge home QB adjustment
             home_qb = qb_df[["game_id", "team", "qb_adjustment"]].copy()
@@ -1174,6 +1255,10 @@ class FeatureMatrixBuilder:
             )
 
             feature_counts["qb_tracking"] = 2  # home + away qb_adjustment
+        # RENAMED ON ARRIVAL: the source column is ``qb_adjustment`` and what lands is
+        # ``home_qb_adjustment`` / ``away_qb_adjustment``. A source-name match would find
+        # neither and reject correct gold.
+        self._record_arrival("qb_tracking", _before, combined_features)
 
         # Snap-count features (game-level; SnapCountBuilder already emits the
         # home_/away_-expanded columns, so merge on game_id like the elo block).
@@ -1181,30 +1266,42 @@ class FeatureMatrixBuilder:
         # this explicit block the registered snap columns pass the LeakageGate but
         # are SILENTLY DROPPED from gold (review #1, orchestrator-verified).
         snaps_df = feature_sources.get("snaps", pd.DataFrame())
+        _before = list(combined_features.columns)
         if len(snaps_df) > 0:
             snap_cols = [c for c in snaps_df.columns if c != "game_id"]
             combined_features = combined_features.merge(
                 snaps_df[["game_id", *snap_cols]], on="game_id", how="left"
             )
             feature_counts["snaps"] = len(snap_cols)
+        self._record_arrival("snaps", _before, combined_features)
 
         # Injury features (game-level; InjuryBuilder already emits the home_/away_-
         # expanded columns). Same rationale as the snap block (review #1): merge on
         # game_id so the columns actually reach all three gold matrices.
         injury_df = feature_sources.get("injury", pd.DataFrame())
+        _before = list(combined_features.columns)
         if len(injury_df) > 0:
             injury_cols = [c for c in injury_df.columns if c != "game_id"]
             combined_features = combined_features.merge(
                 injury_df[["game_id", *injury_cols]], on="game_id", how="left"
             )
             feature_counts["injury"] = len(injury_cols)
+        self._record_arrival("injury", _before, combined_features)
 
         # PLAN 33.2-15: a family whose source frame carries nothing reads as UNKNOWN (NaN, its
         # coverage flags at 0.0), never as a historical median. Laid out here, after the two
         # merges, so the matrix width does not depend on whether a source loaded.
+        #
+        # Its columns count as that family's arrivals: they are the family's answer, laid
+        # out under its own names. (An empty source now REFUSES the build at Stage 1, so a
+        # passing build never reaches here with a family in that state -- but the record is
+        # kept honest rather than left to that assumption.)
+        _before_layout = list(combined_features.columns)
         combined_features = self._lay_out_empty_source_families(
             combined_features, feature_sources
         )
+        for family in self.empty_source_families:
+            self._record_arrival(family, _before_layout, combined_features)
 
         # SEAM 2 of 2 for the Phase-29 line-movement family is DELIBERATELY ABSENT
         # here (SPEC R3, D29-07-01). This is where an explicit merge block used to
@@ -1392,9 +1489,18 @@ class FeatureMatrixBuilder:
         empty_unregistered: list[str] = []
         unregistered: list[str] = []
 
+        # THE TWO-WAY REFUSAL, armed (Plan 33.2-20). Before the loop, so a key with no
+        # ledger row stops the build here rather than after ten minutes of source loads.
+        gate.assert_registry_is_fully_disposed(feature_sources)
+
         for source_name, source_df in feature_sources.items():
             if source_name == "games":
-                continue  # the base frame, not a builder output
+                # NOT A SKIP. ``games`` DEFINES the lock, so it takes the second declared
+                # basis and its VALUES are checked against
+                # features.schedule_moves.facts_at_lock. It lands in checked_sources like
+                # any other key; see InformationTimeGate.check_games.
+                gate.check_games(source_df)
+                continue
 
             supplier = suppliers.get(source_name)
             if isinstance(supplier, InformationTimeProvider):
@@ -1419,13 +1525,20 @@ class FeatureMatrixBuilder:
             else:
                 unregistered.append(source_name)
 
+        empty_unchecked = tuple(
+            sorted({*gate.empty_unchecked_sources, *empty_unregistered})
+        )
         report = CoverageReport(
             checked_sources=gate.checked_sources,
-            empty_unchecked_sources=tuple(
-                sorted({*gate.empty_unchecked_sources, *empty_unregistered})
-            ),
+            empty_unchecked_sources=empty_unchecked,
             unregistered_sources=tuple(sorted(unregistered)),
-            post_stage1_sources=POST_STAGE1_SOURCES,
+            # DERIVED, never a literal (Plan 33.2-20). A declared post-Stage-1 family that
+            # has not been checked YET is in this set; ``_record_opponent_adjusted_coverage``
+            # re-derives it after the merge-site check runs. A family whose check was
+            # removed therefore STAYS here and the final refusal names it, which a literal
+            # ``()`` could not express -- the same edit that removed the check would have
+            # emptied the literal.
+            post_stage1_sources=derive_post_stage1_gap(gate.checked_sources),
         )
         self.information_time_coverage = report
         logger.info(
@@ -1436,6 +1549,35 @@ class FeatureMatrixBuilder:
             unregistered_sources=list(report.unregistered_sources),
             post_stage1_sources=list(report.post_stage1_sources),
         )
+
+        # AN EMPTY SOURCE IS NAMED AND REFUSES (Plan 33.2-20). Plan 33.2-01 froze
+        # ``SourceCheckState.EMPTY_UNCHECKED`` as a REPORT state for exactly this moment;
+        # this plan makes it refuse.
+        #
+        # WHY IT CANNOT STAY A SKIP: ``_SOURCE_LOAD_ERRORS`` converts a FAILED source load
+        # into an EMPTY frame with a warning, so a broken source is indistinguishable from
+        # an absent one at the frame. Skipping an empty frame therefore lets a load failure
+        # read as a clean pass and exit green -- the exact shape of defect this whole phase
+        # exists to remove. ``EMPTY_UNCHECKED`` is a report state and never a way to DECLARE
+        # a source unchecked: the ``InformationBasis`` vocabulary still has exactly two
+        # members and gains no third.
+        if empty_unchecked:
+            msg = (
+                f"{len(empty_unchecked)} feature source(s) loaded ZERO rows and could not "
+                f"be checked against any lock: {list(empty_unchecked)}. "
+                "scripts.build_features._SOURCE_LOAD_ERRORS turns a FAILED source load "
+                "into an empty frame, so an empty source is indistinguishable from a "
+                "broken one here -- and a build that proceeds past either exits green with "
+                "the source missing from gold. Fix the source; there is no way to declare "
+                "it unchecked."
+            )
+            raise ProvenanceCoverageError(
+                msg,
+                {
+                    "violation_type": "empty_unchecked_source",
+                    "empty_unchecked": list(empty_unchecked),
+                },
+            )
         return report
 
     # The builder's seam onto the module-level ``_enforce_groups_dropped``: the SAME
@@ -1617,6 +1759,13 @@ class FeatureMatrixBuilder:
                     sorted({*report.empty_unchecked_sources, OPP_ADJ_SOURCE_NAME})
                 ),
             )
+        # RE-DERIVED, not left at its Stage-1 value (Plan 33.2-20): the family has now been
+        # reached, so the gap closes here and only here. A build whose merge-site check did
+        # not run never gets to this line, so the gap stays open and the final refusal names
+        # it.
+        report = dataclasses.replace(
+            report, post_stage1_sources=derive_post_stage1_gap(report.checked_sources)
+        )
         self.information_time_coverage = report
         logger.info(
             "Information-time gate coverage after the post-Stage-1 merge",
@@ -1722,9 +1871,11 @@ class FeatureMatrixBuilder:
                 no_information_signature=signature,
             )
             self._record_opponent_adjusted_coverage(state)
+            _before = list(combined_features.columns)
             combined_features = combined_features.merge(
                 family, on="game_id", how="left"
             )
+            self._record_arrival(OPP_ADJ_SOURCE_NAME, _before, combined_features)
 
             # Drop old raw EPA columns that are now replaced by opp_adj versions
             raw_epa_suffixes = [
@@ -3210,6 +3361,35 @@ class FeatureMatrixBuilder:
                     matrix, build_clock_columns=BUILD_CLOCK_COLUMNS
                 )
 
+            # -- THE ONE FINAL REFUSAL (Plan 33.2-20), after the post-Stage-1 merge and
+            #    before any gold write --
+            #
+            # Two assertions, both over what is ABOUT TO BE WRITTEN rather than over an
+            # intermediate frame:
+            #
+            #   1. the merge dispositions, per declared source, on each FINAL matrix --
+            #      after _enforce_groups_dropped and every other column-removing step, so
+            #      it certifies the matrices themselves. Registration proves nothing about
+            #      arrival: combine_features has no generic loop, so a source registered
+            #      but not merged passes the gate and is then silently dropped.
+            #   2. the coverage report, which must show all TEN declared sources checked
+            #      and nothing left in any of the three unchecked sets.
+            #
+            # There is no path that reports either failure without refusing.
+            InformationTimeGate.assert_merge_dispositions(
+                feature_matrices, self.merge_arrivals
+            )
+            coverage = self.information_time_coverage
+            if coverage is None:
+                msg = (
+                    "no information-time CoverageReport exists for this build, so nothing "
+                    "records which sources were checked. Refusing to write gold."
+                )
+                raise ProvenanceCoverageError(
+                    msg, {"violation_type": "missing_coverage_report"}
+                )
+            InformationTimeGate.refuse_incomplete_coverage(coverage)
+
             logger.info(
                 "Generated feature matrices",
                 wp_games=len(feature_matrices.get("wp", [])),
@@ -3644,6 +3824,29 @@ def main(argv: list[str] | None = None):
         if args.save:
             builder.save_feature_matrices(feature_matrices, args.season, args.week)
             logger.info("Saved all feature matrices to gold layer")
+
+        # THE COVERAGE THIS BUILD ACHIEVED, PRINTED (Plan 33.2-20). Five lines from the
+        # FINAL CoverageReport, so a run's information-time coverage is a fact on stdout
+        # rather than something to be inferred from a green exit.
+        #
+        # CHECKED_SOURCES is the NON-VACUOUS one: 10 means the nine registry keys AND the
+        # opponent-adjusted family were each checked against every game's own lock.
+        # INFORMATION_TIME_VIOLATIONS is only ever printed as 0, because a violation raises
+        # long before this point -- it is the line that says so out loud rather than an
+        # absence a reader has to interpret.
+        # ``getattr`` because a test may hand ``main`` a recording stub rather than the
+        # real builder. It is not a way for the real build to skip these lines: the
+        # builder sets the attribute in its constructor, and Task 3's verify FAILS on an
+        # ABSENT line as well as on a wrong one, so a build that printed nothing would be
+        # caught rather than read as a pass.
+        coverage = getattr(builder, "information_time_coverage", None)
+        if coverage is not None:
+            print(f"\nCHECKED_SOURCES= {len(coverage.checked_sources)}")
+            print(f"EMPTY_UNCHECKED= {len(coverage.empty_unchecked_sources)}")
+            print(f"UNREGISTERED= {len(coverage.unregistered_sources)}")
+            print(f"POST_STAGE1_UNCHECKED= {len(coverage.post_stage1_sources)}")
+            print("INFORMATION_TIME_VIOLATIONS= 0")
+            print(f"CHECKED_SOURCE_NAMES= {sorted(coverage.checked_sources)}")
 
         logger.info("Feature matrix building completed successfully")
 

@@ -825,7 +825,7 @@ class TestTheDispositionAwareMergeAssertion:
             InformationTimeGate.assert_merge_dispositions(
                 {"features_wp": _correct_matrix()}, arrivals
             )
-        assert "no generic loop" in str(exc.value)
+        assert "NO generic loop over feature_sources" in str(exc.value)
 
     def test_market_with_a_restored_merge_block_raises(self) -> None:
         """A restored merge seam lands columns; the checked_not_merged inverse catches it."""
@@ -928,7 +928,7 @@ class TestTheFinalCoverageRefusal:
 # ---------------------------------------------------------------------------
 
 _PLANTED_MOVE = """
-[[move]]
+[[moves]]
 game_id = "{game_id}"
 move_index = 1
 what_moved = "{what_moved}"
