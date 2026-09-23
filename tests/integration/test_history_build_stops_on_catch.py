@@ -61,20 +61,25 @@ from tests.data_boundary import (
     assert_tree_unchanged,
     content_digest_tree,
 )
+from tests.integration.test_information_time_tracer import TRACER_SEASON, _seed
 from utils import game_lock
 
-HISTORY_SEASON = 2002
+HISTORY_SEASON = TRACER_SEASON
 
-#: The real silver tables the 2002 build needs, copied read-only (the tracer's slice).
-#: Plan 33.2-12 added silver ``weather``: the weather builder is now an information-time
-#: supplier and dates each game from the silver row its one fence selected. That table
-#: carries no ``season`` column, so it is sliced by the season in its ``game_id``.
-SEEDED_TABLES: tuple[str, ...] = (
-    "games",
-    "elo_game_snapshots",
-    "weather_features",
-    "weather",
-)
+#: THE SANDBOX IS THE TRACER'S, BY IMPORT -- one slice, one seeding function.
+#:
+#: Was: a private copy of the tracer's table list (games, elo_game_snapshots,
+#: weather_features, weather) and of its ``_seed``. Plan 33.2-20 armed the gate so that a
+#: source loading ZERO rows REFUSES the build (``ProvenanceCoverageError``, commit
+#: ``f07b1ca``), and fixed the tracer's sandbox for it -- real 2002 ``team_form_features`` /
+#: ``team_game_stats`` rows, plus SCHEMA-ONLY ``snap_counts``, ``injuries`` and
+#: ``odds_snapshot`` (production has no 2002 rows of them, and "the table is missing" and
+#: "the table has nothing for these games" are different facts). This module's copy was
+#: not updated, so its at-lock build was refused on four empty sources and the
+#: non-vacuity node ``test_the_write_counter_is_live_on_an_admissible_build`` went red
+#: (found by Plan 33.2-24 step 24c; the planted refusal still passed, but for a reason
+#: that was no longer only the planted one). Importing the tracer's seeding is the fix at
+#: the cause: two copies of one sandbox are how one of them drifted.
 
 #: The REAL supplier, captured before any test wraps it.
 _REAL_INFORMATION_TIMES = EloFeatureBuilder.information_times
@@ -110,26 +115,6 @@ class HistoryRun:
     gold_after_planted: dict[str, str]
     at_lock_error: BaseException | None
     writes_at_lock: list[str]
-
-
-def _seed(sandbox: Path) -> pd.DataFrame:
-    """Copy the season's real rows of each seeded table from production, read-only."""
-    for layer in ("bronze", "silver", "gold"):
-        (sandbox / layer).mkdir(parents=True, exist_ok=True)
-    games = pd.DataFrame()
-    for table in SEEDED_TABLES:
-        frame = pd.read_parquet(PRODUCTION_DATA_ROOT / "silver" / f"{table}.parquet")
-        season = (
-            frame["season"]
-            if "season" in frame.columns
-            else frame["game_id"].str[:4].astype(int)
-        )
-        frame = frame.loc[season == HISTORY_SEASON].reset_index(drop=True)
-        assert len(frame) > 0, f"production silver {table} has no {HISTORY_SEASON} rows"
-        save_dataframe(frame, table, layer="silver", replace_mode=True)
-        if table == "games":
-            games = frame
-    return games
 
 
 def _move_one_row(game_id: str, when: object) -> Callable[..., pd.DataFrame]:
