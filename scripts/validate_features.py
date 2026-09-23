@@ -252,13 +252,66 @@ def run_gold_audit(
         lines.append(f"  [WARN] Elo ordering check skipped: {exc}")
     lines.append("")
 
-    # -- check_time_fence note (gold carries no per-builder timestamp columns) --
-    lines.append("[TIME FENCE] check_time_fence on persisted gold")
+    # -- THE INFORMATION-TIME GATE'S REAL VERDICT ON PERSISTED GOLD (Plan 33.2-20) --
+    #
+    # WHAT STOOD HERE. A "check_time_fence note" block that announced
+    # "[TIME FENCE] check_time_fence on persisted gold" and then printed [PASS]
+    # UNCONDITIONALLY, citing build_features.py:809. Plan 33.2-01 DELETED
+    # LeakageGate.check_time_fence, so that block named a check which no longer existed
+    # and reported a verdict it had never reached. A line that says PASS regardless of the
+    # outcome is worse than no line, because it is read as evidence -- the exact shape of
+    # defect this phase exists to remove. Plan 33.2-01 left it deliberately, naming Plan
+    # 33.2-20 as the receiver because that plan already owns this line range.
+    #
+    # WHAT PERSISTED GOLD CAN HONESTLY ANSWER, and what it cannot. The sidecar-is-never-a-
+    # column guard is a property OF THE ARTEFACT, so it is RUN here, per matrix, and a
+    # violation is recorded as an unexplained finding and reaches the exit code. The gate's
+    # per-run coverage counters are a property OF A BUILD -- which sources were checked
+    # against which locks -- and cannot be read off a parquet file at all. Printing a
+    # checked/empty-unchecked count here would be inventing one, so the block names the ten
+    # DECLARED sources and the command that prints the real counts instead.
+    from features.provenance import (
+        EXPECTED_CHECKED_SOURCES,
+        InformationTimeViolation,
+        refuse_provenance_columns,
+    )
+    from scripts.fingerprint_gold import BUILD_CLOCK_COLUMNS
+
+    lines.append("[INFORMATION TIME] the sidecar is never a column, on persisted gold")
     lines.append(
-        "  [PASS] gold matrices carry no game_date/kickoff_et/snapshot_ts columns "
-        "(identifiers stripped post-fence); the time-fence is enforced at BUILD "
-        "time on per-builder source frames (build_features.py:809). Re-verified "
-        "by the test_audit_trace_leakage_elo.py injected-future-row test."
+        "  check: features.provenance.refuse_provenance_columns -- no datetime-typed "
+        f"column other than the registered build clock {list(BUILD_CLOCK_COLUMNS)}, and "
+        "no provenance-named column, in any gold matrix"
+    )
+    for target, table in GOLD_MATRICES.items():
+        matrix = load_dataframe(table, layer="gold")
+        try:
+            refuse_provenance_columns(matrix, build_clock_columns=BUILD_CLOCK_COLUMNS)
+        except InformationTimeViolation as exc:
+            lines.append(
+                f"  [FAIL] {table} (target={target}): "
+                f"datetime-typed {exc.details.get('datetime_columns')}, "
+                f"provenance-named {exc.details.get('provenance_named_columns')}"
+            )
+            unexplained_leakage.append(f"{table}:information_time_column")
+        else:
+            lines.append(
+                f"  [PASS] {table} (target={target}): {len(matrix.columns)} columns "
+                "scanned, none is a time or a provenance name"
+            )
+    lines.append("")
+
+    lines.append("[INFORMATION TIME] declared source coverage")
+    lines.append(
+        f"  {len(EXPECTED_CHECKED_SOURCES)} declared sources, every one of which a build "
+        f"must check against each game's own lock: {sorted(EXPECTED_CHECKED_SOURCES)}"
+    )
+    lines.append(
+        "  Per-RUN coverage is a BUILD fact and is not derivable from persisted gold. "
+        "It is printed by `python -m scripts.build_features` as CHECKED_SOURCES=, "
+        "EMPTY_UNCHECKED=, UNREGISTERED=, POST_STAGE1_UNCHECKED= and "
+        "INFORMATION_TIME_VIOLATIONS=. A count invented here would be a number, not a "
+        "measurement."
     )
     lines.append("")
 

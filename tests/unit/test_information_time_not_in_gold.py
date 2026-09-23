@@ -310,14 +310,45 @@ class TestTheValidatorHasNoUnconditionalPass:
             encoding="utf-8"
         )
 
-    def test_the_deleted_checks_narration_is_gone(self) -> None:
-        source = self._source()
-        assert "check_time_fence" not in source, (
-            "scripts/validate_features.py still names check_time_fence, which Plan "
-            "33.2-01 DELETED. Narrating a check that does not exist is a false report."
-        )
-        assert "build_features.py:809" not in source, (
-            "the citation to the deleted fence's line number is still there."
+    def test_the_deleted_check_is_never_REPORTED_only_remembered(self) -> None:
+        """The name may appear in a COMMENT; it may not appear in anything printed.
+
+        The subject is the REPORT, not the file. A historical note saying what stood here
+        and why it was wrong is exactly what this project asks a removal to leave behind --
+        forbidding the string outright would forbid the explanation. What must not survive
+        is a verdict: ``check_time_fence`` in a string constant or an f-string is text that
+        reaches the diagnostic file or stdout, and that is the false report.
+
+        Comments are absent from the AST, so the distinction is a node-shape one and needs
+        no judgement call.
+        """
+        import ast
+
+        tree = ast.parse(self._source())
+        reported: list[int] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if (
+                    "check_time_fence" in node.value
+                    or "build_features.py:809" in node.value
+                ):
+                    reported.append(node.lineno)
+            if isinstance(node, ast.JoinedStr):
+                for part in node.values:
+                    if (
+                        isinstance(part, ast.Constant)
+                        and isinstance(part.value, str)
+                        and (
+                            "check_time_fence" in part.value
+                            or "build_features.py:809" in part.value
+                        )
+                    ):
+                        reported.append(node.lineno)
+        assert reported == [], (
+            f"scripts/validate_features.py REPORTS check_time_fence at line(s) "
+            f"{sorted(set(reported))}. Plan 33.2-01 DELETED that method; narrating a "
+            "check that does not exist is a false report. Say it in a comment if the "
+            "history is worth keeping -- comments are not printed."
         )
 
     def test_it_names_the_information_time_gate_instead(self) -> None:
