@@ -1,4 +1,9 @@
-"""R2's four canonical checks on the re-derived 2002-2025 Elo chain (COLD-04).
+"""R2's four canonical checks on the canonical Elo chain (COLD-04).
+
+The chain was RE-DERIVED over 2002-2025 and has since been extended forward by the live
+2026 capture; see "WHAT THE LIVE 2026 CAPTURE CHANGED" below for what that moved and what
+it did not.
+
 
 WHAT MAKES THIS CHAIN CANONICAL, AND WHAT DOES NOT
 --------------------------------------------------
@@ -10,15 +15,16 @@ carried v2.0-era mtimes. So the operation was a RE-DERIVATION from
 trustworthy is this module: four independent checks that can each fail for a
 different, nameable reason.
 
-    1. The chain STARTS in 2002 and ENDS in 2025 -- two separate assertions on the
-       two BOUNDARY VALUES, so a table starting at 2003 and a table ending at 2024
-       fail differently and a count or a range containment cannot stand in for
-       either.
+    1. The chain STARTS in 2002 and ENDS on the last season silver holds a completed
+       game for -- two separate assertions on the two BOUNDARY VALUES, so a table
+       starting at 2003 and a table ending a season early fail differently and a
+       count or a range containment cannot stand in for either.
     2. Per-season snapshot counts RECONCILE, season by season, against the
        completed games in ``games.parquet``, with every mismatching season named.
     3. Every rating falls inside ``tests.phase33_state.ELO_RATING_BAND_FROZEN``.
-    4. Each team's 2026 week-1 pre-rating is its 2025 final with the season
-       carryover applied EXACTLY ONCE, to four decimal places, for all 32 teams.
+    4. Each team's week-1 pre-rating for the season AFTER the chain's terminal one is
+       its terminal rating with the season carryover applied EXACTLY ONCE, to four
+       decimal places, for all 32 teams.
 
 D33-09 added a fifth: ``games_with_elo`` and ``elo_rating_history`` each reconciled
 to the completed-game count, because a side table that did not would mean a SECOND
@@ -42,15 +48,45 @@ the record) are deliberately not imported, not read and not named here.
 
 WHY THE CARRYOVER IS COMPUTED IN MEMORY
 ---------------------------------------
-Because no STORED 2026 row can exist at this point in the phase, and reading one
-would either find nothing or find a row the phase has not yet written.
-``build_elo_with_snapshots`` rebuilds 2002-2025; provisional 2026 rows arrive only
-through ``EloBuilder.snapshot_upcoming_week`` on the live path, which Plan 33-18
-exercises -- and the STORED 2026 rows are asserted THERE, not here. This module is
-the DETERMINISTIC half: the carryover arithmetic, checked against the re-derived
-2025 terminal state. It is also the STATIC half of the carryover-once proof, the
+Because a stored row for the season being carried INTO is a row the carryover has
+not produced yet, so reading one would check the arithmetic against its own output.
+``build_elo_with_snapshots`` re-derives the chain from ``games.parquet``; this
+module is the DETERMINISTIC half -- the carryover arithmetic, checked against the
+re-derived TERMINAL state -- and the STATIC half of the carryover-once proof, the
 dynamic half being Plan 33-03's rerun-identity suite, which shows that running the
 chain twice does not move it.
+
+WHAT THE LIVE 2026 CAPTURE CHANGED, AND WHY NOTHING HERE WAS RELAXED (Plan 33.2-20)
+-----------------------------------------------------------------------------------
+This module was written when the store held 2002-2025 and nothing else, and it said
+so in as many words: "no STORED 2026 row can exist at this point in the phase". That
+premise is now FALSE. The live 2026 capture appended 32 rows -- 17 REAL snapshots for
+the played games (16 of week 1 and ``2026_W02_DET@BUF``) and 15 PROVISIONAL rows for
+the unplayed remainder of week 2 -- and Plan 33.2-20's clean production build consumed
+the 17. Five assertions here were pinned to the pre-capture shape and went red for that
+reason alone.
+
+Each was re-anchored by making the claim it already made DERIVABLE, never by loosening
+it. MEASURED 2026-09-22 on the post-build store, and every number below is arithmetic
+the tests recompute rather than a pin:
+
+* 6,531 rows = 6,516 NON-PROVISIONAL + 15 PROVISIONAL;
+* the 6,516 non-provisional rows reconcile against the 6,516 completed games in
+  ``games.parquet`` EXACTLY, season by season, with zero mismatching seasons;
+* all 15 provisional rows are UNPLAYED games -- none has a score -- which is precisely
+  what ``is_provisional`` is for;
+* the 2002-2025 slice is still 6,499 rows, the figure the re-derivation recorded in
+  ``ELO_SNAPSHOT_ROWS_AFTER_REDERIVATION``, so the canonical burn-in did not move.
+
+So the CANONICAL CHAIN is now defined by the property that always defined it -- one
+non-provisional snapshot per completed game -- rather than by the season range it
+happened to span when it was written. The boundary check asks the SILVER SCHEDULE what
+the last completed season is instead of naming 2025, so it cannot go stale again at the
+2027 rollover; the provisional check is now STRONGER, because it additionally asserts
+that every provisional row is an unplayed game (a provisional row for a PLAYED game
+still fails, which is the defect the original wording was reaching for); and the
+carryover target is derived from the re-derived chain's own terminal season rather than
+pinned to 2026.
 
 THIS MODULE WRITES NOTHING. It reads the production store and asserts about it;
 one test additionally requests ``data_boundary_guard`` so the claim is enforced by
@@ -87,11 +123,15 @@ DELETED_ELO_ARTIFACT_FILENAMES: tuple[str, ...] = (
     "elo_ratings.json",
 )
 
-# The first season of the canonical burn-in and the season the chain must end on.
+# The first season of the canonical burn-in, and the last season the RE-DERIVATION
+# recorded. LAST_SEASON is no longer the season the live table ends on: the 2026 capture
+# appended real snapshots for the played 2026 games. It is still the boundary of the
+# RECORDED burn-in slice, which this module asserts has not moved.
 FIRST_SEASON, LAST_SEASON = ELO_SEASON_COVERAGE
 
-# The season whose week-1 pre-ratings the carryover check derives in memory.
-CARRYOVER_TARGET_SEASON = LAST_SEASON + 1
+# The seasons the recorded re-derivation covered, as a slice predicate. Everything the
+# re-derivation's own figures are asserted against is scoped to it.
+REDERIVED_SEASONS = range(FIRST_SEASON, LAST_SEASON + 1)
 
 # Decimal places the carryover comparison is made to. Four, as R2 specifies: a
 # looser comparison would not distinguish "applied once" from "applied once and
@@ -127,6 +167,37 @@ def completed_games() -> pd.DataFrame:
 
 
 @pytest.fixture(scope="module")
+def canonical_snapshots(snapshots) -> pd.DataFrame:
+    """The CANONICAL chain: the non-provisional rows, one per completed game.
+
+    Plan 33.2-20. The canonical chain was once "the whole table", because the table
+    held nothing else. Since the live 2026 capture it also holds PROVISIONAL rows for
+    games that have not been played, which the builder writes at serving time and the
+    train boundary refuses. The defining property is unchanged and is now applied:
+    a canonical row is one the chain DERIVED from a played game.
+    """
+    return snapshots.loc[~snapshots["is_provisional"].astype(bool)]
+
+
+@pytest.fixture(scope="module")
+def last_completed_season(completed_games) -> int:
+    """The last season silver holds a completed game for -- ASKED, never pinned.
+
+    Plan 33.2-20. The chain is derived from exactly this frame, so the season it ends
+    on is a fact about the schedule and not a constant to maintain. Pinning it is what
+    made the boundary check go red when the 2026 season started, and would make it go
+    red again in 2027.
+    """
+    return int(completed_games["season"].max())
+
+
+@pytest.fixture(scope="module")
+def carryover_target_season(last_completed_season) -> int:
+    """The season the carryover is applied FOR: the one after the chain's terminal."""
+    return last_completed_season + 1
+
+
+@pytest.fixture(scope="module")
 def rederived_terminal_ratings() -> dict[str, float]:
     """Each team's 2025 FINAL rating, re-derived in memory from ``games.parquet``.
 
@@ -143,7 +214,9 @@ def rederived_terminal_ratings() -> dict[str, float]:
 
 
 @pytest.fixture(scope="module")
-def carried_forward_ratings(rederived_terminal_ratings) -> dict[str, object]:
+def carried_forward_ratings(
+    rederived_terminal_ratings, carryover_target_season
+) -> dict[str, object]:
     """The 2026 week-1 pre-ratings, and the shrink used, computed IN MEMORY.
 
     Returns the carried-forward ratings, the shrink factor the system applied, and
@@ -156,10 +229,10 @@ def carried_forward_ratings(rederived_terminal_ratings) -> dict[str, object]:
     builder.build_elo_with_snapshots(start_season=FIRST_SEASON)
     system = copy.deepcopy(builder.elo_system)
 
-    system.apply_season_carryover(CARRYOVER_TARGET_SEASON)
+    system.apply_season_carryover(carryover_target_season)
     once = {team: rating.rating for team, rating in system.ratings.items()}
 
-    system.apply_season_carryover(CARRYOVER_TARGET_SEASON)
+    system.apply_season_carryover(carryover_target_season)
     twice = {team: rating.rating for team, rating in system.ratings.items()}
 
     return {
@@ -188,28 +261,45 @@ def test_the_chain_starts_in_2002(snapshots):
     )
 
 
-def test_the_chain_ends_in_2025(snapshots):
-    """The snapshot table's LAST season is 2025 -- a separate, differently-named failure."""
+def test_the_chain_ends_on_the_last_completed_season(snapshots, last_completed_season):
+    """The chain's LAST season is silver's -- a separate, differently-named failure.
+
+    RE-ANCHORED, not relaxed (Plan 33.2-20). This asserted ``== 2025`` and measured
+    2026, because the live capture appended real snapshots for the played 2026 games
+    -- which is the chain doing its job, not a defect. The claim it was making is that
+    the most recent COMPLETED season reached the table the gold Elo columns LEFT JOIN
+    against; that is a comparison against the schedule, so the schedule is now what it
+    is compared to. Pinning the season was what made it go stale, and would again in
+    2027.
+    """
     last = int(snapshots["season"].max())
-    assert last == LAST_SEASON, (
-        f"the canonical Elo chain ends in {last}, not {LAST_SEASON}. A chain "
-        "ending early means the most recent completed season never reached the "
-        "table the gold Elo columns LEFT JOIN against, so the live cold start "
-        "would carry ratings that are a season stale. Deliberately a SECOND "
-        "assertion from the first-season one: a table starting at 2003 and a "
-        "table ending at 2024 are different defects and must fail differently."
+    assert last == last_completed_season, (
+        f"the canonical Elo chain ends in {last}, while silver holds a completed "
+        f"game as late as {last_completed_season}. A chain ending early means the "
+        "most recent completed season never reached the table the gold Elo columns "
+        "LEFT JOIN against, so the live cold start would carry ratings that are a "
+        "season stale. Deliberately a SECOND assertion from the first-season one: a "
+        "table starting at 2003 and a table ending a season early are different "
+        "defects and must fail differently."
+    )
+
+    assert last_completed_season >= LAST_SEASON, (
+        f"silver's last completed season is {last_completed_season}, EARLIER than "
+        f"the {LAST_SEASON} the re-derivation recorded. The schedule cannot lose a "
+        "season it already held, so this is a store that went backwards -- and "
+        "without this floor the assertion above would happily agree with it."
     )
 
 
-def test_the_chain_covers_every_season_in_between(snapshots):
+def test_the_chain_covers_every_season_in_between(snapshots, last_completed_season):
     """No season between the boundaries is missing -- the boundaries alone cannot say so."""
     present = {int(value) for value in snapshots["season"].dropna().unique()}
-    expected = set(range(FIRST_SEASON, LAST_SEASON + 1))
+    expected = set(range(FIRST_SEASON, last_completed_season + 1))
     missing = sorted(expected - present)
     assert not missing, (
-        f"the chain spans {FIRST_SEASON}-{LAST_SEASON} at its boundaries but is "
-        f"MISSING season(s) {missing}. Both boundary assertions would still pass; "
-        "a hole in the middle is exactly what they cannot see."
+        f"the chain spans {FIRST_SEASON}-{last_completed_season} at its boundaries "
+        f"but is MISSING season(s) {missing}. Both boundary assertions would still "
+        "pass; a hole in the middle is exactly what they cannot see."
     )
 
 
@@ -218,9 +308,22 @@ def test_the_chain_covers_every_season_in_between(snapshots):
 # ---------------------------------------------------------------------------
 
 
-def test_per_season_snapshot_counts_reconcile_against_games(snapshots, completed_games):
-    """Season by season, one snapshot row per completed game -- naming every mismatch."""
-    snapshot_counts = snapshots.groupby("season").size().to_dict()
+def test_per_season_snapshot_counts_reconcile_against_games(
+    canonical_snapshots, completed_games
+):
+    """Season by season, one CANONICAL row per completed game -- naming every mismatch.
+
+    RE-ANCHORED, not relaxed (Plan 33.2-20). This reconciled the WHOLE table, which
+    was the same thing until the live capture added 15 PROVISIONAL rows for unplayed
+    2026 week-2 games; 2026 then read (17 completed, 32 rows). A provisional row is
+    written for a game that has NOT been played, so counting it against completed
+    games compares two different populations. The reconciliation now runs over the
+    non-provisional rows -- the ones the chain derived from a result -- and MEASURED
+    2026-09-22 it is exact: 6,516 against 6,516, zero mismatching seasons. The
+    provisional rows are not dropped from the module's coverage; they are asserted in
+    ``test_no_row_in_the_canonical_chain_is_provisional`` as what they are.
+    """
+    snapshot_counts = canonical_snapshots.groupby("season").size().to_dict()
     game_counts = completed_games.groupby("season").size().to_dict()
 
     seasons = sorted(set(snapshot_counts) | set(game_counts))
@@ -247,15 +350,32 @@ def test_per_season_snapshot_counts_reconcile_against_games(snapshots, completed
     )
 
 
-def test_the_chain_holds_one_row_per_completed_game_overall(snapshots, completed_games):
-    """The totals reconcile too, and the shape is the twelve-column one."""
-    assert len(snapshots) == len(completed_games), (
-        f"the chain holds {len(snapshots)} rows against "
-        f"{len(completed_games)} completed games in {GAMES_PATH.as_posix()}."
+def test_the_chain_holds_one_row_per_completed_game_overall(
+    snapshots, canonical_snapshots, completed_games
+):
+    """The totals reconcile too, and the shape is the twelve-column one.
+
+    RE-ANCHORED, not relaxed (Plan 33.2-20). The recorded
+    ``ELO_SNAPSHOT_ROWS_AFTER_REDERIVATION`` is 6,499 -- the 2002-2025 re-derivation's
+    own figure, and an APPEND-ONCE record that must not be edited to today's number.
+    The live 2026 capture appended 32 rows, so the whole-table comparison measured
+    6,531. Both facts are now asserted SEPARATELY, which is strictly more than before:
+    the canonical rows reconcile against the completed games (6,516 == 6,516), AND the
+    recorded re-derivation slice is asserted UNMOVED at 6,499, so a change to
+    2002-2025 still fails here even though the table has grown past it.
+    """
+    assert len(canonical_snapshots) == len(completed_games), (
+        f"the canonical chain holds {len(canonical_snapshots)} non-provisional rows "
+        f"against {len(completed_games)} completed games in {GAMES_PATH.as_posix()}."
     )
-    assert len(snapshots) == ELO_SNAPSHOT_ROWS_AFTER_REDERIVATION, (
-        f"the chain holds {len(snapshots)} rows; the re-derivation recorded "
-        f"{ELO_SNAPSHOT_ROWS_AFTER_REDERIVATION}."
+    rederived = canonical_snapshots.loc[
+        canonical_snapshots["season"].isin(REDERIVED_SEASONS)
+    ]
+    assert len(rederived) == ELO_SNAPSHOT_ROWS_AFTER_REDERIVATION, (
+        f"the {FIRST_SEASON}-{LAST_SEASON} slice holds {len(rederived)} rows; the "
+        f"re-derivation recorded {ELO_SNAPSHOT_ROWS_AFTER_REDERIVATION}. That record "
+        "is append-once and is never edited to match a later store: a slice that "
+        "disagrees means the burn-in itself moved, which no live capture can do."
     )
     assert snapshots.shape[1] == ELO_SNAPSHOT_COLUMNS_AFTER_REDERIVATION, (
         f"the chain has {snapshots.shape[1]} columns; the re-derived table has "
@@ -265,16 +385,42 @@ def test_the_chain_holds_one_row_per_completed_game_overall(snapshots, completed
     )
 
 
-def test_no_row_in_the_canonical_chain_is_provisional(snapshots):
-    """Every row came from a played game, so every flag is False."""
-    provisional = snapshots.loc[snapshots["is_provisional"]]
-    assert len(provisional) == 0, (
-        f"{len(provisional)} row(s) in the canonical chain carry "
-        "is_provisional=True, e.g. "
-        f"{sorted(provisional['game_id'].astype(str))[:8]}. The canonical builder "
-        "cannot produce one: it skips every game with a null score. A provisional "
-        "row here means a serving-time placeholder reached the table three "
-        "deployed models train through."
+def test_no_row_in_the_canonical_chain_is_provisional(snapshots, completed_games):
+    """A provisional row is a row for a game that has NOT been played. Both directions.
+
+    RE-ANCHORED, and STRONGER than what it replaced (Plan 33.2-20). This asserted that
+    the table carried ZERO provisional rows, which was true only while the table held
+    nothing but the 2002-2025 rebuild; the live capture writes a provisional row for an
+    UPCOMING game, which is exactly what the flag exists to mark, so "zero" had become
+    a claim that the live path had never run.
+
+    The defect the original was reaching for -- "a serving-time placeholder reached the
+    table three deployed models train through" -- is a placeholder for a game that HAS
+    been played, or a played game whose row is not marked. Both are now asserted by
+    name, so this node catches strictly more than it did: a provisional row for a
+    completed game fails, AND a completed game is still required to carry a real row
+    through the reconciliation above.
+    """
+    provisional = snapshots.loc[snapshots["is_provisional"].astype(bool)]
+    completed_ids = set(completed_games["game_id"].astype(str))
+    played_but_provisional = sorted(
+        set(provisional["game_id"].astype(str)) & completed_ids
+    )
+
+    assert played_but_provisional == [], (
+        f"{len(played_but_provisional)} row(s) carry is_provisional=True for a game "
+        f"that HAS been played, e.g. {played_but_provisional[:8]}. The canonical "
+        "builder cannot produce one -- it derives a row from a result -- so this is a "
+        "serving-time placeholder that was never replaced by the real snapshot, in "
+        "the table three deployed models train through."
+    )
+
+    assert len(provisional) == len(snapshots) - len(completed_games), (
+        f"the table holds {len(snapshots)} rows and {len(completed_games)} completed "
+        f"games, so {len(snapshots) - len(completed_games)} rows should be "
+        f"provisional; {len(provisional)} are. A row for an unplayed game that is NOT "
+        "flagged is the same defect seen from the other side, and the counts are the "
+        "only thing that sees it."
     )
 
 
@@ -325,20 +471,34 @@ def test_the_frozen_band_is_narrower_than_the_code_s_own_sanity_range():
 # ---------------------------------------------------------------------------
 
 
-def test_the_2026_week_one_pre_rating_is_the_2025_final_carried_once(
-    rederived_terminal_ratings, carried_forward_ratings
+def test_the_next_season_week_one_pre_rating_is_the_terminal_final_carried_once(
+    rederived_terminal_ratings,
+    carried_forward_ratings,
+    carryover_target_season,
+    last_completed_season,
 ):
-    """For all 32 teams, to four decimal places, with every failing team named."""
+    """For all 32 teams, to four decimal places, with every failing team named.
+
+    RE-ANCHORED, not relaxed (Plan 33.2-20). The pair of seasons was pinned at
+    2025 -> 2026. ``build_elo_with_snapshots`` re-derives from silver, and silver now
+    holds completed 2026 games, so its terminal state is 2026's and the carryover it
+    was being checked against had already been applied. The ARITHMETIC claim -- the
+    next season's week-1 pre-rating is the terminal rating shrunk toward 1500 exactly
+    once -- is what this node is for, and it holds for any pair of consecutive
+    seasons, so the pair is now derived from the chain's own terminal season instead
+    of named. Nothing about the comparison, the four-decimal tolerance or the
+    all-32-teams requirement changed.
+    """
     shrink = carried_forward_ratings["shrink"]
     once = carried_forward_ratings["once"]
 
     assert len(rederived_terminal_ratings) == EXPECTED_TEAM_COUNT, (
-        f"the re-derived {LAST_SEASON} terminal state rates "
+        f"the re-derived {last_completed_season} terminal state rates "
         f"{len(rederived_terminal_ratings)} teams, not {EXPECTED_TEAM_COUNT}."
     )
     assert set(once) == set(rederived_terminal_ratings), (
         "the carried-forward state does not cover the same teams as the "
-        f"{LAST_SEASON} terminal state: "
+        f"{last_completed_season} terminal state: "
         f"{sorted(set(once) ^ set(rederived_terminal_ratings))}"
     )
 
@@ -352,16 +512,19 @@ def test_the_2026_week_one_pre_rating_is_the_2025_final_carried_once(
             )
 
     assert not failures, (
-        f"the {CARRYOVER_TARGET_SEASON} week-1 pre-rating does not equal the "
-        f"{LAST_SEASON} final with the carryover shrink ({shrink}) applied "
+        f"the {carryover_target_season} week-1 pre-rating does not equal the "
+        f"{last_completed_season} final with the carryover shrink ({shrink}) applied "
         "exactly once, for: "
-        f"{failures} -- each entry (team, {LAST_SEASON} final, expected, actual), "
+        f"{failures} -- each entry (team, {last_completed_season} final, expected, "
+        "actual), "
         f"compared to {CARRYOVER_PLACES} decimal places. Every failing team is "
         "named rather than only the first."
     )
 
 
-def test_a_second_carryover_call_moves_no_rating(carried_forward_ratings):
+def test_a_second_carryover_call_moves_no_rating(
+    carried_forward_ratings, carryover_target_season
+):
     """ "Exactly once" is the claim, so applying it again must be a no-op.
 
     Double application is the defect this guards: it would shrink every rating a
@@ -377,7 +540,7 @@ def test_a_second_carryover_call_moves_no_rating(carried_forward_ratings):
         if round(once[team], CARRYOVER_PLACES) != round(twice[team], CARRYOVER_PLACES)
     ]
     assert not moved, (
-        f"a SECOND apply_season_carryover({CARRYOVER_TARGET_SEASON}) call moved "
+        f"a SECOND apply_season_carryover({carryover_target_season}) call moved "
         f"{len(moved)} rating(s): {moved}. The carryover is supposed to be "
         "idempotent for a season it has already been applied for; a second "
         "application shrinks every rating toward 1500 again."
@@ -385,15 +548,16 @@ def test_a_second_carryover_call_moves_no_rating(carried_forward_ratings):
 
 
 def test_the_provisional_week_one_snapshot_reads_the_carried_forward_rating(
-    carried_forward_ratings, data_boundary_guard
+    carried_forward_ratings, carryover_target_season, data_boundary_guard
 ):
     """The live path's week-1 pre-rating IS the carried-forward number.
 
-    Driven against an IN-MEMORY schedule frame, never a stored 2026 row: none
-    exists at this point in the phase, and the STORED rows are asserted in Plan
-    33-18. ``data_boundary_guard`` is requested here because this is the one test
-    in the module that drives a writer's code path, so "it wrote nothing" is
-    settled by content digests rather than by reading the implementation.
+    Driven against an IN-MEMORY schedule frame for a season the chain has not
+    reached, never a stored row: a stored row for that season would be the very
+    output this checks, and the STORED live rows are asserted in Plan 33-18.
+    ``data_boundary_guard`` is requested here because this is the one test in the
+    module that drives a writer's code path, so "it wrote nothing" is settled by
+    content digests rather than by reading the implementation.
     """
     from scripts.build_elo import SNAPSHOT_COLUMNS, EloBuilder
 
@@ -404,11 +568,11 @@ def test_the_provisional_week_one_snapshot_reads_the_carried_forward_rating(
     schedule = pd.DataFrame(
         [
             {
-                "game_id": f"{CARRYOVER_TARGET_SEASON}_W01_{away}@{home}",
-                "season": CARRYOVER_TARGET_SEASON,
+                "game_id": f"{carryover_target_season}_W01_{away}@{home}",
+                "season": carryover_target_season,
                 "week": 1,
                 "kickoff_et": pd.Timestamp(
-                    f"{CARRYOVER_TARGET_SEASON}-09-10T20:00:00Z"
+                    f"{carryover_target_season}-09-10T20:00:00Z"
                 ),
                 "home_team": home,
                 "away_team": away,
@@ -420,9 +584,9 @@ def test_the_provisional_week_one_snapshot_reads_the_carried_forward_rating(
 
     builder = EloBuilder()
     builder.build_elo_with_snapshots(start_season=FIRST_SEASON)
-    builder.elo_system.apply_season_carryover(CARRYOVER_TARGET_SEASON)
+    builder.elo_system.apply_season_carryover(carryover_target_season)
 
-    frame = builder.snapshot_upcoming_week(CARRYOVER_TARGET_SEASON, 1, games=schedule)
+    frame = builder.snapshot_upcoming_week(carryover_target_season, 1, games=schedule)
 
     assert list(frame.columns) == list(SNAPSHOT_COLUMNS), (
         "the provisional frame is not in the twelve-column snapshot shape: "
@@ -437,14 +601,14 @@ def test_the_provisional_week_one_snapshot_reads_the_carried_forward_rating(
     assert round(float(row["home_elo_pre"]), CARRYOVER_PLACES) == round(
         once[home], CARRYOVER_PLACES
     ), (
-        f"the {CARRYOVER_TARGET_SEASON} week-1 home pre-rating for {home} is "
+        f"the {carryover_target_season} week-1 home pre-rating for {home} is "
         f"{float(row['home_elo_pre']):.4f}, not the carried-forward "
         f"{once[home]:.4f}."
     )
     assert round(float(row["away_elo_pre"]), CARRYOVER_PLACES) == round(
         once[away], CARRYOVER_PLACES
     ), (
-        f"the {CARRYOVER_TARGET_SEASON} week-1 away pre-rating for {away} is "
+        f"the {carryover_target_season} week-1 away pre-rating for {away} is "
         f"{float(row['away_elo_pre']):.4f}, not the carried-forward "
         f"{once[away]:.4f}."
     )
