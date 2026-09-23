@@ -81,6 +81,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.ou_ev_chain import estimate_prior_season_bias
+from models.market_probability import oof_market_probability
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -137,8 +138,9 @@ MODEL_COLUMN: Mapping[str, str] = {
 }
 
 # The gitignored production stores. An input under one of these is digested over RAW bytes; see
-# the module docstring's digest rule.
-_PRODUCTION_STORE_PREFIXES = ("artifacts/", "data/")
+# the module docstring's digest rule. ``outputs/`` joined with the superseding correction (Plan
+# 33.2-26), whose chain-fit record lives there; the 11761c7 derivation reads nothing under it.
+_PRODUCTION_STORE_PREFIXES = ("artifacts/", "data/", "outputs/")
 
 _TEXT_SUFFIXES = (".json", ".toml")
 
@@ -409,6 +411,22 @@ def _shares_and_counts(
     return shares, counts
 
 
+def _anchored_pair(
+    magnitudes: np.ndarray, cumulative_low: float, cumulative_low_medium: float
+) -> tuple[float, float]:
+    """The UNROUNDED ``(high, medium)`` pair reproducing WP's band shares on *magnitudes*.
+
+    The medium threshold is the quantile at WP's cumulative "low" share and the high threshold
+    the quantile at its cumulative "low + medium" share, under :data:`QUANTILE_METHOD`. ONE
+    implementation, read by the 11761c7 derivation and by its superseding correction alike.
+    """
+    raw_medium = float(np.quantile(magnitudes, cumulative_low, method=QUANTILE_METHOD))
+    raw_high = float(
+        np.quantile(magnitudes, cumulative_low_medium, method=QUANTILE_METHOD)
+    )
+    return raw_high, raw_medium
+
+
 def measure(
     artifacts: Mapping[str, str],
     input_digests: Mapping[str, str],
@@ -501,11 +519,8 @@ def measure(
         column = f"{target}_edge"
         magnitudes = edges.loc[edges[column].notna(), column].abs().to_numpy(float)
         if target != "wp":
-            raw_medium = float(
-                np.quantile(magnitudes, cumulative_low, method=QUANTILE_METHOD)
-            )
-            raw_high = float(
-                np.quantile(magnitudes, cumulative_low_medium, method=QUANTILE_METHOD)
+            raw_high, raw_medium = _anchored_pair(
+                magnitudes, cumulative_low, cumulative_low_medium
             )
             raw_thresholds[target] = (raw_high, raw_medium)
             thresholds[target] = (round(raw_high, 4), round(raw_medium, 4))
@@ -1157,6 +1172,1028 @@ in-sample and therefore attenuated, and that it was frozen rather than chosen la
 
 
 # ---------------------------------------------------------------------------
+# THE SUPERSEDING CORRECTION (Plan 33.2-26, SPEC R14, D33.2-01/09/25)
+#
+# Commit 11761c7 froze the 2026 edge thresholds and the 2026 chain-fit bias from models and
+# closing lines this phase replaced. The frozen pair of files is NEVER edited; this section
+# derives the corrected values into a NEW pair (``backtest/corrected_cold_start_constants.py`` +
+# ``COLD-START-CORRECTION.md``) that names 11761c7 by sha.
+#
+# WHAT IS SWAPPED: the models (the three corrected artifacts production serves, through their
+# own recorded recipes' walk-forward predictions -- the same predictions Plan 33.2-29's corrected
+# chain fit was swept on) and the market (the owned ``odds_timeline`` line at or before each
+# game's lock, never a closing line; WP's market side converted OUT OF FOLD). WHAT IS HELD: WP's
+# 0.05 / 0.02 anchor pair, the WP-anchored band-share quantiles, ``QUANTILE_METHOD``, the STRICT
+# ``>`` bands, the digest refusals and the walk-forward bias estimator.
+# ---------------------------------------------------------------------------
+
+CORRECTED_MODULE_PATH = "backtest/corrected_cold_start_constants.py"
+CORRECTION_DOCUMENT_PATH = "COLD-START-CORRECTION.md"
+
+#: The record the correction supersedes, by sha. Resolved to the full sha at render time.
+SUPERSEDED_PREREGISTRATION_SHORT = "11761c7"
+
+#: The corrected chain fit (Plan 33.2-29), read by EXPLICIT path and never through
+#: ``backtest.weekly_bet_list.DEFAULT_CHAIN_FIT_PATH``: this derivation must read the corrected
+#: record whatever the live default names, and until the repoint that default is the Phase-31
+#: record.
+CHAIN_FIT_SOURCE: Path = Path("outputs") / "p332" / "corrected_chain_fit.json"
+
+#: The threshold window: every season with honest pre-lock prices.
+CORRECTED_THRESHOLD_SEASONS: tuple[int, ...] = (2020, 2021, 2022, 2023, 2024)
+CORRECTED_WINDOW_REASON = (
+    "2020-2024 is the whole honest corpus, not a preference: 2018-2019 are unbuyable at any "
+    "price and 2025 has no free pre-lock source. The single-use 2025 hold is spent and no row "
+    "of it enters this derivation."
+)
+
+#: The season the corrected chain-fit bias is FOR. Named rather than derived as "the pool's last
+#: season plus one": the corrected pool ends at 2024, because no 2025 row is read.
+CORRECTED_BIAS_TARGET_SEASON = 2026
+
+#: Below this many rows with a computable edge a target gets NO threshold. The calibration gate's
+#: n >= 100 is the nearest existing floor (33.2-CONTEXT.md, Claude's Discretion); a threshold is a
+#: quantile, and a quantile over fewer rows than that describes the sample, not the target.
+MIN_HONEST_THRESHOLD_ROWS = 100
+
+EDGE_UNITS_CORRECTED: Mapping[str, str] = {
+    "ats": "points (signed model-minus-market home margin)",
+    "ou": "ratio of the market total, floored at 30",
+    "wp": "probability (model minus the spread-derived out-of-fold market probability)",
+}
+
+
+class InsufficientHonestDataForThresholdError(Exception):
+    """A target's honest pool is too small to derive a threshold, so it gets NONE (R14).
+
+    Its threshold is recorded as ``None`` and the selection path places no bets for it -- never a
+    default, a zero or the superseded 11761c7 value, which would look like a threshold and be a
+    relic. Like ``data.sealed_probe_log.SealedProbeLogCorrupt`` it inherits ``Exception``
+    directly, NOT ``ValueError`` / ``KeyError`` / ``RuntimeError`` / ``LookupError``: the
+    ``except ValueError`` around the bias estimator in :func:`measure` and the selection path's
+    absent-input catch tuples would otherwise turn "no threshold" back into "carry on".
+    """
+
+
+class ChainFitReproductionError(Exception):
+    """The derivation's own residuals do not reproduce the corrected chain fit's season biases.
+
+    The 2026 bias continues that record's walk-forward series, so it is only the same series if
+    the earlier seasons come out identical. A mismatch means the two were computed on different
+    predictions, and extending one with the other would be a rule nobody chose.
+    """
+
+
+@dataclass(frozen=True)
+class PrelockEdges:
+    """The per-game edges over the owned pre-lock corpus, and the WP rows with no converter.
+
+    Attributes:
+        frame: One row per corpus game: ``game_id``, ``season``, the market line, the three
+            model outputs, ``wp_market_prob`` (out of fold, NaN where no prior fold exists) and
+            the three edges.
+        wp_excluded: The ``no_prior_fold_converter`` rows (``game_id``, ``season``, ``reason``).
+    """
+
+    frame: pd.DataFrame
+    wp_excluded: pd.DataFrame
+
+
+def build_prelock_edge_frame(
+    corpus_frame: pd.DataFrame,
+    predictions: Mapping[str, pd.DataFrame],
+    walk_forward_slopes: Mapping[int | str, float],
+) -> PrelockEdges:
+    """The three edges of every owned pre-lock game, on each target's own unit. Pure.
+
+    ATS and O/U read the owned pre-lock line directly. WP's market side is converted OUT OF
+    FOLD through ``oof_market_probability`` with the bound converter's prior-only slopes: a
+    historical row converted with the serving slope would be priced by a slope fitted partly on
+    its own outcome. A season with no prior fold (2020 on today's corpus) is recorded as
+    ``no_prior_fold_converter`` and never filled; it stays in the ATS and O/U edges.
+
+    Args:
+        corpus_frame: ``models.blending_data.PrelockTuningCorpus.frame`` (``market_spread`` on
+            the home-margin scale).
+        predictions: ``{wp, ats, ou}`` -> ``game_id`` and ``prediction`` per game.
+        walk_forward_slopes: The bound converter's ``walk_forward_slopes``.
+
+    Raises:
+        SpentHoldSeasonError / DerivationWindowError: a corpus row outside 2020-2024 (a 2025 row
+            is named as the spent hold).
+        ValueError: a corpus game with no prediction for some target.
+    """
+    from models.blending_data import EXCLUSION_NO_PRIOR_FOLD_CONVERTER
+    from scripts.derive_corrected_ev_chain import refuse_seasons_outside
+
+    refuse_seasons_outside(
+        corpus_frame, CORRECTED_THRESHOLD_SEASONS, "the owned pre-lock corpus"
+    )
+    frame = corpus_frame.loc[
+        :, ["game_id", "season", "market_spread", "market_total"]
+    ].copy()
+    frame["game_id"] = frame["game_id"].astype(str)
+    frame["season"] = frame["season"].astype(int)
+
+    for target in TARGETS:
+        preds = predictions[target].loc[:, ["game_id", "prediction"]].copy()
+        preds["game_id"] = preds["game_id"].astype(str)
+        missing = sorted(set(frame["game_id"]) - set(preds["game_id"]))
+        if missing:
+            msg = (
+                f"{len(missing)} owned pre-lock game(s) have no {target} prediction, e.g. "
+                f"{missing[:10]}; refusing rather than dropping them uncounted."
+            )
+            raise ValueError(msg)
+        frame = frame.merge(
+            preds.rename(columns={"prediction": MODEL_COLUMN[target]}),
+            on="game_id",
+            how="left",
+            validate="one_to_one",
+        )
+
+    frame["ats_edge"] = frame["model_spread"] - frame["market_spread"]
+    frame["ou_edge"] = (frame["model_total"] - frame["market_total"]) / frame[
+        "market_total"
+    ].clip(lower=OU_TOTAL_FLOOR)
+
+    covered = frame["season"].isin({int(season) for season in walk_forward_slopes})
+    frame["wp_market_prob"] = np.nan
+    if bool(covered.any()):
+        converted = frame.loc[covered]
+        frame.loc[covered, "wp_market_prob"] = oof_market_probability(
+            converted.assign(home_fav_margin=converted["market_spread"]),
+            walk_forward_slopes,
+        )
+    frame["wp_edge"] = frame["model_prob"] - frame["wp_market_prob"]
+
+    excluded = frame.loc[~covered, ["game_id", "season"]].assign(
+        reason=EXCLUSION_NO_PRIOR_FOLD_CONVERTER
+    )
+    return PrelockEdges(
+        frame=frame.sort_values("game_id", ignore_index=True),
+        wp_excluded=excluded.sort_values("game_id", ignore_index=True),
+    )
+
+
+def require_honest_pool(target: str, magnitudes: np.ndarray) -> None:
+    """Refuse a threshold over fewer than :data:`MIN_HONEST_THRESHOLD_ROWS` honest rows.
+
+    Raises:
+        InsufficientHonestDataForThresholdError: naming the target and both counts.
+    """
+    if magnitudes.size < MIN_HONEST_THRESHOLD_ROWS:
+        msg = (
+            f"[{target!r}] only {magnitudes.size} honest pre-lock row(s) carry a computable "
+            f"edge, below MIN_HONEST_THRESHOLD_ROWS = {MIN_HONEST_THRESHOLD_ROWS}. This target "
+            "gets NO threshold and therefore places no bets; the superseded 11761c7 value is "
+            "never borrowed in its place."
+        )
+        raise InsufficientHonestDataForThresholdError(msg)
+
+
+@dataclass(frozen=True)
+class ThresholdDerivation:
+    """The corrected pairs, their refusals, and the label movement they cause."""
+
+    thresholds: dict[str, tuple[float, float] | None]
+    raw_thresholds: dict[str, tuple[float, float] | None]
+    refusals: dict[str, str]
+    wp_reference_shares: dict[str, float] | None
+    band_shares_after: dict[str, dict[str, float]]
+    band_counts_after: dict[str, dict[str, int]]
+    band_shares_under_current: dict[str, dict[str, float]]
+    band_counts_under_current: dict[str, dict[str, int]]
+    games_changing_band: dict[str, int]
+    eligible_rows: dict[str, int]
+    population_rows: int
+
+
+def derive_threshold_pairs(
+    edges: pd.DataFrame,
+    current_pairs: Mapping[str, tuple[float, float]] | None = None,
+) -> ThresholdDerivation:
+    """The WP-anchored per-target pairs over *edges*, or a named refusal per target. Pure.
+
+    WP's pair stays 0.05 / 0.02 and its measured band shares are the anchor; ATS's and O/U's
+    pairs are the quantiles reproducing those shares on their own ``|edge|`` distributions -- the
+    11761c7 recipe, unchanged. A target below :data:`MIN_HONEST_THRESHOLD_ROWS` is refused (its
+    pair is ``None``), and a refused WP anchor leaves ATS and O/U nothing to reproduce.
+
+    Args:
+        edges: :attr:`PrelockEdges.frame` (``season`` and the three ``*_edge`` columns).
+        current_pairs: The pairs in force before this correction, for the label movement.
+            Defaults to the superseded 11761c7 pairs, READ from the frozen module.
+    """
+    if current_pairs is None:
+        from backtest.cold_start_constants import EDGE_TIER_THRESHOLDS_BY_TARGET
+
+        current_pairs = EDGE_TIER_THRESHOLDS_BY_TARGET
+
+    magnitudes = {
+        target: edges[f"{target}_edge"].dropna().abs().to_numpy(float)
+        for target in TARGETS
+    }
+    thresholds: dict[str, tuple[float, float] | None] = dict.fromkeys(TARGETS)
+    raw: dict[str, tuple[float, float] | None] = dict.fromkeys(TARGETS)
+    refusals: dict[str, str] = {}
+    wp_shares: dict[str, float] | None = None
+
+    try:
+        require_honest_pool("wp", magnitudes["wp"])
+    except InsufficientHonestDataForThresholdError as refusal:
+        refusals["wp"] = str(refusal)
+        for target in ("ats", "ou"):
+            refusals[target] = (
+                f"[{target!r}] the WP anchor is refused, so there are no band shares to "
+                "reproduce and this target gets NO threshold. " + str(refusal)
+            )
+    else:
+        wp_shares, _ = _shares_and_counts(
+            magnitudes["wp"], WP_HIGH_THRESHOLD, WP_MEDIUM_THRESHOLD
+        )
+        cumulative_low = float((magnitudes["wp"] <= WP_MEDIUM_THRESHOLD).mean())
+        cumulative_low_medium = float((magnitudes["wp"] <= WP_HIGH_THRESHOLD).mean())
+        thresholds["wp"] = raw["wp"] = (WP_HIGH_THRESHOLD, WP_MEDIUM_THRESHOLD)
+        for target in ("ats", "ou"):
+            try:
+                require_honest_pool(target, magnitudes[target])
+            except InsufficientHonestDataForThresholdError as refusal:
+                refusals[target] = str(refusal)
+                continue
+            raw_high, raw_medium = _anchored_pair(
+                magnitudes[target], cumulative_low, cumulative_low_medium
+            )
+            raw[target] = (raw_high, raw_medium)
+            thresholds[target] = (round(raw_high, 4), round(raw_medium, 4))
+
+    shares_after: dict[str, dict[str, float]] = {}
+    counts_after: dict[str, dict[str, int]] = {}
+    shares_current: dict[str, dict[str, float]] = {}
+    counts_current: dict[str, dict[str, int]] = {}
+    changing: dict[str, int] = {}
+    for target in TARGETS:
+        pair = thresholds[target]
+        if pair is None:
+            continue
+        values = magnitudes[target]
+        old_high, old_medium = current_pairs[target]
+        shares_after[target], counts_after[target] = _shares_and_counts(values, *pair)
+        shares_current[target], counts_current[target] = _shares_and_counts(
+            values, old_high, old_medium
+        )
+        changing[target] = int(
+            (_band(values, old_high, old_medium) != _band(values, *pair)).sum()
+        )
+
+    return ThresholdDerivation(
+        thresholds=thresholds,
+        raw_thresholds=raw,
+        refusals=refusals,
+        wp_reference_shares=wp_shares,
+        band_shares_after=shares_after,
+        band_counts_after=counts_after,
+        band_shares_under_current=shares_current,
+        band_counts_under_current=counts_current,
+        games_changing_band=changing,
+        eligible_rows={target: int(magnitudes[target].size) for target in TARGETS},
+        population_rows=len(edges),
+    )
+
+
+def extend_prior_season_bias(
+    residuals_by_season: Mapping[int, np.ndarray],
+    record_biases: Mapping[int, float],
+    target_season: int,
+) -> float:
+    """The walk-forward bias for *target_season*, after REPRODUCING the record's seasons.
+
+    Every season the corrected chain fit prices is re-estimated from *residuals_by_season*
+    through the same ``estimate_prior_season_bias`` and must come out EQUAL. Only then is the
+    series extended to *target_season*, over every strictly-prior residual the record's own rule
+    pools.
+
+    Raises:
+        ChainFitReproductionError: a recorded season does not reproduce.
+        EmptyResidualPoolError: no strictly-prior season exists.
+    """
+    pools = {int(season): values for season, values in residuals_by_season.items()}
+    for season, recorded in sorted(record_biases.items()):
+        reproduced = float(estimate_prior_season_bias(pools, int(season)))
+        if reproduced != float(recorded):
+            msg = (
+                f"season {season}: the corrected chain fit records bias {recorded!r} but the "
+                f"same walk-forward residuals give {reproduced!r}. The two were computed on "
+                "different predictions; the 2026 bias is not extended from a series it does "
+                "not reproduce."
+            )
+            raise ChainFitReproductionError(msg)
+    try:
+        return float(estimate_prior_season_bias(pools, target_season))
+    except ValueError as error:
+        msg = (
+            f"no strictly-prior residual exists for {target_season}; no bias is invented: "
+            f"{error}"
+        )
+        raise EmptyResidualPoolError(msg) from error
+
+
+def load_corrected_chain_fit(repo_root: Path = REPO_ROOT) -> Any:
+    """The corrected chain fit, through the live loader, by EXPLICIT path.
+
+    Called through the module attribute so the path it is handed is observable, and handed
+    ``repo_root / CHAIN_FIT_SOURCE`` -- never ``DEFAULT_CHAIN_FIT_PATH``.
+    """
+    from backtest import weekly_bet_list
+
+    return weekly_bet_list.load_frozen_chain_fit(path=repo_root / CHAIN_FIT_SOURCE)
+
+
+def resolve_corrected_inputs(repo_root: Path = REPO_ROOT) -> tuple[dict[str, str], str]:
+    """The four served artifact ids and the converter the LIVE blend binds.
+
+    Precondition of the whole correction (Plan 33.2-25 Task 3 ruled "swap"): the live manifest
+    names exactly ``tests.phase33_state.P332_25B_SWAP_ARTIFACT_IDS``. The converter is reached
+    through the live blend's own provenance (``blend_weights.json``), never as a fifth manifest
+    pointer, and must be the one the blend was recorded binding.
+
+    Raises:
+        DigestMismatchError: the live manifest or the blend's converter is not the recorded one.
+    """
+    import json
+
+    from tests.phase33_state import (
+        P332_25B_BLEND_CONVERTER_ARTIFACT_ID,
+        P332_25B_SWAP_ARTIFACT_IDS,
+    )
+
+    swap = dict(P332_25B_SWAP_ARTIFACT_IDS)
+    manifest = json.loads(
+        (repo_root / "artifacts" / "latest.json").read_text(encoding="utf-8")
+    )
+    moved = {key: manifest.get(key) for key in swap if manifest.get(key) != swap[key]}
+    if moved:
+        msg = (
+            f"artifacts/latest.json does not serve the recorded post-swap ids {swap}: {moved}. "
+            "The correction is derived from the corrected models only."
+        )
+        raise DigestMismatchError(msg)
+    blend = json.loads(
+        (repo_root / "artifacts" / swap["blend"] / "blend_weights.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    converter_id = str(blend.get("market_probability_artifact_id"))
+    if converter_id != P332_25B_BLEND_CONVERTER_ARTIFACT_ID:
+        msg = (
+            f"the live blend binds converter {converter_id!r}, not the recorded "
+            f"{P332_25B_BLEND_CONVERTER_ARTIFACT_ID!r}; there is no yardstick to derive against."
+        )
+        raise DigestMismatchError(msg)
+    return swap, converter_id
+
+
+def corrected_input_keys(swap: Mapping[str, str], converter_id: str) -> list[str]:
+    """Every input the correction reads, in a stable order."""
+    keys = [
+        "artifacts/latest.json",
+        "data/silver/games.parquet",
+        "data/silver/odds_timeline.parquet",
+        CHAIN_FIT_SOURCE.as_posix(),
+    ]
+    keys.extend(f"data/gold/features_{target}.parquet" for target in TARGETS)
+    keys.extend(f"artifact:{swap[key]}" for key in (*TARGETS, "blend"))
+    keys.append(f"artifact:{converter_id}")
+    return keys
+
+
+def measure_input_digests_for(keys: Sequence[str], repo_root: Path) -> dict[str, str]:
+    """Measure each key's digest with the instrument its location requires."""
+    measured: dict[str, str] = {}
+    for key in keys:
+        if key.startswith("artifact:"):
+            measured[key] = digest_artifact_dir(
+                repo_root / "artifacts" / key.split(":", 1)[1]
+            )
+        else:
+            measured[key] = digest_input_file(repo_root / key, key)
+    return measured
+
+
+@dataclass(frozen=True)
+class CorrectedDerivation:
+    """Everything the corrected module and the correction document state."""
+
+    superseded_commit: str
+    swap: Mapping[str, str]
+    converter_id: str
+    gold_generation: str
+    chain_fit_record_id: str
+    chain_fit_floors: Mapping[str, float | None]
+    chain_fit_sds: Mapping[str, float | None]
+    thresholds: ThresholdDerivation
+    superseded_pairs: Mapping[str, tuple[float, float]]
+    wp_excluded_no_prior_fold: int
+    excluded_no_prelock_line: int
+    bias: Mapping[str, float]
+    superseded_bias: Mapping[str, float]
+    bias_by_season: Mapping[str, Mapping[int, float]]
+    bias_seasons: tuple[int, ...]
+    bias_rows: Mapping[str, int]
+    input_digests: Mapping[str, str]
+    formatter: str
+    thread_limit: int
+
+
+def measure_corrected(
+    input_digests: Mapping[str, str], repo_root: Path = REPO_ROOT
+) -> CorrectedDerivation:
+    """Derive the corrected thresholds and 2026 bias. READ-ONLY over data/, artifacts/, outputs/.
+
+    Raises:
+        DigestMismatchError: the manifest, the converter or the gold is not the recorded one.
+        ChainFitReproductionError: the residuals do not reproduce the corrected chain fit.
+    """
+    import json
+
+    from threadpoolctl import threadpool_limits
+
+    import backtest.cold_start_constants as superseded
+    from backtest.profitability_2025 import _residuals_by_season
+    from backtest.tune import (
+        _gold_predictions_fn,
+        common_gold_generation,
+        read_source_recipes,
+    )
+    from backtest.weekly_bet_list import frozen_overlay_season
+    from config.tuning_preregistration import PINNED_THREAD_COUNT
+    from models.blending_data import load_tuning_period_data
+    from models.market_probability import load_market_probability_artifact
+    from scripts.derive_corrected_ev_chain import (
+        BIAS_SEED_SEASONS,
+        build_candidate_frames,
+        fit_frame_for,
+    )
+    from tests.gold_generation import gold_generation_key
+    from tests.phase33_state import P332_25B_REFIT_GOLD_GENERATION
+
+    swap, converter_id = resolve_corrected_inputs(repo_root)
+    artifacts_dir = repo_root / "artifacts"
+    model_ids = {target: swap[target] for target in TARGETS}
+    recipes = read_source_recipes(model_ids, artifacts_dir)
+    gold_digest = common_gold_generation(recipes, P332_25B_REFIT_GOLD_GENERATION)
+    if gold_generation_key() != gold_digest:
+        msg = (
+            "the gold on disk is not the generation the corrected models were fitted on "
+            f"({gold_digest}); their walk-forward predictions cannot be reproduced."
+        )
+        raise DigestMismatchError(msg)
+
+    record = json.loads((repo_root / CHAIN_FIT_SOURCE).read_text(encoding="utf-8"))
+    if dict(record["artifact_ids"]) != swap or (
+        record["market_probability_artifact_id"] != converter_id
+    ):
+        msg = (
+            f"{CHAIN_FIT_SOURCE.as_posix()} was fitted on {record['artifact_ids']} / "
+            f"{record['market_probability_artifact_id']}, not the served {swap} / "
+            f"{converter_id}."
+        )
+        raise DigestMismatchError(msg)
+    chain_fit = load_corrected_chain_fit(repo_root)
+
+    converter = load_market_probability_artifact(converter_id, artifacts_dir)
+    slopes = converter["walk_forward_slopes"]
+    corpus = load_tuning_period_data(repo_root / "data" / "silver")
+    predict = _gold_predictions_fn(repo_root / "data" / "gold")
+    seasons = [*BIAS_SEED_SEASONS, *CORRECTED_THRESHOLD_SEASONS]
+    # THE THREAD PIN (Plan 33.2-22): XGBoost answers differently at different OpenMP thread
+    # counts; every published fit is pinned and the value recorded.
+    with threadpool_limits(limits=PINNED_THREAD_COUNT):
+        predictions = {
+            target: predict(target, recipes[target], seasons) for target in TARGETS
+        }
+
+    in_window = {
+        target: frame[frame["season"].isin(CORRECTED_THRESHOLD_SEASONS)]
+        for target, frame in predictions.items()
+    }
+    edges = build_prelock_edge_frame(corpus.frame, in_window, slopes)
+    thresholds = derive_threshold_pairs(
+        edges.frame, superseded.EDGE_TIER_THRESHOLDS_BY_TARGET
+    )
+
+    # THE 2026 BIAS continues the corrected chain fit's own walk-forward series: the SAME rows
+    # (the bias seed plus every corpus game), the SAME residual helper and the SAME estimator.
+    frames = build_candidate_frames(corpus.frame, predictions, slopes)
+    overlay = frozen_overlay_season()
+    bias: dict[str, float] = {}
+    bias_by_season: dict[str, dict[int, float]] = {}
+    bias_rows: dict[str, int] = {}
+    for target in TARGETS:
+        residuals = _residuals_by_season(
+            fit_frame_for(target, predictions, frames), target
+        )
+        recorded = {
+            season: value
+            for season, value in chain_fit[target].season_bias_by_season.items()
+            if season != overlay
+        }
+        bias[target] = extend_prior_season_bias(
+            residuals, recorded, CORRECTED_BIAS_TARGET_SEASON
+        )
+        bias_by_season[target] = {
+            season: float(values.mean()) for season, values in sorted(residuals.items())
+        }
+        bias_rows[target] = int(sum(len(values) for values in residuals.values()))
+
+    return CorrectedDerivation(
+        superseded_commit=_resolve_commit(SUPERSEDED_PREREGISTRATION_SHORT, repo_root),
+        swap=swap,
+        converter_id=converter_id,
+        gold_generation=gold_digest,
+        chain_fit_record_id=str(record["record_id"]),
+        chain_fit_floors={t: chain_fit[t].ev_floor_t for t in TARGETS},
+        chain_fit_sds={t: chain_fit[t].frozen_sd for t in TARGETS},
+        thresholds=thresholds,
+        superseded_pairs=dict(superseded.EDGE_TIER_THRESHOLDS_BY_TARGET),
+        wp_excluded_no_prior_fold=len(edges.wp_excluded),
+        excluded_no_prelock_line=len(corpus.excluded),
+        bias=bias,
+        superseded_bias=dict(superseded.CHAIN_FIT_BIAS_2026),
+        bias_by_season=bias_by_season,
+        bias_seasons=tuple(sorted(bias_by_season["ats"])),
+        bias_rows=bias_rows,
+        input_digests=dict(input_digests),
+        formatter=formatter_version(),
+        thread_limit=int(PINNED_THREAD_COUNT),
+    )
+
+
+def _resolve_commit(short: str, repo_root: Path) -> str:
+    """The full sha of *short*, refusing a sha git cannot resolve."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{short}^{{commit}}"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def _pair_text(pair: tuple[float, float] | None) -> str:
+    return "None" if pair is None else f"({pair[0]:.4f}, {pair[1]:.4f})"
+
+
+def _raw_pair_text(pair: tuple[float, float] | None) -> str:
+    return "None" if pair is None else f"({pair[0]!r}, {pair[1]!r})"
+
+
+def _target_lines(values: Mapping[str, Any], render: Any = repr) -> str:
+    return "\n".join(
+        f"    {target!r}: {render(values[target])}," for target in sorted(values)
+    )
+
+
+def render_corrected_module(derivation: CorrectedDerivation) -> str:
+    """Emit ``backtest/corrected_cold_start_constants.py``. Pure; deterministic; ASCII."""
+    d = derivation
+    t = d.thresholds
+    wp_seasons = tuple(
+        season for season in CORRECTED_THRESHOLD_SEASONS if season != 2020
+    )
+    sources = {
+        target: {
+            "artifact": d.swap[target],
+            "kind": "owner_ruled_swap",
+            "residuals": "walk-forward refits of this artifact's own recorded recipe",
+            "verdict": "NOT_GATED (SPEC R13: owner readiness ruling, no pass/fail gate)",
+        }
+        for target in TARGETS
+    }
+    eligible = {
+        target: {
+            "bias_rows": d.bias_rows[target],
+            "bias_seasons": len(d.bias_by_season[target]),
+            "threshold_population_rows": t.population_rows,
+            "threshold_rows": t.eligible_rows[target],
+        }
+        for target in TARGETS
+    }
+    bias_season_lines = "\n".join(
+        f"    {target!r}: {{"
+        + ", ".join(
+            f"{season}: {value!r}" for season, value in d.bias_by_season[target].items()
+        )
+        + "},"
+        for target in sorted(d.bias_by_season)
+    )
+    wp_shares = t.wp_reference_shares
+    wp_share_text = (
+        "None"
+        if wp_shares is None
+        else "{"
+        + ", ".join(f"{k!r}: {wp_shares[k]!r}" for k in ("low", "medium", "high"))
+        + "}"
+    )
+
+    return f'''"""SUPERSEDING CORRECTION of the frozen 2026 cold-start rule (Plan 33.2-26, SPEC R14).
+
+GENERATOR OUTPUT. Emitted by ``python -m scripts.derive_cold_start_constants --corrected``.
+Do NOT hand-edit any value below; re-run the derivation.
+
+WHAT IT SUPERSEDES. Commit ``{SUPERSEDED_PREREGISTRATION_SHORT}`` ({d.superseded_commit}) froze the 2026 edge-band
+thresholds and the 2026 chain-fit bias in ``backtest/cold_start_constants.py`` +
+``COLD-START-PREREGISTRATION.md``. Those values were derived from models fitted on inputs later
+found defective and from CLOSING lines, and those models are gone. This module SUPERSEDES them.
+The originals are byte-unchanged and remain the record of what was frozen and when; nothing here
+edits them. ``COLD-START-CORRECTION.md`` is the human-readable half of this record.
+
+WHAT MOVED, symbol by symbol:
+  * ``EDGE_TIER_THRESHOLDS_BY_TARGET`` / ``_UNROUNDED`` -- re-derived on the corrected models'
+    walk-forward predictions over the owned PRE-LOCK lines ({CORRECTED_THRESHOLD_SEASONS[0]}-{CORRECTED_THRESHOLD_SEASONS[-1]}), never a closing
+    line. WP's market side is the spread-derived probability converted OUT OF FOLD
+    (``models.market_probability.oof_market_probability``); its first season has no prior fold
+    and leaves the WP part as ``no_prior_fold_converter``. A target below
+    ``MIN_HONEST_THRESHOLD_ROWS`` gets ``None`` -- NO threshold, therefore NO bets and NO edge
+    band -- never a default, a zero or the old value (``EDGE_TIER_THRESHOLD_REFUSALS`` says why);
+  * ``WP_ANCHOR_BAND_SHARES`` -- re-measured on that population;
+  * ``CHAIN_FIT_BIAS_2026`` / ``_SEASONS`` / ``_BY_SEASON`` -- the corrected chain fit's own
+    walk-forward bias series (Plan 33.2-29, ``outputs/p332/corrected_chain_fit.json``) extended
+    to ``CHAIN_FIT_BIAS_TARGET_SEASON``: the derivation reproduces every season that record prices
+    before extending it. The pool ends at 2024 because no 2025 row is read, which is why the target
+    season is NAMED here rather than derived as the pool's last season plus one;
+  * ``THRESHOLD_DERIVATION_POPULATION``, ``EDGE_TIER_THRESHOLD_UNITS`` (WP's market side),
+    ``CHAIN_FIT_BIAS_SOURCE_BY_TARGET``, ``DERIVATION_*`` and the band tables -- restated for the
+    corrected population. "UNDER_CURRENT" now means under the superseded 11761c7 pairs.
+
+WHAT DID NOT MOVE: WP's 0.05 / 0.02 pair (the anchor), the WP-anchored band-share quantile rule
+(``THRESHOLD_QUANTILE_CONVENTION``, ``numpy.quantile`` method "linear"), the STRICT ``>`` bands,
+the digest refusals, the walk-forward bias estimator
+(``backtest.ou_ev_chain.estimate_prior_season_bias``) and ``FIX_CYCLE_ALLOWANCE``.
+
+THE OTHER TWO MOVED PARTS OF THE 2026 BET RULE -- the EV floor and the frozen residual SD -- are
+superseded separately, naming ``ee20773``: ``backtest.corrected_ev_chain_constants`` and
+``EV-CHAIN-CORRECTION.md`` (Plan 33.2-29).
+
+NOT CLEAN EVIDENCE (D33.2-07): every number here is re-measured on past seasons. It sets a
+threshold; it does not show one is profitable. Only the 2026 season, recorded live, counts.
+
+ASCII only, no emoji (CLAUDE.md hard constraint).
+"""
+
+from __future__ import annotations
+
+# THE TWO FILES THAT ARE THIS CORRECTION, and the two it supersedes. Repo-root-relative POSIX.
+PREREGISTRATION_PATHS: tuple[str, ...] = (
+    "{CORRECTION_DOCUMENT_PATH}",
+    "{CORRECTED_MODULE_PATH}",
+)
+SUPERSEDED_PREREGISTRATION_PATHS: tuple[str, ...] = (
+    "{DOCUMENT_PATH}",
+    "{MODULE_PATH}",
+)
+SUPERSEDED_PREREGISTRATION_COMMIT: str = {d.superseded_commit!r}
+
+# THE CORRECTED EDGE THRESHOLDS, (HIGH, MEDIUM) per target on its OWN unit, four decimal places.
+# ``None`` = NO honest threshold: no bets and no edge band for that target.
+EDGE_TIER_THRESHOLDS_BY_TARGET: dict[str, tuple[float, float] | None] = {{
+{_target_lines(t.thresholds, _pair_text)}
+}}
+
+EDGE_TIER_THRESHOLDS_UNROUNDED: dict[str, tuple[float, float] | None] = {{
+{_target_lines(t.raw_thresholds, _raw_pair_text)}
+}}
+
+# Why a target has no threshold, when one has none. Empty when every target has one.
+EDGE_TIER_THRESHOLD_REFUSALS: dict[str, str] = {{
+{_target_lines(t.refusals)}
+}}
+
+# The pairs this correction supersedes, READ from the frozen 11761c7 module and restated so the
+# old value sits beside the new one.
+SUPERSEDED_EDGE_TIER_THRESHOLDS_BY_TARGET: dict[str, tuple[float, float]] = {{
+{_target_lines(d.superseded_pairs, _pair_text)}
+}}
+
+EDGE_TIER_THRESHOLD_UNITS: dict[str, str] = {{
+{_target_lines(EDGE_UNITS_CORRECTED)}
+}}
+
+THRESHOLD_QUANTILE_CONVENTION: str = (
+    'numpy.quantile(magnitudes, q, method="linear"); q taken from WP band shares under its '
+    'unchanged 0.05 / 0.02 pair; bands assigned with STRICT > so a value exactly at a '
+    'threshold falls in the LOWER band'
+)
+
+# Below this many rows with a computable edge a target gets NO threshold (the calibration gate's
+# n >= 100 is the nearest existing floor).
+MIN_HONEST_THRESHOLD_ROWS: int = {MIN_HONEST_THRESHOLD_ROWS}
+
+# WP's measured band shares under its unchanged pair -- the ANCHOR the other two reproduce.
+WP_ANCHOR_BAND_SHARES: dict[str, float] | None = {wp_share_text}
+
+THRESHOLD_DERIVATION_SEASONS: tuple[int, ...] = {CORRECTED_THRESHOLD_SEASONS!r}
+THRESHOLD_WP_DERIVATION_SEASONS: tuple[int, ...] = {wp_seasons!r}
+THRESHOLD_WINDOW_REASON: str = {CORRECTED_WINDOW_REASON!r}
+
+# The WP rows with a pre-lock line whose season has no prior-fold converter slope. Counted,
+# never filled with the serving slope or a neighbouring season's.
+WP_EXCLUDED_NO_PRIOR_FOLD_CONVERTER: int = {d.wp_excluded_no_prior_fold}
+
+# Scheduled games in the window with no owned line at or before their lock.
+EXCLUDED_NO_PRELOCK_LINE: int = {d.excluded_no_prelock_line}
+
+THRESHOLD_DERIVATION_POPULATION: str = (
+    'the owned pre-lock corpus (silver odds_timeline, the last line at or before each '
+    "game's own lock) over {CORRECTED_THRESHOLD_SEASONS[0]}-{CORRECTED_THRESHOLD_SEASONS[-1]}, scored with the corrected models' walk-forward "
+    'predictions (each season predicted by a fit on strictly earlier seasons); WP over '
+    '{wp_seasons[0]}-{wp_seasons[-1]} only, its market side converted out of fold; shares taken over the rows '
+    'carrying a COMPUTABLE edge'
+)
+
+# THE 2026 CHAIN-FIT BIAS, per target: the pooled mean residual (actual - predicted) over every
+# strictly-prior season the corrected chain fit's walk-forward rule pools.
+CHAIN_FIT_BIAS_2026: dict[str, float] = {{
+{_target_lines(d.bias)}
+}}
+
+CHAIN_FIT_BIAS_TARGET_SEASON: int = {CORRECTED_BIAS_TARGET_SEASON}
+
+CHAIN_FIT_BIAS_SEASONS: tuple[int, ...] = {d.bias_seasons!r}
+
+# The per-season mean residual each pooled bias was estimated from. INT season keys; a JSON
+# representation of the same mapping carries STRING keys.
+CHAIN_FIT_BIAS_BY_SEASON: dict[str, dict[int, float]] = {{
+{bias_season_lines}
+}}
+
+SUPERSEDED_CHAIN_FIT_BIAS_2026: dict[str, float] = {{
+{_target_lines(d.superseded_bias)}
+}}
+
+CHAIN_FIT_BIAS_SOURCE_BY_TARGET: dict[str, dict[str, object]] = {{
+{_target_lines(sources)}
+}}
+
+# The corrected chain fit this bias series continues (Plan 33.2-29), read by explicit path.
+CHAIN_FIT_SOURCE_RECORD_PATH: str = {CHAIN_FIT_SOURCE.as_posix()!r}
+CHAIN_FIT_SOURCE_RECORD_ID: str = {d.chain_fit_record_id!r}
+
+# The corrected model artifacts every number above was derived from, the live blend, and the
+# converter that blend binds.
+DERIVATION_ARTIFACTS: dict[str, str] = {{
+{_target_lines({target: d.swap[target] for target in TARGETS})}
+}}
+LIVE_BLEND_ARTIFACT_ID: str = {d.swap["blend"]!r}
+MARKET_PROBABILITY_ARTIFACT_ID: str = {d.converter_id!r}
+DERIVATION_GOLD_GENERATION: str = {d.gold_generation!r}
+
+# The OpenMP / BLAS thread count every walk-forward fit was pinned to.
+DERIVATION_THREAD_LIMIT: int = {d.thread_limit}
+
+# EVERY input this derivation read, with its digest (gitignored stores over RAW bytes; an
+# ``artifact:<id>`` key is the sha256 over the directory's sorted file manifest).
+DERIVATION_INPUT_DIGESTS: dict[str, str] = {{
+{_render_mapping(d.input_digests)}
+}}
+
+DERIVATION_FORMATTER: str = {d.formatter!r}
+
+DERIVATION_ELIGIBLE_COUNTS: dict[str, dict[str, int]] = {{
+{_target_lines(eligible)}
+}}
+
+# THE LABEL MOVEMENT on the corrected edges: under the superseded 11761c7 pairs, and under the
+# corrected pairs. A target with no threshold has no row.
+BAND_SHARES_UNDER_CURRENT_THRESHOLDS: dict[str, dict[str, float]] = {{
+{_render_share_table(t.band_shares_under_current)}
+}}
+
+BAND_COUNTS_UNDER_CURRENT_THRESHOLDS: dict[str, dict[str, int]] = {{
+{_render_count_table(t.band_counts_under_current)}
+}}
+
+ATS_BAND_SHARES_AFTER: dict[str, dict[str, float]] = {{
+{_render_share_table(t.band_shares_after)}
+}}
+
+ATS_BAND_COUNTS_AFTER: dict[str, dict[str, int]] = {{
+{_render_count_table(t.band_counts_after)}
+}}
+
+GAMES_CHANGING_BAND: dict[str, int] = {{
+{_render_mapping(t.games_changing_band)}
+}}
+
+# Plan 33-08's declared allowance, carried unchanged.
+FIX_CYCLE_ALLOWANCE: int = {FIX_CYCLE_ALLOWANCE}
+
+# Where the other two moved parts of the 2026 bet rule live (Plan 33.2-29, superseding ee20773).
+EV_CHAIN_CORRECTION_MODULE: str = "backtest.corrected_ev_chain_constants"
+'''
+
+
+def render_correction_document(derivation: CorrectedDerivation) -> str:
+    """Emit ``COLD-START-CORRECTION.md``. Pure; deterministic; ASCII."""
+    d = derivation
+    t = d.thresholds
+    rows = []
+    for target in ("wp", "ats", "ou"):
+        old = d.superseded_pairs[target]
+        new = t.thresholds[target]
+        new_text = (
+            "NONE (no bets)" if new is None else f"`{new[1]:.4f}` / `{new[0]:.4f}`"
+        )
+        rows.append(
+            f"| {target} | `{old[1]:.4f}` / `{old[0]:.4f}` | {new_text} "
+            f"| {t.eligible_rows[target]} | {EDGE_UNITS_CORRECTED[target]} |"
+        )
+    threshold_table = "\n".join(rows)
+
+    refusal_lines = (
+        "\n".join(
+            f"- `{target}`: {text}" for target, text in sorted(t.refusals.items())
+        )
+        if t.refusals
+        else "None. Every target cleared the honest-data floor, so every target has a threshold."
+    )
+
+    bias_rows = "\n".join(
+        f"| {target} | `{d.superseded_bias[target]!r}` | `{d.bias[target]!r}` |"
+        for target in ("wp", "ats", "ou")
+    )
+
+    movement = []
+    for target in ("wp", "ats", "ou"):
+        if target not in t.band_counts_after:
+            movement.append(f"| {target} | no threshold | no threshold | n/a |")
+            continue
+        before = t.band_counts_under_current[target]
+        after = t.band_counts_after[target]
+        movement.append(
+            f"| {target} | {before['low']} / {before['medium']} / {before['high']} "
+            f"| {after['low']} / {after['medium']} / {after['high']} "
+            f"| {t.games_changing_band[target]} |"
+        )
+    movement_table = "\n".join(movement)
+
+    ev_rows = "\n".join(
+        f"| {target} | `{d.chain_fit_floors[target]!r}` | `{d.chain_fit_sds[target]!r}` |"
+        for target in ("wp", "ats", "ou")
+    )
+    wp_shares = t.wp_reference_shares
+    share_text = (
+        "not measured (the WP anchor was refused)"
+        if wp_shares is None
+        else (
+            f"low `{wp_shares['low']:.4f}` / medium `{wp_shares['medium']:.4f}` / high "
+            f"`{wp_shares['high']:.4f}`"
+        )
+    )
+    seasons = f"{CORRECTED_THRESHOLD_SEASONS[0]}-{CORRECTED_THRESHOLD_SEASONS[-1]}"
+    wp_window = f"{CORRECTED_THRESHOLD_SEASONS[1]}-{CORRECTED_THRESHOLD_SEASONS[-1]}"
+    wp_pair = t.thresholds["wp"]
+    wp_admission = "no threshold" if wp_pair is None else f"`{wp_pair[1]:.4f}`"
+
+    return f"""# COLD-START CORRECTION -- superseding the 2026 rule frozen at `{SUPERSEDED_PREREGISTRATION_SHORT}`
+
+**Status:** a SUPERSEDING CORRECTION. This document and `{CORRECTED_MODULE_PATH}` are one
+record in two files. The record they supersede -- `{DOCUMENT_PATH}` and `{MODULE_PATH}`,
+frozen at commit `{SUPERSEDED_PREREGISTRATION_SHORT}` (`{d.superseded_commit}`) -- is
+**byte-unchanged** and stays the record of what was frozen and when. Nothing here edits it.
+
+**Why it is superseded.** `{SUPERSEDED_PREREGISTRATION_SHORT}` froze the 2026 edge thresholds and the 2026 chain-fit
+bias from models fitted on inputs later found defective (Phase 33.2) and from CLOSING lines, which
+did not exist at a game's lock. Those models are gone. A value derived from them sits inside the
+live 2026 bet rule, so it is replaced visibly rather than edited quietly.
+
+**Not clean evidence (D33.2-07).** Every number below is re-measured on past seasons. It sets a
+threshold; it does not show that a bet in any band is profitable. Only the 2026 season, recorded
+live under the new lock rule, counts as evidence.
+
+---
+
+## 1. What was swapped, and what was held
+
+**Swapped:** the models -- the three corrected artifacts production serves
+(`{d.swap["wp"]}`, `{d.swap["ats"]}`, `{d.swap["ou"]}`), through their own recorded recipes'
+walk-forward predictions, each season predicted by a fit on strictly earlier seasons -- and the
+market: the owned `odds_timeline` line at or before each game's lock, never a closing line.
+WP's market side is the spread-derived probability from converter `{d.converter_id}` (the one
+the live blend `{d.swap["blend"]}` binds), converted OUT OF FOLD for every historical game.
+
+**Held:** WP's `0.0500` / `0.0200` anchor pair, the WP-anchored band-share quantile rule
+(`numpy.quantile`, method "linear"), the STRICT `>` bands, the digest refusals and the
+walk-forward bias estimator.
+
+**The window is {seasons}.** {CORRECTED_WINDOW_REASON}
+WP uses {wp_window} only: the window's first season has no prior-fold converter slope, so
+**{d.wp_excluded_no_prior_fold} games leave the WP derivation as `no_prior_fold_converter`**
+(counted, never filled with the serving slope). They stay in the ATS and O/U derivations.
+{d.excluded_no_prelock_line} scheduled games in the window had no owned line at or before their
+lock and are not in any part of it.
+
+---
+
+## 2. The edge thresholds, old beside new
+
+`medium / high`, each on its target's own unit, over the rows with a computable edge.
+
+| target | superseded (`{SUPERSEDED_PREREGISTRATION_SHORT}`) | corrected | rows | unit |
+|---|---|---|---|---|
+{threshold_table}
+
+WP's measured band shares under its unchanged pair, the anchor ATS and O/U reproduce: {share_text}.
+
+**A target with too little honest data gets NO threshold.** Below
+`MIN_HONEST_THRESHOLD_ROWS = {MIN_HONEST_THRESHOLD_ROWS}` rows the derivation raises
+`InsufficientHonestDataForThresholdError`, records `None`, and that target places no bets and
+carries no edge band. The superseded value is never borrowed. Refusals in this derivation:
+
+{refusal_lines}
+
+---
+
+## 3. The label movement, in games
+
+Counts are `low / medium / high` over the corrected edges, under the superseded pairs and under
+the corrected ones.
+
+| target | under the `{SUPERSEDED_PREREGISTRATION_SHORT}` pairs | under the corrected pairs | games changing band |
+|---|---|---|---|
+{movement_table}
+
+---
+
+## 4. The 2026 chain-fit bias, old beside new
+
+| target | superseded (`{SUPERSEDED_PREREGISTRATION_SHORT}`) | corrected |
+|---|---|---|
+{bias_rows}
+
+The corrected value continues the walk-forward bias series of the corrected chain fit
+(`{CHAIN_FIT_SOURCE.as_posix()}`, record `{d.chain_fit_record_id}`, Plan 33.2-29): the same rows,
+the same residual helper and the same estimator. The derivation first reproduces every season
+that record prices, exactly, and only then extends the series to 2026, pooling every
+strictly-prior season it covers ({d.bias_seasons[0]}-{d.bias_seasons[-1]}). No 2025 row is read, so the pool ends at
+2024 and the target season is named (`CHAIN_FIT_BIAS_TARGET_SEASON`) rather than inferred from
+it. The superseded value was pooled IN-SAMPLE over the retired models' own training seasons; this
+one is out of sample.
+
+---
+
+## 5. The other two moved parts of the 2026 bet rule: the EV floor and the frozen residual SD
+
+The 2026 bet rule is these thresholds and this bias PLUS the per-target **EV floor** (the number
+that decides whether a bet is placed at all) and the **frozen residual SD** (the scale that turns
+a model's miss into a bet's expected value). D33.2-25 rules that all of them move together. The
+EV floor and the residual SD are superseded separately -- naming `ee20773`, the Phase-31
+pre-registration they came from -- by Plan 33.2-29: `backtest/corrected_ev_chain_constants.py`
+and `EV-CHAIN-CORRECTION.md`. Their values, as the corrected chain fit records them:
+
+| target | EV floor | frozen residual SD |
+|---|---|---|
+{ev_rows}
+
+WP fits no residual SD by design (D31-07). A `None` EV floor would mean no honest floor and no
+bets for that target; none is `None` here.
+
+---
+
+## 6. How the live rule changes
+
+The live rule changes in ONE commit (Plan 33.2-26 Task 3), which moves every live reader
+together: the chain-fit record path, this bias, and the edge bands read by the web cache and the
+current-week predictions. Before that commit the live bet list read the Phase-31 chain-fit record
+and the `{SUPERSEDED_PREREGISTRATION_SHORT}` bias; no run can judge corrected floors against an uncorrected bias,
+or the reverse. From that commit on, a 2026 WIN bet must pass two tests:
+its edge over the spread-derived market probability, on the side bet, is above WP's corrected
+MEDIUM threshold ({wp_admission}: the edge band is at least "medium"), and the moneyline captured at
+that game's lock still leaves positive value after the book's cut (D33.2-11). A target whose
+threshold is `None` places no bets at all.
+
+---
+
+## 7. How to reproduce every number above
+
+```
+OMP_NUM_THREADS=1 uv run python -m scripts.derive_cold_start_constants --corrected --trust-inputs
+```
+
+The derivation reads the four served artifact ids from `tests/phase33_state.py`, refuses unless
+`artifacts/latest.json` serves them and the live blend binds the recorded converter, pins every
+fit to {d.thread_limit} thread, and records every input's digest in `DERIVATION_INPUT_DIGESTS`.
+Running it twice against the same inputs produces byte-identical files.
+
+---
+
+*Phase: 33.2-information-time-integrity-day-before-kickoff-lock-and-hones*
+*Plan 33.2-26, superseding `{SUPERSEDED_PREREGISTRATION_SHORT}`*
+"""
+
+
+# ---------------------------------------------------------------------------
 # The command line
 # ---------------------------------------------------------------------------
 
@@ -1197,9 +2234,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "emit its two rule files. Read-only over data/, outputs/ and artifacts/."
         ),
     )
-    parser.add_argument("--wp-artifact", required=True)
-    parser.add_argument("--ats-artifact", required=True)
-    parser.add_argument("--ou-artifact", required=True)
+    parser.add_argument("--wp-artifact")
+    parser.add_argument("--ats-artifact")
+    parser.add_argument("--ou-artifact")
+    parser.add_argument(
+        "--corrected",
+        action="store_true",
+        help=(
+            "Emit the SUPERSEDING CORRECTION of 11761c7 (Plan 33.2-26) instead: the served "
+            "artifact ids come from tests/phase33_state.py, so no --*-artifact is given."
+        ),
+    )
     parser.add_argument(
         "--digest",
         action="append",
@@ -1226,17 +2271,96 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Print the measured canonical input digests and exit without emitting anything.",
     )
     parser.add_argument("--repo-root", default=str(REPO_ROOT))
-    return parser.parse_args(list(argv) if argv is not None else None)
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    missing = [
+        flag
+        for flag, value in (
+            ("--wp-artifact", args.wp_artifact),
+            ("--ats-artifact", args.ats_artifact),
+            ("--ou-artifact", args.ou_artifact),
+        )
+        if value is None
+    ]
+    if missing and not args.corrected:
+        parser.error(f"the following arguments are required: {', '.join(missing)}")
+    return args
+
+
+def _declared_digests(entries: Sequence[str]) -> dict[str, str]:
+    """Parse repeated ``--digest KEY=SHA256`` arguments."""
+    declared: dict[str, str] = {}
+    for entry in entries:
+        key, _, value = entry.strip().partition("=")
+        key, value = key.strip(), value.strip()
+        if not key or not value:
+            msg = f"--digest expects KEY=SHA256, got {entry!r}"
+            raise SystemExit(msg)
+        declared[key] = value
+    return declared
+
+
+def _write_ascii(repo_root: Path, outputs: Sequence[tuple[str, str]]) -> None:
+    """Refuse non-ASCII text, then write each ``(text, relative path)`` with LF endings."""
+    for text, name in outputs:
+        if not text.isascii():
+            msg = f"{name} is not pure ASCII; refusing to emit (CLAUDE.md hard constraint)."
+            raise SystemExit(msg)
+    for text, name in outputs:
+        (repo_root / name).write_text(text, encoding="utf-8", newline="\n")
+        sys.stdout.write(f"emitted {name}\n")
+
+
+def main_corrected(args: argparse.Namespace, repo_root: Path) -> int:
+    """Verify the inputs, derive the superseding correction, and emit its two files."""
+    swap, converter_id = resolve_corrected_inputs(repo_root)
+    keys = corrected_input_keys(swap, converter_id)
+    if args.trust_inputs:
+        input_digests = measure_input_digests_for(keys, repo_root)
+    else:
+        declared = _declared_digests(args.digest)
+        missing = sorted(set(keys) - set(declared))
+        if missing:
+            msg = (
+                "every input must carry a declared digest; missing: "
+                f"{missing}. Pass --trust-inputs only on the first run."
+            )
+            raise SystemExit(msg)
+        input_digests = _verify_digests(declared, repo_root)
+
+    derivation = measure_corrected(input_digests, repo_root)
+    module_text = ruff_format(
+        render_corrected_module(derivation), CORRECTED_MODULE_PATH
+    )
+    _write_ascii(
+        repo_root,
+        (
+            (module_text, CORRECTED_MODULE_PATH),
+            (render_correction_document(derivation), CORRECTION_DOCUMENT_PATH),
+        ),
+    )
+    t = derivation.thresholds
+    sys.stdout.write(
+        f"THRESHOLDS= {t.thresholds}\nREFUSALS= {sorted(t.refusals)}\n"
+        f"ELIGIBLE_ROWS= {t.eligible_rows}\n"
+        f"WP_EXCLUDED_NO_PRIOR_FOLD= {derivation.wp_excluded_no_prior_fold}\n"
+        f"WP_ANCHOR_SHARES= {t.wp_reference_shares}\n"
+        f"BIAS_2026= {dict(derivation.bias)}\nBIAS_SEASONS= {derivation.bias_seasons}\n"
+        f"THREAD_LIMIT= {derivation.thread_limit}\n"
+    )
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Verify the inputs, derive both quantities, and emit the two rule files."""
     args = parse_args(argv)
     repo_root = Path(args.repo_root).resolve()
+    if args.corrected:
+        return main_corrected(args, repo_root)
+    # parse_args refused a missing id outside --corrected, so all three are present here.
     artifacts = {
-        "wp": args.wp_artifact,
-        "ats": args.ats_artifact,
-        "ou": args.ou_artifact,
+        "wp": str(args.wp_artifact),
+        "ats": str(args.ats_artifact),
+        "ou": str(args.ou_artifact),
     }
 
     if args.print_digests:
@@ -1247,14 +2371,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.trust_inputs:
         input_digests = measure_input_digests(artifacts, repo_root)
     else:
-        declared: dict[str, str] = {}
-        for entry in args.digest:
-            key, _, value = entry.strip().partition("=")
-            key, value = key.strip(), value.strip()
-            if not key or not value:
-                msg = f"--digest expects KEY=SHA256, got {entry!r}"
-                raise SystemExit(msg)
-            declared[key] = value
+        declared = _declared_digests(args.digest)
         required = set(default_input_keys(artifacts))
         missing = sorted(required - set(declared))
         if missing:
