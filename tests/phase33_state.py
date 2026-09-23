@@ -18197,3 +18197,91 @@ P332_23_REFIT_FEATURE_COUNTS: tuple[tuple[str, int], ...] = (
     ("ats", 25),
     ("ou", 25),
 )
+
+# ---------------------------------------------------------------------------
+# THE BLEND RE-TUNE: ONE FIXED WEIGHT PER TARGET, ON LINES OWNED BEFORE THE LOCK.
+#
+# APPENDED by Plan 33.2-24 Task 3 on 2026-09-23, AFTER the run that produced the artifact.
+#
+# WHAT WAS RUN. `python -m backtest.tune` (one behaviour, no flags beyond --artifacts-dir) at
+# commit bb76ef8, inside the digest bracket outputs/p332_blend_before.json. It read the three
+# corrected Plan 33.2-23 artifacts by their recorded ids (P332_23_REFIT_ARTIFACT_IDS), refused
+# to run unless the live gold was their generation, refit each recipe walk-forward per season
+# 2020-2024 under conf.season_partition with the OpenMP pool pinned at one thread, joined the
+# predictions to the owned pre-lock corpus (latest odds_timeline line at or before each game's
+# lock, never filled), converted the WP market side OUT OF FOLD through the converter's
+# walk_forward_slopes, and fitted ONE weight per target on each model's own outcome loss over
+# the grid 0.00-1.00. A no-write dry run in a separate process produced the identical weights,
+# losses and per-season weights to the last digit.
+#
+# WHAT IT FOUND. WP 0.00 and ATS 0.00 -- the pre-lock market alone beat every mix, so both
+# weights sit at the boundary of the grid, a FINDING reported rather than clipped away by a
+# narrower range. O/U 0.12, improving the average miss over the market alone by 0.005 points.
+#
+# artifacts/latest.json was NOT touched: the blend is a candidate until Plan 33.2-25's batched
+# swap, which reads the id and asserts the gold digest across all four artifacts FROM HERE.
+# ---------------------------------------------------------------------------
+
+#: The blend artifact this plan wrote. Plan 33.2-25's swap reads it from here, never from a
+#: directory listing.
+P332_24_BLEND_ARTIFACT_ID: str = "blend_20260923_192155"
+
+#: The fitted weight per target: the model's share of the blend, 0.00 = market alone.
+P332_24_BLEND_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("wp", 0.0),
+    ("ats", 0.0),
+    ("ou", 0.12),
+)
+
+#: The targets whose weight landed EXACTLY on a boundary of the grid.
+P332_24_BOUNDARY_WEIGHT_TARGETS: tuple[str, ...] = ("wp", "ats")
+
+#: The owned pre-lock corpus: 2020-2024 scheduled games with a line at or before their lock.
+P332_24_TUNING_CORPUS_ROWS: int = 1346
+
+#: The tuning rows each target's fit used. WP is smaller by exactly the 255 first-season rows
+#: that have no prior-fold converter slope.
+P332_24_TUNING_GAMES: tuple[tuple[str, int], ...] = (
+    ("wp", 1091),
+    ("ats", 1346),
+    ("ou", 1346),
+)
+
+#: The excluded count PER CLASS. BLEND-TUNING-READOUT.md publishes the same mapping and
+#: tests/unit/test_blend_tuning_readout_md.py holds the two equal.
+P332_24_EXCLUDED_COUNTS: tuple[tuple[str, int], ...] = (
+    ("no_prelock_line", 62),
+    ("no_prior_fold_converter", 255),
+)
+
+#: The three regular-season games inside no_prelock_line (the other 59 are postseason).
+P332_24_NO_PRELOCK_REGULAR_SEASON_GAMES: tuple[str, ...] = (
+    "2020_W05_BUF@TEN",
+    "2024_W17_BAL@HOU",
+    "2024_W17_KC@PIT",
+)
+
+#: The owned-history ids that name no scheduled game -- reported, never joined.
+P332_24_UNJOINED_TIMELINE_IDS: tuple[str, ...] = (
+    "2022_W17_BUF@CIN",
+    "2024_W16_BAL@HOU",
+    "2024_W16_KC@PIT",
+    "2024_W19_DET@LA",
+    "2024_W19_LAC@BAL",
+    "2024_W19_PIT@HOU",
+)
+
+#: The gold generation the blend artifact recorded -- the same value the three model
+#: artifacts cite. Stated as a name rather than a second copy of the digest string.
+P332_24_BLEND_GOLD_GENERATION: str = P332_20_CLEAN_BUILD_GOLD_GENERATION
+
+#: The source models the blend's predictions came from, by name.
+P332_24_BLEND_SOURCE_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
+    P332_23_REFIT_ARTIFACT_IDS
+)
+
+#: The converter the blend binds (Plan 33.2-21).
+P332_24_CONVERTER_ARTIFACT_ID: str = "market_probability_20260923_025709"
+
+#: The OpenMP thread count every fit in the run was pinned to.
+P332_24_THREAD_LIMIT: int = 1

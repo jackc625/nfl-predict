@@ -72,6 +72,24 @@ LABELLED_READOUTS: tuple[str, ...] = (
 
 # Tracked repo-root markdown that carries no addendum, each with the reason found on reading it.
 NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
+    "BLEND-TUNING-READOUT.md": (
+        "Plan 33.2-24's blend re-tune, written under the day-before lock on the corrected models "
+        "and on lines owned before each game's lock. It reports blend weights and their losses "
+        "on re-measured 2020-2024 seasons and carries its own 'not clean evidence' label "
+        "(D33.2-07); it rests on no pre-fix model and no closing line, so the old-rule addendum "
+        "does not describe it."
+    ),
+    "CLOSING-LINE-AUDIT.md": (
+        "Plan 33.2-21's audit of every place a closing line feeds a fit, with one disposition "
+        "each. It lists code sites and their fates; it reports no model accuracy or betting "
+        "result and rests on no pre-fix model."
+    ),
+    "GROUP-VERDICT-READOUT.md": (
+        "Plan 33.2-22's re-measured feature-group verdict, written under the day-before lock on "
+        "corrected gold. It decides which feature families a model may be fitted on and carries "
+        "its own 'not clean evidence' label (D33.2-07); it reports no accuracy or betting result "
+        "and rests on no pre-fix model."
+    ),
     "AUTOMATION.md": (
         "Operational explanation of the scheduled run: what fires, the orchestrator steps, where "
         "logs land and how to tell a run succeeded. Its only figures describe a smoke check of the "
