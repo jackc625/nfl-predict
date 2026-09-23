@@ -17511,3 +17511,166 @@ P332_20_VENUE_SURFACE_RESEARCHED_BY: str = (
 P332_20_VENUE_RECORDS_SHA256_AFTER_SURFACE_FIX: str = (
     "8f7e79879e1a7573be0c2b821631eec967f08509d84a9defef9122a48c9531a3"
 )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-20 Task 3 (the CLEAN PRODUCTION HISTORY BUILD), 2026-09-22.
+#
+# The phase's central claim, made by a RUN rather than asserted: the full production
+# history builds with ZERO information-time violations and ZERO unchecked sources.
+#
+# NOT A LADDER RUNG. No name below ends `_GOLD_WIDTH_DELTA`, because this build moves no
+# width -- it ASSERTS the FINAL pin rung 9 wrote and re-pins nothing (Plan 33.2-12's
+# <owned_protocol_gold_width_pin> P6). It is therefore not a rung of the width chain the
+# resolvers in tests/unit/test_data_qa_gold_width.py discover.
+#
+# THIS IS THE ONE PLACE 2026 ENTERS GOLD (owner ruling 2026-09-21, Plan 33.2-08 Task 4
+# checkpoint). Every `p332_` rung rebuilt `--through-season 2025`; this build is
+# `--all-seasons`.
+# ---------------------------------------------------------------------------
+
+P332_20_CLEAN_BUILD_DATE: str = "2026-09-22"
+
+P332_20_CLEAN_BUILD_COMMAND: str = "python -m scripts.build_features --all-seasons"
+
+#: The five coverage lines `main()` printed, VERBATIM. `CHECKED_SOURCES= 10` is the
+#: non-vacuous one: the nine `feature_sources` registry keys AND the opponent-adjusted
+#: family were each checked against every game's own lock.
+P332_20_CLEAN_BUILD_COVERAGE_LINES: tuple[str, ...] = (
+    "CHECKED_SOURCES= 10",
+    "EMPTY_UNCHECKED= 0",
+    "UNREGISTERED= 0",
+    "POST_STAGE1_UNCHECKED= 0",
+    "INFORMATION_TIME_VIOLATIONS= 0",
+)
+
+P332_20_CLEAN_BUILD_VIOLATIONS: int = 0
+
+P332_20_CLEAN_BUILD_CHECKED_SOURCES: tuple[str, ...] = (
+    "contextual",
+    "elo",
+    "games",
+    "injury",
+    "market",
+    "opponent_adj",
+    "qb_tracking",
+    "snaps",
+    "team_form",
+    "weather",
+)
+
+P332_20_CLEAN_BUILD_EMPTY_UNCHECKED: int = 0
+P332_20_CLEAN_BUILD_UNREGISTERED: int = 0
+P332_20_CLEAN_BUILD_POST_STAGE1_UNCHECKED: int = 0
+
+#: Rows, in the order (features_wp, features_ats, features_ou). 6,499 + the 17 PLAYED 2026
+#: games. Rung 9 was 6,499 over 2002-2025.
+P332_20_CLEAN_BUILD_ROWS: tuple[int, int, int] = (6516, 6516, 6516)
+
+#: Widths, same order. UNCHANGED from rung 9's FINAL pin: this build ASSERTS 188/188/187
+#: and re-pins nothing. Not one column was added or removed in any matrix.
+P332_20_CLEAN_BUILD_WIDTHS: tuple[int, int, int] = (188, 188, 187)
+
+P332_20_CLEAN_BUILD_PIN_EQUALS_MEASURED: bool = True
+P332_20_CLEAN_BUILD_MEASURED_EQUALS_LADDER: bool = True
+
+#: The width-chain delta slots on record at this build: rungs 4, 7, 8, extra step 8e and
+#: rung 9. MEASURED CORRECTION to Plan 33.2-20's own verify, which requires `DELTA_SLOTS=
+#: 4`: that expectation was written before Plan 33.2-19 added extra step 8e, which is the
+#: first EXTRA step ever to move a width (-8 per matrix, the never-populated defensive
+#: team-form copies). Five is the honest count and the plan's four is stale.
+P332_20_CLEAN_BUILD_DELTA_SLOTS: int = 5
+
+#: THE 2026 GAMES THAT ENTERED GOLD -- all 17 of them, named rather than counted.
+#:
+#: NOT THE 32 THE ELO SCOPE ADMITTED, and the difference is worth stating because it
+#: corrects the plan's own framing of "plus provisional 2026". The scope carries every game
+#: an Elo snapshot can date (weeks 1 and 2, 32 games); `create_target_variables` then
+#: removes every game with no SCORE, which is pre-existing behaviour and older than this
+#: phase -- gold is a training corpus and a game with no result has no target. So the 15
+#: unplayed week-2 games are built through the whole pipeline and dropped at the target
+#: stage, and what reaches gold is the 17 PLAYED 2026 games.
+P332_20_CLEAN_BUILD_GAMES_2026_IN_GOLD: tuple[str, ...] = (
+    "2026_W01_ARI@LAC",
+    "2026_W01_ATL@PIT",
+    "2026_W01_BAL@IND",
+    "2026_W01_BUF@HOU",
+    "2026_W01_CHI@CAR",
+    "2026_W01_CLE@JAX",
+    "2026_W01_DAL@NYG",
+    "2026_W01_DEN@KC",
+    "2026_W01_GB@MIN",
+    "2026_W01_MIA@LV",
+    "2026_W01_NE@SEA",
+    "2026_W01_NO@DET",
+    "2026_W01_NYJ@TEN",
+    "2026_W01_SF@LA",
+    "2026_W01_TB@CIN",
+    "2026_W01_WAS@PHI",
+    "2026_W02_DET@BUF",
+)
+
+#: MEASURED, and it matters to the re-fit: NOT ONE provisional Elo row reached gold. All 17
+#: are backed by a REAL (non-provisional) `elo_game_snapshots` row, so
+#: `features.elo_features.assert_no_provisional_training_rows` has nothing to refuse on this
+#: gold. "Provisional 2026" describes the SCOPE the build admits, not the corpus it wrote.
+P332_20_CLEAN_BUILD_PROVISIONAL_ROWS_IN_GOLD: int = 0
+
+#: The 240 unplayed games of 2026 weeks 3-18, scoped out by
+#: `scripts.build_features.scope_full_rebuild_to_elo_coverage`: no pre-game Elo exists for
+#: them and none will until they are played. Plus the 15 unplayed week-2 games dropped at
+#: the target stage: 255 of 272 2026 games are not in gold.
+P332_20_CLEAN_BUILD_GAMES_2026_SCOPED_OUT_NO_ELO: int = 240
+P332_20_CLEAN_BUILD_GAMES_2026_DROPPED_NO_SCORE: int = 15
+P332_20_CLEAN_BUILD_GAMES_2026_IN_SILVER: int = 272
+
+#: The 2002-2025 slice is UNCHANGED, column for column, against the pre-build copy: 6,499
+#: rows compared per matrix, 186 / 186 / 185 shared columns (the build clock excluded), and
+#: ZERO columns moved in any of the three. This build reproduces rung 9 on the history and
+#: only adds 2026.
+P332_20_CLEAN_BUILD_HISTORY_COLUMNS_MOVED: int = 0
+P332_20_CLEAN_BUILD_HISTORY_ROWS_COMPARED: int = 6499
+
+#: The gold generation digest Plan 33.2-23's re-fit records as the gold it trained on
+#: (`tests.gold_generation.gold_generation_key`). Recorded HERE so the re-fit cites it
+#: rather than re-deriving it.
+P332_20_CLEAN_BUILD_GOLD_GENERATION: str = (
+    "484397642530db5b28c49d9234ecfb90e3860783f1b1b41766ab6151a1522597"
+)
+
+#: What it was before this build, for the diff to be checkable rather than asserted.
+P332_20_CLEAN_BUILD_GOLD_GENERATION_BEFORE: str = (
+    "68d547de73c053f9e2d0cfee8bd7f654c12af587a349a2cb8e23a3b930cdd38a"
+)
+
+#: The digest bracket: exactly the four declared paths moved, nothing added or removed and
+#: no mixed entry.
+P332_20_CLEAN_BUILD_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)
+
+#: THE ONE DEFECT THE ARMED GATE CAUGHT ON THE FIRST ATTEMPT, recorded because a refusal
+#: that is fixed and then forgotten teaches nothing.
+#:
+#: The FIRST clean build REFUSED, by name, and wrote nothing (production `data/` verified
+#: digest-identical across the refused run, 1,128 files UNCHANGED):
+#:
+#:     UndatedSourceError: 'weather' declares game 2026_W02_DET@BUF no_information, but
+#:     its 'temp_f' is 66.6 where the declared signature requires null.
+#:
+#: It is a REAL POST-LOCK VALUE. That game kicked off 2026-09-17 20:15 ET, so its lock was
+#: 2026-09-16 18:00 ET; its silver weather row was captured 2026-09-19 15:37 UTC -- two days
+#: AFTER it was played -- and carries no `forecast_issue_time` at all. The fence correctly
+#: refused to date it while `weather_features` still carried a temperature, a wind speed and
+#: `weather_coverage` 1.0 for it. Gold would have learned that game's weather from a reading
+#: taken after the whistle.
+#:
+#: FIXED AT ITS CAUSE, not exempted: the gold-feeding weather frame now follows the same
+#: fence its provenance does (`features.weather.WeatherFeaturesCalculator.
+#: enforce_fence_on_feature_frame`). MEASURED over all 6,771 games, the two disagreed for
+#: exactly this ONE.
+P332_20_CLEAN_BUILD_FIRST_ATTEMPT_REFUSED_ON: str = "2026_W02_DET@BUF"
+P332_20_CLEAN_BUILD_FENCED_WEATHER_ROWS: int = 1
