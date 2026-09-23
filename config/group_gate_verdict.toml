@@ -23,7 +23,7 @@
 # The two statistics are in DIFFERENT UNITS and are compared only through their
 # VERDICTS; see GROUP-VERDICT-READOUT.md for the before/after.
 #
-# Measured 2026-09-23T03:37:16+00:00.
+# Measured 2026-09-23T03:42:15+00:00.
 #
 # ASCII only, no emoji (CLAUDE.md hard constraint).
 # =============================================================================
@@ -74,7 +74,7 @@ fix_cycle_levers = ["D25-05 feature-selection train-window widening (widen the S
 [stage1.verdicts.injury]
 verdict = "DROP"
 reason = "DROP: no positive point estimate on any measured target (a delta of exactly 0.0 is not positive). Measured targets: ['ou', 'wp']."
-coverage_span = "injuries 2009+ (measured 2021-2024)"
+coverage_span = "injuries 2009+ (measured 2023-2024)"
 measured_targets = ["ou", "wp"]
 positive_targets = []
 rejected_positive_targets = []
@@ -83,7 +83,7 @@ rejected_negative_targets = []
 [stage1.verdicts.snap]
 verdict = "DROP"
 reason = "DROP: no positive point estimate on any measured target (a delta of exactly 0.0 is not positive). Measured targets: ['ats', 'ou']."
-coverage_span = "snaps 2013+ (measured 2021-2024)"
+coverage_span = "snaps 2013+ (measured 2023-2024)"
 measured_targets = ["ats", "ou"]
 positive_targets = []
 rejected_positive_targets = []
@@ -92,7 +92,7 @@ rejected_negative_targets = []
 [stage1.verdicts.situational]
 verdict = "DROP"
 reason = "DROP: no positive point estimate on any measured target (a delta of exactly 0.0 is not positive). Measured targets: ['ats']."
-coverage_span = "full history (measured 2021-2024)"
+coverage_span = "full history (measured 2023-2024)"
 measured_targets = ["ats"]
 positive_targets = []
 rejected_positive_targets = []
@@ -269,7 +269,7 @@ excluded_hold_seasons = [2025]
 gold_generation_digest = "484397642530db5b28c49d9234ecfb90e3860783f1b1b41766ab6151a1522597"
 frozen_rule_commit = "dc4d1c0c09ed3b4f5835c801e991aa945f23b479"
 supersedes_commit = "68eb6425eb379701bf1b9d1937feb8c520877394"
-measured_at = "2026-09-23T03:37:16+00:00"
+measured_at = "2026-09-23T03:42:15+00:00"
 # No closing-odds frame was loaded or passed anywhere in this run; under the outcome
 # objective one would have raised ClosingLineInScreenError before any leg ran.
 closing_line_used = false
