@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import optuna
 
+from config.tuning_preregistration import SEARCH_SPACE_BY_TARGET
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WPTrainer
@@ -83,9 +84,18 @@ class TestWPSearchSpace:
                 f"l1 penalty should use solver='saga', got '{solver}'"
             )
 
-    def test_wp_penalty_l2_allows_lbfgs_and_saga(self) -> None:
-        """WPTrainer._define_search_space with penalty='l2' returns
-        solver in ['lbfgs', 'saga']."""
+    def test_wp_penalty_l2_solver_stays_inside_the_pre_registered_choices(self) -> None:
+        """Every l2 solver suggested is one the PRE-REGISTRATION declares.
+
+        RE-POINTED by Plan 33.2-23 from the literal pair ``{"lbfgs", "saga"}``. D33.2-17
+        WIDENS the search space, and the widening is declared ONCE in
+        ``config/tuning_preregistration.py`` -- a file locked by a content hash and a
+        git-ancestry assertion. A second copy of the choice set here would have to be
+        edited by hand every time the declared one moved, which is exactly the drift the
+        pre-registration exists to remove. Read against the declaration this assertion is
+        STRICTLY STRONGER than the literal: it fails for ANY suggested solver outside the
+        declared set, whatever that set says today.
+        """
         trainer = WPTrainer()
 
         study = optuna.create_study(direction="minimize")
@@ -102,10 +112,14 @@ class TestWPSearchSpace:
         study.optimize(objective, n_trials=50)
 
         assert len(l2_solvers) > 0, "No l2 penalty trials found in 50 trials"
-        assert l2_solvers <= {
-            "lbfgs",
-            "saga",
-        }, f"Unexpected solvers for l2: {l2_solvers}"
+        declared = set(SEARCH_SPACE_BY_TARGET["wp"]["solver_l2"].choices)
+        assert declared, (
+            "the pre-registered l2 solver set is empty; this proves nothing"
+        )
+        assert l2_solvers <= declared, (
+            f"Unexpected solvers for l2: {l2_solvers - declared}; the pre-registration "
+            f"declares {sorted(declared)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +209,18 @@ class TestOUSearchSpace:
 class TestATSSearchSpaceRanges:
     """Tests for ATSTrainer search space ranges per D-07."""
 
-    def test_ats_learning_rate_range(self) -> None:
-        """ATSTrainer learning_rate in [0.005, 0.3] range."""
+    def test_ats_learning_rate_stays_inside_the_pre_registered_range(self) -> None:
+        """Every suggested learning_rate lies inside the PRE-REGISTERED bound.
+
+        RE-POINTED by Plan 33.2-23 from the literal ``[0.005, 0.3]``, which D33.2-17
+        deliberately widened. The bound now comes from the one declaration the trainer
+        itself reads, so this test can never disagree with what is actually searched --
+        and it still fails for any value outside it. The OLD bound is not lost: the
+        pre-registration records it beside the new one under ``ParamSpec.current``, and
+        the assertion below proves the widening is real rather than asserted.
+        """
         trainer = ATSTrainer()
+        spec = SEARCH_SPACE_BY_TARGET["ats"]["learning_rate"]
 
         study = optuna.create_study(direction="minimize")
         learning_rates: list[float] = []
@@ -209,12 +232,30 @@ class TestATSSearchSpaceRanges:
 
         study.optimize(objective, n_trials=30)
 
+        assert learning_rates, "no trial ran; the range check proves nothing"
         for lr in learning_rates:
-            assert 0.005 <= lr <= 0.3, f"learning_rate {lr} outside [0.005, 0.3]"
+            assert spec.low <= lr <= spec.high, (
+                f"learning_rate {lr} outside the pre-registered "
+                f"[{spec.low}, {spec.high}]"
+            )
+        assert spec.current == "0.005 - 0.3 (log)", (
+            "the pre-registration no longer records the bound this test used to pin, so "
+            "the widening can no longer be read off the file"
+        )
+        assert spec.low < 0.005 and spec.high > 0.3, (
+            "the range did not actually widen; D33.2-17 requires wider ranges, and a "
+            "re-pointed test must not quietly accept an unchanged one"
+        )
 
-    def test_ats_max_depth_range(self) -> None:
-        """ATSTrainer max_depth in [2, 8] range."""
+    def test_ats_max_depth_stays_inside_the_pre_registered_range(self) -> None:
+        """Every suggested max_depth lies inside the PRE-REGISTERED bound.
+
+        RE-POINTED from the literal ``[2, 8]`` for the same reason as the sibling above,
+        with the same two controls: the prior bound is still readable, and the new one is
+        genuinely wider.
+        """
         trainer = ATSTrainer()
+        spec = SEARCH_SPACE_BY_TARGET["ats"]["max_depth"]
 
         study = optuna.create_study(direction="minimize")
         depths: list[int] = []
@@ -226,8 +267,15 @@ class TestATSSearchSpaceRanges:
 
         study.optimize(objective, n_trials=30)
 
+        assert depths, "no trial ran; the range check proves nothing"
         for d in depths:
-            assert 2 <= d <= 8, f"max_depth {d} outside [2, 8]"
+            assert spec.low <= d <= spec.high, (
+                f"max_depth {d} outside the pre-registered [{spec.low}, {spec.high}]"
+            )
+        assert spec.current == "2 - 8"
+        assert spec.low < 2 and spec.high > 8, (
+            "the range did not actually widen; D33.2-17 requires wider ranges"
+        )
 
 
 # ---------------------------------------------------------------------------

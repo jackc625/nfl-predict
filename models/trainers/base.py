@@ -22,6 +22,26 @@ import pandas as pd
 from sklearn.feature_selection import SelectFromModel
 from sklearn.pipeline import Pipeline
 
+from config.tuning_preregistration import (
+    BEAT_RANDOM_MARGIN_BY_TARGET,
+    NOT_CLEARED_ARM,
+    NOT_CLEARED_RULE,
+    OUTER_COMPARISON_RULE,
+    PINNED_THREAD_COUNT,
+    PRUNER_CONFIG,
+    RANDOM_SAMPLER_SEED,
+    SEARCH_SPACE_BY_TARGET,
+    STUDY_ARM_RANDOM,
+    STUDY_ARM_TPE,
+    TPE_SAMPLER_SEED,
+    TPE_SAMPLER_STARTUP_TRIALS,
+    TRIAL_BUDGET_BY_TARGET,
+    outer_comparison_season,
+    search_space_digest,
+)
+from config.tuning_preregistration import (
+    study_name as preregistered_study_name,
+)
 from models.artifacts import CONVERTER_PARAMS_METADATA_KEY, save_model_artifact
 from models.clv import compute_clv_for_predictions
 from models.temporal import (
@@ -159,7 +179,21 @@ LEGACY_TUNING_STORAGE_DIR: Path = Path("data/optuna")
 # irreversible action. The tag is bumped rather than the tracer's study files deleted:
 # study files are the historical record of what was searched, and the guard's own remediation
 # message says so.
-TUNING_STUDY_TAG: str = "p30s2"
+#
+# BUMPED ``p30s2`` -> ``p332s23`` by Plan 33.2-23 before the BINDING Phase-33.2 re-fit.
+# EVERY study stored under the old tag was searched with MARKET-LINE COLUMNS inside the
+# selected feature set, which D33.2-03 removes from every fit decision, so none of them is
+# reusable -- and reusing the identity would resume a study already at budget and return
+# those unusable parameters while reporting a full trial count.
+#
+# CHANGING THIS TAG CHANGES THE SEARCH, not merely its label, and that is INTENDED here.
+# ``optuna.pruners.HyperbandPruner._get_bracket_id`` brackets each trial by a crc32 of the
+# STUDY NAME (see BACKTEST_TUNING_STUDY_TAG's note for the citation and the measured
+# consequence), so a different name prunes a different set of trials. Under this plan the
+# two arms are ``{target}_tuning_{TAG}_tpe`` and ``{target}_tuning_{TAG}_random``, which
+# therefore prune on DIFFERENT schedules even under one PRUNER_CONFIG -- declared rather
+# than hidden, and made harmless because NO adoption decision reads an in-search value.
+TUNING_STUDY_TAG: str = "p332s23"
 
 # Where the Phase-30 SQLite study files live. OptunaTuner defaults storage_dir to
 # ``data/optuna``, which collides with this phase's own prohibition on writing under ``data/``
@@ -296,6 +330,78 @@ def _stored_trial_counts(tuner: OptunaTuner) -> tuple[int, int]:
 # constant over its own fit window.
 
 
+def _zero_trial_message(
+    study_name: str,
+    trials_before: int,
+    trials_after: int,
+    budget: int,
+) -> str:
+    """The message a vacuous resume raises with, declared ONCE.
+
+    Both the legacy single-arm path and the pre-registered two-arm path raise it, and
+    ``tests/unit/test_promote_models_tuned_path.py`` asserts it names both the study and
+    the remediation. Two copies of it would be two contracts wearing one name.
+    """
+    return (
+        f"Optuna study '{study_name}' added ZERO new trials "
+        f"(stored before={trials_before}, after={trials_after}, budget={budget}). "
+        "The study was resumed already at budget, so the 'best params' returned are the "
+        "STORED ones -- this candidate would be reported as tuned without having been "
+        "tuned. Remediation: bump TUNING_STUDY_TAG in models.trainers.base to open a "
+        "fresh study identity. Do NOT delete the existing study file to work around "
+        "this -- study files are the historical record of what was searched."
+    )
+
+
+def decide_adoption(
+    target: str,
+    arms: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Decide whether *target*'s SEARCHED winner beat the RANDOM winner by the bar.
+
+    THE DECISION READS ONE NUMBER PER ARM, AND IT IS THE OUT-OF-SAMPLE ONE. Both arms
+    optimise the same three temporal CV folds (:meth:`BaseTrainer._make_objective` over
+    ``make_temporal_cv_splits``), so the gap between their ``in_search_best_value`` entries
+    is a gap between two winners selected on the SAME noise -- it cannot show that the
+    searched winner generalises. Each arm's ``outer_score`` is its best setting REFIT on
+    the same train+hp_val data and scored ONCE on the season named by
+    ``config.tuning_preregistration.OUTER_COMPARISON_RULE``, which neither search ever saw.
+    ``in_search_best_value`` is recorded and decides nothing.
+
+    THE MARGIN IS READ FROM THE PRE-REGISTRATION AND IS NEVER A LITERAL HERE. A number
+    written into this function could be changed after the search ran with nothing to catch
+    it; a number in ``config/tuning_preregistration.py`` is locked by a content hash and a
+    git-ancestry assertion (``tests/unit/test_tuning_preregistration.py``).
+
+    Every target's metric is LOWER-IS-BETTER (``METRIC_BY_TARGET``), so the gap in the
+    searched winner's favour is ``random.outer_score - tpe.outer_score``.
+
+    Args:
+        target: ``"wp"``, ``"ats"`` or ``"ou"``.
+        arms: The per-arm record, keyed by ``STUDY_ARM_TPE`` / ``STUDY_ARM_RANDOM``. Each
+            must carry ``outer_score``.
+
+    Returns:
+        The adoption record: the margin that had to be cleared, the observed gap, whether
+        it cleared, which arm was adopted, and -- when it did NOT clear -- the
+        pre-registered not-cleared rule that was applied, so the outcome is a RECORDED
+        FINDING rather than a silent fall-through.
+    """
+    margin = BEAT_RANDOM_MARGIN_BY_TARGET[target]
+    tpe_outer = float(arms[STUDY_ARM_TPE]["outer_score"])
+    random_outer = float(arms[STUDY_ARM_RANDOM]["outer_score"])
+    gap = random_outer - tpe_outer
+    cleared = bool(gap >= margin)
+    return {
+        "margin": margin,
+        "outer_gap": gap,
+        "margin_cleared": cleared,
+        "adopted_arm": STUDY_ARM_TPE if cleared else NOT_CLEARED_ARM,
+        "not_cleared_rule": "" if cleared else NOT_CLEARED_RULE,
+        "outer_comparison_rule": OUTER_COMPARISON_RULE,
+    }
+
+
 def informative_columns(X: pd.DataFrame) -> list[str]:
     """Return the columns of ``X`` that vary over these rows, in their original order.
 
@@ -414,6 +520,15 @@ class BaseTrainer(ABC):
         self.tuning_storage_dir: Path = LEGACY_TUNING_STORAGE_DIR
         self.require_fresh_search: bool = False
 
+        # Plan 33.2-23 / D33.2-17. FALSE by default, so every existing caller keeps the
+        # single-arm, 100-trial-defaulted search byte-for-byte. The Phase-33.2 re-fit opts
+        # in via use_phase332_tuning(), after which the budget comes from the
+        # pre-registration, a RandomSampler baseline runs FIRST over the same objective and
+        # the same budget, and the searched winner is adopted only if it beats that
+        # baseline on a season neither arm saw.
+        self.preregistered_search: bool = False
+        self.adoption_record: dict[str, Any] | None = None
+
         # What the LAST tuning search on this instance actually did. Initialised here so the
         # attributes exist even on an untuned path (tune=False never sets them). These three
         # values already existed as locals inside tune_hyperparameters and were already logged;
@@ -444,6 +559,30 @@ class BaseTrainer(ABC):
         self.tuning_study_tag = TUNING_STUDY_TAG
         self.tuning_storage_dir = TUNING_STORAGE_DIR
         self.require_fresh_search = True
+
+    def use_phase332_tuning(self) -> None:
+        """Opt this trainer into the PRE-REGISTERED two-arm search (D33.2-17, Plan 33.2-23).
+
+        It is the PER-PHASE identity plus three properties that identity alone does not
+        carry, each of which silently does not happen if it is not switched on:
+
+        * the trial BUDGET comes from ``TRIAL_BUDGET_BY_TARGET`` and the 100-trial default
+          that both ``models/tuning.py`` and this module carry becomes UNREACHABLE. A
+          caller that passes a contradicting budget fails loudly rather than quietly
+          shipping a hundred-trial search described as a deep one;
+        * a RANDOM-sampler baseline runs FIRST, over the SAME objective object and the
+          SAME budget, as a SEPARATE study that cannot resume the tuned arm's;
+        * the searched winner is adopted only if it beats that baseline by the
+          pre-registered per-target margin on the OUTER season -- and when it does not, the
+          pre-registered not-cleared rule is applied and RECORDED.
+
+        Deliberately NOT the default and deliberately NOT folded into
+        :meth:`use_phase30_tuning`: that opt-in is what ``scripts/promote_models`` and
+        every other Stage-2 caller already use, and changing what they search in one move
+        is the elevation of scope this class's identity split exists to prevent.
+        """
+        self.use_phase30_tuning()
+        self.preregistered_search = True
 
     def use_backtest_tuning(self, run_id: str) -> None:
         """Opt this trainer into the PER-RUN backtest study storage (Plan 30-16).
@@ -741,12 +880,51 @@ class BaseTrainer(ABC):
 
         return float(mean_absolute_error(actuals.values, predictions))
 
+    def _resolve_trial_budget(self, n_trials: int | None) -> int:
+        """Resolve how many trials this search may START, and refuse a silent default.
+
+        THE DEFAULT IS THE DEFECT THIS EXISTS TO CLOSE. ``models/tuning.py`` and this
+        module BOTH default ``n_trials`` to 100, so a plan that says "deep search" without
+        setting the budget ships a hundred-trial search and nothing in the run says
+        otherwise. On the pre-registered path the budget therefore comes from
+        ``config.tuning_preregistration.TRIAL_BUDGET_BY_TARGET`` and a caller that
+        contradicts it fails LOUDLY.
+
+        Args:
+            n_trials: What the caller asked for, or None for "resolve it".
+
+        Returns:
+            The budget, in trials STARTED.
+
+        Raises:
+            RuntimeError: On the pre-registered path, when the caller named a budget that
+                is not the pre-registered one.
+        """
+        if not self.preregistered_search:
+            # The LEGACY resolution, byte-identical to the former signature default.
+            return 100 if n_trials is None else n_trials
+
+        budget = TRIAL_BUDGET_BY_TARGET[self.target]
+        if n_trials is not None and n_trials != budget:
+            msg = (
+                f"tune_hyperparameters was called with n_trials={n_trials} on the "
+                f"PRE-REGISTERED path, where the budget for target '{self.target}' is "
+                f"{budget} (config.tuning_preregistration.TRIAL_BUDGET_BY_TARGET). The "
+                "budget is pre-registered precisely because both models/tuning.py and "
+                "models/trainers/base.py default it to 100, so an unnoticed argument "
+                "would ship a hundred-trial search described as a deep one. Pass the "
+                "pre-registered budget or pass nothing."
+            )
+            raise RuntimeError(msg)
+        return budget
+
     def tune_hyperparameters(
         self,
         X_train: pd.DataFrame,
         y_train: pd.Series,
-        n_trials: int = 100,
+        n_trials: int | None = None,
         season_week_df: pd.DataFrame | None = None,
+        full_features_df: pd.DataFrame | None = None,
     ) -> dict:
         """Tune hyperparameters using Optuna with temporal CV folds.
 
@@ -755,16 +933,30 @@ class BaseTrainer(ABC):
         storage for resumability. Per D-05, uses target-specific
         optimization metric (direction derived from _get_scoring_metric).
 
+        TWO PATHS, and which one runs is an EXPLICIT opt-in. Without
+        :meth:`use_phase332_tuning` this is the single-arm search it has always been, with
+        the same 100-trial default and the same study name. With it, the pre-registered
+        two-arm search of D33.2-17 runs instead -- see
+        :meth:`_run_preregistered_two_arm_search`.
+
         Args:
             X_train: Training features (train + hp_val combined).
             y_train: Training targets.
-            n_trials: Number of Optuna trials (default 100 per D-02).
+            n_trials: Number of Optuna trials. None resolves to the legacy default of 100,
+                or -- on the pre-registered path -- to the pre-registered per-target
+                budget. See :meth:`_resolve_trial_budget`.
             season_week_df: DataFrame with "season" and "week" columns
                 for temporal CV splits. If None, creates index-based splits.
+            full_features_df: The FULL feature matrix, including the outer comparison
+                season. Required on the pre-registered path and IGNORED otherwise: the
+                adoption gate scores each arm on a season that is by construction absent
+                from ``X_train``.
 
         Returns:
             Best parameters dict.
         """
+        budget = self._resolve_trial_budget(n_trials)
+
         # Create temporal CV folds
         if season_week_df is not None:
             cv_splits = make_temporal_cv_splits(season_week_df, n_splits=3)
@@ -784,6 +976,18 @@ class BaseTrainer(ABC):
         # in sklearn convention, but we want to minimize the raw metric
         direction = "minimize"
 
+        objective = self._make_objective(X_train, y_train, cv_splits)
+
+        if self.preregistered_search:
+            return self._run_preregistered_two_arm_search(
+                objective=objective,
+                X_train=X_train,
+                y_train=y_train,
+                budget=budget,
+                direction=direction,
+                full_features_df=full_features_df,
+            )
+
         # Study identity + storage come from INSTANCE state, so the Stage-2 opt-in
         # (use_phase30_tuning) can require a genuinely fresh search without changing what any
         # other caller trains with (T-30-02 / T-30-14). storage_dir is passed explicitly --
@@ -794,7 +998,7 @@ class BaseTrainer(ABC):
             study_name=study_name,
             direction=direction,
             storage_dir=self.tuning_storage_dir,
-            n_trials=n_trials,
+            n_trials=budget,
         )
 
         # Read the stored trial counts BEFORE the search so a vacuous resume is detectable.
@@ -803,7 +1007,6 @@ class BaseTrainer(ABC):
         # which is what a reader assumes a "trials" figure means (WR-08).
         trials_before, completed_before = _stored_trial_counts(tuner)
 
-        objective = self._make_objective(X_train, y_train, cv_splits)
         result = tuner.optimize(objective)
 
         # HARD-fail a search that added nothing. A resumed full study returns the STORED best
@@ -830,16 +1033,9 @@ class BaseTrainer(ABC):
         self.last_tuning_completed_added = completed_added
 
         if self.require_fresh_search and trials_added <= 0:
-            msg = (
-                f"Optuna study '{study_name}' added ZERO new trials "
-                f"(stored before={trials_before}, after={result.n_trials}, budget={n_trials}). "
-                "The study was resumed already at budget, so the 'best params' returned are the "
-                "STORED ones -- this candidate would be reported as tuned without having been "
-                f"tuned. Remediation: bump TUNING_STUDY_TAG in {__name__} to open a fresh study "
-                "identity. Do NOT delete the existing study file to work around this -- study "
-                "files are the historical record of what was searched."
+            raise RuntimeError(
+                _zero_trial_message(study_name, trials_before, result.n_trials, budget)
             )
-            raise RuntimeError(msg)
 
         # Replay best params through _define_search_space to get
         # model-compatible parameter names (e.g., "solver_l2" -> "solver")
@@ -862,6 +1058,245 @@ class BaseTrainer(ABC):
 
         # Store tuning result for later use in save()
         self._tuning_result = result
+
+        return best_params
+
+    # ------------------------------------------------------------------
+    # The PRE-REGISTERED two-arm search (D33.2-17, Plan 33.2-23)
+    # ------------------------------------------------------------------
+
+    def _run_one_arm(
+        self,
+        arm: str,
+        objective: Callable[[optuna.Trial], float],
+        budget: int,
+        direction: str,
+    ) -> tuple[TuningResult, dict[str, Any]]:
+        """Run ONE arm of the pre-registered search and return its result and its record.
+
+        Both arms come through here, with the SAME ``objective`` OBJECT and the SAME
+        ``budget``. That is what makes "the two arms searched the same space with the same
+        budget" true BY CONSTRUCTION rather than by a second declaration that can drift --
+        and a smaller random budget would rig the comparison in the searched winner's
+        favour.
+
+        Args:
+            arm: ``STUDY_ARM_RANDOM`` or ``STUDY_ARM_TPE``.
+            objective: The shared objective, built ONCE by the caller.
+            budget: Trials to START, from the pre-registration.
+            direction: Optuna's optimisation direction.
+
+        Returns:
+            ``(result, record)`` -- the raw ``TuningResult`` and the per-arm record that
+            goes into the artifact's tuning metadata.
+
+        Raises:
+            RuntimeError: If the arm resumed a study already at budget (zero new trials),
+                or if it did not START exactly the pre-registered budget.
+        """
+        sampler = (
+            optuna.samplers.RandomSampler(seed=RANDOM_SAMPLER_SEED)
+            if arm == STUDY_ARM_RANDOM
+            else optuna.samplers.TPESampler(
+                seed=TPE_SAMPLER_SEED, n_startup_trials=TPE_SAMPLER_STARTUP_TRIALS
+            )
+        )
+        name = preregistered_study_name(self.target, self.tuning_study_tag, arm)
+        tuner = OptunaTuner(
+            study_name=name,
+            direction=direction,
+            storage_dir=self.tuning_storage_dir,
+            n_trials=budget,
+            sampler=sampler,
+            # ONE pruner configuration for both arms. The crc32-of-the-study-name bracket
+            # still differs between two differently-named studies; that is declared in
+            # RANDOM_COMPARATOR and is harmless because no decision reads an in-search
+            # value.
+            pruner=optuna.pruners.HyperbandPruner(**PRUNER_CONFIG),
+        )
+
+        trials_before, completed_before = _stored_trial_counts(tuner)
+        result = tuner.optimize(objective)
+        trials_added = result.n_trials - trials_before
+
+        if self.require_fresh_search and trials_added <= 0:
+            raise RuntimeError(
+                _zero_trial_message(name, trials_before, result.n_trials, budget)
+            )
+
+        # The POSITIVE form of the anti-vacuity check, and the only count the two arms can
+        # be held EQUAL on. A completed-trial floor cannot be relied on to pass: under
+        # HyperbandPruner most trials are pruned BY DESIGN, and two arms with different
+        # samplers and different crc32 brackets will not complete the same number.
+        if result.n_trials != budget:
+            msg = (
+                f"arm '{arm}' of target '{self.target}' recorded "
+                f"trials_started={result.n_trials}, but the pre-registered budget is "
+                f"{budget}. The budget is asserted in trials STARTED because that is the "
+                "only count both arms can be held equal on; a search that started a "
+                "different number is not the search that was pre-registered."
+            )
+            raise RuntimeError(msg)
+
+        record = {
+            "study_name": name,
+            "sampler": type(tuner.sampler).__name__,
+            "trials_started": result.n_trials,
+            "trials_started_added": trials_added,
+            "trials_completed": result.n_completed_trials,
+            "trials_completed_added": result.n_completed_trials - completed_before,
+            "trials_pruned": result.n_pruned_trials,
+            "trials_failed": result.n_failed_trials,
+            # RECORDED AND DECIDES NOTHING. Two winners selected on the same folds can
+            # differ by noise alone; only ``outer_score`` enters the adoption gate.
+            "in_search_best_value": result.best_value,
+            "outer_score": None,
+        }
+        return result, record
+
+    def _score_on_outer_season(
+        self,
+        best_params: dict,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_outer: pd.DataFrame,
+        y_outer: pd.Series,
+    ) -> float:
+        """Refit *best_params* on train+hp_val and score it ONCE on the outer season.
+
+        The SAME training data for both arms and the SAME metric the tuner minimised
+        (:meth:`_compute_cv_score`), so the only thing that differs between the two numbers
+        the adoption gate compares is the hyperparameter setting.
+        """
+        model = self._create_model(best_params)
+        model.fit(X_train, y_train)
+        predictions = self._predict_raw(model, X_outer)
+        return float(self._compute_cv_score(predictions, y_outer))
+
+    def _run_preregistered_two_arm_search(
+        self,
+        objective: Callable[[optuna.Trial], float],
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        budget: int,
+        direction: str,
+        full_features_df: pd.DataFrame | None,
+    ) -> dict:
+        """Run the RANDOM baseline, then the TPE search, then the outer-season gate.
+
+        THE ORDER IS PART OF THE DESIGN. The random baseline runs FIRST because it is the
+        comparator: a baseline established after seeing the searched winner is not a
+        baseline. Each arm is a SEPARATE study under a name the other cannot resume.
+
+        Returns:
+            The adopted parameters -- the searched winner when it beat the random winner by
+            the pre-registered margin on the outer season, otherwise the pre-registered
+            not-cleared rule's answer, which is the trainer's standard defaults.
+
+        Raises:
+            RuntimeError: If no ``full_features_df`` was supplied. Without it there is no
+                outer season, and a "margin" computed on the folds both arms optimised
+                would prove nothing -- so this refuses rather than degrading quietly.
+        """
+        if full_features_df is None or "season" not in getattr(
+            full_features_df, "columns", []
+        ):
+            msg = (
+                "the pre-registered search needs full_features_df (a frame carrying a "
+                "'season' column) to resolve and score the OUTER comparison season. "
+                f"{OUTER_COMPARISON_RULE} Without it the only available comparison is "
+                "between two winners selected on the same folds, which cannot show "
+                "generalisation -- so this is a refusal, not a fallback."
+            )
+            raise RuntimeError(msg)
+
+        # NON-VACUITY, asserted rather than assumed. An EMPTY search space would make both
+        # arms search nothing, both best values identical and the gap trivially zero -- a
+        # guard that passes by measuring nothing. The space is the pre-registered one, read
+        # here from the same declaration the three trainers' suggest_* calls read.
+        searched_space = SEARCH_SPACE_BY_TARGET[self.target]
+        if not searched_space:
+            msg = (
+                f"the pre-registered search space for target '{self.target}' is EMPTY. "
+                "Both arms would search nothing, their best values would be identical and "
+                "the margin gate would be satisfied by measuring nothing."
+            )
+            raise RuntimeError(msg)
+
+        outer_season = outer_comparison_season(full_features_df["season"])
+
+        arms: dict[str, dict[str, Any]] = {}
+        results: dict[str, TuningResult] = {}
+        adopted_params_by_arm: dict[str, dict] = {}
+
+        # RANDOM FIRST. Both arms receive the SAME objective object and the SAME budget.
+        for arm in (STUDY_ARM_RANDOM, STUDY_ARM_TPE):
+            result, record = self._run_one_arm(arm, objective, budget, direction)
+            results[arm] = result
+            arms[arm] = record
+            # Replay through _define_search_space so the parameter NAMES are the ones the
+            # estimator takes (e.g. WP's "solver_l2" -> "solver").
+            adopted_params_by_arm[arm] = self._define_search_space(
+                optuna.trial.FixedTrial(result.best_params)
+            )
+
+        feature_columns = list(X_train.columns)
+        outer_rows = full_features_df[full_features_df["season"] == outer_season]
+        X_outer = outer_rows[feature_columns]
+        y_outer = outer_rows[self._get_target_column()]
+
+        for arm in (STUDY_ARM_RANDOM, STUDY_ARM_TPE):
+            arms[arm]["outer_score"] = self._score_on_outer_season(
+                adopted_params_by_arm[arm], X_train, y_train, X_outer, y_outer
+            )
+
+        decision = decide_adoption(self.target, arms)
+        adopted_arm = decision["adopted_arm"]
+        best_params = (
+            adopted_params_by_arm[STUDY_ARM_TPE]
+            if adopted_arm == STUDY_ARM_TPE
+            else self._get_default_params()
+        )
+
+        # The tuned arm is the headline TuningResult the save path already reads; the
+        # per-arm record below is what an auditor actually needs.
+        tuned = results[STUDY_ARM_TPE]
+        self._tuning_result = tuned
+        self.last_tuning_study_name = arms[STUDY_ARM_TPE]["study_name"]
+        self.last_tuning_trials_before = (
+            tuned.n_trials - arms[STUDY_ARM_TPE]["trials_started_added"]
+        )
+        self.last_tuning_trials_added = arms[STUDY_ARM_TPE]["trials_started_added"]
+        self.last_tuning_completed_before = (
+            tuned.n_completed_trials - arms[STUDY_ARM_TPE]["trials_completed_added"]
+        )
+        self.last_tuning_completed_added = arms[STUDY_ARM_TPE]["trials_completed_added"]
+
+        self.adoption_record = {
+            "arms": arms,
+            "outer_season": outer_season,
+            "outer_season_n_games": len(outer_rows),
+            "search_space_digest": search_space_digest(self.target),
+            "trial_budget": budget,
+            "thread_limit": PINNED_THREAD_COUNT,
+            "study_tag": self.tuning_study_tag,
+            "adopted_params": best_params,
+            **decision,
+        }
+
+        self.logger.info(
+            "Pre-registered two-arm search completed",
+            target=self.target,
+            outer_season=outer_season,
+            margin=decision["margin"],
+            outer_gap=decision["outer_gap"],
+            margin_cleared=decision["margin_cleared"],
+            adopted_arm=adopted_arm,
+            tpe_outer=arms[STUDY_ARM_TPE]["outer_score"],
+            random_outer=arms[STUDY_ARM_RANDOM]["outer_score"],
+            trials_started=budget,
+            thread_limit=PINNED_THREAD_COUNT,
+        )
 
         return best_params
 
@@ -937,6 +1372,10 @@ class BaseTrainer(ABC):
             self.tune_hyperparameters(
                 combined_train[self.feature_names],
                 combined_targets,
+                # D33.2-17: the FULL frame, so the pre-registered adoption gate can
+                # resolve and score the OUTER comparison season -- a season that is by
+                # construction absent from combined_train. Ignored on every other path.
+                full_features_df=features_df,
             )
             if tune
             else self._get_default_params()
@@ -1059,9 +1498,19 @@ class BaseTrainer(ABC):
                 "study_name": tuning_result.study_name,
                 "best_value": tuning_result.best_value,
                 "n_trials": tuning_result.n_trials,
+                "n_completed_trials": tuning_result.n_completed_trials,
+                "n_pruned_trials": tuning_result.n_pruned_trials,
+                "n_failed_trials": tuning_result.n_failed_trials,
                 "param_importances": tuning_result.param_importances,
                 "optimization_metric": self._get_scoring_metric(),
             }
+            # The PRE-REGISTERED search's record (D33.2-17): both arms, the outer season,
+            # the margin verdict, the adopted arm and the search-space digest. It lands in
+            # `{target}_params.json` because that is where models/artifacts.py already
+            # writes the tuning record -- NOT in metadata.json, which carries the training
+            # metadata and the gold digest.
+            if self.adoption_record is not None:
+                tuning_metadata.update(self.adoption_record)
 
         return save_model_artifact(
             model=self.model,

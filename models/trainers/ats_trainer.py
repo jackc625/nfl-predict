@@ -19,6 +19,7 @@ import optuna
 import pandas as pd
 from xgboost import XGBRegressor
 
+from config.tuning_preregistration import SEARCH_SPACE_BY_TARGET
 from models.temporal import TemporalSplitConfig, WalkForwardSplitter
 from models.train_ats import ResidualDistributionConverter
 from models.trainers.base import BaseTrainer, concat_holdout_predictions
@@ -88,10 +89,15 @@ class ATSTrainer(BaseTrainer):
         }
 
     def _define_search_space(self, trial: optuna.Trial) -> dict:
-        """8-parameter XGBoost search space for ATS (per D-07).
+        """The XGBoost search space, READ from the committed pre-registration.
 
-        Defines the full hyperparameter search space for XGBoost
-        margin prediction. Ranges follow D-07 specifications.
+        NO NUMERIC BOUND IS A LITERAL HERE ANY MORE (D33.2-17, Plan 33.2-23). Every bound
+        comes from ``config.tuning_preregistration.SEARCH_SPACE_BY_TARGET``, which records
+        TODAY'S bound beside the widened one. Two things follow that could not both follow
+        while the bounds were inline: the widening happened ONCE, in a file locked by a
+        content hash and a git-ancestry assertion, and the RandomSampler baseline searches
+        the IDENTICAL space BY CONSTRUCTION rather than by a second declaration that can
+        drift away from this one.
 
         Args:
             trial: Optuna trial for parameter suggestion.
@@ -99,15 +105,44 @@ class ATSTrainer(BaseTrainer):
         Returns:
             Dict of parameter name to suggested value.
         """
+        space = SEARCH_SPACE_BY_TARGET[self.target]
+        learning_rate = space["learning_rate"]
+        max_depth = space["max_depth"]
+        n_estimators = space["n_estimators"]
+        subsample = space["subsample"]
+        colsample_bytree = space["colsample_bytree"]
+        min_child_weight = space["min_child_weight"]
+        reg_alpha = space["reg_alpha"]
+        reg_lambda = space["reg_lambda"]
+        gamma = space["gamma"]
         return {
-            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
-            "max_depth": trial.suggest_int("max_depth", 2, 8),
-            "n_estimators": trial.suggest_int("n_estimators", 50, 500),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
-            "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 10.0, log=True),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10.0, log=True),
+            "learning_rate": trial.suggest_float(
+                "learning_rate",
+                learning_rate.low,
+                learning_rate.high,
+                log=learning_rate.log,
+            ),
+            "max_depth": trial.suggest_int("max_depth", max_depth.low, max_depth.high),
+            "n_estimators": trial.suggest_int(
+                "n_estimators", n_estimators.low, n_estimators.high
+            ),
+            "subsample": trial.suggest_float(
+                "subsample", subsample.low, subsample.high
+            ),
+            "colsample_bytree": trial.suggest_float(
+                "colsample_bytree", colsample_bytree.low, colsample_bytree.high
+            ),
+            "min_child_weight": trial.suggest_int(
+                "min_child_weight", min_child_weight.low, min_child_weight.high
+            ),
+            "reg_alpha": trial.suggest_float(
+                "reg_alpha", reg_alpha.low, reg_alpha.high, log=reg_alpha.log
+            ),
+            "reg_lambda": trial.suggest_float(
+                "reg_lambda", reg_lambda.low, reg_lambda.high, log=reg_lambda.log
+            ),
+            # NEW axis: gamma was fixed at XGBoost's 0.0 and never searched before.
+            "gamma": trial.suggest_float("gamma", gamma.low, gamma.high),
             "random_state": 42,
             "verbosity": 0,
             "n_jobs": -1,
@@ -233,6 +268,10 @@ class ATSTrainer(BaseTrainer):
             self.tune_hyperparameters(
                 combined_train[self.feature_names],
                 combined_targets,
+                # D33.2-17: the FULL frame, so the pre-registered adoption gate can
+                # resolve and score the OUTER comparison season -- a season that is by
+                # construction absent from combined_train. Ignored on every other path.
+                full_features_df=features_df,
             )
             if tune
             else self._get_default_params()

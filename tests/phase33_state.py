@@ -18018,3 +18018,64 @@ P332_22_EXCLUDED_GROUPS: tuple[str, ...] = ("injury", "situational", "snap")
 #: The BH family size and the paired sample per cell, for the record.
 P332_22_BH_DENOMINATOR: int = 6
 P332_22_N_PAIRED_PER_CELL: int = 570
+
+# ---------------------------------------------------------------------------
+# THE TUNING PRE-REGISTRATION, AND ITS WITNESS.
+#
+# APPENDED by Plan 33.2-23 Task 2 on 2026-09-23, AFTER the single-file commit that froze
+# `config/tuning_preregistration.py` and in a STRICTLY LATER commit than it (Plan 33.2-08's
+# <owned_protocol_witness> W1/W3/W5, the same discipline the season-partition rule and the
+# weather cross-check use).
+#
+# WHAT WAS PRE-REGISTERED, AND WHY IT HAD TO BE. D33.2-17 requires a DEEP search (order
+# 1,000 trials per target over widened ranges) whose winner must beat a RANDOM-setting
+# baseline by a real margin. Three parts of that silently do not happen if they are not
+# frozen in advance:
+#
+#   * the BUDGET. models/tuning.py and models/trainers/base.py BOTH default n_trials to
+#     100, so a "deep search" that does not set it ships a hundred-trial run;
+#   * the RANGES. All three trainers carried their bounds as literals inside their
+#     suggest_* calls, so a "widened" space and a second declaration for the random arm
+#     could drift apart with nothing failing;
+#   * the MARGIN and the NOT-CLEARED RULE. A bar chosen after seeing the gap is not a bar.
+#
+# THE OWNER RULED BOTH QUESTIONS ON 2026-09-23, asked one at a time, before any search
+# number existed: the per-target margin at TWO measured noise-widths (WP 0.0067 log loss,
+# ATS 0.49 points of margin, O/U 0.56 points of total), and fall-back-to-defaults when the
+# bar is missed. Both are recorded VERBATIM in the pre-registration itself.
+# ---------------------------------------------------------------------------
+
+#: The pre-registration's last-modifying commit. It touches that ONE file and nothing else,
+#: and it is a STRICT ancestor of every commit that runs the search.
+P332_23_TUNING_PREREGISTRATION_COMMIT: str = "e6b522dc4c20e066f535fca21c38556b5f643ec0"
+
+#: sha256 of config/tuning_preregistration.py's NEWLINE-NORMALIZED bytes -- every CRLF
+#: folded to LF before hashing, the same discipline every other witness in this module uses
+#: and for the same reason: core.autocrlf=true with no .gitattributes means a raw-byte
+#: digest would hold only on the platform that measured it.
+P332_23_TUNING_PREREGISTRATION_FILE_SHA256: dict[str, str] = {
+    "config/tuning_preregistration.py": (
+        "6511f56f49256672ba19e3b9667339ed9dde745f52e3bfba0758178317587bc9"
+    ),
+}
+
+#: The study identity tag the Phase-33.2 re-fit searches under. BUMPED from "p30s2":
+#: every study stored under the old tag was searched with market-line columns inside the
+#: selected feature set, so none of them is reusable, and resuming that identity would
+#: return those unusable parameters while reporting a full trial count.
+P332_23_TUNING_STUDY_TAG: str = "p332s23"
+
+#: The per-target margin the searched winner had to clear, in that target's own metric.
+P332_23_BEAT_RANDOM_MARGINS: tuple[tuple[str, float], ...] = (
+    ("wp", 0.0067),
+    ("ats", 0.49),
+    ("ou", 0.56),
+)
+
+#: The budget, in trials STARTED, per target per arm.
+P332_23_TRIAL_BUDGET: int = 1000
+
+#: The OpenMP thread count every number this plan produces was pinned to -- both search
+#: arms, the outer comparison and the final fits. Plan 33.2-22 measured the XGBoost legs
+#: disagreeing by enough to move a verdict at different thread counts.
+P332_23_THREAD_LIMIT: int = 1

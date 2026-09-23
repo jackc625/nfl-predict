@@ -22,6 +22,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from config.tuning_preregistration import SEARCH_SPACE_BY_TARGET
 from models.calibrate import ProbabilityCalibrator
 from models.clv import compute_clv_for_predictions
 from models.temporal import TemporalSplitConfig, WalkForwardSplitter
@@ -259,6 +260,16 @@ class WPTrainer(BaseTrainer):
         to avoid conditional parameter conflicts, but is returned as
         "solver" in the output dict so LogisticRegression receives valid kwargs.
 
+        NO NUMERIC BOUND AND NO CATEGORICAL SET IS A LITERAL HERE ANY MORE (D33.2-17,
+        Plan 33.2-23). Every one comes from
+        ``config.tuning_preregistration.SEARCH_SPACE_BY_TARGET["wp"]``, which records
+        TODAY'S bound beside the widened one -- and, for the two that could not widen
+        (``penalty``, whose three values ARE the admissible set alongside a searchable
+        solver, and ``l1_ratio``, whose own domain IS [0, 1]), says so and says why rather
+        than leaving an unchanged bound to look like an oversight. Reading the space from
+        one place is also what makes the RandomSampler baseline search the IDENTICAL space
+        by construction.
+
         Args:
             trial: Optuna trial for parameter suggestion.
 
@@ -266,8 +277,19 @@ class WPTrainer(BaseTrainer):
             Dict of parameter name to suggested value, ready for
             LogisticRegression(**params).
         """
-        C = trial.suggest_float("C", 0.001, 100.0, log=True)
-        penalty = trial.suggest_categorical("penalty", ["l1", "l2", "elasticnet"])
+        space = SEARCH_SPACE_BY_TARGET["wp"]
+        inverse_regularisation = space["C"]
+        penalty_spec = space["penalty"]
+        l1_ratio_spec = space["l1_ratio"]
+        solver_spec = space["solver_l2"]
+
+        C = trial.suggest_float(
+            "C",
+            inverse_regularisation.low,
+            inverse_regularisation.high,
+            log=inverse_regularisation.log,
+        )
+        penalty = trial.suggest_categorical("penalty", penalty_spec.choices)
 
         params: dict = {
             "C": C,
@@ -280,11 +302,13 @@ class WPTrainer(BaseTrainer):
             params["solver"] = "saga"
         elif penalty == "elasticnet":
             params["solver"] = "saga"
-            params["l1_ratio"] = trial.suggest_float("l1_ratio", 0.0, 1.0)
+            params["l1_ratio"] = trial.suggest_float(
+                "l1_ratio", l1_ratio_spec.low, l1_ratio_spec.high
+            )
         else:  # l2
             # Use distinct Optuna name to avoid conflicts with fixed solver values,
             # but map back to "solver" for LogisticRegression compatibility
-            solver_choice = trial.suggest_categorical("solver_l2", ["lbfgs", "saga"])
+            solver_choice = trial.suggest_categorical("solver_l2", solver_spec.choices)
             params["solver"] = solver_choice
 
         return params
@@ -478,6 +502,10 @@ class WPTrainer(BaseTrainer):
             self.tune_hyperparameters(
                 combined_train[self.feature_names],
                 combined_targets,
+                # D33.2-17: the FULL frame, so the pre-registered adoption gate can
+                # resolve and score the OUTER comparison season -- a season that is by
+                # construction absent from combined_train. Ignored on every other path.
+                full_features_df=features_df,
             )
             if tune
             else self._get_default_params()
