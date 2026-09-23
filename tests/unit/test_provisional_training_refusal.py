@@ -57,7 +57,10 @@ from tests.fixtures.elo_sandbox import (
     sandbox_builder,
     seed_sandbox_games,
 )
-from tests.phase33_state import TRAINER_GOLD_LOAD_SITES
+from tests.phase33_state import (
+    P332_23_TRAINER_GOLD_LOAD_SITES,
+    TRAINER_GOLD_LOAD_SITES,
+)
 
 LIVE_SEASON = 2026
 
@@ -247,6 +250,16 @@ class TestTheGuardIsWiredAtEveryPinnedSite:
 
     def test_every_pinned_site_resolves_and_calls_the_guard(self) -> None:
         assert len(TRAINER_GOLD_LOAD_SITES) == 4
+        assert len(P332_23_TRAINER_GOLD_LOAD_SITES) == 4
+        assert {
+            (module, function) for module, function, _ in TRAINER_GOLD_LOAD_SITES
+        } == {
+            (module, function)
+            for module, function, _ in P332_23_TRAINER_GOLD_LOAD_SITES
+        }, (
+            "the re-measured slot and the original describe DIFFERENT sites, so the "
+            "re-point silently changed which loads are covered rather than where they are"
+        )
 
         unguarded: list[tuple[str, str]] = []
         for module_name, function_name, _line in TRAINER_GOLD_LOAD_SITES:
@@ -275,7 +288,14 @@ class TestTheGuardIsWiredAtEveryPinnedSite:
         """
         from pathlib import Path
 
-        for module_name, _function_name, line in TRAINER_GOLD_LOAD_SITES:
+        # RE-POINTED by Plan 33.2-23 at the re-measured slot. `models/train.py`'s gold
+        # load moved from line 730 to 907 when the pre-registered-re-fit block landed
+        # above it; the GUARD did not move, and the sibling test that asserts the guard is
+        # wired reads the function source rather than a line, so it never went red. The
+        # original tuple stays UNEDITED as the record of where the loads stood when Plan
+        # 33-04 first measured them -- editing a provenance line in place would destroy
+        # exactly the provenance it exists to carry.
+        for module_name, _function_name, line in P332_23_TRAINER_GOLD_LOAD_SITES:
             path = Path(module_name.replace(".", "/") + ".py")
             assert path.is_file(), f"{path} does not exist"
             lines = path.read_text(encoding="utf-8").splitlines()

@@ -15,7 +15,9 @@ and integrates all prior work (Plans 01-03) into a single runnable pipeline.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +70,78 @@ _VALID_TARGETS = ("wp", "ats", "ou", "all")
 # marker would be a claim that reads as a non-claim.
 # ---------------------------------------------------------------------------
 GOLD_GENERATION_METADATA_KEY = "trained_on_real_weather_generation"
+
+# ---------------------------------------------------------------------------
+# THE PRE-REGISTERED RE-FIT (D33.2-17 / R13, Plan 33.2-23).
+#
+# `--tune` is an EXPLICIT opt-in to the two-arm search, and it is NOT the same thing as the
+# default (which already tunes). Three things change under it and only under it, so every
+# other caller -- scripts.retrain_models, backtest.engine, the Friday orchestrator -- is
+# byte-identical:
+#
+#   * the trainer opts into `use_phase332_tuning()`: the pre-registered budget, a
+#     RandomSampler baseline over the same objective and budget, and adoption only on a
+#     margin cleared on a season neither arm saw;
+#   * the feature-group exclusion is DERIVED from the ratified verdict rather than typed,
+#     and the verdict's own digest is recorded beside it;
+#   * `--gold-generation` becomes REQUIRED. A re-fit whose artifact cannot name the gold it
+#     was trained on is a re-fit nobody can reproduce, and this module must not import the
+#     tests package to measure it for itself (see GOLD_GENERATION_METADATA_KEY).
+# ---------------------------------------------------------------------------
+
+#: The ratified Stage-1 feature-group verdict, read verbatim -- the same file and the same
+#: key `scripts/promote_models.py` reads, so what the rule decided and what gets trained
+#: cannot diverge by a typo.
+GROUP_GATE_VERDICT_PATH = Path("config/group_gate_verdict.toml")
+
+#: Metadata keys the pre-registered re-fit writes into `metadata.json`. They live there and
+#: NOT in the tuning sidecar because they describe the TRAINING RUN -- what data, which
+#: verdict, which study identity, how many threads -- rather than the search.
+GOLD_GENERATION_DIGEST_METADATA_KEY = "gold_generation_digest"
+GROUP_VERDICT_DIGEST_METADATA_KEY = "group_verdict_digest"
+TUNING_STUDY_TAG_METADATA_KEY = "tuning_study_tag"
+THREAD_LIMIT_METADATA_KEY = "thread_limit"
+
+
+def _normalized_sha256(path: Path) -> str:
+    """sha256 of a tracked text file's NEWLINE-NORMALIZED bytes.
+
+    Normalized because this repository has ``core.autocrlf=true`` and no
+    ``.gitattributes``, so a raw-byte digest of a tracked text file would hold only on the
+    platform that measured it.
+    """
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def verdict_exclusion() -> tuple[tuple[str, ...], str]:
+    """Return the ratified exclusion list and the verdict file's digest.
+
+    DERIVED, never transcribed (D24-07, and the same precedence
+    ``scripts/promote_models._resolve_exclude_groups`` applies). The digest travels with it
+    so an artifact records WHICH verdict shaped its feature set, not merely that one did.
+
+    Returns:
+        ``(groups, digest)``.
+
+    Raises:
+        FileNotFoundError: If no ratified verdict exists. This is a STOP rather than an
+            empty list: without the verdict every feature group is trained, including the
+            ones the frozen rule DROPPED, and the run would silently reverse a ratified
+            owner decision.
+    """
+    if not GROUP_GATE_VERDICT_PATH.exists():
+        msg = (
+            f"no ratified Stage-1 verdict at '{GROUP_GATE_VERDICT_PATH}'. The "
+            "pre-registered re-fit refuses to train on EVERY feature group, including any "
+            "the frozen rule dropped: that would silently reverse a ratified decision. "
+            "Restore the verdict, or pass --exclude-groups explicitly to state the "
+            "exclusion deliberately."
+        )
+        raise FileNotFoundError(msg)
+    with GROUP_GATE_VERDICT_PATH.open("rb") as handle:
+        verdict = tomllib.load(handle)
+    groups = tuple(str(group) for group in verdict.get("excluded_groups", []))
+    return groups, _normalized_sha256(GROUP_GATE_VERDICT_PATH)
 
 
 def parse_exclude_groups(raw: str) -> tuple[str, ...]:
@@ -289,6 +363,9 @@ def train_target(
     exclude_groups: tuple[str, ...] = (),
     exclude_groups_provenance: str = "none",
     gold_generation: str | None = None,
+    preregistered_search: bool = False,
+    group_verdict_digest: str | None = None,
+    thread_limit: int | None = None,
 ) -> dict[str, Any]:
     """Train a single model target and optionally compute market baseline.
 
@@ -341,7 +418,12 @@ def train_target(
     trainer_class = trainers[target]
     trainer = trainer_class(config=config)
 
-    if tune:
+    if tune and preregistered_search:
+        # D33.2-17 / R13: the PRE-REGISTERED two-arm search. It is the Stage-2 identity
+        # (so everything the comment below says still holds) PLUS the pre-registered
+        # budget, the RandomSampler baseline and the outer-season adoption gate.
+        trainer.use_phase332_tuning()
+    elif tune:
         # SPEC R5 / T-30-02: this entry point IS the Stage-2 candidate train that
         # scripts/promote_models STEP 1 invokes, so a tuned run here must genuinely search --
         # a fresh per-phase study identity, storage outside data/, and a hard failure if zero
@@ -400,6 +482,22 @@ def train_target(
     # caller supplied nothing -- see GOLD_GENERATION_METADATA_KEY.
     if gold_generation:
         trainer.metadata[GOLD_GENERATION_METADATA_KEY] = gold_generation
+        # D33.2-17 / R13: the SAME value under the name an auditor looks for. The key
+        # above is the gold-weather bridge's flip predicate and means "this run DECLARES
+        # it trained on the corrected weather generation"; this one is the plain
+        # provenance fact -- which gold generation these features came from -- and every
+        # re-fit artifact must carry it whether or not the bridge ever reads it.
+        trainer.metadata[GOLD_GENERATION_DIGEST_METADATA_KEY] = gold_generation
+
+    if group_verdict_digest:
+        trainer.metadata[GROUP_VERDICT_DIGEST_METADATA_KEY] = group_verdict_digest
+    if preregistered_search:
+        trainer.metadata[TUNING_STUDY_TAG_METADATA_KEY] = trainer.tuning_study_tag
+    if thread_limit is not None:
+        # Recorded because Plan 33.2-22 MEASURED the XGBoost legs returning different
+        # answers at different OpenMP thread counts, by enough to move a verdict. A number
+        # produced under an unrecorded thread count is one nobody else can reproduce.
+        trainer.metadata[THREAD_LIMIT_METADATA_KEY] = thread_limit
 
     # Save artifacts
     artifact_path = trainer.save(artifacts_dir)
@@ -438,6 +536,9 @@ def train_target(
         "model_metrics": model_metrics,
         "market_baseline": market_baseline,
         "artifact_path": str(artifact_path),
+        # None on every path but the pre-registered one, where it is the per-target margin
+        # verdict this plan must publish rather than absorb.
+        "adoption_record": trainer.adoption_record,
     }
 
 
@@ -579,6 +680,44 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Straight re-fit with existing default params; skip Optuna tuning (D24-12).",
     )
+    parser.add_argument(
+        "--all-targets",
+        action="store_true",
+        help=(
+            "Train every target. Equivalent to --target all, which is already the "
+            "default; it exists so a re-fit command reads as the deliberate act it is "
+            "rather than relying on a default."
+        ),
+    )
+    parser.add_argument(
+        "--tune",
+        action="store_true",
+        help=(
+            "Run the PRE-REGISTERED two-arm search (D33.2-17 / R13). This is NOT the same "
+            "as the default, which also tunes: under this flag the trial budget and the "
+            "search space come from config/tuning_preregistration.py, a RandomSampler "
+            "baseline runs FIRST over the same objective and the same budget, and the "
+            "searched winner is adopted only if it beats that baseline by the "
+            "pre-registered per-target margin on a season neither arm saw. The "
+            "feature-group exclusion is DERIVED from the ratified verdict and "
+            "--gold-generation becomes REQUIRED. Cannot be combined with --no-tune."
+        ),
+    )
+    parser.add_argument(
+        "--thread-limit",
+        type=int,
+        default=None,
+        help=(
+            "Pin the BLAS/OpenMP thread pool to this many threads for the whole run and "
+            "record the value in each artifact's metadata. Plan 33.2-22 MEASURED the "
+            "XGBoost legs returning different answers at different thread counts, by "
+            "enough to move a verdict, so an unpinned run is one nobody else can "
+            "reproduce. Omitting it leaves the pool unpinned, which is the previous "
+            "behaviour exactly. The pin itself is applied by scripts/train_models.py, "
+            "which must set it BEFORE numpy is imported; this flag records it. Under "
+            "--tune it defaults to config.tuning_preregistration.PINNED_THREAD_COUNT."
+        ),
+    )
     # SITE 5 of the season partition (RESEARCH 11.1), and the one that matters most for what
     # a FUTURE run records. R6's target names "all three model configs", which read
     # holdout_seasons [2021..2024] -- but those live in artifacts/<id>/metadata.json, the
@@ -670,9 +809,47 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.tune and args.no_tune:
+        parser.error(
+            "--tune (the pre-registered two-arm search) and --no-tune (skip tuning "
+            "entirely) contradict each other; pass one or neither."
+        )
+
     # D30-01: the Stage-2 feature-group exclusion, applied IN MEMORY between the parquet read
     # and train_target. Empty by default, which is a true no-op (see parse_exclude_groups).
     exclude_groups = parse_exclude_groups(args.exclude_groups)
+    exclude_groups_provenance = args.exclude_groups_provenance
+    group_verdict_digest: str | None = None
+    thread_limit: int | None = args.thread_limit
+
+    if args.tune:
+        from config.tuning_preregistration import PINNED_THREAD_COUNT
+
+        if not args.gold_generation:
+            parser.error(
+                "--gold-generation is REQUIRED with --tune. A re-fit whose artifact "
+                "cannot name the gold generation it was trained on is a re-fit nobody "
+                "can reproduce. Measure it with tests.gold_generation.gold_generation_key"
+                "() and pass it; this module deliberately does not import the tests "
+                "package to measure it for itself."
+            )
+        if not exclude_groups:
+            # DERIVED from the ratified verdict, never typed. An explicit
+            # --exclude-groups still wins and keeps its 'override' provenance.
+            exclude_groups, group_verdict_digest = verdict_exclusion()
+            exclude_groups_provenance = "verdict"
+            print(
+                f"  Exclusion list DERIVED from the ratified Stage-1 verdict "
+                f"({GROUP_GATE_VERDICT_PATH}): {list(exclude_groups)}"
+            )
+        else:
+            _, group_verdict_digest = verdict_exclusion()
+            print(
+                "  [OVERRIDE] --exclude-groups was supplied on the COMMAND LINE; this "
+                "list is NOT the ratified Stage-1 verdict."
+            )
+        if thread_limit is None:
+            thread_limit = PINNED_THREAD_COUNT
 
     # Parse season lists
     train_seasons = [int(s.strip()) for s in args.config_train_seasons.split(",")]
@@ -686,7 +863,7 @@ def main() -> None:
     )
 
     # Determine targets to train
-    if args.target == "all":
+    if args.all_targets or args.target == "all":
         targets = ["wp", "ats", "ou"]
     else:
         targets = [args.target]
@@ -786,8 +963,11 @@ def main() -> None:
             artifacts_dir=args.artifacts_dir,
             tune=not args.no_tune,
             exclude_groups=exclude_groups,
-            exclude_groups_provenance=args.exclude_groups_provenance,
+            exclude_groups_provenance=exclude_groups_provenance,
             gold_generation=args.gold_generation,
+            preregistered_search=args.tune,
+            group_verdict_digest=group_verdict_digest,
+            thread_limit=thread_limit,
         )
         all_results[target] = result
 
@@ -796,6 +976,40 @@ def main() -> None:
         print_summary(all_results)
     else:
         print("No models were trained. Check feature matrix availability.")
+
+    print_run_record(all_results, thread_limit)
+
+
+def print_run_record(results: dict[str, dict], thread_limit: int | None) -> None:
+    """Print the machine-readable record of what this run actually did.
+
+    THE MARGIN VERDICT IS PUBLISHED, PER TARGET, WHETHER OR NOT IT WAS CLEARED. A search
+    that failed its pre-registered bar is a FINDING to state plainly, not a result to
+    soften -- so a target with no recorded verdict prints ``unrecorded`` rather than
+    nothing, and ``unrecorded`` is a failure signal for the caller that reads this.
+
+    Args:
+        results: Per-target training results from :func:`train_target`.
+        thread_limit: The pinned thread count, or None when the run was unpinned.
+    """
+    print(f"TRAINED= {len(results)}")
+    print(f"THREAD_LIMIT= {thread_limit if thread_limit is not None else 'unpinned'}")
+    verdicts = []
+    for target, result in results.items():
+        record = result.get("adoption_record")
+        if not record:
+            verdicts.append(f"{target}:unrecorded")
+            continue
+        state = "cleared" if record["margin_cleared"] else "not-cleared"
+        verdicts.append(
+            f"{target}:{state}:adopted={record['adopted_arm']}"
+            f":gap={record['outer_gap']:+.6f}"
+            f":margin={record['margin']}"
+            f":outer_season={record['outer_season']}"
+        )
+    print("MARGIN_VERDICT= " + " ".join(verdicts))
+    for target, result in results.items():
+        print(f"ARTIFACT= {target} {Path(result['artifact_path']).name}")
 
 
 if __name__ == "__main__":

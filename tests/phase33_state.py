@@ -18079,3 +18079,121 @@ P332_23_TRIAL_BUDGET: int = 1000
 #: arms, the outer comparison and the final fits. Plan 33.2-22 measured the XGBoost legs
 #: disagreeing by enough to move a verdict at different thread counts.
 P332_23_THREAD_LIMIT: int = 1
+
+# ---------------------------------------------------------------------------
+# THE RE-MEASURED TRAINER GOLD-LOAD SITES.
+#
+# APPENDED by Plan 33.2-23 Task 3 on 2026-09-23. ``TRAINER_GOLD_LOAD_SITES`` above stays
+# BYTE-UNCHANGED as the record of where those four loads stood when Plan 33-04 measured
+# them; this slot is the re-measurement, under the same APPEND-ONCE protocol the season
+# partition rule's own re-point used (``P332_18_*``).
+#
+# WHY IT MOVED, AND WHY THAT IS NOT A DEFECT. Plan 33.2-23 added the pre-registered-re-fit
+# block to ``models/train.py`` ABOVE the gold load, which shifted the load from line 730 to
+# line 907. The guard itself did not move: ``assert_no_provisional_training_rows`` is still
+# called immediately after the read, and the sibling test that asserts the guard is WIRED
+# (``test_every_trainer_entry_point_calls_the_guard``) reads the function source, not the
+# line, so it never went red. Only the PROVENANCE line drifted, and a provenance line that
+# is edited in place would lose the record of where the load was when it was first pinned.
+#
+# The other three modules were re-measured too and had not moved.
+# ---------------------------------------------------------------------------
+
+#: ``(module, function, line)`` for every trainer entry point that loads gold, re-measured
+#: 2026-09-23. The LINE is provenance, not a pin: the assertion on it is that the recorded
+#: position is inside the file and reads like a gold load.
+P332_23_TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
+    ("models.train_wp", "main", 1148),
+    ("models.train_ats", "main", 1163),
+    ("models.train_ou", "main", 1423),
+    ("models.train", "main", 907),
+)
+
+# ---------------------------------------------------------------------------
+# THE THREE RE-FIT ARTIFACTS, AND WHAT THE PRE-REGISTERED SEARCH ACTUALLY FOUND.
+#
+# APPENDED by Plan 33.2-23 Task 3 on 2026-09-23, AFTER the run that produced them.
+#
+# WHAT WAS RUN. Three targets, on the corrected gold (generation
+# P332_20_CLEAN_BUILD_GOLD_GENERATION, 188/188/187 over 6,516 rows) with the three DROPped
+# feature groups excluded per the re-measured verdict, under a FRESH study tag and with the
+# OpenMP pool pinned at one thread. Per target, TWO arms of 1,000 trials STARTED each: a
+# RandomSampler baseline first, then TPE, over the SAME objective object and the SAME
+# widened, pre-registered search space. Each arm's winner was then refit on the same
+# train+hp_val data and scored ONCE on 2024 -- the first holdout season, derived from the
+# committed partition rule, which neither search ever saw.
+#
+# WHAT IT FOUND: NOTHING THAT CLEARED ITS BAR, ON ANY TARGET. Deep search did not beat
+# random setting selection by a margin luck cannot explain, so under the owner's 2026-09-23
+# ruling all three ship on the trainer's standard default parameters and the failure is
+# PUBLISHED per target rather than absorbed. That is the guard working, not the phase
+# failing: a search that cannot beat its own random baseline has found fold noise, and
+# adopting its winner would have shipped that noise as an improvement.
+#
+# THE WP RESULT IS THE STARKEST AND WAS FORESEEN. The owner was told BEFORE setting the bar
+# that the WP margin (0.0067) exceeds the entire best-to-worst range measured across 8
+# random WP settings (0.0055), so WP would probably not clear it. It did not -- and by a
+# wider mechanism than a near miss: both arms converged on the SAME best in-search value
+# and the SAME outer score to six decimal places. A thousand TPE trials found nothing a
+# thousand random draws had not already found.
+#
+# PRODUCTION WAS NOT SWAPPED. `artifacts/latest.json` is byte-unchanged, proved by the
+# content-digest bracket around the run (`git diff` cannot see artifacts/ at all --
+# .gitignore:30). The batched swap is Plan 33.2-25's, once all four artifacts exist.
+# ---------------------------------------------------------------------------
+
+#: ``(target, artifact_id)`` for the three candidates this re-fit wrote. Plan 33.2-25's swap
+#: and Plan 33.2-26's threshold derivation read these ids FROM HERE rather than re-deriving
+#: them from a directory listing, which would silently pick up whatever was written last.
+P332_23_REFIT_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
+    ("wp", "wp_20260923_115808"),
+    ("ats", "ats_20260923_124120"),
+    ("ou", "ou_20260923_133813"),
+)
+
+#: The gold generation all three were trained on. Stated as a name rather than a second copy
+#: of the digest string, so the two cannot drift.
+P332_23_REFIT_GOLD_GENERATION: str = P332_20_CLEAN_BUILD_GOLD_GENERATION
+
+#: The season the adoption gate scored on -- the FIRST holdout season, derived from
+#: conf.season_partition, never typed, and never the spent 2025 hold.
+P332_23_OUTER_COMPARISON_SEASON: int = 2024
+
+#: The per-target verdict: (target, margin_cleared, outer gap in that target's own metric,
+#: the bar it had to clear, the arm adopted). The gap is
+#: ``random_outer_score - tpe_outer_score``; every metric is lower-is-better, so a POSITIVE
+#: gap means the searched winner was ahead -- by far less than the bar, on all three.
+P332_23_MARGIN_VERDICTS: tuple[tuple[str, bool, float, float, str], ...] = (
+    ("wp", False, -3.8147441860925113e-07, 0.0067, "defaults"),
+    ("ats", False, 0.032063220859619435, 0.49, "defaults"),
+    ("ou", False, 0.023050816193893104, 0.56, "defaults"),
+)
+
+#: Per target and arm: (target, arm, started, completed, pruned, failed). STARTED is the
+#: budget proof and is EQUAL across arms by assertion; the other three are REPORTED FACTS
+#: with no floor -- HyperbandPruner prunes most trials by design, and the two arms have
+#: different samplers and different crc32 brackets, so their completed counts differ.
+P332_23_TRIAL_COUNTS: tuple[tuple[str, str, int, int, int, int], ...] = (
+    ("wp", "random", 1000, 571, 429, 0),
+    ("wp", "tpe", 1000, 641, 359, 0),
+    ("ats", "random", 1000, 591, 409, 0),
+    ("ats", "tpe", 1000, 700, 300, 0),
+    ("ou", "random", 1000, 575, 425, 0),
+    ("ou", "tpe", 1000, 685, 315, 0),
+)
+
+#: The two arms' OUTER-season scores, per target: (target, random, tpe). WP's two are equal
+#: to the sixth decimal -- the searched arm found nothing the random arm had not.
+P332_23_OUTER_SCORES: tuple[tuple[str, float, float], ...] = (
+    ("wp", 0.5991536346856597, 0.5991540161600784),
+    ("ats", 9.963965444606647, 9.931902223747027),
+    ("ou", 9.923300616480895, 9.900249800287002),
+)
+
+#: The selected feature count per target, so the no-market scan's non-vacuity control has a
+#: recorded value to close against rather than merely "non-zero".
+P332_23_REFIT_FEATURE_COUNTS: tuple[tuple[str, int], ...] = (
+    ("wp", 20),
+    ("ats", 25),
+    ("ou", 25),
+)
