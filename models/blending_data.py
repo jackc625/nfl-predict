@@ -61,7 +61,6 @@ from models.market_probability import (
     timeline_spread_to_home_fav_margin,
 )
 from utils import get_logger
-from utils.game_lock import lock_frame
 
 logger = get_logger(__name__)
 
@@ -264,7 +263,12 @@ def select_prelock_lines(
 
     schedule = schedule.loc[:, list(_SCHEDULE_COLUMNS)].copy()
     schedule["game_id"] = schedule["game_id"].astype(str)
-    # THE lock, one per game, from THE rule -- never a second derivation here.
+    # THE lock, one per game, from THE rule -- never a second derivation here. Imported
+    # HERE rather than at module level: a module-level binding of the rule's function
+    # hides this call from the one-lock-rule identity delegate
+    # (tests/unit/test_one_lock_rule_source_scan.py, control 5).
+    from utils.game_lock import lock_frame
+
     locks = lock_frame(schedule)
     schedule["lock"] = pd.to_datetime(schedule["game_id"].map(locks), utc=True)
 
