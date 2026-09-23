@@ -45,8 +45,9 @@ WP: the market side of every historical row is converted OUT OF FOLD through
 ``models.market_probability.oof_market_probability`` with the converter the live blend binds, never
 through the serving slope. 2020 has no prior fold, so its games leave the WP sweep as
 ``no_prior_fold_converter`` (counted, never filled). The owned timeline carries no moneyline, so a
-WP candidate is priced at the fair moneyline implied by that out-of-fold probability. WP fits no
-residual SD by design (D31-07).
+WP candidate is priced from that out-of-fold probability WITH the bookmaker's cut put back on
+(:data:`WP_WIN_PAYOUT_FACTOR`): pricing it at the no-vig line would pay every winning bet more
+than any book does and flatter the sweep. WP fits no residual SD by design (D31-07).
 
 WHAT IT WRITES
 --------------
@@ -75,7 +76,7 @@ from threadpoolctl import threadpool_limits
 
 from backtest.ats_ev_chain import ChainFit, FenceWindow
 from backtest.ev_chain_constants import HOLD_SEASONS_P31, RUN_LEDGER_PATH
-from backtest.ou_ev_chain import EV_FLOOR_GRID
+from backtest.ou_ev_chain import EV_FLOOR_GRID, MINUS_110_PAYOUT
 from backtest.profitability_2025 import (
     _fit_target_on_tune,
     _per_bet_frame,
@@ -115,6 +116,17 @@ WP_NO_FROZEN_SD_REASON: str = (
     "a standard deviation of, and inventing a logit-space one was rejected "
     "(backtest/wp_ev_chain.py)."
 )
+
+#: The bookmaker's cut put back on a historical WP price: a winning WP bet pays 100/110 of what
+#: the no-vig price would pay -- the standard -110 cut (a 0.0476 two-way hold at even odds), the
+#: same price the ATS and O/U legs are graded at here (``backtest.ats_ev_chain`` and
+#: ``backtest.ou_ev_chain.devig`` fall back to flat -110 when no juice is stored, which is every
+#: row of the owned timeline). No live PRE-LOCK moneyline is stored in silver --
+#: ``odds_snapshot``'s moneylines are the nflverse backfill -- so there is no owned measurement to
+#: use instead. Cross-check: the live Odds API captures in bronze (14 games, 9 books, all
+#: pre-lock, 2025 week 5) show a median per-game hold of 0.042, so -110 is realistic and slightly
+#: conservative. Those 2025 quotes are NOT read here (the hold is spent).
+WP_WIN_PAYOUT_FACTOR: float = MINUS_110_PAYOUT
 
 RECORD_PATH: Path = Path("outputs") / "p332" / "corrected_chain_fit.json"
 MODULE_PATH: Path = Path("backtest") / "corrected_ev_chain_constants.py"
@@ -171,8 +183,8 @@ class CandidateFrames:
         frames: ``{wp, ats, ou}`` -> one row per game, in the columns the strategies read. The
             strategies' market field names (``closing_spread``, ``closing_total``, ``ml_home``,
             ``ml_away``) are their LEGACY names; here they hold the owned PRE-LOCK line and the
-            fair moneyline implied by the out-of-fold market probability. The closing-line guard
-            runs on the inputs BEFORE this rename.
+            moneyline implied by the out-of-fold market probability plus the -110 cut. The
+            closing-line guard runs on the inputs BEFORE this rename.
         wp_excluded: The ``no_prior_fold_converter`` rows (:data:`EXCLUDED_COLUMNS`).
         corpus_game_ids: The owned pre-lock corpus games.
         closing_line_rows: Post-lock or undated line rows found in the inputs (always 0: the
@@ -219,6 +231,19 @@ def refuse_closing_lines(inputs: pd.DataFrame) -> int:
     snapshot = pd.to_datetime(inputs["snapshot_ts"], utc=True)
     lock = pd.to_datetime(inputs["lock"], utc=True)
     return int((snapshot > lock).sum() + (snapshot.isna() | lock.isna()).sum())
+
+
+def vigged_moneyline(
+    fair_probability: float, payout_factor: float = WP_WIN_PAYOUT_FACTOR
+) -> int:
+    """The American moneyline a book would post for *fair_probability*, cut included.
+
+    A win pays *payout_factor* of the no-vig profit, so at 0.5 both sides post -110. The cut is
+    taken from the winnings rather than added to the probability, so every probability below 1
+    still has a posted price (a proportional mark-up would exceed 1 on a heavy favourite).
+    """
+    fair_profit = (1.0 - fair_probability) / fair_probability
+    return probability_to_moneyline(1.0 / (1.0 + fair_profit * payout_factor))
 
 
 def _narrow_predictions(frame: pd.DataFrame, target: str) -> pd.DataFrame:
@@ -306,10 +331,8 @@ def build_candidate_frames(
     priced["market_prob"] = oof_market_probability(
         priced.assign(home_fav_margin=priced["market_spread"]), walk_forward_slopes
     )
-    priced["ml_home"] = [probability_to_moneyline(q) for q in priced["market_prob"]]
-    priced["ml_away"] = [
-        probability_to_moneyline(1.0 - q) for q in priced["market_prob"]
-    ]
+    priced["ml_home"] = [vigged_moneyline(q) for q in priced["market_prob"]]
+    priced["ml_away"] = [vigged_moneyline(1.0 - q) for q in priced["market_prob"]]
     priced["target"] = "wp"
     frames["wp"] = priced
 
@@ -639,6 +662,7 @@ def build_record(
         "input_digest": derivation.input_digest,
         "fit_time": fit_time,
         "thread_limit": PINNED_THREAD_COUNT,
+        "wp_win_payout_factor": WP_WIN_PAYOUT_FACTOR,
         "tune_fit": tune_fit,
         "targets": targets,
     }
@@ -759,6 +783,7 @@ def render_corrected_module(
         + _render_mapping({t: superseded[t]["frozen_sd"] for t in TARGETS}),
         f"CORRECTED_WP_NO_FROZEN_SD_REASON: str = {WP_NO_FROZEN_SD_REASON!r}",
         f"CORRECTED_THREAD_LIMIT: int = {PINNED_THREAD_COUNT!r}",
+        f"CORRECTED_WP_WIN_PAYOUT_FACTOR: float = {WP_WIN_PAYOUT_FACTOR!r}",
         f"CORRECTED_REPLAY_SNAPSHOT_TS_POLICY: str = {policy!r}",
         "",
     ]
@@ -870,6 +895,7 @@ def main() -> int:
             print(f"WP_GATE_PASSED= {gate.passed}")
     print(f"REFUSALS= {sorted(derivation.refusals)}")
     print(f"THREAD_LIMIT= {PINNED_THREAD_COUNT}")
+    print(f"WP_WIN_PAYOUT_FACTOR= {WP_WIN_PAYOUT_FACTOR}")
     print(f"GOLD_GENERATION= {gold_digest}")
     print(f"INPUT_DIGEST= {derivation.input_digest}")
     print(f"LEDGER_SHA= {ledger_before}")

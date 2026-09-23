@@ -360,6 +360,28 @@ class TestTheWpMarketSideIsOutOfFold:
         for target in ("ats", "ou"):
             assert sorted(set(frames.frames[target]["season"])) == list(_CORPUS_SEASONS)
 
+    def test_the_wp_price_carries_the_bookmakers_cut(self) -> None:
+        """A historical WP bet is priced WITH the -110 two-way hold, never at the no-vig line."""
+        from backtest.ou_ev_chain import devig
+        from utils.probability_utils import probability_to_moneyline
+
+        script = _load(SCRIPT_MODULE)
+        assert script.vigged_moneyline(0.5) == -110
+        corpus, predictions = _fixture()
+        wp = script.build_candidate_frames(
+            corpus, predictions, _WALK_FORWARD_SLOPES
+        ).frames["wp"]
+        for q, ml_home, ml_away in zip(
+            wp["market_prob"], wp["ml_home"], wp["ml_away"], strict=True
+        ):
+            # The posted pair carries a real overround ...
+            assert devig(over_odds=ml_home, under_odds=ml_away)["method"] == (
+                "real_two_sided"
+            )
+            # ... and the no-vig price pays MORE on the same side (the control).
+            assert ml_home < probability_to_moneyline(q)
+            assert ml_away < probability_to_moneyline(1.0 - q)
+
     def test_the_derivation_never_touches_a_serving_slope_path(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

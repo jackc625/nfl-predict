@@ -45,7 +45,7 @@ from __future__ import annotations
 
 SUPERSEDED_PREREGISTRATION_COMMIT: str = "ee20773b58c3a59de2450d56c64992e240282820"
 CORRECTED_CHAIN_FIT_RECORD_PATH: str = "outputs/p332/corrected_chain_fit.json"
-CORRECTED_CHAIN_FIT_RECORD_ID: str = "corrected_chain_fit_20260923_221126"
+CORRECTED_CHAIN_FIT_RECORD_ID: str = "corrected_chain_fit_20260923_231233"
 CORRECTED_SOURCE_ARTIFACT_IDS: dict[str, str] = {
     "wp": "wp_20260923_172144",
     "ats": "ats_20260923_172148",
@@ -80,4 +80,5 @@ SUPERSEDED_FROZEN_SD_BY_TARGET: dict[str, float | None] = {
 }
 CORRECTED_WP_NO_FROZEN_SD_REASON: str = "D31-07: WP fits no residual SD by design. A calibrated classifier has no residual to take a standard deviation of, and inventing a logit-space one was rejected (backtest/wp_ev_chain.py)."
 CORRECTED_THREAD_LIMIT: int = 1
+CORRECTED_WP_WIN_PAYOUT_FACTOR: float = 0.9090909090909091
 CORRECTED_REPLAY_SNAPSHOT_TS_POLICY: str = "Every replay row's information time is judged against THAT GAME'S OWN LOCK: 18:00 America/New_York on the ET calendar day before its kickoff (D33.2-01, utils.game_lock). Information timed at the lock is admissible; one second after is not. This SUPERSEDES -- it does not replace -- the frozen sentence of commit ee20773 (backtest/ev_chain_constants.py), which describes the retired preceding-Friday 6 PM Eastern freeze and the retired get_synthetic_snapshot_ts; that sentence stays byte-unchanged as the record of what was frozen and when."
