@@ -292,7 +292,9 @@ class TestTheRefusals:
         frames = script.build_candidate_frames(
             corpus, predictions, _WALK_FORWARD_SLOPES
         )
-        planted = predictions["ou"].head(1).assign(season=2025)
+        planted = (
+            predictions["ou"].head(1).assign(season=2025, game_id="2025_W01_A0@H0")
+        )
         predictions["ou"] = pd.concat([predictions["ou"], planted], ignore_index=True)
         with pytest.raises(script.SpentHoldSeasonError, match="2025"):
             script.fit_frame_for("ou", predictions, frames)
