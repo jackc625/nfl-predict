@@ -170,14 +170,14 @@ def test_wp_train_on_synthetic_data(wp_trainer, synthetic_features_df):
     """Train on synthetic feature matrix produces model with predictions in [0,1]."""
     results = wp_trainer.train_and_evaluate(synthetic_features_df)
 
-    # Should have season results for holdout seasons (2021-2024)
-    assert len(results["season_results"]) == 4
+    # One result per holdout season of the committed partition that the frame carries
+    # (generate_splits skips a holdout season with no rows).
+    present = set(synthetic_features_df["season"])
+    expected = [s for s in wp_trainer.config.holdout_seasons if s in present]
+    assert expected, "fixture sanity: the frame must carry a holdout season"
+    assert [r["season"] for r in results["season_results"]] == expected
     assert results["feature_names"] is not None
     assert len(results["feature_names"]) > 0
-
-    # All predictions should be in [0, 1]
-    for season_result in results["season_results"]:
-        assert season_result["season"] in [2021, 2022, 2023, 2024]
 
 
 # ---------------------------------------------------------------------------

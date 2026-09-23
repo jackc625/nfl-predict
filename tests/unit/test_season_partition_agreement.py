@@ -41,9 +41,9 @@ WHAT THIS ASSERTS OVER, AND WHAT IT DELIBERATELY DOES NOT
 ----------------------------------------------------------
 SOURCE sites only. R6's target names "all three model configs", which read
 ``holdout_seasons: [2021..2024]`` -- but those live in ``artifacts/<id>/metadata.json``, the
-RECORD of a past training run, and D33.1-04 PROHIBITS editing them. So the correct assertion is
-the opposite of agreement: they must still read 2021-2024 and must DIFFER from the live
-partition, and that difference must be REPORTED rather than erased. That is
+RECORD of a past training run, and D33.1-04 PROHIBITS editing them. So the pre-correction
+incumbents must still read 2021-2024, and since Plan 33.2-25's swap the models production serves
+were re-fitted under the live rule and record it. That is
 ``TestTheIncumbentRecordsDifferAndAreNotEdited`` below.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -70,8 +70,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: temporary copy without touching the real file.
 GATE_TOML_PATH = REPO_ROOT / "config" / "gate.toml"
 
-#: The three deployed incumbents, and the window every one of them RECORDS. Not a partition
-#: site: a historical fact about three past training runs.
+#: The three pre-correction incumbents (``phase33_state.INCUMBENT_ARTIFACTS``), and the window
+#: every one of them RECORDS. Not a partition site: a historical fact about three past
+#: training runs.
 _INCUMBENT_RECORDED_WINDOW = (2021, 2022, 2023, 2024)
 
 
@@ -441,18 +442,25 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
     R6's target names "all three model configs". They live in ``artifacts/<id>/metadata.json``
     and record ``holdout_seasons: [2021..2024]``. Editing them to agree with the live partition
     would falsify the record of a past training run to unblock a gate -- the defect class this
-    milestone exists to detect. So the assertion is that they DIFFER, and that the difference
-    is reported rather than erased. They change only when a future re-fit writes new ones.
+    milestone exists to detect. They change only when a future re-fit writes new ones.
+
+    Plan 33.2-25's swap was that re-fit. The pre-correction incumbents
+    (``phase33_state.INCUMBENT_ARTIFACTS``) still record 2021-2024, unedited; the models
+    production now serves record the live partition, so there is no difference to report.
     """
 
-    def _incumbent_windows(self) -> dict[str, tuple[int, ...]]:
+    def _incumbent_windows(
+        self, versions: dict[str, str] | None = None
+    ) -> dict[str, tuple[int, ...]]:
+        """Recorded holdout per target, for *versions* or else what latest.json serves."""
         manifest_path = REPO_ROOT / "artifacts" / "latest.json"
         if not manifest_path.exists():
             pytest.skip(
                 "artifacts/latest.json is absent, so there is no deployed incumbent to read. "
                 "Restore it per RUNBOOK's clean-checkout step."
             )
-        versions = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if versions is None:
+            versions = json.loads(manifest_path.read_text(encoding="utf-8"))
         windows: dict[str, tuple[int, ...]] = {}
         for target in ("wp", "ats", "ou"):
             version = versions.get(target)
@@ -472,54 +480,40 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
         return windows
 
     def test_every_incumbent_still_records_the_pre_correction_window(self) -> None:
-        for target, window in self._incumbent_windows().items():
+        incumbents = dict(phase33_state.INCUMBENT_ARTIFACTS)
+        incumbents.pop("blend")
+        windows = self._incumbent_windows(incumbents)
+        assert set(windows) == {"wp", "ats", "ou"}
+        for target, window in windows.items():
             assert window == _INCUMBENT_RECORDED_WINDOW, (
-                f"the deployed '{target}' incumbent records holdout {list(window)}, not the "
+                f"the '{target}' incumbent records holdout {list(window)}, not the "
                 f"{list(_INCUMBENT_RECORDED_WINDOW)} it was trained on. A metadata.json is "
                 "the RECORD of a past training run; if this changed without a re-fit, a "
                 "record was edited (D33.1-04 prohibits exactly that)."
             )
 
-    def test_every_incumbent_window_DIFFERS_from_the_live_partition(self) -> None:
+    def test_every_served_model_records_the_live_partition(self) -> None:
+        manifest = json.loads(
+            (REPO_ROOT / "artifacts" / "latest.json").read_text(encoding="utf-8")
+        )
+        assert manifest == dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)
         live = tuple(_partition().holdout)
-        for target, window in self._incumbent_windows().items():
-            assert window != live, (
-                f"the deployed '{target}' incumbent's recorded holdout now EQUALS the live "
-                f"partition {list(live)}. Under D33.1-04 the correct outcome is a reported "
-                "DIFFERENCE, not agreement -- agreement here means somebody edited the "
-                "record instead of re-fitting."
+        windows = self._incumbent_windows()
+        assert set(windows) == {"wp", "ats", "ou"}
+        for target, window in windows.items():
+            assert window == live, (
+                f"the served '{target}' model records holdout {list(window)}, not the live "
+                f"partition {list(live)} it was re-fitted under in Plan 33.2-25."
             )
 
-    def test_the_difference_is_REPORTED_rather_than_raised(self) -> None:
-        """``_incumbent_window`` used to raise on this. It must now report and continue."""
+    def test_the_served_models_carry_no_window_report(self) -> None:
+        """Agreement is silent: ``_incumbent_window`` reports only a difference."""
         from scripts.promote_models import _incumbent_window
 
         artifacts_dir = REPO_ROOT / "artifacts"
-        if not (artifacts_dir / "latest.json").exists():
-            pytest.skip(
-                "artifacts/latest.json is absent; nothing to derive a window from."
-            )
-
         for target in sorted(self._incumbent_windows()):
             window = _incumbent_window(target, artifacts_dir)
-            report = window["window_report"]
-            assert report, (
-                f"'{target}': the incumbent's recorded window differs from the live "
-                "partition, so _incumbent_window must REPORT it. An empty report means the "
-                "difference is silent, which is what the raise used to prevent."
-            )
-            assert "2021" in report and "2024" in report, report
-            # Review CR-01: all three windows come from the committed rule now, so the
-            # report must name every field that moved. The train window is the one that
-            # was silently inherited from a VOID artifact before the fix.
-            assert "train:" in report, (
-                "the report names only some of the fields that moved; a window difference "
-                f"that is not stated is the CR-01 defect. Got: {report}"
-            )
-            assert "in-sample" in report.lower(), (
-                "the report must name the consequence -- the gate's re-score of an artifact "
-                f"fitted on those seasons is IN-SAMPLE. Got: {report}"
-            )
+            assert window["window_report"] == "", (target, window["window_report"])
 
 
 class TestTheRuleWillNotTreatALiveSeasonAsCompleted:

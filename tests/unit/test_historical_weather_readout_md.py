@@ -23,13 +23,14 @@ slots the document quotes, which are records rather than moving measurements. Pl
 generation-gate four existing guards for exactly this reason; this one is written so it never needs
 gating, and an AST check in the plan's verification asserts it imports no harness module.
 
-THE ONE FILE IT READS OUTSIDE THE DOCUMENT is ``artifacts/latest.json``, and only to take a sha256 of
-its bytes. That is the phase's byte-identity fence, which 33.1-11-PLAN.md's prohibitions table names
-in this module by name. It reads nothing under ``data/`` and it never writes.
+IT READS NOTHING OUTSIDE THE DOCUMENT. It once took a sha256 of ``artifacts/latest.json`` as the
+phase's byte-identity fence; Plan 33.2-25's authorised swap moved that file, so the fence now checks
+that the readout quotes the digest the Phase-33.1 record holds, and leaves the live manifest to the
+manifest-freeze test. It reads nothing under ``data/`` and it never writes.
 
 TWO CONSISTENCY TESTS rather than substring checks, because two of the readout's claims can each be
 individually well-formed and jointly wrong: the readout's R7 claim must agree with
-``WEATHER_BRIDGE_R7_DISPOSITION["status"]``, and the deployed manifest must still digest to the value
+``WEATHER_BRIDGE_R7_DISPOSITION["status"]``, and the readout's manifest digest must be the one
 recorded at this phase's start.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -37,7 +38,6 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import pytest
@@ -46,7 +46,6 @@ from tests import phase33_state
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 READOUT_MD = REPO_ROOT / "HISTORICAL-WEATHER-READOUT.md"
-LIVE_MANIFEST = REPO_ROOT / "artifacts" / "latest.json"
 
 # Required section markers. Substrings of each section heading, so a reword inside a section does
 # not trip the guard but dropping the section does.
@@ -214,16 +213,19 @@ class TestTheReadoutMakesNoPerformanceClaim:
 class TestTheDeployedManifestIsByteIdentical:
     """The fence the readout's central claim rests on, checked rather than quoted."""
 
-    def test_latest_json_digests_to_the_value_recorded_at_phase_start(self) -> None:
-        """``artifacts/latest.json`` still digests to the value recorded before this phase ran."""
-        recorded = phase33_state.FINAL_FIT_NOT_RUN_IN_PHASE_331[
-            "latest_json_digest_before"
-        ]
-        measured = hashlib.sha256(LIVE_MANIFEST.read_bytes()).hexdigest()
-        assert measured == recorded, (
-            "artifacts/latest.json has MOVED. The readout states plainly that no model was re-fit "
-            "and that nothing reached production; that statement rests on this digest. Either the "
-            "readout is now false or a production swap happened outside the record."
+    def test_the_readout_quotes_the_digest_recorded_at_phase_start(self) -> None:
+        """The readout's byte-identity claim names the digest the Phase-33.1 record holds.
+
+        This used to require the LIVE ``artifacts/latest.json`` to still digest to that value.
+        Plan 33.2-25's authorised swap moved it, so the live check would now test a later
+        phase; the record and the readout's claim about Phase 33.1 are unchanged.
+        """
+        record = phase33_state.FINAL_FIT_NOT_RUN_IN_PHASE_331
+        recorded = record["latest_json_digest_before"]
+        assert record["latest_json_digest_after"] == recorded
+        quoted = f"{recorded[:8]}...{recorded[-6:]}"
+        assert quoted in READOUT_MD.read_text(encoding="utf-8"), (
+            f"the readout no longer quotes the recorded phase-start digest {quoted}."
         )
 
 

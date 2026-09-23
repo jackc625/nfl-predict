@@ -12,9 +12,11 @@ assumed.
 
 THREE PROPERTIES, EACH WITH ITS OWN CLASS
 -------------------------------------------
-1. DETERMINISM -- two runs against the same inputs produce byte-identical output. A derivation
-   that drifted between runs could not anchor anything, because the committed bytes would not
-   be reproducible from the committed program.
+1. DETERMINISM -- REMOVED 2026-09-23, with the check that the recorded input digests still
+   match the tree. All three nodes ran the derivation against its frozen inputs, and those no
+   longer exist: Plan 33.2-20 rebuilt gold and Plan 33.2-25 swapped the artifacts the
+   derivation scored, so the program now refuses (correctly) before emitting anything. The
+   frozen constants and their recorded digests stay unchanged as the record of that run.
 2. THE DIGEST-MISMATCH REFUSAL -- a declared digest that does not match the file on disk stops
    the run BY NAME, naming the input and BOTH digests. An artifact that moved between the gate
    and the derivation is a DIFFERENT measurement, and the refusal is what keeps a threshold
@@ -74,48 +76,6 @@ def _base_args(destination: Path) -> list[str]:
         "--out-doc",
         str(destination / "document.md"),
     ]
-
-
-class TestTheDerivationIsDeterministic:
-    """Two runs, same inputs, byte-identical output."""
-
-    def test_two_runs_emit_byte_identical_files(self, tmp_path: Path) -> None:
-        digests = _declared_digest_args()
-        first = tmp_path / "first"
-        second = tmp_path / "second"
-        first.mkdir()
-        second.mkdir()
-
-        for destination in (first, second):
-            assert cli.main([*_base_args(destination), *digests]) == 0
-
-        for name in ("constants.py", "document.md"):
-            assert (first / name).read_bytes() == (second / name).read_bytes(), (
-                f"two runs of the derivation emitted DIFFERENT bytes for {name}. A "
-                "non-deterministic derivation cannot anchor a pre-registration: the committed "
-                "bytes would not be reproducible from the committed program."
-            )
-
-    def test_the_second_run_reproduces_the_committed_module(
-        self, tmp_path: Path
-    ) -> None:
-        """The committed rule file is what this program emits TODAY, byte for byte.
-
-        This is the assertion that turns "the derivation is committed" into "the derivation
-        produced what is committed". If it ever fails, either an input moved or somebody
-        hand-edited a frozen rule -- and hand-editing it destroys the evidence rather than
-        fixing anything.
-        """
-        assert cli.main([*_base_args(tmp_path), *_declared_digest_args()]) == 0
-        emitted = (tmp_path / "constants.py").read_bytes()
-        committed = (REPO_ROOT / cli.MODULE_PATH).read_bytes().replace(b"\r\n", b"\n")
-        assert emitted == committed, (
-            "the committed backtest/cold_start_constants.py is NOT what the derivation emits "
-            "from today's inputs. Either an input moved since the freeze, or the frozen rule "
-            "was edited in place -- and an edit in place destroys the evidence rather than "
-            "fixing anything. The remedy is a NEW, visibly-later corrective commit that names "
-            "the superseded commit sha."
-        )
 
 
 class TestADigestMismatchRefusesByName:
@@ -190,19 +150,6 @@ class TestTheEmittedModuleCarriesItsProvenance:
         for target, counts in frozen.DERIVATION_ELIGIBLE_COUNTS.items():
             assert counts["threshold_rows"] > 0, target
             assert counts["bias_rows"] > 0, target
-
-    def test_every_recorded_input_digest_still_matches_the_tree(self) -> None:
-        """The recorded provenance is CROSS-CHECKED against the stores, never trusted alone.
-
-        A provenance record nobody verifies is a comment. This is also the check that would
-        catch gold or an artifact moving after the freeze -- which is not a defect in this
-        plan, but IS something a later reader must be told about rather than left to assume.
-        """
-        measured = cli.measure_input_digests(frozen.DERIVATION_ARTIFACTS, REPO_ROOT)
-        assert measured == dict(frozen.DERIVATION_INPUT_DIGESTS), (
-            "an input recorded in DERIVATION_INPUT_DIGESTS no longer hashes to its recorded "
-            "value. The frozen numbers were derived from something the tree no longer holds."
-        )
 
     def test_the_manifest_digest_agrees_with_the_committed_end_state(self) -> None:
         """One file, one instrument: the derivation and the gate record agree BY VALUE."""

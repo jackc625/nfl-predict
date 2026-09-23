@@ -189,7 +189,9 @@ _LIVE_GOLD_DISPLAY_NUNIQUE = {
 #
 # Closing it is a re-fit that must pass the gate, not a cleanup. WP
 # (``wp_20260824_113325``) and ATS (``ats_20260605_220128``) are clean.
-_KNOWN_DEPLOYED_DISPLAY_RESIDUE = {
+#
+# A HISTORICAL RECORD since Plan 33.2-25's swap: none of those three serves any more.
+_PHASE30_DEPLOYED_DISPLAY_RESIDUE = {
     "ou_20260326_163930": ["raw_precip_mm", "raw_precip_prob", "raw_wind_mph"],
 }
 
@@ -612,21 +614,11 @@ class TestDeployedArtifactResidue:
     the residue is pinned EXACTLY, so a NEW offender fails and the known one
     cannot quietly become permanent-by-forgetting.
 
-    BOTH NODES BELOW ARE RED AND ARE DELIBERATELY NOT RE-ANCHORED HERE (Plan
-    33.2-20). They pin a property of DEPLOYED MODEL ARTIFACTS, not of data, and the
-    standing owner ruling is that the pre-correction models are dead: every artifact
-    ``artifacts/latest.json`` names was fitted on gold this phase has since replaced
-    column by column. MEASURED 2026-09-22: the manifest now names the Phase-33 re-fit
-    (``wp_20260914_221745`` / ``ats_20260914_221751`` / ``ou_20260914_221756``), NOT
-    the Phase-30 ``ou_20260326_163930`` this anchor records, so the measured residue
-    is ``{}`` -- and pinning it to ``{}`` would anchor a property of artifacts that
-    Plan 33.2-23's re-fit is about to replace, which is exactly the re-pin the data
-    sweep refuses to make elsewhere.
-
-    ROUTED to Plan 33.2-23 (the re-fit on corrected gold), with the rest of the
-    dead-model family. The honest re-anchor is the one that plan can make: measure the
-    residue of the artifacts it actually promotes, against the display columns that
-    actually reach them, and record THAT.
+    RE-ANCHORED after Plan 33.2-25's swap. The residue above was closed the intended
+    way, by re-fits: production now serves ``P332_25B_SWAP_ARTIFACT_IDS``, and
+    MEASURED 2026-09-23 none of the three consumes a display column, so the live
+    residue is ``{}``. ``_PHASE30_DEPLOYED_DISPLAY_RESIDUE`` stays as the record of
+    what the Phase-30 O/U model consumed.
     """
 
     @staticmethod
@@ -649,19 +641,24 @@ class TestDeployedArtifactResidue:
         return residue
 
     def test_the_deployed_residue_is_exactly_the_recorded_one(self) -> None:
-        assert self._deployed_residue() == _KNOWN_DEPLOYED_DISPLAY_RESIDUE, (
-            "The set of deployed artifacts consuming display-only columns changed. "
-            "A NEW entry means a fit selected a display column despite Plan 30-15, "
-            "or an artifact predating it was promoted -- investigate before "
-            "re-anchoring. An entry DISAPPEARING means the residue was closed by a "
-            "gate-passing re-fit, which is the intended resolution: update this "
-            "anchor and the utils/feature_columns.py note together."
+        assert self._deployed_residue() == {}, (
+            "A deployed artifact consumes display-only columns. That means a fit "
+            "selected a display column despite Plan 30-15, or an artifact predating "
+            "it was promoted -- investigate before re-anchoring."
         )
 
-    def test_the_two_re_fit_targets_carry_no_residue(self) -> None:
-        """WP and ATS are clean; only the retained v1.0 O/U artifact is not."""
-        residue = self._deployed_residue()
-        assert set(residue) == {"ou_20260326_163930"}
+    def test_the_manifest_names_the_swapped_artifacts_and_each_has_a_feature_list(
+        self,
+    ) -> None:
+        """Non-vacuity for the ``{}`` above: ``_deployed_residue`` skips a missing list."""
+        import json
+
+        manifest = json.loads(
+            (_ARTIFACTS_DIR / "latest.json").read_text(encoding="utf-8")
+        )
+        assert manifest == dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)
+        for target in ("wp", "ats", "ou"):
+            assert (_ARTIFACTS_DIR / manifest[target] / "feature_list.json").is_file()
 
     def test_a_freshly_selected_feature_set_could_not_produce_the_residue(
         self,
@@ -672,6 +669,6 @@ class TestDeployedArtifactResidue:
         the artifact predates the exclusion, not because the exclusion leaks.
         """
         frame = _synthetic_frame()
-        for name in _KNOWN_DEPLOYED_DISPLAY_RESIDUE["ou_20260326_163930"]:
+        for name in _PHASE30_DEPLOYED_DISPLAY_RESIDUE["ou_20260326_163930"]:
             assert name in frame.columns
             assert name not in _splitter(target_col="target_wp")._feature_cols(frame)

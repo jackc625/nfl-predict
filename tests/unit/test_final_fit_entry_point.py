@@ -75,7 +75,8 @@ from tests.phase33_state import (
     GOLD_GENERATION_AFTER_ELO_REBUILD,
     GOLD_GENERATION_AT_REFIT,
     GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
-    POST_GATE_MANIFEST_DIGEST,
+    P332_25_POST_SWAP_LATEST_JSON_SHA256,
+    P332_25B_REFIT_GOLD_GENERATION,
     WP_PREPROCESSING_DEFECT_CLOSURE,
 )
 from tests.unit.test_weather_bridge_expiry import WEATHER_GENERATION_MARKER_KEY
@@ -731,9 +732,11 @@ class TestPhase33Wave15IsTheCallerAndTheBoundaryMovedByOneModule:
         in one owner-authorised pass. The Phase-33.1 record is NOT edited to agree --
         it is the record of what THAT phase left, and it is still true of that phase.
 
-        WHAT IT ASSERTS NOW: the live digest equals Plan 33-15's recorded end state and is
+        WHAT IT ASSERTS NOW: the live digest equals the most recent authorised write and is
         NOT the Phase-33.1 value. Both halves are asserted, because "it changed" alone
-        would be satisfied by any accident.
+        would be satisfied by any accident. RE-POINTED 2026-09-23 from Plan 33-15's
+        ``POST_GATE_MANIFEST_DIGEST`` to Plan 33.2-25's post-swap digest; both records
+        are unedited.
         """
         latest = Path("artifacts") / "latest.json"
         if not latest.exists():
@@ -744,10 +747,9 @@ class TestPhase33Wave15IsTheCallerAndTheBoundaryMovedByOneModule:
 
         live = digest_file(latest)
 
-        assert live == POST_GATE_MANIFEST_DIGEST, (
-            "the live manifest digest is neither the Phase-33.1 value nor Plan 33-15's "
-            "recorded end state. Something moved the production swap surface outside the "
-            "one owner-authorised pass."
+        assert live == P332_25_POST_SWAP_LATEST_JSON_SHA256, (
+            "the live manifest digest is not Plan 33.2-25's recorded post-swap state. "
+            "Something moved the production swap surface outside an owner-authorised pass."
         )
         assert live != FINAL_FIT_NOT_RUN_IN_PHASE_331["latest_json_digest_after"]
 
@@ -888,9 +890,16 @@ class TestTheRecordedGenerationIsTheLaddersOwn:
             GOLD_GENERATION_AT_REFIT != GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED
         )
 
-    def test_it_equals_the_live_gold_on_disk(self) -> None:
-        """The marker must name the gold the candidates are ACTUALLY fitted on."""
-        assert gold_generation_key() == GOLD_GENERATION_AT_REFIT
+    def test_the_live_gold_is_the_generation_the_served_models_were_fitted_on(
+        self,
+    ) -> None:
+        """Live gold is what production's models were fitted on.
+
+        This used to compare live gold with ``GOLD_GENERATION_AT_REFIT``, the Phase-33
+        re-fit's generation. Plan 33.2-20 rebuilt gold and Plan 33.2-25 re-fitted on it,
+        so that record is history and the live comparison is against the 33.2-25 re-fit's.
+        """
+        assert gold_generation_key() == P332_25B_REFIT_GOLD_GENERATION
 
 
 class TestTheWPPreprocessingDefectClosureIsRecordedInOnePlace:
