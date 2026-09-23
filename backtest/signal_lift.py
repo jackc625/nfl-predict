@@ -311,10 +311,13 @@ _ODDS_PATH = Path("data/silver/odds_snapshot.parquet")
 def _is_snap_col(col: str) -> bool:
     """Match a derived snap-count feature (home_/away_ prefixed).
 
-    Matches snap CONTINUITY / CONCENTRATION / rolling-position-share columns only. Deliberately
-    does NOT match ``snapshot_spread`` / ``snapshot_total`` / ``snapshot_ml_prob_home_fair`` --
-    those carry the substring "snap" but are odds-SNAPSHOT columns, not snap-count features
-    (RESEARCH: never add a bare ``snap`` substring guard -- it collides with rolling_snap_*).
+    Matches snap CONTINUITY / CONCENTRATION / rolling-position-share columns and the family's
+    own ``snap_coverage`` flag (Plan 33.2-17 added it to the snap builder; it belongs to the
+    family the way ``*_injury_coverage`` belongs to the injury family, so excluding ``snap``
+    excludes it too). Deliberately does NOT match ``snapshot_spread`` / ``snapshot_total`` /
+    ``snapshot_ml_prob_home_fair`` -- those carry the substring "snap" but are odds-SNAPSHOT
+    columns, not snap-count features (RESEARCH: never add a bare ``snap`` substring guard --
+    it collides with rolling_snap_*).
     """
     cl = col.lower()
     if not cl.startswith(("home_", "away_")):
@@ -323,6 +326,7 @@ def _is_snap_col(col: str) -> bool:
         "snap_continuity" in cl
         or "snap_concentration" in cl
         or "rolling_snap_share" in cl
+        or cl.endswith("_snap_coverage")
     )
 
 
