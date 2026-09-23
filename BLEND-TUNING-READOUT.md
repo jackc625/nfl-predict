@@ -1,6 +1,7 @@
 # BLEND-TUNING-READOUT.md -- one fixed blend weight per target, tuned on lines we owned
 
-**Phase 33.2, Plan 33.2-24. Owner decisions D33.2-03, D33.2-09, D33.2-10. Measured 2026-09-23.**
+**Phase 33.2, Plan 33.2-24. Owner decisions D33.2-03, D33.2-09, D33.2-10. Measured 2026-09-23;
+re-fitted the same day in step 24b, after two mis-filed games were repaired (section 9).**
 
 **Built on re-measured past seasons; not clean evidence.** Only the 2026 season, recorded live
 under the day-before 6 PM ET lock, counts (D33.2-07). What follows sets how much of the market's
@@ -35,11 +36,11 @@ carries no moneyline at all.
 
 | Target | Weight | Loss minimised | Loss at the weight | Market alone (w=0) | Model alone (w=1) | Games | Seasons |
 |---|---|---|---|---|---|---|---|
-| WP | 0.00 | log loss | 0.613838 | 0.613838 | 0.645184 | 1,091 | 2021-2024 |
-| ATS | 0.00 | mean absolute error (points) | 9.780275 | 9.780275 | 10.430835 | 1,346 | 2020-2024 |
-| O/U | 0.12 | mean absolute error (points) | 10.287936 | 10.292533 | 10.879621 | 1,346 | 2020-2024 |
+| WP | 0.00 | log loss | 0.613530 | 0.613530 | 0.644597 | 1,093 | 2021-2024 |
+| ATS | 0.00 | mean absolute error (points) | 9.795252 | 9.795252 | 10.445867 | 1,348 | 2020-2024 |
+| O/U | 0.12 | mean absolute error (points) | 10.286055 | 10.290987 | 10.874359 | 1,348 | 2020-2024 |
 
-The blend artifact is `blend_20260923_192155`. The weights were searched over every hundredth
+The blend artifact is `blend_20260923_195755`. The weights were searched over every hundredth
 from 0.00 to 1.00, and each target's weight is the one that made the blend's predictions closest
 to what actually happened, measured in that model's own metric: log loss for win probability,
 average absolute miss in points for the spread and the total.
@@ -51,9 +52,9 @@ weights landed at exactly 0.00, the edge of the search. That is a result, report
 number the search was forced into: the old tuner searched only 0.50 to 0.70 and could never have
 said this.
 
-The reason is visible in the models' own predictions. On the 1,346 owned games, the spread
+The reason is visible in the models' own predictions. On the 1,348 owned games, the spread
 model's predictions line up with the market's spread closely (correlation 0.77) and track the
-real margin less well than the spread does (0.33 against 0.44). Whatever the model knows, the
+real margin less well than the spread does (0.33 against 0.45). Whatever the model knows, the
 market already priced in, and the market knows more besides. The win model's predictions track
 the result at 0.30. These are the corrected models -- no betting line among their inputs
 (D33.2-03), default settings because no search beat its random baseline (Plan 33.2-23) -- and on
@@ -67,7 +68,7 @@ Seen season by season, the weight each season would have chosen on its own:
 
 | Target | 2020 | 2021 | 2022 | 2023 | 2024 |
 |---|---|---|---|---|---|
-| WP | (not tuned) | 0.25 | 0.00 | 0.00 | 0.16 |
+| WP | (not tuned) | 0.25 | 0.00 | 0.00 | 0.18 |
 | ATS | 0.00 | 0.00 | 0.00 | 0.00 | 0.24 |
 | O/U | 0.00 | 0.46 | 0.00 | 0.00 | 0.40 |
 
@@ -85,7 +86,7 @@ raw predictions are still produced and still shown beside them.
 those seasons, the LATEST line captured at or before that game's lock -- a line captured exactly
 at the lock counts, one captured a second later does not. Where two lines carry the same capture
 time, the later-recorded one is used, and a game can never contribute two rows. For 1,104 of the
-1,346 games the line used was captured between 24 and 48 hours before the lock; the median is
+1,348 games the line used was captured between 24 and 48 hours before the lock; the median is
 24.1 hours. A game with no such line is left out and counted (section 5). Nothing is ever filled
 in for a missing line.
 
@@ -111,45 +112,43 @@ its settings, its excluded feature families and its selection rule.
 **The market side.** For the spread and the total, the market's opinion is the owned line
 itself. For win probability it is that spread converted to a probability OUT OF FOLD: each
 season uses a conversion slope fitted only on EARLIER seasons (2021: 0.158554, 2022: 0.135658,
-2023: 0.142952, 2024: 0.142728). The converter's final slope (0.151244), which the blend binds
-for serving, was fitted on all five seasons including the game being scored; using it here would
+2023: 0.142952, 2024: 0.142728). The converter's final slope (0.151588, from the re-fitted
+converter `market_probability_20260923_195443`), which the blend binds for serving, was fitted on all five seasons including the game being scored; using it here would
 have let each game's own result shape the market side it is compared against.
 
 **Reproducibility.** Every fit was pinned to one processor thread and the value is recorded in
 the artifact. The whole fit was run twice in two separate processes -- once as a dry run that
 wrote nothing, once for real -- and produced identical weights, losses and per-season weights to
-the last digit. The gold both runs read is generation
+the last digit; the step-24b re-fit did the same again, and so did its converter. The gold both runs read is generation
 `484397642530db5b28c49d9234ecfb90e3860783f1b1b41766ab6151a1522597`, the same generation the three
 models were fitted on; the fit refuses to run on any other.
 
 ## 5. The exclusions -- every game accounted for
 
-1,408 games were scheduled in 2020-2024. 1,346 are in the corpus. The other 62 are left out, for
+1,408 games were scheduled in 2020-2024. 1,348 are in the corpus. The other 60 are left out, for
 one reason, and one more class leaves the win-probability fit alone:
 
 | Class | Games | Leaves |
 |---|---|---|
-| no_prelock_line | 62 | all three fits |
+| no_prelock_line | 60 | all three fits |
 | no_prior_fold_converter | 255 | the WP fit only |
 
-**`no_prelock_line` -- 62 games with no owned line at or before their lock.**
+**`no_prelock_line` -- 60 games with no owned line at or before their lock.**
 
 - 59 postseason games with no owned line at all: 24 wild-card, 20 divisional, 10 conference
   championship and 5 Super Bowl games. The owned history carries postseason lines only for the six
   2024 wild-card games, which are in the corpus.
 - `2020_W05_BUF@TEN` -- regular season. The owned history holds lines for it, but every one was
   captured after its lock (the game was moved to a Tuesday during the 2020 COVID reschedules).
-- `2024_W17_KC@PIT` and `2024_W17_BAL@HOU` -- the two 2024 Christmas Day games. The owned history
-  DOES hold lines for both, some captured before the lock, but they are filed under the ids
-  `2024_W16_KC@PIT` and `2024_W16_BAL@HOU` -- week 16, where the schedule has them in week 17 -- so
-  they do not join. They are left out rather than re-keyed here, because the same history also
-  feeds the fitted converter, and the two must read the same games. The mis-filing is recorded for
-  correction.
+- The two 2024 Christmas Day games, `2024_W17_KC@PIT` and `2024_W17_BAL@HOU`, are NO LONGER
+  excluded. The first fit left them out because the owned history had filed their lines a week
+  early, under `2024_W16_KC@PIT` and `2024_W16_BAL@HOU`; step 24b repaired that at the root and
+  re-fitted (section 9). Both are now in the corpus, on lines captured six hours before their
+  locks.
 
-**The six owned-history ids that name no scheduled game.** They are not exclusions -- no scheduled
-game is missing because of them -- but they are listed so none is dropped silently:
+**The four owned-history ids that name no scheduled game.** They are not exclusions -- no
+scheduled game is missing because of them -- but they are listed so none is dropped silently:
 
-- `2024_W16_KC@PIT`, `2024_W16_BAL@HOU` -- the two Christmas Day games above, filed a week early.
 - `2022_W17_BUF@CIN` -- the game suspended and never completed in January 2023.
 - `2024_W19_DET@LA`, `2024_W19_LAC@BAL`, `2024_W19_PIT@HOU` -- wild-card pairings priced on
   1-3 January 2025, before the final week settled the bracket. None of them was played.
@@ -193,7 +192,39 @@ under the day-before 6 PM ET lock, counts (D33.2-07). See Phase 33.2.
 
 ---
 
-*Generated from the run of `python -m backtest.tune` on 2026-09-23.*
-*The artifact it wrote is `artifacts/blend_20260923_192155/blend_weights.json`; its witness is the*
-*`P332_24_*` block in `tests/phase33_state.py`, and `tests/unit/test_blend_tuning_readout_md.py`*
-*holds this document's exclusion counts equal to that witness.*
+## 9. Step 24b: what the two re-keyed games changed
+
+The first fit (`blend_20260923_192155`, the same afternoon) left out the two 2024 Christmas Day
+games, because the ingest that bought the owned line history filed any game played before the
+Thursday of its week under the PREVIOUS week: both Wednesday games sat under week-16 ids that no
+scheduled game carries. The fault was fixed at its root, not worked around: the ingest now matches
+every captured line to its scheduled game by teams and kickoff; the 16 stored rows were re-keyed
+to week 17 in one declared write that moved nothing else (the gold was not touched); the
+spread-to-probability converter was re-fitted on the repaired history (1,344 games instead of
+1,342); and the blend was re-fitted exactly as before. The first artifact stays on disk as
+written; the one above replaces it for the production swap.
+
+| | First fit | Re-fit |
+|---|---|---|
+| Blend artifact | `blend_20260923_192155` | `blend_20260923_195755` |
+| Converter | `market_probability_20260923_025709` | `market_probability_20260923_195443` |
+| Converter games / final slope | 1,342 / 0.151244 | 1,344 / 0.151588 |
+| Corpus games (WP / ATS / O/U) | 1,091 / 1,346 / 1,346 | 1,093 / 1,348 / 1,348 |
+| Games excluded as `no_prelock_line` | 62 | 60 |
+| Weights (WP / ATS / O/U) | 0.00 / 0.00 / 0.12 | 0.00 / 0.00 / 0.12 |
+| 2024 WP weight chosen alone | 0.16 | 0.18 |
+
+**No weight moved.** Two games out of more than a thousand cannot shift a weight searched in
+steps of 0.01, and they did not. Every loss rose slightly because both games were road-favourite
+blowouts (Kansas City 29-10 at Pittsburgh, Baltimore 31-2 at Houston), which the market and the
+models both missed by a lot. The conversion slopes used for the historical win-probability rows
+did not change at all: each is fitted only on seasons before the one it converts, and both added
+games are 2024 games.
+
+---
+
+*Generated from the step-24b run of `python -m backtest.tune` on 2026-09-23.*
+*The artifact it wrote is `artifacts/blend_20260923_195755/blend_weights.json`; its witness is the*
+*`P332_24B_*` block in `tests/phase33_state.py` (the first fit's `P332_24_*` block is kept*
+*unchanged), and `tests/unit/test_blend_tuning_readout_md.py` holds this document's exclusion*
+*counts equal to that witness.*

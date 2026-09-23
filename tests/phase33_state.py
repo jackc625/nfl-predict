@@ -18408,3 +18408,97 @@ P332_24B_CONVERTER_MARGIN_WIN_CORRELATION: float = 0.39304229866642654
 
 #: The thread count the fit was pinned to (config.tuning_preregistration).
 P332_24B_CONVERTER_THREAD_LIMIT: int = 1
+
+# ---------------------------------------------------------------------------
+# STEP 24b (c): THE BLEND RE-FIT WITH THE TWO CHRISTMAS GAMES IN THE CORPUS.
+#
+# APPENDED by Plan 33.2-24's step 24b on 2026-09-23, AFTER the fit. The P332_24_* slot
+# above is byte-unchanged and blend_20260923_192155 stays on disk untouched; this slot
+# SUPERSEDES P332_24_BLEND_ARTIFACT_ID AS THE BLEND PLAN 33.2-25's SWAP INSTALLS. It is the
+# same fit on the same three corrected models, binding the re-fitted converter
+# (P332_24B_CONVERTER_ARTIFACT_ID), over a corpus that now includes 2024_W17_KC@PIT and
+# 2024_W17_BAL@HOU.
+#
+# WHAT WAS RUN. `python -m backtest.tune` -- exactly Plan 33.2-24's procedure, one behaviour,
+# thread-pinned at 1 inside run_blend_tuning -- inside the artifacts/ digest bracket
+# outputs/p332_24b_artifacts_before.json, which closed with exactly TWO added directories
+# (this blend and the converter) and artifacts/latest.json byte-unchanged. A no-write run in
+# a separate process against a scratch artifacts copy produced the identical record line for
+# line (weights, every loss, every per-season weight, every count); the two payloads differ
+# only in `tuned_at`.
+#
+# WHAT THE TWO GAMES CHANGED. No weight moved: WP 0.00, ATS 0.00, O/U 0.12, the same
+# boundary targets. The corpus grew by exactly the two games (1,346 -> 1,348; WP 1,091 ->
+# 1,093), no_prelock_line fell by exactly two (62 -> 60), and the 2024 WP season-alone
+# weight moved 0.16 -> 0.18. Both games were road-favourite blowouts (KC 29-10 at PIT, BAL
+# 31-2 at HOU), which is why every loss moved upward a little.
+# ---------------------------------------------------------------------------
+
+#: The blend Plan 33.2-25's batched swap installs, read from here -- never from a listing.
+P332_24B_BLEND_ARTIFACT_ID: str = "blend_20260923_195755"
+
+#: The fitted weight per target: the model's share of the blend, 0.00 = market alone.
+P332_24B_BLEND_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("wp", 0.0),
+    ("ats", 0.0),
+    ("ou", 0.12),
+)
+
+#: The targets whose weight landed EXACTLY on a boundary of the grid.
+P332_24B_BOUNDARY_WEIGHT_TARGETS: tuple[str, ...] = ("wp", "ats")
+
+#: The owned pre-lock corpus: 2020-2024 scheduled games with a line at or before their lock.
+P332_24B_TUNING_CORPUS_ROWS: int = 1348
+
+#: The tuning rows each target's fit used. WP is smaller by exactly the 255 first-season
+#: rows that have no prior-fold converter slope.
+P332_24B_TUNING_GAMES: tuple[tuple[str, int], ...] = (
+    ("wp", 1093),
+    ("ats", 1348),
+    ("ou", 1348),
+)
+
+#: The excluded count PER CLASS; BLEND-TUNING-READOUT.md publishes the same mapping.
+P332_24B_EXCLUDED_COUNTS: tuple[tuple[str, int], ...] = (
+    ("no_prelock_line", 60),
+    ("no_prior_fold_converter", 255),
+)
+
+#: The one regular-season game inside no_prelock_line (the other 59 are postseason): its
+#: only owned lines were captured after its lock (the COVID Tuesday move).
+P332_24B_NO_PRELOCK_REGULAR_SEASON_GAMES: tuple[str, ...] = ("2020_W05_BUF@TEN",)
+
+#: The owned-history ids that name no scheduled game -- reported, never joined.
+P332_24B_UNJOINED_TIMELINE_IDS: tuple[str, ...] = P332_24B_ODDS_TIMELINE_NO_GAME_IDS
+
+#: Each target's loss at its weight, with the market alone and the model alone, as the
+#: artifact records them.
+P332_24B_LOSS_AT_WEIGHT: tuple[tuple[str, float], ...] = (
+    ("wp", 0.6135302593965576),
+    ("ats", 9.795252225519288),
+    ("ou", 10.286054808053489),
+)
+P332_24B_LOSS_MARKET_ONLY: tuple[tuple[str, float], ...] = (
+    ("wp", 0.6135302593965576),
+    ("ats", 9.795252225519288),
+    ("ou", 10.290986646884273),
+)
+P332_24B_LOSS_MODEL_ONLY: tuple[tuple[str, float], ...] = (
+    ("wp", 0.6445966210307789),
+    ("ats", 10.445867074502202),
+    ("ou", 10.87435858468981),
+)
+
+#: The gold generation the blend recorded -- the one the three model artifacts cite.
+P332_24B_BLEND_GOLD_GENERATION: str = P332_20_CLEAN_BUILD_GOLD_GENERATION
+
+#: The source models the blend's predictions came from.
+P332_24B_BLEND_SOURCE_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
+    P332_23_REFIT_ARTIFACT_IDS
+)
+
+#: The converter the blend binds (re-fitted in step 24b).
+P332_24B_BLEND_CONVERTER_ARTIFACT_ID: str = P332_24B_CONVERTER_ARTIFACT_ID
+
+#: The OpenMP thread count every fit in the run was pinned to.
+P332_24B_BLEND_THREAD_LIMIT: int = 1
