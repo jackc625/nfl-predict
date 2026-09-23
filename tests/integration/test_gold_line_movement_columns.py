@@ -90,9 +90,15 @@ DRIFT_PATH_COLUMNS = (
     "total_range",
 )
 
-# Market columns that must SURVIVE. The freeze anchors (snapshot_*) and the
-# pre-existing, historically identically-0.0 MarketAnchor movement columns are all
-# baseline features and all near-misses for a careless substring prune.
+# The four market columns the line-movement drop must NOT take: the freeze anchors
+# (snapshot_*) and the pre-existing, historically identically-0.0 MarketAnchor movement
+# columns, all near-misses for a careless substring prune.
+#
+# THEY ARE NO LONGER IN GOLD (Plan 33.2-19, p332_ rung 9, D33.2-03). They left all three
+# matrices with the rest of the betting line, through the `market` group -- a DIFFERENT
+# family from `line_movement`. The name is kept because the subject is unchanged: what
+# must survive the LINE-MOVEMENT drop, which is asserted at the predicate rather than by
+# reading a matrix that a later rung legitimately emptied.
 MARKET_SURVIVORS = (
     "snapshot_total",
     "snapshot_spread",
@@ -262,20 +268,50 @@ class TestLineMovementDropped:
         )
 
     @pytest.mark.parametrize("matrix", MATRICES)
-    def test_the_market_survivors_are_present(
+    def test_the_market_columns_are_not_taken_with_the_family(
         self, gold_frames: dict[str, pd.DataFrame], matrix: str
     ) -> None:
-        """The freeze anchors and the MarketAnchor movement columns must remain.
+        """The line-movement drop must be a family removal, not a suffix sweep.
 
         ``snapshot_total`` ends in ``total``; ``spread_movement`` contains
         ``spread``. A substring prune rather than an exact-suffix one would take
         all four with the family and silently delete the market leg's anchors.
+        THAT suffix discipline is this node's real and unchanged subject, and it is
+        asserted AT THE PREDICATE: ``line_movement`` matches none of the four.
+
+        IT NO LONGER ASSERTS THE FOUR ARE PRESENT IN GOLD, because they are not, and
+        that is BY DECISION (Plan 33.2-19, p332_ rung 9, D33.2-03): no betting line
+        is a model input for any target, so all four left every matrix through the
+        ``market`` group -- a DIFFERENT family from ``line_movement``. Was: the four
+        asserted PRESENT in every matrix, which held only while no betting line had
+        been removed from the model inputs. This node had been red since rung 9;
+        Plan 33.2-19 retargeted the equivalent node in
+        ``tests/unit/test_data_qa_gold_width.py`` and did not reach this module.
+        MEASURED: the pre-build copy of rung 9's own gold already carried none of
+        the four, so the redness predates Plan 33.2-20's build.
+
+        The node is STRONGER, not weaker: the removal is now asserted to be
+        ATTRIBUTABLE -- the ``market`` predicate matches exactly those four names,
+        and the live matrix carries none of them and no other market column either.
         """
+        frame = pd.DataFrame(
+            columns=pd.Index([*FULL_FAMILY, *MARKET_SURVIVORS]),
+        )
+        taken = set(group_columns(frame, "line_movement")) & set(MARKET_SURVIVORS)
+        assert taken == set(), (
+            f"the line_movement predicate matches market columns {sorted(taken)}; a "
+            "family drop that reaches them is the substring sweep this node exists "
+            "to catch"
+        )
+        assert set(group_columns(frame, "market")) == set(MARKET_SURVIVORS), (
+            "the market predicate does not match exactly the four, so their removal "
+            "from gold is not attributable to the market group alone"
+        )
+
         cols = set(gold_frames[matrix].columns)
-        missing = [c for c in MARKET_SURVIVORS if c not in cols]
-        assert not missing, (
-            f"{matrix} lost market columns {missing} to the drop. These are "
-            f"pre-existing baseline features, not Phase-29 line-movement columns."
+        assert not (cols & set(MARKET_SURVIVORS)), sorted(cols & set(MARKET_SURVIVORS))
+        assert group_columns(gold_frames[matrix], "market") == [], (
+            f"{matrix} carries a market column: rung 9 removed the whole group"
         )
 
     def test_the_ou_label_survives_in_its_own_matrix(
