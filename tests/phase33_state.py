@@ -18526,3 +18526,54 @@ P332_24C_TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
     ("models.train_ou", "main", 1421),
     ("models.train", "main", 907),
 )
+
+# ---------------------------------------------------------------------------
+# THE BATCHED SWAP: THE FOUR POINTERS IT INSTALLS, AND THE MANIFEST IT REPLACES.
+#
+# APPENDED by Plan 33.2-25 Task 2 on 2026-09-23, BEFORE the owner's readiness ruling
+# (Task 3) and before any write to artifacts/latest.json. Nothing here was re-derived from a
+# directory listing: the three model ids are Plan 33.2-23's recorded candidates
+# (P332_23_REFIT_ARTIFACT_IDS) and the blend is step 24b's re-fit
+# (P332_24B_BLEND_ARTIFACT_ID), which supersedes the first blend fit.
+#
+# WHY THE PRE-SWAP MANIFEST IS RECORDED. The swap (Task 4) is one atomic write of all four
+# pointers through models.artifacts.replace_manifest. It is reversible only by hand, and
+# only from a record that exists before it runs -- so the exact bytes it replaces, their
+# sha256 and the four pointer values are written down here first. The old artifacts are dead
+# by standing ruling and restoring them is not a sanctioned move; the record exists so that
+# what production served before the swap can always be reconstructed.
+#
+# MEASURED 2026-09-23: artifacts/latest.json read as bytes. It carries CRLF line endings
+# because _atomic_write_json writes in text mode on Windows, so the TEXT below spells them.
+# ---------------------------------------------------------------------------
+
+#: ``(manifest_key, artifact_id)`` exactly as the swap writes them into latest.json.
+P332_25_SWAP_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
+    ("wp", "wp_20260923_115808"),
+    ("ats", "ats_20260923_124120"),
+    ("ou", "ou_20260923_133813"),
+    ("blend", "blend_20260923_195755"),
+)
+
+#: The one gold generation all four record -- a name, not a second copy of the digest.
+P332_25_SWAP_GOLD_GENERATION: str = P332_20_CLEAN_BUILD_GOLD_GENERATION
+
+#: ``(manifest_key, artifact_id)`` as latest.json named them immediately before the swap.
+P332_25_PRE_SWAP_LATEST_JSON: tuple[tuple[str, str], ...] = (
+    ("wp", "wp_20260914_221745"),
+    ("ats", "ats_20260914_221751"),
+    ("ou", "ou_20260914_221756"),
+    ("blend", "blend_dynamic_20260606_020635"),
+)
+
+#: The pre-swap latest.json, byte for byte (143 bytes; CRLF as stored).
+P332_25_PRE_SWAP_LATEST_JSON_TEXT: str = (
+    '{\r\n  "wp": "wp_20260914_221745",\r\n  "ats": "ats_20260914_221751",\r\n'
+    '  "ou": "ou_20260914_221756",\r\n  "blend": "blend_dynamic_20260606_020635"\r\n}'
+)
+
+#: sha256 of those exact bytes -- the digest Plans 33.2-21 to 33.2-24 each recorded as
+#: byte-unchanged across their runs.
+P332_25_PRE_SWAP_LATEST_JSON_SHA256: str = (
+    "9115c8d76532820e6b77dfecc7903f10c911bfc30e02a15cb6c3a33dbc602cfb"
+)

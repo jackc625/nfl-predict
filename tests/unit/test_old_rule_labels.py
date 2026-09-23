@@ -127,6 +127,13 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "Canonical run-sequence instructions (commands, entry points, expected outputs). It "
         "reports no model or betting result."
     ),
+    "REFIT-READOUT.md": (
+        "Plan 33.2-25's record of the corrected models and blend the production swap installs, "
+        "written under the day-before lock on corrected gold. It reports re-measured past "
+        "seasons from folds that fit only on earlier seasons and labels every results section "
+        "'not clean evidence' (D33.2-07); it names no pre-fix model and no gate baseline, so "
+        "the old-rule addendum does not describe it."
+    ),
     "PROFITABILITY-PREREGISTRATION.md": (
         "A sealed pre-registration whose ancestry anchor is checked by "
         "tests/unit/test_preregistration_ancestry.py; editing it in place would destroy that "
