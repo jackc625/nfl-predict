@@ -36,9 +36,14 @@ Phase-31 pre-registration (``PROFITABILITY-PREREGISTRATION.md`` section 4.3 plus
 
 A TYPE TRAP TRAVELS WITH CLAUSE 3
 ---------------------------------
-The stored ``snapshot_ts`` column is a STRING today, holding one fixed calendar date per season,
-and its single non-consensus row uses a different, space-separated UTC format. Any comparison
-against a lock instant must PARSE and must never string-compare, and it must be
+The stored ``snapshot_ts`` column WAS a STRING -- one fixed calendar date per season written as
+``2018-09-19T18:00:00-04:00``, beside a 2025 family in a different, space-separated UTC format.
+Plan 33.2-20 repaired the store to ``datetime64[ns, UTC]`` (``scripts/repair_odds_snapshot_ts_dtype.py``,
+a conversion: every instant re-parsed through :func:`require_aware_snapshot_ts` and unchanged,
+and all 285 rows with a bronze counterpart agreeing exactly), and the transform above now emits
+that same representation, so the trap is closed at both ends. THE LENIENT PARSE PATH STAYS, because
+a value can still arrive from a caller, a fixture or an older export in any of those shapes: any
+comparison against a lock instant must PARSE and must never string-compare, and it must be
 Eastern-anchored rather than UTC-anchored. :func:`normalize_snapshot_ts` is the ONE lenient parse
 path and :func:`require_aware_snapshot_ts` the strict one; the ONE comparison is
 ``utils.game_lock.is_admissible``, called directly, against a lock this module derives with
@@ -734,6 +739,27 @@ def transform_nfl_odds_with_counts(schedules_df: pd.DataFrame) -> OddsTransformR
 
     odds_df = pd.DataFrame(odds_records)
 
+    # Clause 3's instant, stored in the column's ONE representation: datetime64[ns, UTC].
+    #
+    # WHY THIS IS HERE (Plan 33.2-20, found by repairing the store this writes to).
+    # `gameday_lock` returns 18:00 on the EASTERN wall clock, so a season's rows carry two
+    # different UTC offsets (-04:00 in September, -05:00 after the November changeover) and
+    # pandas infers `datetime64[ns, America/New_York]`. The stored table is
+    # `datetime64[ns, UTC]`, and `pd.concat` cannot unify that pair -- it falls back to
+    # `object`, which the parquet normalizer writes as TEXT. That is exactly how the 2025
+    # backfill of 2026-09-05 stringified every stored instant, and it would happen again on
+    # the next merge: `carry_forward_unmatched_stored_rows` concatenates stored survivors
+    # onto this frame BEFORE `upsert_silver` sees it, so the storage writer's own alignment
+    # never gets the chance to fix it.
+    #
+    # A CONVERSION, NEVER A RELABEL (D33.2-01). Every value is already tz-aware and keeps its
+    # instant; only the representation changes. The lock is still DERIVED on the Eastern wall
+    # clock by `gameday_lock` -- that is the rule and it is untouched -- and every comparison
+    # still goes through `utils.game_lock.is_admissible` on parsed instants, so nothing that
+    # reads this column can tell the difference except by its dtype.
+    if "snapshot_ts" in odds_df.columns and len(odds_df):
+        odds_df["snapshot_ts"] = pd.to_datetime(odds_df["snapshot_ts"], utc=True)
+
     logger.info(
         "Transformed odds data",
         input_games=len(betting_games),
@@ -981,6 +1007,45 @@ def remove_synthetic_stored_rows(
     return report
 
 
+def recorded_nulled_cells(
+    record_path: Path | None = None,
+) -> frozenset[tuple[str, str]]:
+    """``(game_id, column)`` for every cell the correction record NULLED by decision.
+
+    Plan 33.2-20. Plan 33.2-08's repair settles each disputed line value against a cited
+    source and, where no source can settle it, records the cell as
+    ``disposition = "nulled"`` with its reason (D33.2-23). That null is a VERDICT: the raw
+    nflverse feed still carries the disputed number, so any merge that treats the cell as
+    merely absent will put it straight back.
+
+    Read through ``scripts.repair_odds_snapshot.load_record`` -- the ONE reader of that file
+    -- imported lazily because that module imports :func:`canonical_game_id` from this one.
+    An absent or unreadable record yields an EMPTY set: the file is a correction ledger, not
+    a dependency of the ingest, and a fresh checkout that has never run the repair has no
+    verdicts to honour.
+
+    Args:
+        record_path: The correction record. Defaults to ``config/odds_corrections.toml``.
+
+    Returns:
+        The frozen set of decided-unknown ``(game_id, column)`` pairs.
+    """
+    from scripts.repair_odds_snapshot import DEFAULT_RECORD_PATH, load_record
+
+    path = record_path if record_path is not None else DEFAULT_RECORD_PATH
+    try:
+        record = load_record(path)
+    except (OSError, ValueError):
+        return frozenset()
+    return frozenset(
+        (str(entry["game_id"]), str(entry["column"]))
+        for entry in record.get("correction", [])
+        if entry.get("disposition") == "nulled"
+        and entry.get("game_id")
+        and entry.get("column")
+    )
+
+
 def preserve_stored_lines(
     incoming: pd.DataFrame, stored: pd.DataFrame
 ) -> tuple[pd.DataFrame, int]:
@@ -1024,6 +1089,8 @@ def preserve_stored_lines(
     if n_matched == 0:
         return result, 0
 
+    decided_unknown = recorded_nulled_cells()
+    game_ids = pd.Series(result["game_id"].astype(str).to_numpy(), index=result.index)
     for column in available:
         stored_values = pd.Series(
             lookup[column].reindex(keys).to_numpy(), index=result.index
@@ -1037,6 +1104,28 @@ def preserve_stored_lines(
         # destroyed".
         take = matched & stored_values.notna()
         result.loc[take, column] = stored_values[take]
+
+        # EXCEPT WHERE THE NULL IS A VERDICT (Plan 33.2-20, D33.2-23). WR-14 above cannot tell
+        # an ABSENT value from a DECIDED unknown, and the two need opposite treatment. Plan
+        # 33.2-08's repair NULLED a cell that no cited source could settle and recorded why in
+        # config/odds_corrections.toml; the raw feed still carries the disputed value, so
+        # WR-14's "improve a stored null" arm silently put it back and undid a ratified
+        # correction. MEASURED on the real 2024 merge before this arm existed: exactly three
+        # cells moved, spread / ml_home / ml_away of 2024_W17_TEN@JAX, back to exactly the
+        # three ``old_value``s the record names -- nothing else in 2,140 rows.
+        #
+        # The RECORD is what tells the two apart, so neither rule is weakened: a stored null
+        # with no recorded verdict is still improvable (WR-14 intact), and a recorded one is
+        # never re-filled from the feed. Re-deciding it needs a new cited source and a new
+        # correction entry, which is the point of keeping the record at all.
+        decided = game_ids.isin(
+            {game for game, recorded in decided_unknown if recorded == column}
+        )
+        if bool(decided.any()):
+            # ``mask`` rather than ``.loc[...] = pd.NA``: assigning ``pd.NA`` into a float64
+            # price column turns the whole column ``object``, and an object column of floats
+            # is the parquet-writes-text shape the OTHER half of this fix just repaired.
+            result[column] = result[column].mask(matched & decided, other=float("nan"))
 
     return result, n_matched
 
