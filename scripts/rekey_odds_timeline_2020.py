@@ -147,7 +147,8 @@ def old_rule_season_start(season: int) -> datetime:
 def old_rule_week(kickoff_et: datetime, season: int) -> int:
     """Return the week number the old rule derived for *kickoff_et*.
 
-    Mirrors ``scripts/ingest_odds_timeline._derive_season_week`` (lines 170-172),
+    Mirrors the RETIRED ``scripts/ingest_odds_timeline._derive_season_week`` (removed by
+    Plan 33.2-24 step 24b, when events became keyed by the schedule),
     which is what actually produced the stored ids: weeks elapsed since the
     season opener, clamped to 1..22.
     """

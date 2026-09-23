@@ -32,6 +32,14 @@ CRITICAL invariants:
   ``odds_timeline`` (OUM-06 discipline).
 * This script writes ONLY ``odds_timeline`` + bronze; it never writes
   ``odds_snapshot`` (D-11).
+* A captured event is KEYED BY THE SCHEDULE (Plan 33.2-24 step 24b): it takes the
+  ``game_id`` of the silver ``games`` row with the same canonical home and away teams
+  whose kickoff is nearest its ``commence_time``, within
+  :data:`SCHEDULE_MATCH_TOLERANCE`. An event with no such row is REFUSED by name.
+  The week is never counted from a date: that count filed the two Wednesday 2024
+  Christmas games under week-16 ids no game carries, would have filed 2026's
+  Thanksgiving-eve game under week 11, and refused the 2026 Wednesday opener and
+  every Super Bowl since 2021 outright.
 * SPEND SAFETY: the backfill SKIPS the paid call for any requested timestamp
   already covered in ``odds_timeline`` (see :func:`_snapshot_already_stored`).
   ``upsert_silver_composite`` makes the WRITE idempotent, but not the paid CALL
@@ -67,7 +75,7 @@ from utils import (
     get_logger,
 )
 from utils.date_utils import ET, get_nfl_season_start
-from utils.game_id_utils import create_standard_game_id
+from utils.game_id_utils import normalize_team_name
 
 logger = get_logger(__name__)
 
@@ -86,10 +94,26 @@ CONSENSUS_SOURCE = "consensus_median"
 # Regular-season weeks captured by a full-season backfill.
 _REGULAR_SEASON_WEEKS = 18
 
-# The highest week number a real NFL game_id can carry (18 regular + playoffs).
-# A derived week outside 1.._MAX_DERIVABLE_WEEK is an out-of-season listing and
-# is REFUSED rather than clamped into a valid-looking key (WR-05).
-_MAX_DERIVABLE_WEEK = 22
+# How far a listed ``commence_time`` may sit from its scheduled kickoff and still be
+# that game. MEASURED 2026-09-23 over silver ``games``: the shortest gap between two
+# meetings of the same ORDERED pairing is 6.16 days (2009_W17/W18 PHI@DAL; 2022's
+# BAL@CIN week 18 and wild-card round are 7.3 days apart). Three days is below half of
+# that, so the nearest scheduled kickoff inside the window is the only one that can be,
+# and a listing six days away from a real meeting -- a speculative playoff pairing
+# priced before week 18 settled, say -- is a DIFFERENT game and is refused rather than
+# attached to the meeting it happens to share teams with. A flexed kickoff moves by
+# hours, well inside it.
+SCHEDULE_MATCH_TOLERANCE = timedelta(hours=72)
+
+# The silver ``games`` columns the per-game key match and the per-game lock read.
+SCHEDULE_COLUMNS: tuple[str, ...] = (
+    "game_id",
+    "season",
+    "week",
+    "home_team",
+    "away_team",
+    "kickoff_et",
+)
 
 # Lookback window used to decide whether a requested snapshot timestamp T is
 # ALREADY covered in odds_timeline (the spend-safety skip guard).
@@ -265,29 +289,45 @@ def _week_request_instants(
     return [*cadence, *locks]
 
 
-def _load_backfill_schedule(base_path: Path | None) -> pd.DataFrame:
-    """The silver ``games`` schedule the backfill derives its lock instants from.
+def load_timeline_schedule(base_path: Path | None) -> pd.DataFrame:
+    """The silver ``games`` schedule every captured event is keyed against.
+
+    Both entry points read it: the backfill derives each week's lock instants from it,
+    and both the backfill and the live capture key every board event to a game through
+    it (:func:`match_event_to_schedule`).
 
     Raises:
-        DataIngestionError: when it cannot be read. No schedule means no per-game lock,
-            and a backfill that guessed one would buy data against the wrong instant.
+        DataIngestionError: when it cannot be read. No schedule means no per-game lock
+            and no game to key an event to, and an ingest that guessed either would
+            write a line under the wrong game or buy data against the wrong instant.
     """
     if base_path is None:
         base_path = Path(get_settings().config.data.root_path)
     games_path = base_path / "silver" / "games.parquet"
     try:
         return pd.read_parquet(
-            games_path,
-            columns=["game_id", "season", "week", "kickoff_et"],
-            engine="pyarrow",
+            games_path, columns=list(SCHEDULE_COLUMNS), engine="pyarrow"
         )
     except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
         msg = (
-            f"cannot backfill odds_timeline without a schedule: {games_path} could not "
-            f"be read ({exc}). Each game's lock is derived from its kickoff, so a "
-            "missing schedule is refused rather than guessed around."
+            f"cannot ingest odds_timeline without a schedule: {games_path} could not "
+            f"be read ({exc}). Each event is keyed to its game and each game's lock is "
+            "derived from its kickoff, so a missing schedule is refused rather than "
+            "guessed around."
         )
         raise DataIngestionError(msg) from exc
+
+
+def _require_schedule_columns(schedule: pd.DataFrame) -> None:
+    """Refuse a schedule that cannot key an event, naming what it lacks."""
+    missing = [c for c in SCHEDULE_COLUMNS if c not in schedule.columns]
+    if missing:
+        msg = (
+            f"the odds_timeline schedule is missing {missing}; an event is keyed to its "
+            "game by canonical home team, away team and kickoff, so a schedule without "
+            "them cannot key anything"
+        )
+        raise DataIngestionError(msg)
 
 
 def _parse_envelope_timestamp(timestamp: str | None) -> datetime:
@@ -305,46 +345,68 @@ def _parse_envelope_timestamp(timestamp: str | None) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _derive_season_week(commence_time: str | None) -> tuple[int, int]:
-    """Derive ``(season, week)`` from a game's ``commence_time``.
+def _parse_commence_time(value: Any) -> datetime | None:
+    """A listed ``commence_time`` as a tz-aware UTC instant, or None when unusable.
 
-    The NFL season spans Sept-Feb, so a January/February game belongs to the
-    PRIOR calendar year's season. The week is the number of weeks elapsed since
-    the season's first Thursday.
+    A naive value is None rather than assumed UTC: an instant nobody stated the zone of
+    is not an instant this ingest may key a game by.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
-    WR-05: this REFUSES to clamp an out-of-range week into a valid-looking key.
-    The old ``max(1, min(week, 22))`` turned a board listing whose
-    ``commence_time`` precedes the season opener into ``{season}_W01_AWAY@HOME``
-    -- a key that can COLLIDE with the real Week-1 meeting of the same two teams.
-    ``upsert_silver_composite`` dedupes with ``keep="last"``, so a same-timestamp
-    collision silently overwrites a real paid row and a different-timestamp
-    collision silently corrupts that game's trajectory. An out-of-season listing
-    is a data error and must read as one.
 
-    This whole derive-don't-reconcile mechanism is what orphaned the entire 2020
-    archive (D29-06-01) and cost a re-key of 1,780 paid rows;
-    :func:`_warn_on_orphaned_game_ids` is the second half of the fix.
+def match_event_to_schedule(
+    *,
+    home_team: str,
+    away_team: str,
+    commence: datetime,
+    schedule: pd.DataFrame,
+) -> str | None:
+    """The ``game_id`` of the scheduled game a board event IS, or None when it is none.
+
+    THE KEY COMES FROM THE SCHEDULE (Plan 33.2-24 step 24b). This replaces a week COUNTED
+    from the listed ``commence_time`` -- whole weeks since the season's opening Thursday --
+    which put every game played before the Thursday of its own week into the PREVIOUS
+    week. Measured over silver ``games`` 2020-2026, ten games disagreed with that count:
+    the two Wednesday 2024 Christmas games (stored as week-16 ids no game carries, so their
+    owned pre-lock lines joined nothing), 2026's Wednesday Thanksgiving-eve game (week 11
+    for week 12), the Wednesday 2026 opener (week 0, refused), the five Super Bowls since
+    2021 (week 23, refused) and the 2020 Super Bowl (week 22 where the schedule says 21).
+
+    The match: the rows with the same CANONICAL home and away team, and among them the one
+    whose kickoff is nearest ``commence``, accepted only within
+    :data:`SCHEDULE_MATCH_TOLERANCE`. Home and away are ordered, so a neutral-site listing
+    keyed the other way round names no game and is refused rather than flipped.
+
+    THERE IS NO FALLBACK. An event with no row inside the window is not keyed at all --
+    WR-05's rule, that an event which cannot be placed is refused rather than clamped onto a
+    valid-looking key, now applied by the schedule instead of by a week range. A fallback
+    that derived a week from the date is exactly the mechanism that mis-keyed the Christmas
+    games silently.
 
     Raises:
-        ValueError: If ``commence_time`` is missing, or derives a week outside
-            1-22 for its season.
+        utils.DataValidationError: a team name that does not map to a canonical franchise
+            (the project's hard-fail on unknown teams).
     """
-    if not commence_time:
-        raise ValueError("Game envelope is missing its 'commence_time' field")
-    kickoff = datetime.fromisoformat(commence_time.replace("Z", "+00:00")).astimezone(
-        ET
-    )
-    season = kickoff.year if kickoff.month >= 8 else kickoff.year - 1
-    season_start = get_nfl_season_start(season)
-    days_since_start = (kickoff - season_start).days
-    week = days_since_start // 7 + 1
-    if not 1 <= week <= _MAX_DERIVABLE_WEEK:
-        raise ValueError(
-            f"commence_time {commence_time} derives week {week} for season "
-            f"{season} (season start {season_start.date()}); refusing to clamp an "
-            f"out-of-season listing onto a valid game_id"
-        )
-    return season, week
+    home = normalize_team_name(home_team)
+    away = normalize_team_name(away_team)
+    candidates = schedule[
+        (schedule["home_team"] == home) & (schedule["away_team"] == away)
+    ]
+    if candidates.empty:
+        return None
+    gaps = (pd.to_datetime(candidates["kickoff_et"], utc=True) - commence).abs()
+    nearest = gaps.idxmin()
+    if gaps.loc[nearest] > SCHEDULE_MATCH_TOLERANCE:
+        return None
+    return str(candidates.loc[nearest, "game_id"])
 
 
 def _extract_book_total(bookmaker: dict[str, Any]) -> float | None:
@@ -374,6 +436,8 @@ def _extract_book_spread(
 def normalize_envelope_to_timeline_rows(
     envelope: dict[str, Any],
     markets: list[str],
+    *,
+    schedule: pd.DataFrame,
     region: str = "us",
 ) -> list[dict[str, Any]]:
     """Normalize a raw historical API envelope into consensus timeline rows.
@@ -381,19 +445,26 @@ def normalize_envelope_to_timeline_rows(
     A DEDICATED raw-response normalizer (review 29-03 MED): the upstream
     ``create_consensus_lines`` expects already ``opening_``/``snapshot_``-
     prefixed rows, NOT raw API game envelopes. Here each ``envelope["data"]``
-    game is normalized (canonical teams + ``game_id``), its per-book totals (and
-    spreads when requested) are read, and ONE consensus-median row per game is
-    emitted -- stamped with ``snapshot_ts = envelope timestamp`` (review 29-03
-    HIGH).
+    game is KEYED TO ITS SCHEDULED GAME (:func:`match_event_to_schedule`), its
+    per-book totals (and spreads when requested) are read, and ONE consensus-median
+    row per game is emitted -- stamped with ``snapshot_ts = envelope timestamp``
+    (review 29-03 HIGH).
 
     Args:
         envelope: ``{timestamp, ..., data: [game, ...]}`` historical envelope.
         markets: Markets present (``"totals"`` always; ``"spreads"`` opt-in).
+        schedule: The silver ``games`` schedule (:data:`SCHEDULE_COLUMNS`) -- the WHOLE
+            schedule, never one week's slice: a Tuesday board lists games of more than
+            one week, and a Wednesday game belongs to the week the schedule says.
         region: Odds region recorded as provenance (default ``"us"``).
 
     Returns:
         A list of dicts ready for ``OddsTimelineSchema`` validation.
+
+    Raises:
+        DataIngestionError: when the schedule lacks a column the key match reads.
     """
+    _require_schedule_columns(schedule)
     snapshot_ts = _parse_envelope_timestamp(envelope.get("timestamp"))
     want_spreads = "spreads" in markets
 
@@ -402,27 +473,39 @@ def normalize_envelope_to_timeline_rows(
         home_name = game.get("home_team")
         away_name = game.get("away_team")
 
-        # WR-05: an out-of-season board listing is SKIPPED with a warning, not
-        # clamped onto a valid-looking key and not allowed to discard the rest of
-        # a paid snapshot. Mirrors the "No usable book lines" skip below.
-        try:
-            season, week = _derive_season_week(game.get("commence_time"))
-        except ValueError as exc:
+        # WR-05: a listing that cannot be placed is SKIPPED with a warning -- never
+        # keyed by a guess and never allowed to discard the rest of a paid snapshot.
+        # Mirrors the "No usable book lines" skip below.
+        commence = _parse_commence_time(game.get("commence_time"))
+        if commence is None:
             logger.warning(
-                "Skipping game whose commence_time does not derive a valid week",
+                "Skipping game whose commence_time is missing or unreadable",
                 home_team=home_name,
                 away_team=away_name,
                 commence_time=game.get("commence_time"),
-                error=str(exc),
                 snapshot_ts=snapshot_ts.isoformat(),
             )
             continue
 
-        # Canonical, hard-fail-on-unknown team mapping (CLAUDE.md constraint);
-        # create_standard_game_id normalizes the full API team names internally.
-        game_id = create_standard_game_id(
-            season=season, week=week, away_team=away_name, home_team=home_name
+        # Canonical, hard-fail-on-unknown team mapping (CLAUDE.md constraint) happens
+        # inside the match; the KEY is the scheduled game's own id.
+        game_id = match_event_to_schedule(
+            home_team=home_name,
+            away_team=away_name,
+            commence=commence,
+            schedule=schedule,
         )
+        if game_id is None:
+            logger.warning(
+                "Skipping game: no scheduled game has these teams within the match "
+                "tolerance of its commence_time (refused, never keyed by a guess)",
+                home_team=home_name,
+                away_team=away_name,
+                commence_time=game.get("commence_time"),
+                tolerance_hours=SCHEDULE_MATCH_TOLERANCE.total_seconds() / 3600,
+                snapshot_ts=snapshot_ts.isoformat(),
+            )
+            continue
 
         book_totals: list[float] = []
         book_spreads: list[float] = []
@@ -501,20 +584,20 @@ def _warn_on_orphaned_game_ids(
 ) -> int:
     """Log the count of derived ``game_id``s that do NOT join ``games`` silver.
 
-    WR-05. The ``game_id`` written here is DERIVED arithmetically from
+    WR-05. The ``game_id`` written here used to be DERIVED arithmetically from
     ``commence_time`` and never RECONCILED against the games table. That is the
     exact mechanism that orphaned the entire 2020 archive (D29-06-01) and cost a
-    re-key of 1,780 paid rows: ``get_nfl_season_start`` was wrong, every derived
-    week was off by one, and nothing between the API and the parquet noticed.
-    ``get_nfl_season_start`` has since been corrected, but the structural
-    weakness had not been: rescheduled games (2020 had many -- "early-September
-    board listings whose provisional dates later moved") would silently orphan
-    again.
+    re-key of 1,780 paid rows, and -- after ``get_nfl_season_start`` was corrected --
+    still filed the two Wednesday 2024 Christmas games under week-16 ids (Plan 33.2-24
+    step 24b). Every id is now TAKEN from the schedule the caller passed
+    (:func:`match_event_to_schedule`), so an orphan here means that schedule was not
+    silver ``games`` -- a stale copy, or a caller's own frame -- and this is the line
+    that says so.
 
     A single WARNING line with the orphan count would have surfaced D29-06-01 on
     the day it happened, so that is what this emits. It WARNS rather than raises:
-    a legitimately-not-yet-ingested future game must not block a paid snapshot
-    from being persisted, and the paid call has already been made.
+    the paid call has already been made, and the rows are keyed to real games of
+    the schedule that was supplied.
 
     Returns:
         The number of orphaned ``game_id`` values (0 when the check cannot run).
@@ -679,9 +762,10 @@ def backfill_timeline(
         min_credits_remaining: Abort when the API reports fewer remaining credits
             than this. A floor, not a budget: it leaves headroom for the weekly
             forward-collect job rather than draining the account to zero.
-        games: The schedule the lock instants are derived from (``game_id``,
-            ``season``, ``week``, ``kickoff_et``). Read from silver ``games`` under
-            *base_path* when omitted.
+        games: The schedule the lock instants are derived from AND every board event
+            is keyed against (:data:`SCHEDULE_COLUMNS`). Read from silver ``games``
+            under *base_path* when omitted. The WHOLE schedule keys events: a week's
+            Tuesday board lists games of later weeks too.
 
     Returns:
         Total rows written across all snapshots.
@@ -704,8 +788,10 @@ def backfill_timeline(
     if markets is None:
         markets = DEFAULT_MARKETS
 
-    # The schedule the per-game lock instants come from, resolved BEFORE any paid call.
-    schedule = _load_backfill_schedule(base_path) if games is None else games
+    # The schedule the per-game lock instants come from and every event is keyed
+    # against, resolved and checked BEFORE any paid call.
+    schedule = load_timeline_schedule(base_path) if games is None else games
+    _require_schedule_columns(schedule)
 
     # Spend-safety guard: one read of what is already on disk FOR THESE MARKETS,
     # kept current as the loop writes so a resumed backfill never re-buys stored
@@ -757,7 +843,9 @@ def backfill_timeline(
                 envelope_ts = _parse_envelope_timestamp(envelope.get("timestamp"))
                 stored_snapshots.add(pd.Timestamp(envelope_ts))
 
-                rows = normalize_envelope_to_timeline_rows(envelope, markets)
+                rows = normalize_envelope_to_timeline_rows(
+                    envelope, markets, schedule=schedule
+                )
                 if not rows:
                     # Visible rather than silent: a paid call that bought nothing
                     # is exactly the event an operator needs to see. Note this
@@ -820,6 +908,7 @@ def capture_current_week(
     week: int | None = None,
     region: str = "us",
     base_path: Path | None = None,
+    games: pd.DataFrame | None = None,
 ) -> int:
     """Capture the current week's trajectory snapshot (FREE-tier forward path).
 
@@ -828,19 +917,34 @@ def capture_current_week(
     (tz-aware UTC). This is the forward-collect entry point wired into the Friday
     orchestrator by Plan 29-08.
 
+    Every board event is keyed to its scheduled game through the WHOLE schedule,
+    exactly as the backfill keys it (Plan 33.2-24 step 24b). The ``season`` / ``week``
+    below only label the bronze file; they never key a row. That matters most on this
+    path: the 2026 season carries a Wednesday opener and a Wednesday Thanksgiving-eve
+    game, which the retired week count refused and mis-filed respectively.
+
     Args:
         client: An ``OddsAPIClient`` (real key in automation).
         markets: Markets to fetch (default ``["totals"]``).
-        season: Override season (default: current).
-        week: Override week (default: current).
+        season: Override season (default: current). Labels the bronze file only.
+        week: Override week (default: current). Labels the bronze file only.
         region: Odds region recorded as provenance (default ``"us"``).
         base_path: Optional data root (for tests); defaults to settings.
+        games: The schedule events are keyed against (:data:`SCHEDULE_COLUMNS`). Read
+            from silver ``games`` under *base_path* when omitted.
 
     Returns:
         Rows written for the captured snapshot.
+
+    Raises:
+        DataIngestionError: when no schedule is supplied and none can be read. Raised
+            BEFORE the API call, so a capture that could key nothing spends nothing.
     """
     if markets is None:
         markets = DEFAULT_MARKETS
+
+    schedule = load_timeline_schedule(base_path) if games is None else games
+    _require_schedule_columns(schedule)
 
     if season is None or week is None:
         current_season, current_week = get_current_nfl_week()
@@ -856,7 +960,9 @@ def capture_current_week(
         "timestamp": snapshot_now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "data": raw_games,
     }
-    rows = normalize_envelope_to_timeline_rows(envelope, markets, region=region)
+    rows = normalize_envelope_to_timeline_rows(
+        envelope, markets, schedule=schedule, region=region
+    )
     written = _write_timeline_rows(rows, season, week, base_path=base_path)
 
     logger.info(

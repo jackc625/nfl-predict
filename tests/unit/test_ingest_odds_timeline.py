@@ -42,7 +42,6 @@ from scripts.ingest_odds_timeline import (
     MockModeBackfillError,
     SpendGuardError,
     _build_parser,
-    _derive_season_week,
     _load_stored_snapshot_timestamps,
     _snapshot_already_stored,
     backfill_timeline,
@@ -67,6 +66,8 @@ WEEK6_GAMES = pd.DataFrame(
         "game_id": ["2021_W06_KC@BUF"],
         "season": [2021],
         "week": [6],
+        "home_team": ["BUF"],
+        "away_team": ["KC"],
         "kickoff_et": [pd.Timestamp("2021-10-17T17:00:00Z")],
     }
 )
@@ -265,7 +266,9 @@ def test_backfill_hard_fails_on_mock_mode():
 
 def test_raw_envelope_normalizer_builds_consensus_rows():
     """The dedicated normalizer turns a raw envelope into consensus rows."""
-    rows = normalize_envelope_to_timeline_rows(_fake_envelope(), ["totals"])
+    rows = normalize_envelope_to_timeline_rows(
+        _fake_envelope(), ["totals"], schedule=WEEK6_GAMES
+    )
 
     assert len(rows) == 1
     row = rows[0]
@@ -500,11 +503,21 @@ def test_normalizer_maps_the_2020_washington_football_team_name():
         ],
     }
 
-    rows = normalize_envelope_to_timeline_rows(envelope, ["totals"])
+    schedule = pd.DataFrame(
+        {
+            "game_id": ["2020_W01_PHI@WAS"],
+            "season": [2020],
+            "week": [1],
+            "home_team": ["WAS"],
+            "away_team": ["PHI"],
+            "kickoff_et": [pd.Timestamp("2020-09-13T17:00:00Z")],
+        }
+    )
+
+    rows = normalize_envelope_to_timeline_rows(envelope, ["totals"], schedule=schedule)
 
     assert len(rows) == 1
-    assert rows[0]["game_id"].startswith("2020_W")
-    assert rows[0]["game_id"].endswith("_PHI@WAS")
+    assert rows[0]["game_id"] == "2020_W01_PHI@WAS"
 
 
 def test_debug_params_log_redacts_api_key():
@@ -792,37 +805,51 @@ def test_make_request_does_not_retry_a_programming_error():
 
 
 # ---------------------------------------------------------------------------
-# WR-05: the derived game_id is neither clamped nor unreconciled
+# WR-05: a listing that cannot be placed is refused, never clamped or guessed
 #
-# The week is DERIVED arithmetically from commence_time and was never
+# The week used to be DERIVED arithmetically from commence_time and was never
 # RECONCILED against games silver -- the exact mechanism that orphaned the whole
-# 2020 archive (D29-06-01) and cost a re-key of 1,780 paid rows. Additionally the
-# max(1, min(week, 22)) clamp turned an out-of-range date into a VALID-LOOKING
-# key: a listing before the season opener became {season}_W01_AWAY@HOME, which
-# can collide with the real Week-1 meeting of the same two teams. Because
-# upsert_silver_composite dedupes with keep="last", a same-timestamp collision
-# silently overwrites a real paid row.
+# 2020 archive (D29-06-01) and cost a re-key of 1,780 paid rows. A max(1, min(week,
+# 22)) clamp once turned an out-of-range date into a VALID-LOOKING key: a listing
+# before the season opener became {season}_W01_AWAY@HOME, which can collide with the
+# real Week-1 meeting of the same two teams. Because upsert_silver_composite dedupes
+# with keep="last", a same-timestamp collision silently overwrites a real paid row.
+#
+# Plan 33.2-24 step 24b retired the derivation itself: every event is now keyed to its
+# scheduled game (tests/unit/test_odds_timeline_schedule_keying.py). These four tests
+# keep WR-05's intent -- refuse, never clamp -- against the schedule match. Was: three
+# of them called the deleted _derive_season_week directly.
 # ---------------------------------------------------------------------------
 
 
+def _one_game_board(commence_time: str) -> dict:
+    envelope = _fake_envelope()
+    envelope["data"][0]["commence_time"] = commence_time
+    return envelope
+
+
 def test_an_out_of_season_listing_is_refused_not_clamped():
-    """A pre-opener commence_time must not become a valid Week-1 game_id."""
-    with pytest.raises(ValueError, match="refusing to clamp"):
-        _derive_season_week("2021-07-04T17:00:00Z")
+    """A pre-opener listing must not become the real Week-1 (or any) game_id."""
+    rows = normalize_envelope_to_timeline_rows(
+        _one_game_board("2021-07-04T17:00:00Z"), ["totals"], schedule=WEEK6_GAMES
+    )
+    assert rows == []
 
 
 def test_a_far_future_listing_is_refused_not_clamped():
-    """Nor may a listing past week 22 be clamped down onto the last playoff week."""
-    with pytest.raises(ValueError, match="refusing to clamp"):
-        _derive_season_week("2022-07-20T17:00:00Z")
+    """Nor may a listing far past the schedule be clamped onto its last meeting."""
+    rows = normalize_envelope_to_timeline_rows(
+        _one_game_board("2022-07-20T17:00:00Z"), ["totals"], schedule=WEEK6_GAMES
+    )
+    assert rows == []
 
 
-def test_a_normal_in_season_listing_still_derives():
+def test_a_normal_in_season_listing_still_keys():
     """Positive control: the refusal must not break the ordinary path."""
-    season, week = _derive_season_week("2021-10-17T17:00:00Z")
-
-    assert season == 2021
-    assert 1 <= week <= 22
+    rows = normalize_envelope_to_timeline_rows(
+        _one_game_board("2021-10-17T17:00:00Z"), ["totals"], schedule=WEEK6_GAMES
+    )
+    assert [row["game_id"] for row in rows] == ["2021_W06_KC@BUF"]
 
 
 def test_an_out_of_season_game_is_skipped_without_discarding_the_board():
@@ -834,7 +861,9 @@ def test_an_out_of_season_game_is_skipped_without_discarding_the_board():
     bad_game["away_team"] = "Green Bay Packers"
     envelope["data"] = [bad_game, *envelope["data"]]
 
-    rows = normalize_envelope_to_timeline_rows(envelope, ["totals"])
+    rows = normalize_envelope_to_timeline_rows(
+        envelope, ["totals"], schedule=WEEK6_GAMES
+    )
 
     assert len(rows) == 1
     assert rows[0]["game_id"] == "2021_W06_KC@BUF"
