@@ -110,17 +110,20 @@ def mini_strategies() -> list[Any]:
     return strategies
 
 
-def fits_with_floor(ev_floor_t: float) -> dict[str, WeeklyChainFit]:
+def fits_with_floor(
+    ev_floor_t: float, refused: frozenset[str] = frozenset()
+) -> dict[str, WeeklyChainFit]:
     """A frozen fit per canonical target, sharing one EV floor.
 
     The floor is the dial these tests turn: a floor of 0.0 admits the fixture's candidates
     and a floor above anything it can price rejects every one of them, which is what makes a
-    genuine no-edge week constructible without weakening any real threshold.
+    genuine no-edge week constructible without weakening any real threshold. A target in
+    *refused* carries NO floor (``None``, Plan 33.2-29): no honest floor, therefore no bets.
     """
     return {
         target: WeeklyChainFit(
             target=target,
-            ev_floor_t=ev_floor_t,
+            ev_floor_t=None if target in refused else ev_floor_t,
             frozen_sd=13.0,
             season_bias_by_season={SEASON: -1.0},
         )
@@ -128,7 +131,9 @@ def fits_with_floor(ev_floor_t: float) -> dict[str, WeeklyChainFit]:
     }
 
 
-def chain_fit_record(ev_floor_t: float) -> dict[str, Any]:
+def chain_fit_record(
+    ev_floor_t: float, refused: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     """The on-disk shape ``load_frozen_chain_fit`` reads, as a plain dict.
 
     Returned rather than written: a fixture module that wrote its own inputs would be the
@@ -147,7 +152,8 @@ def chain_fit_record(ev_floor_t: float) -> dict[str, Any]:
     return {
         "tune_fit": {
             target: {
-                "ev_floor_t": ev_floor_t,
+                # A refused target is written as JSON ``null`` (Plan 33.2-29).
+                "ev_floor_t": None if target in refused else ev_floor_t,
                 "frozen_sd": 13.0,
                 "season_bias_by_season": {},
             }

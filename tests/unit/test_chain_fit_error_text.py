@@ -277,3 +277,28 @@ def test_the_residual_sd_refusal_still_names_the_target_and_the_offending_value(
     message = _raised_message("require_frozen_sd")
     assert "'ou'" in message
     assert "None" in message
+
+
+# ---------------------------------------------------------------------------
+# 5. The message is RECORD-AWARE (Plan 33.2-29)
+# ---------------------------------------------------------------------------
+
+
+def test_a_missing_corrected_record_names_the_command_that_regenerates_it(
+    tmp_path: Any,
+) -> None:
+    """The corrected record IS regenerable, so the locked-door text would be false of it."""
+    from backtest.corrected_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
+
+    absent = tmp_path / CORRECTED_CHAIN_FIT_RECORD_PATH.rsplit("/", 1)[-1]
+    with pytest.raises(FrozenChainFitError) as excinfo:
+        load_frozen_chain_fit(absent)
+    message = str(excinfo.value)
+    assert "scripts.derive_corrected_ev_chain" in message
+    assert "NO fallback" in message
+    assert "CANNOT BE REGENERATED" not in message
+
+
+def test_the_phase31_record_keeps_its_one_shot_ledger_text() -> None:
+    """The Phase-31 branch is unchanged: that record really is a spent single-use split."""
+    assert "CANNOT BE REGENERATED" in _raised_message("load_frozen_chain_fit")

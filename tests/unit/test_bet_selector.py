@@ -1479,6 +1479,7 @@ class TestFacadePublicSurface:
             "missing_prediction",
             "ev_not_finite",
             "no_bet_side",
+            "no_honest_ev_floor",
         )
 
 

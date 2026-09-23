@@ -87,6 +87,7 @@ _EXPECTED_REASONS = (
     "missing_prediction",
     "ev_not_finite",
     "no_bet_side",
+    "no_honest_ev_floor",
 )
 
 # The commit this plan started from (wave-3 HEAD). ``assert_real_odds`` is the LOCKED Phase-27

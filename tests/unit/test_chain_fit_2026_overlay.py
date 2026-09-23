@@ -318,3 +318,14 @@ def test_the_frozen_pool_is_exactly_the_five_strictly_prior_seasons() -> None:
     """
     assert CHAIN_FIT_BIAS_SEASONS == (2021, 2022, 2023, 2024, 2025)
     assert sorted(CHAIN_FIT_BIAS_2026) == sorted(CANONICAL_TARGETS)
+
+
+def test_a_null_floor_passes_through_the_overlay_untouched(tmp_path: Path) -> None:
+    """A target with NO honest floor (Plan 33.2-29) still gets its 2026 bias, and stays None."""
+    record = _record()
+    record["tune_fit"]["ats"]["ev_floor_t"] = None
+    fits = load_frozen_chain_fit(_write(tmp_path, record))
+
+    assert fits["ats"].ev_floor_t is None
+    assert _OVERLAY_SEASON in fits["ats"].season_bias_by_season
+    assert fits["ou"].ev_floor_t == 0.0

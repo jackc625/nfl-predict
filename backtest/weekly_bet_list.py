@@ -101,6 +101,7 @@ from backtest.cold_start_constants import (
     CHAIN_FIT_BIAS_2026,
     CHAIN_FIT_BIAS_SEASONS,
 )
+from backtest.corrected_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
 from backtest.ev_chain_constants import assign_ev_tier
 from backtest.ou_divergence import dedupe_odds_by_book_preference
 from backtest.ou_ev_chain import american_to_payout
@@ -124,6 +125,7 @@ __all__ = [
     "FrozenChainFitError",
     "LockPassedError",
     "MissingDecidedAtError",
+    "NoHonestEVFloorError",
     "WeeklyChainFit",
     "assert_decided_at_before_freeze",
     "build_bet_week_schedule",
@@ -140,6 +142,8 @@ __all__ = [
     "read_bet_list_with_schema_shim",
     "read_bet_tracker_artifact",
     "records_to_bet_list_frame",
+    "refused_targets",
+    "require_ev_floor",
     "select_games_for_decision_instant",
     "select_weekly_bets",
     "upsert_bet_list_rows",
@@ -187,6 +191,13 @@ BET_LIST_READ_COLUMNS: tuple[str, ...] = tuple(
 
 # The pre-registered run record carrying the tune-only fit. Gitignored (it is generator output),
 # which is why its absence RAISES a named error instead of defaulting.
+#
+# DELIBERATELY STILL THE PHASE-31 RECORD. The corrected record (Plan 33.2-29,
+# ``backtest.corrected_ev_chain_constants.CORRECTED_CHAIN_FIT_RECORD_PATH``) is STAGED, not
+# live: Plan 33.2-26 Task 3 repoints this path in the SAME commit as the cold-start bias import
+# above, because ``_overlay_frozen_chain_fit`` applies that bias inside ``load_frozen_chain_fit``
+# and repointing one without the other would judge corrected floors against an uncorrected bias.
+# Do not "finish the job" here.
 DEFAULT_CHAIN_FIT_PATH: Path = (
     Path("outputs") / "p31" / "profitability_2025_verdict.json"
 )
@@ -248,6 +259,16 @@ class FrozenChainFitError(RuntimeError):
     residual SD, the prior-season walk-forward bias -- was fitted on tune-only data under a rule
     frozen before any 2025 number existed. Substituting a default would admit bets at a threshold
     nobody swept for.
+    """
+
+
+class NoHonestEVFloorError(RuntimeError):
+    """A scalar EV floor was asked for a target whose record carries NONE (Plan 33.2-29).
+
+    The corrected chain fit records ``ev_floor_t = null`` when no grid floor admitted a single
+    bet on the honest pool: no honest floor, therefore no bets. Raised by name rather than
+    coerced, because both obvious coercions are wrong -- ``0.0`` is a real grid value that admits
+    everything, and ``inf`` is refused by ``assign_ev_tier`` deep inside the band assignment.
     """
 
 
@@ -330,7 +351,13 @@ class WeeklyChainFit:
 
     Attributes:
         target: The canonical target code.
-        ev_floor_t: The pre-registered per-target EV floor.
+        ev_floor_t: The pre-registered per-target EV floor, or None when NO HONEST FLOOR COULD
+            BE SWEPT (the corrected record's explicit ``null``) -- which means NO BETS for that
+            target. Distinct from ``0.0``, a real ``EV_FLOOR_GRID`` member meaning "admit
+            everything". ``float('inf')`` was REJECTED as the sentinel: the sealed
+            ``backtest.ev_chain_constants.assign_ev_tier`` refuses a non-finite floor by name, so
+            it would move the crash into the band assignment instead of removing it. Read a
+            scalar through :func:`require_ev_floor`.
         frozen_sd: The frozen residual SD, or None for WP, which fits none by design (D31-07).
         season_bias_by_season: The prior-season walk-forward bias per season.
         calibration_gate_passed: The TUNE-split calibration gate verdict, or None when no gate was
@@ -344,7 +371,7 @@ class WeeklyChainFit:
     """
 
     target: str
-    ev_floor_t: float
+    ev_floor_t: float | None
     frozen_sd: float | None
     season_bias_by_season: dict[int, float]
     calibration_gate_passed: bool | None = None
@@ -372,6 +399,21 @@ def load_frozen_chain_fit(
             Never a default: see the class docstring.
     """
     fit_path = Path(path)
+    if (
+        not fit_path.exists()
+        and fit_path.name == Path(CORRECTED_CHAIN_FIT_RECORD_PATH).name
+    ):
+        # THE CORRECTED RECORD IS REGENERABLE, so its refusal names the command. The Phase-31
+        # text below is true of the Phase-31 record ONLY -- a single-use hold split -- and
+        # would send a reader of this record to a locked door.
+        msg = (
+            f"the corrected tune-only fit is not on disk at {fit_path.as_posix()}; the weekly "
+            "bet list cannot be selected without the per-target EV floor and residual SD. It is "
+            "generator output over 2020-2024 (never the spent 2025 hold) and is regenerated "
+            "deterministically with `uv run python -m scripts.derive_corrected_ev_chain`. There "
+            "is NO fallback: a defaulted floor would admit bets at a threshold nobody swept for."
+        )
+        raise FrozenChainFitError(msg)
     if not fit_path.exists():
         msg = (
             f"the pre-registered tune-only fit is not on disk at {fit_path.as_posix()}; the "
@@ -427,7 +469,11 @@ def load_frozen_chain_fit(
             trigger = target_record[target].get("fallback_trigger")
         fits[target] = WeeklyChainFit(
             target=target,
-            ev_floor_t=float(block["ev_floor_t"]),
+            # An explicit ``null`` is a RECORDED verdict (no honest floor); an ABSENT key is a
+            # malformed record and was refused above. Two facts, two outcomes.
+            ev_floor_t=(
+                None if block["ev_floor_t"] is None else float(block["ev_floor_t"])
+            ),
             frozen_sd=None if frozen_sd is None else float(frozen_sd),
             season_bias_by_season={
                 int(season): float(bias)
@@ -1047,6 +1093,34 @@ def require_frozen_sd(fit: WeeklyChainFit) -> float:
     return float(value)
 
 
+def require_ev_floor(fit: WeeklyChainFit) -> float:
+    """The EV floor as a scalar, REFUSING a target whose record carries none (Plan 33.2-29).
+
+    Modelled on :func:`require_frozen_sd`: the one place a caller that needs a number gets it,
+    so no site silently coerces a ``None`` floor into 0.0.
+
+    Raises:
+        NoHonestEVFloorError: naming the target.
+    """
+    if fit.ev_floor_t is None:
+        msg = (
+            f"target {fit.target!r} has NO honest EV floor: no value on the frozen grid admitted "
+            "a single bet on the honest pre-lock pool, so this target places no bets. It is "
+            "never defaulted to 0.0 (a real grid value that admits everything)."
+        )
+        raise NoHonestEVFloorError(msg)
+    return float(fit.ev_floor_t)
+
+
+def refused_targets(fits: Mapping[str, WeeklyChainFit]) -> frozenset[str]:
+    """The targets whose record carries NO honest EV floor: they place no bets (Plan 33.2-29)."""
+    return frozenset(target for target, fit in fits.items() if fit.ev_floor_t is None)
+
+
+#: The suppression reason a refused target's games carry (``backtest.bet_selector``'s taxonomy).
+NO_HONEST_EV_FLOOR_REASON: str = "no_honest_ev_floor"
+
+
 def wp_fallback_is_active(fits: Mapping[str, WeeklyChainFit]) -> bool:
     """True when the run record says WP's TUNE-split calibration gate FAILED (WR-12).
 
@@ -1080,8 +1154,15 @@ def _wp_gate_from_fit(fit: WeeklyChainFit) -> Any | None:
     )
 
 
-def build_strategies(fits: dict[str, WeeklyChainFit]) -> list[Any]:
-    """The three registered strategies, built ONCE from the frozen fit.
+def build_strategies(
+    fits: dict[str, WeeklyChainFit], skip_targets: frozenset[str] = frozenset()
+) -> list[Any]:
+    """The registered strategies, built ONCE from the frozen fit, minus *skip_targets*.
+
+    *skip_targets* are the targets with NO honest EV floor (:func:`refused_targets`): their
+    strategy is not registered, so no candidate for them is ever priced. Their residual SD is
+    still required -- the derivation fits it independently of the floor, so a missing one is a
+    malformed record, not a refusal.
 
     Built once and shared between selection and grading, so a bet is graded under exactly the rule
     it was selected under. Two independent constructions could drift apart on a parameter and the
@@ -1090,7 +1171,7 @@ def build_strategies(fits: dict[str, WeeklyChainFit]) -> list[Any]:
     The two line targets' residual SDs go through :func:`require_frozen_sd`, which REFUSES an
     absent or non-positive value rather than substituting 0.0 (WR-05).
     """
-    return default_strategies(
+    strategies = default_strategies(
         ou_frozen_sd=require_frozen_sd(fits["ou"]),
         ou_season_bias_by_season=fits["ou"].season_bias_by_season,
         ats_frozen_sd=require_frozen_sd(fits["ats"]),
@@ -1103,6 +1184,7 @@ def build_strategies(fits: dict[str, WeeklyChainFit]) -> list[Any]:
         # which is the inverse of the D31-07 guarantee.
         wp_gate=_wp_gate_from_fit(fits["wp"]),
     )
+    return [strategy for strategy in strategies if strategy.target not in skip_targets]
 
 
 def select_weekly_bets(
@@ -1118,17 +1200,53 @@ def select_weekly_bets(
     Every pricing, admission, sizing and grading decision happens inside ``BetSelector.select``.
     This function supplies the frozen inputs and the schedule that makes the universe complete;
     it prices nothing of its own, which is what keeps exactly one bet-decision path in the tree.
+
+    A target with NO honest EV floor (Plan 33.2-29) is left out of the floor mapping, the
+    strategy registry and the candidates, so nothing of it is priced; each of its scheduled games
+    is recorded as a SUPPRESSED ``no_honest_ev_floor`` row instead of vanishing. If one leaked,
+    ``BetSelector.ev_floor_for``'s ``UnregisteredTargetError`` is the backstop.
     """
+    refused = refused_targets(fits)
     if strategies is None:
-        strategies = build_strategies(fits)
+        strategies = build_strategies(fits, skip_targets=refused)
+    strategies = [s for s in strategies if s.target not in refused]
+    # The lock each refused game is recorded against comes from the selector's own ONE lock
+    # call site, so a refusal row carries the same ``freeze_ts`` a selector row would.
+    from backtest.bet_selector import _freshness_context
+
+    refusal_rows = [
+        {
+            "game_id": game["game_id"],
+            "season": int(game["season"]),
+            "week": int(game["week"]),
+            "target": target,
+            "rejection_reason": NO_HONEST_EV_FLOOR_REASON,
+            "freeze_ts": _freshness_context({"gameday": game.get("gameday")})[1],
+        }
+        for target in sorted(refused)
+        for game in schedule.to_dict("records")
+    ]
+    if not strategies:
+        return SelectionResult(rejected=refusal_rows)
+
+    live_candidates = (
+        candidates[~candidates["target"].isin(refused)]
+        if refused and "target" in candidates.columns
+        else candidates
+    )
     selector = BetSelector(
         frozen_sd=float(fits["ou"].frozen_sd or 0.0),
         season_bias_by_season={},
-        ev_floor_t={target: fit.ev_floor_t for target, fit in fits.items()},
+        ev_floor_t={
+            target: require_ev_floor(fit)
+            for target, fit in fits.items()
+            if target not in refused
+        },
         bankroll=bankroll,
         strategies=strategies,
     )
-    return selector.select(candidates, scheduled_games=schedule)
+    result = selector.select(live_candidates, scheduled_games=schedule)
+    return replace(result, rejected=[*result.rejected, *refusal_rows])
 
 
 # ---------------------------------------------------------------------------
@@ -1151,7 +1269,7 @@ def _row_from_record(
     *,
     status: str,
     rejection_reason: str | None,
-    ev_floor_t: float,
+    ev_floor_t: float | None,
     unit: float,
     decided_at: str | None,
 ) -> dict[str, Any]:
@@ -1179,6 +1297,9 @@ def _row_from_record(
 
     ev_tier: str | None = None
     if status == BET_STATUS_LIVE and per_bet_ev is not None:
+        if ev_floor_t is None:
+            msg = f"a LIVE {target!r} row reached the bet list with no honest EV floor"
+            raise NoHonestEVFloorError(msg)
         ev_tier = assign_ev_tier(float(per_bet_ev), ev_floor_t)
 
     return {

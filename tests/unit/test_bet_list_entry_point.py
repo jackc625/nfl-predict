@@ -496,3 +496,74 @@ def test_the_predicate_is_wired_into_populate_cache() -> None:
         "warning is a helper nobody uses and the zero-row cache is still silent in production. "
         f"Called names: {sorted(_called_names(populate))}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 5. The CLI's existing --chain-fit-path drives a no-floor record end to end (Plan 33.2-29)
+# ---------------------------------------------------------------------------
+
+
+def test_the_cli_refuses_a_no_floor_target_without_crashing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record whose ATS floor is ``null`` yields ZERO live ATS rows and every ATS game recorded."""
+    import functools
+    import sys
+
+    import backtest.weekly_bet_list as wbl
+    import scripts.generate_bet_list as cli
+
+    record = {
+        "tune_fit": {
+            target: {
+                "ev_floor_t": None if target == "ats" else 0.0,
+                "frozen_sd": fit.frozen_sd,
+                "season_bias_by_season": {str(_SEASON): 0.0},
+            }
+            for target, fit in _FITS.items()
+        }
+    }
+    fit_path = tmp_path / "corrected_chain_fit.json"
+    fit_path.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(
+        wbl,
+        "build_weekly_candidates",
+        lambda season, week, **kwargs: (_authored_candidates(), _authored_schedule()),
+    )
+    # The run instant is injected (see _RUN_INSTANT); the CLI itself is driven for real.
+    monkeypatch.setattr(
+        cli,
+        "generate_weekly_bet_list",
+        functools.partial(wbl.generate_weekly_bet_list, now=_RUN_INSTANT),
+    )
+    output_dir = tmp_path / "bet_list"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_bet_list",
+            "--season",
+            str(_SEASON),
+            "--week",
+            str(_WEEK),
+            "--output-dir",
+            str(output_dir),
+            "--artifacts-dir",
+            str(tmp_path / "artifacts"),
+            "--gold-dir",
+            str(tmp_path / "gold"),
+            "--silver-dir",
+            str(tmp_path / "silver"),
+            "--chain-fit-path",
+            str(fit_path),
+        ],
+    )
+
+    cli.main()
+
+    stored = pd.read_parquet(output_dir / BET_LIST_ARTIFACT_NAME)
+    ats = stored[stored["target"] == "ats"]
+    assert len(ats) == 2
+    assert set(ats["status"]) == {"suppressed"}
+    assert set(ats["rejection_reason"]) == {"no_honest_ev_floor"}
+    assert (stored[stored["target"] != "ats"]["status"] == "live").any()

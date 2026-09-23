@@ -140,6 +140,10 @@ REJECTION_REASONS: tuple[str, ...] = (
     "missing_prediction",  # no model output for that game -- a pipeline gap (D31-19)
     "ev_not_finite",  # a non-finite per-bet EV: suppressed, never tiered (SPEC R7, D31-24)
     "no_bet_side",  # the model agrees with the market inside the LOCKED no-bet band (D31-05)
+    # the target has NO honest EV floor: no grid floor admitted a bet on the honest pre-lock
+    # pool, so the whole target places no bets and each of its games is recorded, not dropped
+    # (Plan 33.2-29). Emitted by ``backtest.weekly_bet_list.select_weekly_bets``, not here.
+    "no_honest_ev_floor",
 )
 # ``no_bet_side`` is plan 31-10's addition, and it is a NINTH reason rather than a reuse of one of
 # the eight. D31-05 gives the WP and ATS targets NO eligibility gate (and D33.2-24 took O/U's away),

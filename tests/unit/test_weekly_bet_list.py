@@ -835,3 +835,92 @@ def test_wp_is_still_exempt_from_the_season_check_on_the_default_path(
     fits = load_frozen_chain_fit(_write_fit(tmp_path, record))
 
     _require_season_covered(fits, 2025)
+
+
+# ---------------------------------------------------------------------------
+# 5. A target with NO honest EV floor places no bets, and does not crash (Plan 33.2-29)
+# ---------------------------------------------------------------------------
+
+
+def _refusal_frame(refused: frozenset[str]) -> pd.DataFrame:
+    from backtest.weekly_bet_list import records_to_bet_list_frame, select_weekly_bets
+    from tests.fixtures.decision_frame import (
+        fits_with_floor,
+        mini_strategies,
+        week_candidates,
+        week_schedule,
+    )
+
+    fits = fits_with_floor(0.0, refused=refused)
+    result = select_weekly_bets(
+        week_candidates(), week_schedule(), fits, strategies=mini_strategies()
+    )
+    return records_to_bet_list_frame(
+        result, fits, run_mode="forward", decided_at=datetime(2026, 9, 17, tzinfo=UTC)
+    )
+
+
+def test_a_target_with_no_floor_places_no_bets_and_raises_nothing() -> None:
+    """The REFUSAL, not a crash: no TypeError, zero live rows, every game recorded."""
+    from tests.fixtures.decision_frame import N_GAMES
+
+    try:
+        frame = _refusal_frame(frozenset({"ats"}))
+    except TypeError as exc:  # the pre-revision failure, named
+        pytest.fail(f"a None floor crashed instead of refusing: {exc}")
+
+    ats = frame[frame["target"] == "ats"]
+    assert (ats["status"] == BET_STATUS_LIVE).sum() == 0
+    assert len(ats) == N_GAMES
+    assert set(ats["status"]) == {"suppressed"}
+    assert set(ats["rejection_reason"]) == {"no_honest_ev_floor"}
+    # Non-vacuity: a target WITH a floor produces live rows on the same frame.
+    assert (frame[frame["target"] == "ou"]["status"] == BET_STATUS_LIVE).sum() > 0
+
+
+def test_the_pre_revision_shape_crashed_on_the_same_fixture() -> None:
+    """Control: the old float cast is what the refusal replaced, and it raised TypeError."""
+    from tests.fixtures.decision_frame import chain_fit_record
+
+    block = chain_fit_record(0.0, refused=frozenset({"ats"}))["tune_fit"]["ats"]
+    with pytest.raises(TypeError):
+        float(block["ev_floor_t"])
+
+
+def test_an_explicit_null_floor_loads_as_none_and_an_absent_key_still_refuses(
+    tmp_path: Path,
+) -> None:
+    import typing
+
+    from backtest.weekly_bet_list import require_ev_floor
+    from tests.fixtures.decision_frame import chain_fit_record
+
+    assert type(None) in typing.get_args(
+        typing.get_type_hints(WeeklyChainFit)["ev_floor_t"]
+    )
+    path = tmp_path / "fit.json"
+    path.write_text(
+        json.dumps(chain_fit_record(0.0, refused=frozenset({"wp"}))), encoding="utf-8"
+    )
+    fits = load_frozen_chain_fit(path)
+    assert fits["wp"].ev_floor_t is None
+    assert fits["ats"].ev_floor_t == 0.0
+    from backtest.weekly_bet_list import NoHonestEVFloorError
+
+    with pytest.raises(NoHonestEVFloorError, match="'wp'"):
+        require_ev_floor(fits["wp"])
+
+    record = chain_fit_record(0.0)
+    del record["tune_fit"]["wp"]["ev_floor_t"]
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(FrozenChainFitError, match="'wp'"):
+        load_frozen_chain_fit(path)
+
+
+def test_the_live_reader_is_staged_not_repointed() -> None:
+    """Plan 33.2-26 Task 3 repoints the default WITH the cold-start bias; this plan must not."""
+    from backtest.weekly_bet_list import DEFAULT_CHAIN_FIT_PATH
+
+    assert DEFAULT_CHAIN_FIT_PATH.as_posix() == (
+        "outputs/p31/profitability_2025_verdict.json"
+    )
