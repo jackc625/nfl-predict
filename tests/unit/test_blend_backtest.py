@@ -106,6 +106,21 @@ def _make_closing_odds(game_ids: list[str]) -> pd.DataFrame:
     )
 
 
+#: The production converter fit's slope (``market_probability_20260923_025709``, measured
+#: over 1,342 graded 2020-2024 games). Plan 33.2-21: the WP blend takes its market opinion
+#: from the pre-lock SPREAD through a BOUND converter, never from a closing moneyline.
+_BOUND_CONVERTER_ID = "market_probability_20260923_025709"
+_BOUND_CONVERTER_SLOPE = 0.1512435881109338
+
+
+def _make_bound_blender() -> MarketBlender:
+    """A blender with a converter bound to it, as Plan 33.2-24 will write one."""
+    return MarketBlender(
+        market_probability_artifact_id=_BOUND_CONVERTER_ID,
+        market_probability_slope_beta=_BOUND_CONVERTER_SLOPE,
+    )
+
+
 def _make_backtest_results(
     blend_config: BlendConfig | None = None,
     is_blended: bool = False,
@@ -249,14 +264,12 @@ class TestBlendPredictionsModifiesValues:
     """Verify that blend_predictions actually changes model values."""
 
     def test_wp_blending_changes_model_prob(self) -> None:
-        from models.blending import MarketBlender
-
         preds = _make_wp_predictions(n=20)
         game_ids = preds["game_id"].tolist()
         odds = _make_closing_odds(game_ids)
 
         original_probs = preds["model_prob"].copy()
-        blender = MarketBlender()
+        blender = _make_bound_blender()
         blended = blender.blend_predictions(preds, odds, "wp")
 
         # At least some values should have changed
@@ -304,13 +317,11 @@ class TestBlendPreservesMetadata:
     """Verify that blending preserves non-model columns."""
 
     def test_wp_preserves_game_id_season_week(self) -> None:
-        from models.blending import MarketBlender
-
         preds = _make_wp_predictions(n=15)
         game_ids = preds["game_id"].tolist()
         odds = _make_closing_odds(game_ids)
 
-        blender = MarketBlender()
+        blender = _make_bound_blender()
         blended = blender.blend_predictions(preds, odds, "wp")
 
         pd.testing.assert_series_equal(
@@ -336,13 +347,11 @@ class TestSimulatorSchemaCompatibility:
     """Verify BettingSimulator.simulate accepts blended prediction DataFrames."""
 
     def test_simulator_accepts_blended_wp_predictions(self) -> None:
-        from models.blending import MarketBlender
-
         preds = _make_wp_predictions(n=20)
         game_ids = preds["game_id"].tolist()
         odds = _make_closing_odds(game_ids)
 
-        blender = MarketBlender()
+        blender = _make_bound_blender()
         blended_wp = blender.blend_predictions(preds, odds, "wp")
 
         # Merge odds columns into predictions (as BettingSimulator expects)
@@ -724,21 +733,23 @@ class TestDynamicComparison:
             }
         )
 
-        blender = MarketBlender()
+        blender = _make_bound_blender()
 
         # Path A: blend_predictions (what run_comparison uses)
         blended_a = blender.blend_predictions(preds_df.copy(), odds_df, "wp")
 
-        # Path B: manual blend_wp call (what engine does internally)
-        from utils.probability_utils import moneyline_to_probability
+        # Path B: manual blend_wp call (what engine does internally). Plan 33.2-21: the
+        # market opinion is the BOUND converter applied to the pre-lock spread, not a
+        # devigged closing moneyline.
+        from models.market_probability import market_home_win_probability
 
         merged = preds_df.copy().merge(odds_df, on="game_id", how="left")
-        home_raw = merged["ml_home"].apply(lambda ml: moneyline_to_probability(int(ml)))
-        away_raw = merged["ml_away"].apply(lambda ml: moneyline_to_probability(int(ml)))
-        fair_home = (home_raw / (home_raw + away_raw)).values
+        market_prob = market_home_win_probability(
+            merged["spread"].to_numpy(dtype=float), _BOUND_CONVERTER_SLOPE
+        )
         blended_manual = blender.blend_wp(
             np.asarray(preds_df["model_prob"].values, dtype=np.float64),
-            np.asarray(fair_home, dtype=np.float64),
+            np.asarray(market_prob, dtype=np.float64),
         )
 
         # The blended model_prob values should match exactly

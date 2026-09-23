@@ -30,6 +30,7 @@ from models.blending import (
     BlendWeights,
     DynamicBlendWeights,
     MarketBlender,
+    MarketProbabilityUnavailable,
     SigmoidParams,
 )
 
@@ -271,6 +272,35 @@ class TestBlendPredictions:
         )
 
     @pytest.fixture()
+    def sample_market_wp_moneyline_only(self) -> pd.DataFrame:
+        """A market frame carrying ONLY the closing moneyline the WP blend used to devig.
+
+        Plan 33.2-21: the WP half now takes its market opinion from the pre-lock SPREAD
+        through the fitted converter, so a moneyline-only frame supplies no market
+        opinion at all -- and a blend with no market opinion refuses by name rather than
+        quietly returning the unblended model probability.
+        """
+        return pd.DataFrame(
+            {
+                "game_id": ["2023_01_KC_DET", "2023_01_BUF_NYJ"],
+                "ml_home": [-150, -120],
+                "ml_away": [130, 100],
+            }
+        )
+
+    @pytest.fixture()
+    def bound_blender(self) -> MarketBlender:
+        """A blender with a converter BOUND to it, as Plan 33.2-24 will write one.
+
+        The slope is the production fit's (``market_probability_20260923_025709``,
+        measured over 1,342 graded 2020-2024 games).
+        """
+        return MarketBlender(
+            market_probability_artifact_id="market_probability_20260923_025709",
+            market_probability_slope_beta=0.1512435881109338,
+        )
+
+    @pytest.fixture()
     def sample_predictions_ats(self) -> pd.DataFrame:
         """Sample ATS predictions DataFrame."""
         return pd.DataFrame(
@@ -300,10 +330,14 @@ class TestBlendPredictions:
         self,
         sample_predictions_wp: pd.DataFrame,
         sample_market_wp: pd.DataFrame,
+        bound_blender: MarketBlender,
     ) -> None:
-        """blend_predictions with WP target modifies model_prob column."""
-        blender = MarketBlender()
-        result = blender.blend_predictions(
+        """blend_predictions with WP target modifies model_prob column.
+
+        Plan 33.2-21: the market opinion now comes from the pre-lock spread through the
+        blender's BOUND converter, not from a devigged closing moneyline.
+        """
+        result = bound_blender.blend_predictions(
             sample_predictions_wp, sample_market_wp, target="wp"
         )
         # model_prob should be different from original (blended with market)
@@ -313,6 +347,22 @@ class TestBlendPredictions:
         blended_probs = result["model_prob"].values
         # With default weight 0.6, blended should differ from original
         assert not np.allclose(original_probs, blended_probs)
+
+    def test_blend_predictions_wp_refuses_a_moneyline_only_market(
+        self,
+        sample_predictions_wp: pd.DataFrame,
+        sample_market_wp_moneyline_only: pd.DataFrame,
+        bound_blender: MarketBlender,
+    ) -> None:
+        """A market frame with no pre-lock spread supplies no opinion, so the blend REFUSES.
+
+        This case used to log a warning and return the unblended model probability. A
+        silent no-blend is indistinguishable from a blend with weight zero (Plan 33.2-21).
+        """
+        with pytest.raises(MarketProbabilityUnavailable):
+            bound_blender.blend_predictions(
+                sample_predictions_wp, sample_market_wp_moneyline_only, target="wp"
+            )
 
     def test_blend_predictions_ats_modifies_model_spread(
         self,
@@ -348,10 +398,10 @@ class TestBlendPredictions:
         self,
         sample_predictions_wp: pd.DataFrame,
         sample_market_wp: pd.DataFrame,
+        bound_blender: MarketBlender,
     ) -> None:
         """blend_predictions preserves DataFrame columns (game_id, season, week, etc.)."""
-        blender = MarketBlender()
-        result = blender.blend_predictions(
+        result = bound_blender.blend_predictions(
             sample_predictions_wp, sample_market_wp, target="wp"
         )
         # All original columns should still be present
@@ -404,10 +454,10 @@ class TestBlendPredictions:
         self,
         sample_predictions_wp: pd.DataFrame,
         sample_market_wp: pd.DataFrame,
+        bound_blender: MarketBlender,
     ) -> None:
         """blend_predictions returns a copy, not the original DataFrame."""
-        blender = MarketBlender()
-        result = blender.blend_predictions(
+        result = bound_blender.blend_predictions(
             sample_predictions_wp, sample_market_wp, target="wp"
         )
         assert result is not sample_predictions_wp
