@@ -324,16 +324,44 @@ def _migrated_store() -> pd.DataFrame:
     return frame
 
 
+def _migrated_history() -> pd.DataFrame:
+    """The 2002-2025 slice: the population the Plan 33-12 migration recorded.
+
+    RE-ANCHOR (Plan 33.2-20). The migration's figures were measured when the store held
+    2002-2025 and nothing else, so "the store" and "the migrated population" were the
+    same frame. The live 2026 capture appended 272 rows and they are not that
+    population: the migration never saw them, and asserting its counts against them
+    would be asserting a record against data it does not describe.
+
+    The record is APPEND-ONCE and was NOT edited to today's totals. It is asserted here
+    against the slice it describes -- which is strictly sharper, because a change to any
+    2002-2025 row still fails it -- and the 2026 rows are asserted separately, by name,
+    in :class:`TestTheLive2026CaptureIsRecordedNotAbsorbed` and in the whole-store
+    halves of the assertions below.
+    """
+    frame = _migrated_store()
+    _first, last = phase33_state.SILVER_GAMES_SEASONS_AFTER_IDENTITY
+    return frame.loc[frame["season"] <= last]
+
+
 class TestTheMigratedStoreCarriesRealIdentityColumns:
     """COLD-09 / D33-15 / D33-17, asserted on the store rather than the derivation."""
 
     def test_the_store_is_the_shape_the_migration_recorded(self) -> None:
         """Asserted first: the assertions below are vacuous against an empty frame."""
         frame = _migrated_store()
-        assert len(frame) == phase33_state.SILVER_GAMES_ROWS_AFTER_IDENTITY
+        history = _migrated_history()
+        assert len(history) == phase33_state.SILVER_GAMES_ROWS_AFTER_IDENTITY
         assert len(frame.columns) == phase33_state.SILVER_GAMES_COLUMNS_AFTER_MEASURED
         first, last = phase33_state.SILVER_GAMES_SEASONS_AFTER_IDENTITY
-        assert (int(frame["season"].min()), int(frame["season"].max())) == (first, last)
+        assert (int(history["season"].min()), int(history["season"].max())) == (
+            first,
+            last,
+        )
+        # The live capture is a FORWARD extension, never a rewrite: the store starts on
+        # the same season and can only end later.
+        assert int(frame["season"].min()) == first
+        assert int(frame["season"].max()) >= last
 
     def test_season_type_can_never_disagree_with_game_type_on_any_row(self) -> None:
         """D33-17, over ALL rows, naming the offenders.
@@ -356,20 +384,30 @@ class TestTheMigratedStoreCarriesRealIdentityColumns:
         )
 
     def test_the_partition_is_real_rather_than_a_constant(self) -> None:
-        """The whole defect in one assertion: more than one distinct value exists."""
+        """The whole defect in one assertion: more than one distinct value exists.
+
+        The counts are asserted on the MIGRATED population (2002-2025). The live 2026
+        capture's 272 rows are all Regular so far and are asserted separately, so this
+        node keeps saying exactly what the migration measured.
+        """
         frame = _migrated_store()
-        counts = dict(frame["season_type"].value_counts())
-        assert set(counts) == {"Regular", "Postseason"}, (
-            f"season_type holds {sorted(counts)}. Before this migration it held "
-            "only ['Regular'] -- on every WC, DIV, CON and SB game ever played."
+        counts = dict(_migrated_history()["season_type"].value_counts())
+        assert set(frame["season_type"].unique()) == {"Regular", "Postseason"}, (
+            f"season_type holds {sorted(set(frame['season_type'].unique()))}. Before "
+            "this migration it held only ['Regular'] -- on every WC, DIV, CON and SB "
+            "game ever played."
         )
         assert dict(phase33_state.SILVER_SEASON_TYPE_COUNTS_AFTER_IDENTITY) == {
             key: int(value) for key, value in counts.items()
         }
+        assert dict(phase33_state.P332_20_SILVER_SEASON_TYPE_COUNTS_ALL) == {
+            key: int(value)
+            for key, value in frame["season_type"].value_counts().items()
+        }
 
     def test_the_postseason_population_is_at_least_ninety_rows(self) -> None:
         """D33-17's floor, and the recorded count, checked against each other."""
-        frame = _migrated_store()
+        frame = _migrated_history()
         measured = int((frame["season_type"] != "Regular").sum())
         assert measured >= 90, (
             f"only {measured} postseason rows exist across 2002-2025; the phase's "
@@ -379,14 +417,21 @@ class TestTheMigratedStoreCarriesRealIdentityColumns:
         assert measured == phase33_state.POSTSEASON_ROW_COUNT
 
     def test_neutral_site_is_no_longer_a_constant_false(self) -> None:
-        frame = _migrated_store()
-        measured = int(frame["neutral_site"].sum())
+        """The migrated population's 91, and the live capture's eight, separately."""
+        measured = int(_migrated_history()["neutral_site"].sum())
         assert measured == phase33_state.NEUTRAL_SITE_TRUE_ROW_COUNT, (
-            f"{measured} rows read neutral_site True; the migration measured "
-            f"{phase33_state.NEUTRAL_SITE_TRUE_ROW_COUNT}. These are the same games "
-            "HISTORICAL_NEUTRAL_MISRESOLUTION enumerates."
+            f"{measured} rows read neutral_site True across 2002-2025; the migration "
+            f"measured {phase33_state.NEUTRAL_SITE_TRUE_ROW_COUNT}. These are the same "
+            "games HISTORICAL_NEUTRAL_MISRESOLUTION enumerates."
         )
         assert measured > 0
+        total = int(_migrated_store()["neutral_site"].sum())
+        assert total == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_ALL, (
+            f"{total} rows read neutral_site True across the whole store. The delta "
+            "from the migrated 91 is the live 2026 capture's eight international "
+            "games, and nothing else."
+        )
+        assert total - measured == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_2026
 
     def test_stadium_id_is_present_on_every_row(self) -> None:
         """A presence RATE, not a presence check: a partial re-ingest is the risk."""
@@ -411,8 +456,22 @@ class TestTheMigratedStoreCarriesRealIdentityColumns:
         )
 
     def test_the_recorded_integrity_checks_still_hold(self) -> None:
-        """The manifest's SILVER_GAMES_INTEGRITY_AFTER_IDENTITY, re-measured."""
-        frame = _migrated_store()
+        """The manifest's SILVER_GAMES_INTEGRITY_AFTER_IDENTITY, re-measured.
+
+        Over the MIGRATED population. ``rows`` and ``distinct_seasons`` are counts OF
+        that population, so measuring them over a store the live capture has extended
+        compares a record against rows it never described. The uniqueness and null
+        checks are asserted over the WHOLE store first, where they belong: those are
+        invariants rather than counts, so a null the 2026 capture introduced must fail
+        here and not be scoped away with the counts.
+        """
+        whole = _migrated_store()
+        assert not whole["game_id"].duplicated().any()
+        assert int(whole["stadium_id"].isna().sum()) == 0
+        assert (
+            sum(int(whole[column].isna().sum()) for column in PRIMARY_KEY_COLUMNS) == 0
+        )
+        frame = _migrated_history()
         measured = {
             "rows": len(frame),
             "columns": len(frame.columns),
@@ -428,6 +487,52 @@ class TestTheMigratedStoreCarriesRealIdentityColumns:
             assert value == recorded[key], (
                 f"{key} is {value} but the migration recorded {recorded[key]}"
             )
+
+
+class TestTheLive2026CaptureIsRecordedNotAbsorbed:
+    """The 272 rows the live capture added are counted BY NAME (Plan 33.2-20).
+
+    Scoping the migration's figures to 2002-2025 is only honest if the rows that fall
+    outside the scope are asserted somewhere. Without this class, a capture that
+    doubled or silently dropped 2026 would leave every assertion above green.
+    """
+
+    def test_the_store_is_the_history_plus_the_capture(self) -> None:
+        frame = _migrated_store()
+        history = _migrated_history()
+        captured = len(frame) - len(history)
+        assert len(frame) == phase33_state.P332_20_SILVER_GAMES_ROWS_ALL
+        assert len(history) == phase33_state.P332_20_SILVER_GAMES_ROWS_HISTORY_2002_2025
+        assert captured == phase33_state.P332_20_SILVER_GAMES_ROWS_2026_CAPTURE, (
+            f"{captured} rows sit beyond the migrated 2002-2025 population; the live "
+            f"2026 capture recorded "
+            f"{phase33_state.P332_20_SILVER_GAMES_ROWS_2026_CAPTURE}."
+        )
+        assert (
+            int(frame["season"].min()),
+            int(frame["season"].max()),
+        ) == phase33_state.P332_20_SILVER_GAMES_SEASONS_ALL
+
+    def test_every_captured_row_is_a_2026_row(self) -> None:
+        """The scope boundary is a season boundary, and nothing else hides behind it."""
+        frame = _migrated_store()
+        _first, last = phase33_state.SILVER_GAMES_SEASONS_AFTER_IDENTITY
+        beyond = frame.loc[frame["season"] > last]
+        assert set(beyond["season"].unique()) == {2026}, sorted(
+            set(beyond["season"].unique())
+        )
+
+    def test_the_captured_rows_carry_the_same_identity_columns(self) -> None:
+        """A forward extension writes the migrated shape, not a looser one."""
+        frame = _migrated_store()
+        _first, last = phase33_state.SILVER_GAMES_SEASONS_AFTER_IDENTITY
+        beyond = frame.loc[frame["season"] > last]
+        assert int(beyond["stadium_id"].isna().sum()) == 0
+        assert set(beyond["season_type"].unique()) <= {"Regular", "Postseason"}
+        assert (
+            int(beyond["neutral_site"].sum())
+            == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_2026
+        )
 
 
 class TestTheRecordedSilverWidthIsSixteenAndSaysWhy:
@@ -539,13 +644,70 @@ class TestTheFourthMovedColumnWasDeclaredNotDiscovered:
             )
 
     def test_the_migrated_roof_distribution_matches_the_record(self) -> None:
+        """RE-MEASURED, because Plan 33.2-09 MOVED it on purpose (Plan 33.2-20).
+
+        This is the one migration figure the 2002-2025 slice genuinely changed. Seven
+        2025 international games had been resolved to the US stadium the feed named;
+        Plan 33.2-09 resolved each to the venue actually played at, and three of those
+        moves cross a roof class. The pre-correction counts therefore describe a store
+        that placed seven games in the wrong country, and restoring them would be
+        asserting the defect. ``SILVER_VENUE_ROOF_COUNTS_AFTER_IDENTITY`` is
+        append-once and is left byte-unchanged as the record of what it measured; the
+        current counts live in a NEW slot beside it.
+
+        The delta is asserted as ARITHMETIC, never as a replacement number: the three
+        moving games are recorded with their before and after venue and roof, the
+        per-class delta is DERIVED from them, and the re-measured counts must equal the
+        recorded ones plus exactly that.
+        """
+        history = _migrated_history()
+        measured = {
+            key: int(value)
+            for key, value in history["venue_roof"].value_counts().items()
+        }
+        assert measured == dict(
+            phase33_state.P332_20_SILVER_VENUE_ROOF_COUNTS_HISTORY
+        ), f"2002-2025 roof distribution is {measured}"
+
+        recorded = dict(phase33_state.SILVER_VENUE_ROOF_COUNTS_AFTER_IDENTITY)
+        delta = dict(phase33_state.P332_20_VENUE_ROOF_HISTORY_DELTA)
+        assert measured == {roof: recorded[roof] + delta[roof] for roof in recorded}, (
+            "the re-measured counts are not the recorded ones plus the declared delta"
+        )
+
+        # The delta is DERIVED from the named games, so it cannot be a number chosen to
+        # make the line above balance.
+        derived = dict.fromkeys(recorded, 0)
+        for (
+            _game,
+            _from_id,
+            from_roof,
+            _to_id,
+            to_roof,
+        ) in phase33_state.P332_20_VENUE_ROOF_MOVING_GAMES:
+            derived[from_roof] -= 1
+            derived[to_roof] += 1
+        assert derived == delta, (
+            f"the three recorded moving games imply {derived}, not the declared {delta}"
+        )
+
+    def test_the_three_roof_moving_games_read_their_corrected_venue(self) -> None:
+        """The record names games, so the games are checked -- both ends of each move."""
+        frame = _migrated_store().set_index("game_id")
+        moving = phase33_state.P332_20_VENUE_ROOF_MOVING_GAMES
+        assert moving, "non-vacuity: the record names at least one moving game"
+        for game_id, from_id, from_roof, to_id, to_roof in moving:
+            assert frame.at[game_id, "stadium_id"] == to_id, game_id
+            assert frame.at[game_id, "venue_roof"] == to_roof, game_id
+            assert from_id != to_id and from_roof != to_roof, game_id
+
+    def test_the_whole_store_roof_distribution_is_recorded_too(self) -> None:
+        """2026's 272 rows are counted, not quietly excluded."""
         frame = _migrated_store()
         measured = {
             key: int(value) for key, value in frame["venue_roof"].value_counts().items()
         }
-        assert measured == dict(
-            phase33_state.SILVER_VENUE_ROOF_COUNTS_AFTER_IDENTITY
-        ), f"roof distribution is {measured}"
+        assert measured == dict(phase33_state.P332_20_SILVER_VENUE_ROOF_COUNTS_ALL)
 
 
 def _venues_by_stadium_id() -> set[str]:

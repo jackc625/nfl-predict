@@ -17753,3 +17753,72 @@ P332_20_GOLD_WEATHER_CONSTANCY_AFTER_CLEAN_BUILD: dict[str, object] = {
 P332_20_GOLD_2026_ROWS: int = 17
 P332_20_GOLD_2026_UNRECORDED_WEATHER_ROWS: int = 16
 P332_20_GOLD_2026_FENCED_WEATHER_ROWS: int = 1
+
+# SILVER `games` AFTER THE LIVE 2026 CAPTURE AND THE PLAN 33.2-09 VENUE CORRECTIONS.
+# Stated BESIDE the Plan 33-12 identity-migration slots, every one of which is byte-unchanged
+# (SILVER_GAMES_ROWS_AFTER_IDENTITY, SILVER_SEASON_TYPE_COUNTS_AFTER_IDENTITY,
+# NEUTRAL_SITE_TRUE_ROW_COUNT, POSTSEASON_ROW_COUNT, SILVER_GAMES_INTEGRITY_AFTER_IDENTITY
+# and SILVER_VENUE_ROOF_COUNTS_AFTER_IDENTITY). MEASURED 2026-09-22.
+#
+# TWO SEPARATE CAUSES, and they are kept separate because they move different things:
+#
+# (1) THE LIVE 2026 CAPTURE appended 272 rows, so the store is 6,771 where the migration
+#     recorded 6,499. NOTHING about 2002-2025 moved through this cause: the history slice
+#     still reads 6,499 rows, 16 columns, seasons 2002-2025, 6,223 Regular / 276 Postseason
+#     and 91 neutral-site rows -- every migration figure, exactly. The 8 extra neutral-site
+#     rows (91 -> 99) are 2026's eight international games and are the SAME derivation
+#     reading a new season, not a change to an old one.
+#
+# (2) PLAN 33.2-09's VENUE CORRECTIONS moved the 2002-2025 ROOF distribution, deliberately,
+#     and this is the ONE migration figure that genuinely changed on the history slice. The
+#     seven 2025 international games had been resolved to the US stadium the feed named; each
+#     now resolves to the venue actually played at. Net, indoor -1 and outdoor +1, retractable
+#     unchanged -- which is the sum of three moves and not one:
+#       * 2025_W01_KC@LAC  SoFi (indoor)            -> Arena Corinthians (outdoor): indoor -1,
+#         outdoor +1;
+#       * 2025_W10_ATL@IND Lucas Oil (retractable)  -> Olympiastadion (outdoor): retractable -1,
+#         outdoor +1;
+#       * 2025_W11_WAS@MIA Hard Rock (outdoor)      -> Bernabeu (retractable): outdoor -1,
+#         retractable +1.
+#     The other four corrected games moved between two outdoor venues, so they move no count.
+#     RE-MEASURED rather than restored: the pre-correction counts describe a store that
+#     resolved seven games to the wrong country, so re-pinning to them would be asserting the
+#     defect.
+P332_20_SILVER_GAMES_ROWS_ALL: int = 6771
+P332_20_SILVER_GAMES_ROWS_HISTORY_2002_2025: int = 6499
+P332_20_SILVER_GAMES_ROWS_2026_CAPTURE: int = 272
+P332_20_SILVER_GAMES_SEASONS_ALL: tuple[int, int] = (2002, 2026)
+
+P332_20_SILVER_SEASON_TYPE_COUNTS_ALL: tuple[tuple[str, int], ...] = (
+    ("Regular", 6495),
+    ("Postseason", 276),
+)
+P332_20_NEUTRAL_SITE_TRUE_ROWS_ALL: int = 99
+P332_20_NEUTRAL_SITE_TRUE_ROWS_2026: int = 8
+
+#: The 2002-2025 roof distribution RE-MEASURED after Plan 33.2-09's venue corrections. The
+#: pre-correction record stays as the record of the store it described.
+P332_20_SILVER_VENUE_ROOF_COUNTS_HISTORY: tuple[tuple[str, int], ...] = (
+    ("outdoor", 4720),
+    ("indoor", 1030),
+    ("retractable", 749),
+)
+#: The same distribution over the whole store, 2026 included.
+P332_20_SILVER_VENUE_ROOF_COUNTS_ALL: tuple[tuple[str, int], ...] = (
+    ("outdoor", 4901),
+    ("indoor", 1079),
+    ("retractable", 791),
+)
+#: The per-class delta from SILVER_VENUE_ROOF_COUNTS_AFTER_IDENTITY on the HISTORY slice,
+#: with the three games that produce it. Recorded so the movement is attributable rather
+#: than merely observed.
+P332_20_VENUE_ROOF_HISTORY_DELTA: tuple[tuple[str, int], ...] = (
+    ("outdoor", 1),
+    ("indoor", -1),
+    ("retractable", 0),
+)
+P332_20_VENUE_ROOF_MOVING_GAMES: tuple[tuple[str, str, str, str, str], ...] = (
+    ("2025_W01_KC@LAC", "LAX01", "indoor", "SAO00", "outdoor"),
+    ("2025_W10_ATL@IND", "IND00", "retractable", "BER00", "outdoor"),
+    ("2025_W11_WAS@MIA", "MIA00", "outdoor", "MAD01", "retractable"),
+)
