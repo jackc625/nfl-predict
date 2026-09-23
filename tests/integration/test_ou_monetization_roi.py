@@ -26,7 +26,9 @@ Covers the OUM-03/05 acceptance for ``backtest/ou_monetization.py``:
 Load-bearing number anchors (reproduced this session against the DEPLOYED v1.0 OU artifact
 ``ou_20260326_163930`` over 2021-2024 canonical gold; the ROI VERDICT itself is the owner
 checkpoint, NOT a hard assert -- D27-01/02):
-  - frozen residual SD ~13.15 (fit on bias-corrected TUNE 2021-2022 residuals only)
+  - (the frozen residual SD ~13.15 anchor is DELETED: it was a point estimate of the dead v1.0
+    ``ou_20260326_163930`` model; the runner now scores the DEPLOYED model, so the SD is asserted
+    finite and positive rather than pinned -- Plan 33.2-29)
   - (the pre-hold high-total boundary 48.0 anchor is DELETED BY RULING -- D33.2-24 removed the
     boundary; ``no_eligibility_gate`` asserts it is gone instead)
   - odds coverage 0.9543 (n_with_line 1087 / n_total 1139; 52 excluded)
@@ -63,7 +65,6 @@ _GOLD_OU_PATH = Path("data/gold/features_ou.parquet")
 
 # Number anchors (reproduced this session; see module docstring). Tolerances: tight for coverage,
 # looser for the SD; the ROI itself is an owner checkpoint, not a hard assert.
-ANCHOR_FROZEN_SD = 13.15
 ANCHOR_COVERAGE = 0.9543
 ANCHOR_N_WITH_LINE = 1087
 ANCHOR_N_TRIALS = 5
@@ -73,7 +74,6 @@ ANCHOR_SUBPOPULATION_RULE = (
     "none (D33.2-24: no eligibility gate; the EV floor alone decides)"
 )
 
-_TOL_SD = 5e-2
 _TOL_COVERAGE = 5e-3
 
 # Production files the runner must NOT edit (the self-judging boundary).
@@ -118,7 +118,9 @@ class TestOuMonetizationRoi:
         assert fence["threshold_window"] == "tune_2021_2022"
 
         frozen = monetization_result["frozen"]
-        assert abs(frozen["frozen_sd"] - ANCHOR_FROZEN_SD) < _TOL_SD
+        # A property, not a point estimate: the SD belongs to whichever model is deployed, and the
+        # 13.15 once pinned here was the dead v1.0 model's (Plan 33.2-29).
+        assert np.isfinite(frozen["frozen_sd"]) and frozen["frozen_sd"] > 0
         # t is one of the pre-registered grid values (chosen by ROI, not invented).
         assert frozen["ev_floor_t"] in set(EV_FLOOR_GRID)
 
