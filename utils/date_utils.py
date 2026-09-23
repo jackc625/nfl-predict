@@ -84,52 +84,44 @@ def get_nfl_season_start(season: int) -> datetime:
 
 def get_current_nfl_week(now: datetime | None = None) -> tuple[int, int]:
     """
-    Get the current NFL season and week based on when games actually finish.
+    Get the current NFL season and week, read from the RECORDED SCHEDULE.
 
-    NFL weeks transition on Tuesday after the last game of the previous week
-    (typically Monday Night Football). This ensures consistency with betting
-    markets and data availability.
+    A thin delegate to ``utils.current_slate.resolve_current_slate`` -- the one
+    schedule-keyed resolver -- so every caller that imports this name reads the
+    same answer without changing a call site. The rule: the week of the earliest
+    scheduled game whose kickoff ET calendar day is today or later, a season
+    opening on its opener's lock day (D33.2-01). Monday night stays in its week,
+    Tuesday moves on, a Tuesday reschedule is its own week on its own day.
 
-    WR-05 correction. The previous implementation returned a week ONE TOO HIGH on
-    Thursday, Friday, Saturday and Sunday -- every game day except Monday -- for
-    every week of the season, contradicting the contract stated in the paragraph
-    above. The cause was double counting: ``days_since_start // 7 + 1`` is measured
-    from the season's opening THURSDAY and is therefore already Thursday-anchored,
-    so the conditional ``+1`` for "Tuesday or later" added a second week from
-    Thursday onward. Every consumer (the Friday orchestrator, the ingest scripts,
-    the prediction filename) uses the value verbatim with no compensation, so the
-    orchestrator was generating NEXT week's predictions.
+    Step 24c of Plan 33.2-24. This used to COUNT weeks from the computed Thursday
+    after Labor Day, and step 24b measured it disagreeing with the schedule on 18
+    games 2018-2026 at their own lock or kickoff (every opener at its lock, the
+    Wednesday 2026 opener, the 2020/2021 Tuesday reschedules, the 17-week-era
+    Super Bowls), each an omitted capture or prediction. The count survives only
+    as ``utils.current_slate.retired_calendar_week``, the offseason branch's
+    documented value. Its history is kept there: WR-05 removed a double count
+    that ran one week high Thursday through Sunday.
 
-    The fix anchors the buckets on the transition day itself -- the Tuesday two days
-    before the opening Thursday -- instead of patching a Thursday-anchored bucket.
-    The pre-season guard below is deliberately KEPT: without it, anchoring two days
-    earlier would also flip the pre-season Tuesday and Wednesday from the previous
-    season's week 18 to the new season's week 1, which is a behaviour change nobody
-    asked for.
+    Outside the season the documented contract is unchanged: before a season's
+    opener lock day, the previous season's week 18; through the spring, the
+    previous season's week clamped to 22.
 
     Args:
         now: Reference instant, for testing against a frozen clock. Defaults to
-            ``datetime.now(ET)``. Purely additive -- every existing call site passes
-            nothing and behaves identically.
+            ``datetime.now(ET)``. Must be timezone-aware.
 
     Returns:
-        Tuple of (season, week) where week is 1-18 for regular season
+        Tuple of (season, week), the week in the schedule's own numbering
+        (playoff rounds continue it).
+
+    Raises:
+        utils.current_slate.SlateResolutionError: the recorded schedule cannot
+            name the slate (missing, a season at hand with no schedule on record,
+            a store stale beyond one playoff round). Never a silent calendar guess.
     """
-    if now is None:
-        now = datetime.now(ET)
+    from utils.current_slate import resolve_current_slate
 
-    season = get_current_nfl_season(now)
-    season_start = get_nfl_season_start(season)
-
-    # Calculate weeks since season start
-    if now < season_start:
-        # We're before the season starts, return previous season's last week
-        return season - 1, NFL_REGULAR_SEASON_WEEKS
-
-    # NFL weeks transition on the Tuesday after the previous week's last game
-    # (Monday Night Football), so bucket from that Tuesday.
-    week_anchor = season_start - timedelta(days=2)
-    return season, min((now - week_anchor).days // 7 + 1, NFL_TOTAL_WEEKS)
+    return resolve_current_slate(now).as_tuple()
 
 
 def parse_nfl_date(date_str: str) -> datetime:
@@ -201,26 +193,6 @@ def is_game_time(kickoff_time: datetime, check_time: datetime | None = None) -> 
 
     time_diff = abs((kickoff_time - check_time).total_seconds() / 3600)  # hours
     return time_diff <= 4
-
-
-def get_week_start_end(season: int, week: int) -> tuple[datetime, datetime]:
-    """
-    Get start and end times for a given NFL week.
-
-    Args:
-        season: NFL season year
-        week: Week number (1-18 for regular season)
-
-    Returns:
-        Tuple of (week_start, week_end) in ET timezone
-    """
-    season_start = get_nfl_season_start(season)
-
-    # Week 1 starts on season start date
-    week_start = season_start + timedelta(weeks=week - 1)
-    week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
-
-    return week_start, week_end
 
 
 def format_nfl_date(dt: datetime, include_time: bool = True) -> str:

@@ -4,6 +4,15 @@ Focus: the D-06 offseason no-op short-circuit. A live (scheduled, unforced)
 offseason run must exit 0 as a clean no-op WITHOUT constructing/running the
 orchestrator -- so no CRITICAL "Pipeline Failed" alert is ever fired. With
 --force the short-circuit is bypassed and the pipeline still runs.
+
+"Offseason" is read from the RECORDED SCHEDULE (step 24c of Plan 33.2-24,
+``utils.current_slate``), so these tests freeze the clock and let the real
+resolver read production silver ``games`` read-only. Was: each test also patched
+``scripts.friday_pipeline.get_current_nfl_week`` to a fixed tuple and the CLI
+computed a calendar window from it; that name is gone from the module, and the
+window was wrong at both ends (it opened after the 2026 opener's lock and closed
+before the 2026 Super Bowl -- pinned in
+``tests/unit/test_current_slate_schedule_keyed.py``).
 """
 
 from datetime import datetime
@@ -23,16 +32,12 @@ class TestOffseasonNoOp:
         """
         from scripts.friday_pipeline import main
 
-        # May 29 is squarely in the NFL offseason (season starts early September,
-        # season_end ~= start + 22 weeks lands in early February).
+        # May 29 is squarely in the NFL offseason: the 2025 Super Bowl (2026-02-08)
+        # is recorded and the 2026 opener's lock day (2026-09-08) is months away.
         offseason_now = datetime(2026, 5, 29, 12, 0, tzinfo=ET)
 
         with (
             patch("sys.argv", ["friday_pipeline.py"]),
-            patch(
-                "scripts.friday_pipeline.get_current_nfl_week",
-                return_value=(2025, 22),
-            ),
             patch("scripts.friday_pipeline.datetime") as mock_dt,
             patch("pipeline.orchestrator.FridayPipeline") as mock_pipeline_cls,
         ):
@@ -60,10 +65,6 @@ class TestOffseasonNoOp:
 
         with (
             patch("sys.argv", ["friday_pipeline.py", "--force"]),
-            patch(
-                "scripts.friday_pipeline.get_current_nfl_week",
-                return_value=(2025, 22),
-            ),
             patch("scripts.friday_pipeline.datetime") as mock_dt,
             patch("pipeline.orchestrator.FridayPipeline") as mock_pipeline_cls,
         ):
@@ -93,10 +94,6 @@ class TestOffseasonNoOp:
 
         with (
             patch("sys.argv", ["friday_pipeline.py", "--dry-run"]),
-            patch(
-                "scripts.friday_pipeline.get_current_nfl_week",
-                return_value=(2025, 22),
-            ),
             patch("scripts.friday_pipeline.datetime") as mock_dt,
             patch("pipeline.orchestrator.FridayPipeline") as mock_pipeline_cls,
         ):
@@ -127,10 +124,6 @@ class TestOffseasonNoOp:
 
         with (
             patch("sys.argv", ["friday_pipeline.py"]),
-            patch(
-                "scripts.friday_pipeline.get_current_nfl_week",
-                return_value=(2025, 7),
-            ),
             patch("scripts.friday_pipeline.datetime") as mock_dt,
             patch("pipeline.orchestrator.FridayPipeline") as mock_pipeline_cls,
         ):

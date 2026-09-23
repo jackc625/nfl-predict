@@ -18502,3 +18502,27 @@ P332_24B_BLEND_CONVERTER_ARTIFACT_ID: str = P332_24B_CONVERTER_ARTIFACT_ID
 
 #: The OpenMP thread count every fit in the run was pinned to.
 P332_24B_BLEND_THREAD_LIMIT: int = 1
+
+# ---------------------------------------------------------------------------
+# THE TRAINER GOLD-LOAD PROVENANCE LINES, RE-MEASURED AFTER STEP 24c.
+#
+# APPENDED by Plan 33.2-24 step 24c on 2026-09-23. ``TRAINER_GOLD_LOAD_SITES`` (Plan 33-04)
+# and ``P332_23_TRAINER_GOLD_LOAD_SITES`` (Plan 33.2-23) above stay BYTE-UNCHANGED as the
+# records of where the four loads stood when each was measured; this slot is the next
+# re-measurement, under the same APPEND-ONCE protocol.
+#
+# WHY IT MOVED, AND WHY THAT IS NOT A DEFECT. Step 24c replaced the three trainers' CLI
+# default -- a CALENDAR season paired with ``get_current_nfl_week()``, which is the whole
+# ``(season, week)`` TUPLE, compared against the ``week`` column -- with one call to
+# ``utils.current_slate.cli_target_season_week``. That block sits ABOVE each gold load and
+# is two lines shorter, so each load moved up by two. The guard did not move: the sibling
+# test that asserts it is WIRED reads the function source, not the line. ``models/train.py``
+# was re-measured too and had not moved.
+# ---------------------------------------------------------------------------
+
+P332_24C_TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
+    ("models.train_wp", "main", 1146),
+    ("models.train_ats", "main", 1161),
+    ("models.train_ou", "main", 1421),
+    ("models.train", "main", 907),
+)

@@ -1383,7 +1383,7 @@ def main():
     import argparse
     from pathlib import Path
 
-    from utils.date_utils import get_current_nfl_season, get_current_nfl_week
+    from utils.current_slate import cli_target_season_week
 
     parser = argparse.ArgumentParser(description="Train Over/Under (O/U) Model")
     parser.add_argument("--season", type=int, help="Target season (default: current)")
@@ -1411,12 +1411,10 @@ def main():
 
     args = parser.parse_args()
 
-    # Determine season and week
-    season = args.season or get_current_nfl_season()
-    if args.week == "all":
-        week = None
-    else:
-        week = int(args.week) if args.week else get_current_nfl_week()
+    # Determine season and week: explicit values win, else ONE schedule-keyed resolution.
+    # Was: a calendar season paired with get_current_nfl_week() -- the whole (season, week)
+    # TUPLE -- compared against the week column (step 24c).
+    season, week = cli_target_season_week(args.season, args.week)
 
     # Load features from gold layer (standard pipeline path)
     try:

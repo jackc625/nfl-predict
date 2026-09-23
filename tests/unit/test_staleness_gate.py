@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+from utils.current_slate import BASIS_OFFSEASON, BASIS_SCHEDULED_SLATE, CurrentSlate
 from utils.date_utils import ET
 
 # ---------------------------------------------------------------------------
@@ -55,25 +56,33 @@ def _make_settings_mock(overrides: dict | None = None):
     return settings
 
 
+IN_SEASON_SLATE = CurrentSlate(2025, 5, in_season=True, basis=BASIS_SCHEDULED_SLATE)
+OFFSEASON_SLATE = CurrentSlate(2025, 22, in_season=False, basis=BASIS_OFFSEASON)
+
+
 # ---------------------------------------------------------------------------
 # Season gate tests
 # ---------------------------------------------------------------------------
 
 
 class TestCheckSeason:
-    """Tests for StalenessGate.check_season()."""
+    """Tests for StalenessGate.check_season().
+
+    "In season" is the schedule-keyed resolver's answer (step 24c of Plan 33.2-24), so
+    these tests patch ``pipeline.staleness.resolve_current_slate``. Was: they patched
+    ``pipeline.staleness.get_nfl_season_start`` and the gate computed a calendar window
+    ``[computed opener, + 22 weeks]`` -- wrong at both ends, and gone from the module.
+    The real-schedule cases (the 2026 opener's lock day passes; late May fails) are in
+    ``tests/unit/test_current_slate_schedule_keyed.py::TestTheStalenessSeasonGate``.
+    """
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.datetime")
-    @patch("pipeline.staleness.get_nfl_season_start")
-    def test_check_season_passes_in_season(
-        self, mock_season_start, mock_dt, mock_settings
-    ):
+    @patch("pipeline.staleness.resolve_current_slate")
+    def test_check_season_passes_in_season(self, mock_resolve, mock_dt, mock_settings):
         """Season gate passes during in-season (October)."""
         mock_settings.return_value = _make_settings_mock()
-        # Season 2025 starts September 4
-        season_start = datetime(2025, 9, 4, tzinfo=ET)
-        mock_season_start.return_value = season_start
+        mock_resolve.return_value = IN_SEASON_SLATE
         # Current time is October 10 (in-season)
         mock_dt.now.return_value = datetime(2025, 10, 10, 12, 0, tzinfo=ET)
 
@@ -87,14 +96,11 @@ class TestCheckSeason:
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.datetime")
-    @patch("pipeline.staleness.get_nfl_season_start")
-    def test_check_season_fails_offseason(
-        self, mock_season_start, mock_dt, mock_settings
-    ):
+    @patch("pipeline.staleness.resolve_current_slate")
+    def test_check_season_fails_offseason(self, mock_resolve, mock_dt, mock_settings):
         """Season gate fails during offseason (April)."""
         mock_settings.return_value = _make_settings_mock()
-        season_start = datetime(2025, 9, 4, tzinfo=ET)
-        mock_season_start.return_value = season_start
+        mock_resolve.return_value = OFFSEASON_SLATE
         # Current time is April 15 (offseason -- after season end)
         mock_dt.now.return_value = datetime(2026, 4, 15, 12, 0, tzinfo=ET)
 
@@ -110,12 +116,11 @@ class TestCheckSeason:
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.datetime")
-    @patch("pipeline.staleness.get_nfl_season_start")
-    def test_force_bypasses_season(self, mock_season_start, mock_dt, mock_settings):
+    @patch("pipeline.staleness.resolve_current_slate")
+    def test_force_bypasses_season(self, mock_resolve, mock_dt, mock_settings):
         """force=True during offseason returns passed=True with bypass message."""
         mock_settings.return_value = _make_settings_mock()
-        season_start = datetime(2025, 9, 4, tzinfo=ET)
-        mock_season_start.return_value = season_start
+        mock_resolve.return_value = OFFSEASON_SLATE
         mock_dt.now.return_value = datetime(2026, 4, 15, 12, 0, tzinfo=ET)
 
         from pipeline.staleness import StalenessGate
@@ -482,7 +487,7 @@ class TestRunAllChecks:
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.datetime")
-    @patch("pipeline.staleness.get_nfl_season_start")
+    @patch("pipeline.staleness.resolve_current_slate")
     @patch("pipeline.staleness.get_current_nfl_week")
     @patch("pipeline.staleness.get_latest_artifact_path")
     @patch("pipeline.staleness.Path")
@@ -493,15 +498,13 @@ class TestRunAllChecks:
         mock_path_cls,
         mock_resolver,
         mock_get_week,
-        mock_season_start,
+        mock_resolve,
         mock_dt,
         mock_settings,
     ):
         """run_all_checks combines season + staleness results."""
         mock_settings.return_value = _make_settings_mock()
-        # In-season
-        season_start = datetime(2025, 9, 4, tzinfo=ET)
-        mock_season_start.return_value = season_start
+        mock_resolve.return_value = IN_SEASON_SLATE
         mock_dt.now.return_value = datetime(2025, 10, 10, 12, 0, tzinfo=ET)
         mock_get_week.return_value = (2025, 5)
         mock_time.time.return_value = 1000000.0
@@ -546,14 +549,13 @@ class TestRunAllChecks:
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.datetime")
-    @patch("pipeline.staleness.get_nfl_season_start")
+    @patch("pipeline.staleness.resolve_current_slate")
     def test_run_all_checks_season_fails_skips_staleness(
-        self, mock_season_start, mock_dt, mock_settings
+        self, mock_resolve, mock_dt, mock_settings
     ):
         """If season fails, staleness checks are skipped."""
         mock_settings.return_value = _make_settings_mock()
-        season_start = datetime(2025, 9, 4, tzinfo=ET)
-        mock_season_start.return_value = season_start
+        mock_resolve.return_value = OFFSEASON_SLATE
         mock_dt.now.return_value = datetime(2026, 4, 15, 12, 0, tzinfo=ET)
 
         from pipeline.staleness import StalenessGate

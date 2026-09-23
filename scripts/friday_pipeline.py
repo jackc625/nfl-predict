@@ -14,45 +14,44 @@ Usage:
 
 import argparse
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from utils.date_utils import (
-    ET,
-    get_current_nfl_week,
-    get_nfl_season_start,
-)
+from utils.current_slate import SlateResolutionError, resolve_current_slate
+from utils.date_utils import ET
 from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# Season window matches StalenessGate.check_season: season_start + 22 weeks
-# (regular season + playoffs through the Super Bowl). Kept here so the D-06
-# offseason no-op short-circuit and the staleness gate stay in lockstep.
-_SEASON_WINDOW_WEEKS = 22
-
 
 def _is_offseason(now: datetime | None = None) -> bool:
-    """Return True if *now* falls outside the current NFL season window.
+    """Return True if the recorded schedule has no slate open at *now*.
 
-    Mirrors ``pipeline.staleness.StalenessGate.check_season`` so the CLI
-    short-circuit and the staleness gate agree on what "offseason" means:
-    the window is ``[season_start, season_start + 22 weeks]`` for the season
-    resolved by ``get_current_nfl_week()``.
+    Reads the SAME schedule-keyed resolver as ``pipeline.staleness.StalenessGate.
+    check_season``, so the CLI short-circuit and the staleness gate cannot disagree on
+    what "offseason" means: it is the resolver's offseason branch -- before a season's
+    opener lock day, or after a season whose Super Bowl is recorded with the next
+    season not yet begun.
+
+    Step 24c of Plan 33.2-24 replaced the calendar window this used to compute,
+    ``[computed opener Thursday, + 22 weeks]`` for the season the retired week count
+    resolved. That window was wrong at both ends: it opened AFTER the 2026 opener's
+    Tuesday lock (the Wednesday opener kicked off before the computed Thursday), and
+    it closed on 2026-02-05, three days BEFORE the 2026-02-08 Super Bowl. It also
+    ignored its own ``now`` argument when resolving the season.
 
     Args:
         now: Reference time (defaults to ``datetime.now(ET)``).
 
     Returns:
-        True when *now* is before the season start or after the season end.
+        True when no slate is open.
+
+    Raises:
+        utils.current_slate.SlateResolutionError: the schedule cannot say (for example a
+            season at hand whose schedule is not recorded). Never read as "offseason".
     """
     if now is None:
         now = datetime.now(ET)
-
-    season, _week = get_current_nfl_week()
-    season_start = get_nfl_season_start(season)
-    season_end = season_start + timedelta(weeks=_SEASON_WINDOW_WEEKS)
-
-    return now < season_start or now > season_end
+    return not resolve_current_slate(now).in_season
 
 
 def main() -> int:
@@ -121,9 +120,26 @@ def main() -> int:
     # tool that lists the steps that WOULD run and executes nothing, so it should work
     # year-round. The crying-wolf protection (D-06) is intact because the scheduled task
     # never passes --dry-run; only a human operator inspecting steps out of season does.
-    if not args.force and not args.dry_run and _is_offseason():
-        logger.info("Offseason no-op -- pipeline skipped (use --force to run anyway)")
-        return 0
+    #
+    # A schedule that cannot name the slate (a season at hand with no recorded schedule, a
+    # store stale beyond one playoff round) is NOT the offseason: it fails the run by name,
+    # with the command that records the schedule, before any orchestrator exists -- so it is
+    # an honest exit 1, not a CRITICAL alert, and never a silent no-op that would skip a live
+    # slate (step 24c).
+    if not args.force and not args.dry_run:
+        try:
+            offseason = _is_offseason()
+        except SlateResolutionError as refusal:
+            logger.error(
+                "The recorded schedule cannot name the current slate -- run refused",
+                error=str(refusal),
+            )
+            return 1
+        if offseason:
+            logger.info(
+                "Offseason no-op -- pipeline skipped (use --force to run anyway)"
+            )
+            return 0
 
     try:
         from pipeline.orchestrator import FridayPipeline

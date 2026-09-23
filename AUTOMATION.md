@@ -110,12 +110,24 @@ the staleness season gate, set `status="failed"`, fire a CRITICAL "Pipeline Fail
 alert, and raise -- a false alarm that erodes trust (crying wolf). To prevent this,
 `scripts/friday_pipeline.py::main` detects the offseason and returns `0` as a clean INFO
 no-op **BEFORE** constructing `FridayPipeline`, so no orchestrator alert path is reached.
-The offseason window mirrors `StalenessGate.check_season` exactly
-(`[season_start, season_start + 22 weeks]`, resolved via `get_current_nfl_week()` in ET),
-so the CLI short-circuit and the season gate can never disagree. `--force` deliberately
-bypasses the short-circuit so the operator can still run out of season (e.g. a one-time
-forced run against a completed-week stand-in). A live unforced offseason run therefore
-exits 0 as a no-op with **no CRITICAL alert**.
+"Offseason" is read from the RECORDED SCHEDULE by the one resolver both sites call,
+`utils.current_slate.resolve_current_slate` (Plan 33.2-24 step 24c), so the CLI
+short-circuit and `StalenessGate.check_season` can never disagree: no slate is open
+before a season's opener lock day, or after a season whose Super Bowl is recorded while
+the next season has not begun. `--force` deliberately bypasses the short-circuit so the
+operator can still run out of season (e.g. a one-time forced run against a
+completed-week stand-in). A live unforced offseason run therefore exits 0 as a no-op with
+**no CRITICAL alert**.
+
+Step 24c retired the calendar window this used to compute (`[computed opener Thursday,
++ 22 weeks]`, resolved via `get_current_nfl_week()`), which was wrong at both ends: it
+opened after the Wednesday 2026 opener's Tuesday lock, and it closed on 2026-02-05, three
+days before the 2026-02-08 Super Bowl. One case is deliberately NOT a no-op: when the
+schedule cannot name the slate -- the calendar season has turned (August onward) but its
+schedule is not recorded in silver `games`, or a playoff store is stale by more than one
+round -- the run exits 1 with an ERROR naming `uv run python -m scripts.ingest_games
+--season <season>`, still before any orchestrator exists (so no CRITICAL alert). A silent
+no-op there would skip a live slate, which is the failure step 24c removed.
 
 ---
 
@@ -414,6 +426,9 @@ the same empty `monitoring_config`, so it falls back to those defaults.
   `StalenessGate.check_season` exactly; `--force` bypasses. No new `log.status` was added
   (Option A, smallest blast radius).
 - **Commit:** `cc66264`.
+- **Superseded in mechanism by Plan 33.2-24 step 24c:** both sites now read "offseason"
+  from the recorded schedule (`utils.current_slate`) rather than a calendar window; the
+  no-op contract itself is unchanged (see section 2, "Offseason no-op short-circuit").
 
 ### D-07..D-10 -- Windows scheduling reconciled into one drift-proof story
 

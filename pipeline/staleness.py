@@ -15,12 +15,13 @@ Addresses review concerns:
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from conf.settings import get_settings
 from models.artifacts import get_latest_artifact_path
-from utils.date_utils import ET, get_current_nfl_week, get_nfl_season_start
+from utils.current_slate import resolve_current_slate
+from utils.date_utils import ET, get_current_nfl_week
 from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -67,13 +68,24 @@ class StalenessGate:
         self.force = force
 
     def check_season(self) -> StalenessResult:
-        """Check whether we are within the NFL season window.
+        """Check whether the recorded schedule has a slate open now.
 
         This is a SEPARATE concept from staleness checks. The season gate
-        prevents running the pipeline during the offseason (April-August).
+        prevents running the pipeline during the offseason.
+
+        "In season" is the schedule-keyed resolver's answer
+        (``utils.current_slate.resolve_current_slate``), the same one the Friday
+        CLI's offseason no-op reads, so the two cannot disagree. Step 24c of Plan
+        33.2-24 replaced the calendar window ``[computed opener Thursday, + 22
+        weeks]``, which opened after the 2026 opener's lock and closed before the
+        2026 Super Bowl.
 
         Returns:
             StalenessResult with passed=False if offseason.
+
+        Raises:
+            utils.current_slate.SlateResolutionError: the schedule cannot name the
+                slate; never read as "offseason".
         """
         if self.force:
             logger.warning("FORCED RUN -- season check bypassed")
@@ -82,17 +94,14 @@ class StalenessGate:
                 warnings=["FORCED RUN -- season check bypassed"],
             )
 
-        season_start = get_nfl_season_start(self.season)
-        # Approximate season end: season_start + 22 weeks (includes playoffs to Super Bowl)
-        season_end = season_start + timedelta(weeks=22)
         now = datetime.now(ET)
+        slate = resolve_current_slate(now)
 
-        if now < season_start or now > season_end:
+        if not slate.in_season:
             msg = (
-                f"Not in NFL season (offseason). "
-                f"Season {self.season} runs {season_start.strftime('%Y-%m-%d')} "
-                f"to ~{season_end.strftime('%Y-%m-%d')}. "
-                f"Use --force to bypass."
+                f"Not in NFL season (offseason): the recorded schedule has no slate "
+                f"open on {now.strftime('%Y-%m-%d')} (offseason value "
+                f"S{slate.season}W{slate.week}). Use --force to bypass."
             )
             logger.warning(msg)
             return StalenessResult(passed=False, errors=[msg])

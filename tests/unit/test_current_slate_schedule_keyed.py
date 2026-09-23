@@ -401,6 +401,33 @@ class TestThePlayoffGap:
                 _et("2040-01-30 12:00"), schedule=through_wild_card
             )
 
+    def test_a_store_two_rounds_stale_within_two_weeks_is_refused(self) -> None:
+        """Seven days after a wild-card round the divisional round may already be over."""
+        slate = _slate()
+        through_wild_card = _schedule(*SEASON_2039_TAIL[:2])
+
+        with pytest.raises(slate.ScheduleIncompleteError):
+            slate.resolve_current_slate(
+                _et("2040-01-19 12:00"), schedule=through_wild_card
+            )
+
+    def test_the_round_bounds_are_the_measured_minimums(
+        self, production_schedule: pd.DataFrame
+    ) -> None:
+        """Each bound is the fewest days, 2002-2025, from a round's last game to the next's."""
+        slate = _slate()
+        games = production_schedule[production_schedule["season"] <= 2025].copy()
+        games["day"] = [k.date() for k in games["kickoff"]]
+        minimums: dict[str, int] = {}
+        for season, grp in games.groupby("season"):
+            final = 18 if season >= slate.FIRST_EIGHTEEN_WEEK_SEASON else 17
+            last_day = grp.groupby("week")["day"].max()
+            for offset, label in enumerate(("REG", "WC", "DIV", "CON")):
+                gap = (last_day[final + offset + 1] - last_day[final + offset]).days
+                minimums[label] = min(minimums.get(label, gap), gap)
+
+        assert minimums == slate.NEXT_ROUND_VALID_DAYS
+
     def test_a_truncated_regular_season_is_refused(self) -> None:
         slate = _slate()
         truncated = _schedule(("2039_W10_A@B", 2039, 10, "2039-11-10 13:00", "REG"))
