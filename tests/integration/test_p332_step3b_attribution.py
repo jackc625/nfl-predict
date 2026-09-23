@@ -204,24 +204,64 @@ class TestTheExplainableSetIsDerived:
         assert fg.PHASE332_SURFACE_STEP_COLUMNS == ("surface_mismatch",)
         assert fg.phase332_surface_step_earliest_season() == SEASON_FLOOR
 
+    @staticmethod
+    def _venues_whose_class_moved() -> dict[str, str]:
+        """``stadium_id -> surface`` for every venue the new rule classifies differently.
+
+        DERIVED from ``data/venues.json`` under the SAME two rules
+        ``phase332_surface_reclassified_games`` applies -- the retired two-spelling set
+        and ``features.contextual.surface_is_grass`` -- rather than listed. The list
+        WAS hardcoded at nine ids, and Plan 33.2-20's venue correction (``e8e5686``,
+        MEL00 and RIO00 to Grass, PAR00 to Hybrid Grass, each with a cited source)
+        correctly added three more, so the pin went red for a reason that is the fix
+        working. A set derived from the file cannot go stale against the file.
+        """
+        from features.contextual import ContextualFeaturesCalculator, surface_is_grass
+
+        retired = fg.PHASE332_SURFACE_STEP_RETIRED_GRASS_SPELLINGS
+        return {
+            record["stadium_id"]: record["surface"]
+            for record in ContextualFeaturesCalculator().venues_data["venues"]
+            if (record["surface"] in retired) != surface_is_grass(record["surface"])
+        }
+
     def test_every_reclassified_game_is_at_a_reclassified_venue(self) -> None:
         import pandas as pd
 
         games = pd.read_parquet("data/silver/games.parquet").set_index("game_id")
         reclassified = fg.phase332_surface_reclassified_games()
         assert reclassified, "the fix must change at least one game"
-        venues = {
-            "LON00",
-            "LON01",
-            "LON02",
-            "MEX00",
-            "FRA00",
-            "GER00",
-            "SAO00",
-            "DUB00",
-            "BER00",
+        moved = self._venues_whose_class_moved()
+        assert moved, "non-vacuity: at least one venue's class moves under the new rule"
+        stadiums = {games.at[g, "stadium_id"] for g in reclassified}
+        assert stadiums <= set(moved), sorted(stadiums - set(moved))
+
+    def test_the_three_corrected_2026_venues_joined_the_derived_set(self) -> None:
+        """Plan 33.2-20's venue correction, asserted where it bites.
+
+        MEL00 and RIO00 read ``Matrix Turf`` and PAR00 ``Sport Turf`` -- values copied
+        from SoFi Stadium, at three stadiums that are grass. Under the retired rule and
+        the new one alike they classified as synthetic, so they were NOT in this derived
+        set. Corrected, they are; that widening is the whole of why this class's pin
+        moved, and it is asserted rather than absorbed.
+
+        STEP 3b's OWN REBUILD IS UNTOUCHED. Each of the three hosts one 2026 game only,
+        and the step's attribution window is 2002-2025
+        (``phase332_surface_step_earliest_season`` filters there), so no gold row the
+        step rebuilt reads any of them.
+        """
+        moved = self._venues_whose_class_moved()
+        assert {"MEL00", "RIO00", "PAR00"} <= set(moved)
+        assert moved["MEL00"] == "Grass"
+        assert moved["RIO00"] == "Grass"
+        assert moved["PAR00"] == "Hybrid Grass"
+        assert fg.phase332_surface_step_earliest_season() == SEASON_FLOOR
+        seasons = {
+            season
+            for game, season in fg.phase332_surface_reclassified_games().items()
+            if game[:4] == "2026"
         }
-        assert {games.at[g, "stadium_id"] for g in reclassified} <= venues
+        assert seasons <= {2026}
 
     def test_a_column_other_than_surface_mismatch_is_unattributed(self) -> None:
         verdict = attribute_rung(
