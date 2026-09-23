@@ -621,12 +621,17 @@ class TestTheLiveManifestIsNeverWritten:
     RE-POINTED 2026-09-14 by Plan 33-15 Task 4. The claim is unchanged -- THIS MODULE
     never writes the live manifest -- but its fixed reference had to move, because the
     manifest itself moved for the first time since Phase 33.1's close.
+
+    RE-POINTED AGAIN 2026-09-23 by Plan 33.2-25 Task 4, for the same reason: the
+    owner-accepted batched swap (SPEC R13) installed the corrected artifacts, so the
+    recorded END STATE is now ``P332_25B_SWAP_ARTIFACT_IDS``. Phase 33's
+    ``POST_GATE_ARTIFACT_MANIFEST`` is retained unedited as the record of what it installed.
     """
 
     def test_the_live_manifest_holds_the_POST_PROMOTION_pointers(self) -> None:
         """Reading it changed nothing, and the recorded END STATE is what is live."""
         manifest = _live_manifest()
-        for target, artifact_id in phase33_state.POST_GATE_ARTIFACT_MANIFEST.items():
+        for target, artifact_id in phase33_state.P332_25B_SWAP_ARTIFACT_IDS:
             assert manifest[target] == artifact_id, target
 
     def test_the_phase_331_close_record_is_RETAINED_unedited(self) -> None:

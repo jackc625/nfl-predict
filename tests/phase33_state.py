@@ -18710,3 +18710,22 @@ P332_25B_SWAP_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
     ("ou", "ou_20260923_172152"),
     ("blend", "blend_20260923_212418"),
 )
+
+# ---------------------------------------------------------------------------
+# THE SWAP, AS IT RAN: THE MANIFEST PRODUCTION NOW SERVES.
+#
+# APPENDED by Plan 33.2-25 Task 4 on 2026-09-23, AFTER the owner's readiness ruling
+# ("Swap", Task 3) and after `uv run python -m scripts.swap_corrected_artifacts --apply`
+# installed P332_25B_SWAP_ARTIFACT_IDS through models.artifacts.replace_manifest in ONE
+# atomic write. The artifacts/ digest bracket (outputs/p332_swap_before.json) moved
+# latest.json and nothing else. The manifest it replaced is P332_25_PRE_SWAP_LATEST_JSON*.
+#
+# This is the anchor the live manifest-freeze test now holds production to: the most recent
+# AUTHORISED write of the sole production swap surface. A later write that does not also
+# append its own slot here turns that test red by name.
+# ---------------------------------------------------------------------------
+
+#: sha256 of artifacts/latest.json's bytes immediately after the swap (CRLF as stored).
+P332_25_POST_SWAP_LATEST_JSON_SHA256: str = (
+    "3f1cbe3d9c3f8190a2ca3a4fed21b11510dcfea2159c036fb23874f32c9e8830"
+)

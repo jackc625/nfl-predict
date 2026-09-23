@@ -85,6 +85,10 @@ from tests.phase30_state import (
     DEPLOYED_BLEND_VERSION,
     MANIFEST_SHA256_AFTER,
 )
+from tests.phase33_state import (
+    P332_25_POST_SWAP_LATEST_JSON_SHA256,
+    P332_25B_SWAP_ARTIFACT_IDS,
+)
 
 # Repo root resolved from this file: tests/integration/test_blend_revalidation_isolation.py.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -363,29 +367,49 @@ def test_blend_save_by_default_leaves_the_manifest_alone(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 
+def _phase30_post_promotion_manifest_sha256(copy_manifest: dict[str, str]) -> str:
+    """The sha256 production's manifest had after Plan 30-11, rebuilt from the COPY.
+
+    The copy was taken from production after Plan 30-11's swap, and the re-validation moved
+    only its ``blend`` key. Restoring that one key to ``DEPLOYED_BLEND_VERSION`` and
+    serializing the way ``_atomic_write_json`` did on this Windows checkout (indent 2, CRLF)
+    must therefore reproduce ``MANIFEST_SHA256_AFTER`` exactly -- which proves the copy's
+    ``wp``/``ats``/``ou`` pointers are the ones production held when the comparison ran.
+    """
+    restored = {**copy_manifest, "blend": DEPLOYED_BLEND_VERSION}
+    payload = json.dumps(restored, indent=2).replace("\n", "\r\n").encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 @pytest.mark.integration
 def test_live_production_manifest_is_the_recorded_post_promotion_manifest() -> None:
-    """The live ``artifacts/latest.json`` is byte-identical to the recorded post-promotion manifest.
+    """The live ``artifacts/latest.json`` is byte-identical to the LAST authorised swap's record.
 
-    ``MANIFEST_SHA256_AFTER`` was pinned by Plan 30-11 at the moment of the phase's ONE authorised
-    production write. The blend re-validation ran after that, through a tool that rewrites this
-    exact file by default. If it had been run as documented, this digest would have moved.
+    Originally pinned to ``MANIFEST_SHA256_AFTER`` (Plan 30-11), the manifest the blend
+    re-validation ran after. RE-PINNED by Plan 33.2-25 Task 4, deliberately: that plan's
+    owner-accepted batched swap (SPEC R13, ``scripts/swap_corrected_artifacts.py`` through
+    ``models.artifacts.replace_manifest``) is now the most recent authorised write of the sole
+    production swap surface, so the freeze holds production to its record --
+    ``P332_25B_SWAP_ARTIFACT_IDS`` and ``P332_25_POST_SWAP_LATEST_JSON_SHA256``. The Phase-30
+    witness itself moved to the next test, which proves from the re-validation COPY that the
+    comparison measured the models production held after Plan 30-11.
 
-    The blend pointer is asserted separately from the digest so a manifest re-serialization that
-    preserved the pointer, and a pointer change that happened to preserve the digest, are told
+    The pointers are asserted separately from the digest so a manifest re-serialization that
+    preserved the pointers, and a pointer change that happened to preserve the digest, are told
     apart rather than conflated.
     """
     if not _PROD_LATEST.exists():
         pytest.skip(f"production manifest not present at {_PROD_LATEST}")
 
     manifest = json.loads(_PROD_LATEST.read_text())
-    assert manifest["blend"] == DEPLOYED_BLEND_VERSION, (
-        f"the deployed blend pointer moved: {manifest['blend']} != {DEPLOYED_BLEND_VERSION}. The "
-        "blend re-validation swapped production outside scripts/promote_models.py (T-30-07)"
+    expected = dict(P332_25B_SWAP_ARTIFACT_IDS)
+    assert manifest == expected, (
+        f"the production pointers moved: {manifest} != {expected}. Something swapped production "
+        "after Plan 33.2-25's recorded swap without appending its own record"
     )
-    assert _sha256(_PROD_LATEST) == MANIFEST_SHA256_AFTER, (
-        "artifacts/latest.json is not byte-identical to the manifest Plan 30-11 recorded after the "
-        "authorised swap; something rewrote the sole production swap surface afterwards"
+    assert _sha256(_PROD_LATEST) == P332_25_POST_SWAP_LATEST_JSON_SHA256, (
+        "artifacts/latest.json is not byte-identical to the manifest Plan 33.2-25 recorded after "
+        "the authorised swap; something rewrote the sole production swap surface afterwards"
     )
 
 
@@ -394,30 +418,38 @@ def test_live_revalidation_copy_carries_the_redirected_rewrite() -> None:
     """The real re-validation's blend-pointer rewrite landed in the COPY, not in production.
 
     The live counterpart of the hermetic pair above: the copy the comparison was pointed at carries
-    a DIFFERENT blend pointer from production (so the rewrite genuinely happened and was
-    redirected), while its wp/ats/ou pointers still match production (so the copy is otherwise the
-    production state the comparison was supposed to be measuring), and the newly written blend
-    artifact directory exists under the copy and NOT under ``artifacts/``.
+    a DIFFERENT blend pointer from the one production served when it ran (so the rewrite
+    genuinely happened and was redirected), while its wp/ats/ou pointers are the ones production
+    held after Plan 30-11 (so the copy is otherwise the production state the comparison was
+    supposed to be measuring), and the newly written blend artifact directory exists under the
+    copy and NOT under ``artifacts/``.
+
+    RE-PINNED by Plan 33.2-25 Task 4: this used to compare the copy with the LIVE manifest,
+    which only held while production still served Plan 30-11's pointers. Production has since
+    moved through authorised swaps, so the comparison is now against Plan 30-11's own record:
+    ``DEPLOYED_BLEND_VERSION`` for the blend, and ``MANIFEST_SHA256_AFTER`` reproduced from the
+    copy for the three model pointers.
     """
     copy_manifest_path = _STAGING_COPY / "latest.json"
-    if not copy_manifest_path.exists() or not _PROD_LATEST.exists():
+    if not copy_manifest_path.exists():
         pytest.skip(
             f"the Plan 30-12 re-validation copy is not present at {_STAGING_COPY} "
             "(gitignored runtime state)"
         )
 
     copy_manifest = json.loads(copy_manifest_path.read_text())
-    prod_manifest = json.loads(_PROD_LATEST.read_text())
 
-    assert copy_manifest["blend"] != prod_manifest["blend"], (
-        "the copy's blend pointer equals production's -- the comparison's blend-artifact save "
-        "never ran, so 'production is unchanged' proves nothing about redirection"
+    assert copy_manifest["blend"] != DEPLOYED_BLEND_VERSION, (
+        "the copy's blend pointer equals the blend production served -- the comparison's "
+        "blend-artifact save never ran, so 'production is unchanged' proves nothing about "
+        "redirection"
     )
-    for key in ("wp", "ats", "ou"):
-        assert copy_manifest[key] == prod_manifest[key], (
-            f"the re-validation copy's {key} pointer diverged from production's; the comparison "
-            "was not measuring the deployed models"
-        )
+    assert (
+        _phase30_post_promotion_manifest_sha256(copy_manifest) == MANIFEST_SHA256_AFTER
+    ), (
+        "the re-validation copy's wp/ats/ou pointers are not the ones production held after "
+        "Plan 30-11's swap; the comparison was not measuring the deployed models"
+    )
 
     assert (_STAGING_COPY / copy_manifest["blend"]).is_dir(), (
         f"the copy's blend pointer {copy_manifest['blend']} does not resolve to a directory in "
