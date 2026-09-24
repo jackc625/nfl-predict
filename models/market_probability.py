@@ -123,6 +123,7 @@ __all__ = [
     "MarketProbabilityError",
     "MarketProbabilityFit",
     "NoPriorFoldError",
+    "SlopeDidNotConvergeError",
     "fit_market_probability",
     "fit_slope",
     "load_market_probability_artifact",
@@ -252,6 +253,15 @@ class NoPriorFoldError(MarketProbabilityError):
     """
 
 
+class SlopeDidNotConvergeError(MarketProbabilityError):
+    """Newton-Raphson ran out of steps, or produced a non-finite slope (A33.2-review IN-02).
+
+    A separable or degenerate corpus can drive the likelihood's maximum to infinity. The last
+    iterate of such a run is not a fitted slope; returning it and relying on the plausibility
+    band to catch it would be catching it by accident.
+    """
+
+
 @dataclass(frozen=True)
 class MarketProbabilityFit:
     """The two slopes and the provenance that makes them auditable.
@@ -337,6 +347,8 @@ def fit_slope(margins: np.ndarray, wins: np.ndarray) -> float:
         ClosingLineInFitError: never. This function judges nothing; the admissibility
             checks live in :func:`fit_market_probability`.
         ValueError: when the inputs are empty or of different lengths.
+        SlopeDidNotConvergeError: when the iteration does not converge within
+            ``_NEWTON_MAX_STEPS`` steps or the slope is not finite.
     """
     x = np.asarray(margins, dtype=float)
     y = np.asarray(wins, dtype=float)
@@ -348,6 +360,7 @@ def fit_slope(margins: np.ndarray, wins: np.ndarray) -> float:
         raise ValueError(msg)
 
     beta = 0.1
+    step = float("nan")
     for _ in range(_NEWTON_MAX_STEPS):
         probability = 1.0 / (1.0 + np.exp(-beta * x))
         gradient = float(np.sum(x * (y - probability)))
@@ -360,9 +373,19 @@ def fit_slope(margins: np.ndarray, wins: np.ndarray) -> float:
             raise ValueError(msg)
         step = gradient / hessian
         beta -= step
+        if not np.isfinite(beta):
+            msg = (
+                f"the slope diverged to {beta!r}: the corpus is separable or degenerate, "
+                "so the likelihood has no finite maximum"
+            )
+            raise SlopeDidNotConvergeError(msg)
         if abs(step) < _NEWTON_TOLERANCE:
-            break
-    return float(beta)
+            return float(beta)
+    msg = (
+        f"Newton-Raphson did not converge in {_NEWTON_MAX_STEPS} steps (last step "
+        f"{step!r}, beta {beta!r}); the last iterate is not a fitted slope"
+    )
+    raise SlopeDidNotConvergeError(msg)
 
 
 # ---------------------------------------------------------------------------

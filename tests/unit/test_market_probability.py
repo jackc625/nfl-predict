@@ -195,6 +195,18 @@ class TestFit:
         # rather than merely that something was.
         assert "-0.1" in str(excinfo.value)
 
+    def test_a_separable_corpus_refuses_instead_of_returning_the_last_iterate(
+        self,
+    ) -> None:
+        """A33.2-review IN-02: no convergence means no slope, stated by name."""
+        from models.market_probability import SlopeDidNotConvergeError
+
+        # Every favourite wins: the likelihood rises forever as beta grows.
+        margins = np.array([-7.0, -3.0, 3.0, 7.0])
+        wins = np.array([0.0, 0.0, 1.0, 1.0])
+        with pytest.raises(SlopeDidNotConvergeError):
+            fit_slope(margins, wins)
+
     def test_walk_forward_slope_is_fitted_on_strictly_earlier_seasons(
         self, corpus: pd.DataFrame
     ) -> None:
