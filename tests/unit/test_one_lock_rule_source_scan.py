@@ -232,8 +232,16 @@ def _drive_live_odds_ingest(_tmp: Path) -> None:
     ingester = OddsDataIngester.__new__(OddsDataIngester)
     ingester.api_client = _EmptyBoard()
     ingester.sportsbook_priority = []
-    # An empty board returns before any write; the locks are derived before the request.
-    assert ingester.ingest_odds(season=2026, week=2, schedule=_games()).empty
+    # An empty board writes nothing and FAILS by name (33.2 review C1 WR-08); the locks
+    # are derived before the request either way.
+    from utils import DataIngestionError
+
+    try:
+        ingester.ingest_odds(season=2026, week=2, schedule=_games())
+    except DataIngestionError as refusal:
+        assert "no odds row was captured" in str(refusal)
+    else:
+        raise AssertionError("an empty odds board was reported as a success")
 
 
 def _drive_timeline_locks(_tmp: Path) -> None:

@@ -60,7 +60,9 @@ from utils import (
     get_logger,
     log_data_operation,
 )
+from utils.exceptions import DataValidationError
 from utils.game_id_utils import is_valid_game_id
+from utils.team_data import normalize_team_abbreviation
 
 logger = get_logger(__name__)
 
@@ -678,49 +680,11 @@ class OddsDataIngester:
         if team in team_mapping:
             return team_mapping[team]
 
-        # Try to extract abbreviation
-        team_upper = team.upper().strip()
-
-        # Common abbreviation patterns
-        abbrev_mapping = {
-            "KANSAS CITY": "KC",
-            "KC": "KC",
-            "BUFFALO": "BUF",
-            "BUF": "BUF",
-            "NEW ENGLAND": "NE",
-            "NE": "NE",
-            "MIAMI": "MIA",
-            "MIA": "MIA",
-            "BALTIMORE": "BAL",
-            "BAL": "BAL",
-            "CINCINNATI": "CIN",
-            "CIN": "CIN",
-            "CLEVELAND": "CLE",
-            "CLE": "CLE",
-            "PITTSBURGH": "PIT",
-            "PIT": "PIT",
-            "LAS VEGAS": "LV",
-            "RAIDERS": "LV",
-            "LV": "LV",
-            "GREEN BAY": "GB",
-            "PACKERS": "GB",
-            "GB": "GB",
-            "SAN FRANCISCO": "SF",
-            "49ERS": "SF",
-            "SF": "SF",
-            "NEW YORK GIANTS": "NYG",
-            "NYG": "NYG",
-            "NEW YORK JETS": "NYJ",
-            "NYJ": "NYJ",
-        }
-
-        for key, abbrev in abbrev_mapping.items():
-            if key in team_upper:
-                return abbrev
-
-        # Default: return as-is (will likely fail validation)
-        logger.warning("Could not normalize team name", team=team)
-        return team_upper[:5]  # Truncate to max 5 chars
+        # Otherwise it must be a team abbreviation the canonical mapping knows. An unknown
+        # name RAISES (the project rule: canonical abbreviations, hard-fail on unknowns;
+        # 33.2 review C1 WR-08). It used to be truncated to five characters, and the
+        # substring guesses it replaced could mis-map a name (``NEW ORLEANS`` contains ``NE``).
+        return normalize_team_abbreviation(team)
 
     def _create_game_id_from_odds(
         self, game_data: dict[str, Any], season: int, week: int
@@ -1021,6 +985,10 @@ class OddsDataIngester:
                 )
                 all_odds_records.extend(game_odds)
 
+            except DataValidationError:
+                # An unknown team name is never skipped as one bad game: it means the feed's
+                # names changed, and every later game would silently go unmatched too.
+                raise
             except Exception as e:
                 logger.warning(
                     "Failed to process game odds", game_data=game_data, error=str(e)
@@ -1175,9 +1143,28 @@ class OddsDataIngester:
                 raw_odds, schedule=schedule, locks=locks, captured_at=captured_at
             )
 
+            # A SLATE WITH NO MATCHED ODDS IS A FAILURE, NOT A SUCCESS (33.2 review C1 WR-08):
+            # an empty return let the critical step pass and the slate be predicted with no
+            # market side and nothing naming why. Games missing from a partial board are named.
+            report = self.last_match_report
+            unpriced = sorted(
+                set(schedule["game_id"].astype(str))
+                - set(odds_df.get("game_id", pd.Series(dtype=str)).astype(str))
+            )
             if odds_df.empty:
-                logger.warning("No odds data to process")
-                return odds_df
+                msg = (
+                    f"no odds row was captured for any of the {len(schedule)} scheduled "
+                    f"game(s) {unpriced}; post-lock (not written): "
+                    f"{list(report.post_lock_games)}; unmatched payload games: "
+                    f"{list(report.unmatched_games)}"
+                )
+                raise DataIngestionError(msg)
+            if unpriced:
+                logger.warning(
+                    "Scheduled games with no captured odds row",
+                    game_ids=unpriced,
+                    post_lock_games=list(report.post_lock_games),
+                )
 
             # Validate data. created_at arrives on every row as the observed capture
             # instant; no second clock read happens at the write.

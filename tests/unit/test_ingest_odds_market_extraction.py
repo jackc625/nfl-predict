@@ -733,3 +733,39 @@ class TestACaptureAfterTheLockIsNeverWritten:
         row = _row_for(transformed, HOME_FAV["game_id"])
         assert row["created_at"] == at_lock
         assert ingester.last_match_report.post_lock_games == ()
+
+
+class TestUnknownTeamsAndEmptySlatesAreLoud:
+    """33.2 review C1 WR-08: canonical team mapping hard-fails; zero matched odds is a failure.
+
+    An unrecognised name used to be TRUNCATED to five characters and the game then quietly
+    failed to match; a board with no matched game returned an empty frame and the critical
+    step reported success, so a slate was predicted with no market side and nothing named why.
+    """
+
+    def test_an_unknown_team_name_is_refused_by_name(self):
+        from utils.exceptions import DataValidationError
+
+        renamed = {**HOME_FAV, "home": "Atlanta Firebirds"}
+        with pytest.raises(DataValidationError, match="Atlanta Firebirds"):
+            _transform(_bare_ingester(), [_event(renamed)], _schedule())
+
+    def test_a_slate_with_no_matched_odds_fails_and_names_the_games(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from utils import DataIngestionError
+
+        class _OtherGamesOnly:
+            def get_nfl_odds(self, **_kwargs):
+                return [_event(WEEK3_THURSDAY, commence_time="2026-09-25T00:15:00Z")]
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(
+            ingest_odds_module, "_observe_capture_instant", lambda: CAPTURED_AT
+        )
+        ingester = _bare_ingester()
+        ingester.api_client = _OtherGamesOnly()
+        with pytest.raises(DataIngestionError, match=HOME_FAV["game_id"]):
+            ingester.ingest_odds(season=2026, week=2, schedule=_schedule())
