@@ -207,11 +207,14 @@ def edge_tier(edge: float | None, target: str) -> str | None:
             against WP's probability pair, which is the defect this signature exists to remove.
 
     Returns:
-        ``"high"``, ``"medium"`` or ``"low"``. An absent edge is ``"low"`` -- the behaviour both
-        retired helpers had, in one case through ``np.where``'s NaN-comparison result and in the
-        other through a ``pd.notna`` guard at the call site. It is stated HERE, so the two
-        call sites cannot answer the absent case differently. ``None`` -- UNBANDED -- when the
-        target has NO honest threshold (SPEC R14): distinct from ``"low"``, which is a band.
+        ``"high"``, ``"medium"`` or ``"low"``. ``None`` -- UNBANDED -- in two cases, both
+        distinct from ``"low"``, which is a band: the target has NO honest threshold (SPEC R14),
+        or the edge is ABSENT (a game with no market line has no edge to band).
+
+        AN ABSENT EDGE USED TO BE ``"low"`` (33.2 review C2 CR-04 = B WR-11). Both retired helpers
+        answered it that way, and every game with no line was then stored, rendered and exported
+        with the band "low" -- a claim about an edge that does not exist. It is answered HERE, so
+        the call sites cannot answer the absent case differently.
 
     Raises:
         UnknownEdgeTargetError: when *target* is outside the frozen vocabulary. Raised BEFORE the
@@ -222,7 +225,7 @@ def edge_tier(edge: float | None, target: str) -> str | None:
         return None
     high, medium = pair
     if edge is None or pd.isna(edge):
-        return EDGE_TIER_LABELS[0]
+        return None
     magnitude = abs(float(edge))
     if magnitude > high:
         return EDGE_TIER_LABELS[2]

@@ -37,9 +37,8 @@
     </p>
 
     {# Predictions grid: WP | ATS | O/U. Each shows OUR MODEL'S own number beside the market's,
-       for every game -- a bet or not, a market line or not. The edge band is shown only where an
-       edge exists: utils.edge_tier bands an absent edge "low", which on a game with no line would
-       read as a measured small edge. #}
+       for every game -- a bet or not, a market line or not. The edge band is stored NULL where no
+       edge exists (utils.edge_tier, 33.2 review C2 CR-04), so a game with no line shows none. #}
     <div class="grid grid-cols-3 gap-3 mb-4">
       {# Win Probability #}
       <div class="text-center">
@@ -48,7 +47,7 @@
           <div><dt class="inline text-xs text-gray-500">Model</dt> <dd class="inline font-semibold text-gray-900">{{ pv.win_prob(game.wp_prob, game.home_team, game.away_team, "-") }}</dd></div>
           <div><dt class="inline text-xs text-gray-500">Market</dt> <dd class="inline text-gray-700">{{ pv.win_prob(game.market_wp, game.home_team, game.away_team, pv.market_wp_missing(game)) }}</dd></div>
         </dl>
-        {% if game.wp_confidence and game.wp_edge is not none %}
+        {% if game.wp_confidence %}
           {% with level=game.wp_confidence, value=game.wp_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}
         {% endif %}
       </div>
@@ -69,7 +68,7 @@
             {% if game.ats_prediction > game.market_spread %}{{ game.home_team }}{% else %}{{ game.away_team }}{% endif %} covers
           </p>
         {% endif %}
-        {% if game.ats_confidence and game.ats_edge is not none %}
+        {% if game.ats_confidence %}
           {% with level=game.ats_confidence, value=game.ats_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}
         {% endif %}
       </div>
@@ -85,7 +84,7 @@
             {% if game.ou_prediction > game.market_total %}Over{% else %}Under{% endif %}
           </p>
         {% endif %}
-        {% if game.ou_confidence and game.ou_edge is not none %}
+        {% if game.ou_confidence %}
           {% with level=game.ou_confidence, value=game.ou_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}
         {% endif %}
       </div>

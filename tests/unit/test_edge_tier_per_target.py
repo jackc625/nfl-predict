@@ -159,7 +159,7 @@ def test_a_none_threshold_is_unbanded_never_a_type_error(
         assert edge_tier(value, "ats") is None
     assert list(edge_tier_series(pd.Series([10.0, None]), "ats")) == [None, None]
     # The other targets keep their bands, and "low" stays a band.
-    assert edge_tier(None, "wp") == "low"
+    assert edge_tier(None, "wp") is None
     assert edge_tier(0.01, "wp") == "low"
     assert edge_tier(1.0, "ou") == "high"
 
@@ -390,15 +390,16 @@ def test_an_empty_series_returns_an_empty_series_and_does_not_raise(
 
 
 @pytest.mark.parametrize("target", ["ats", "ou", "wp"])
-def test_an_all_null_series_bands_low_throughout(target: str) -> None:
-    """The absent-edge-is-low contract, stated in the helper and asserted per target.
+def test_an_all_null_series_is_unbanded_throughout(target: str) -> None:
+    """An absent edge has NO band, stated in the helper and asserted per target.
 
     52 of the 1,139 games in the pinned population carry no stored market line at all, so all
-    three edges are NULL on them. The contract is what stops the two call sites answering that
-    case differently.
+    three edges are NULL on them. They used to be banded "low" -- a claim about an edge that does
+    not exist, stored and exported for every game with no line (33.2 review C2 CR-04 = B WR-11).
+    Answering it in the helper is what stops the call sites answering it differently.
     """
     result = edge_tier_series(pd.Series([None, None, None], dtype=object), target)
-    assert list(result) == ["low", "low", "low"]
+    assert list(result) == [None, None, None]
 
 
 @pytest.mark.parametrize("target", ["ats", "ou", "wp"])
@@ -411,9 +412,11 @@ def test_a_nan_never_silently_produces_a_band_by_comparison(target: str) -> None
     """
     high, _medium = EDGE_TIER_THRESHOLDS_BY_TARGET[target]
     result = edge_tier_series(pd.Series([np.nan, high * 2.0, None]), target)
-    assert list(result) == ["low", "high", "low"]
-    assert edge_tier(np.nan, target) == "low"
-    assert edge_tier(None, target) == "low"
+    assert list(result) == [None, "high", None]
+    assert edge_tier(np.nan, target) is None
+    assert edge_tier(None, target) is None
+    # The control: a real zero edge IS a band, so "absent" and "small" stay distinguishable.
+    assert edge_tier(0.0, target) == "low"
 
 
 # ---------------------------------------------------------------------------

@@ -1638,6 +1638,28 @@ PREDICTIONS_TABLE_COLUMNS: list[str] = [
 ]
 
 
+def _band_edges(frame: pd.DataFrame) -> None:
+    """Set the three edge bands in place from the three stored edges -- the ONE band site.
+
+    The EDGE BAND comes from the ONE shared source (D31-23). The stored column names keep their
+    historical ``*_confidence`` spelling -- renaming them would move every export header, which
+    is a published figure -- but the value they carry is the edge band, not a confidence.
+
+    THE VALUES COME FROM A PER-TARGET RULER (CLEAN-01, D33-22). The three edges are in three
+    INCOMPATIBLE UNITS -- wp a probability delta, ats POINTS since Plan 33-10, ou a fraction of
+    the market total -- so ``target`` is REQUIRED with no default and the unit each column is in
+    is stated here rather than assumed.
+
+    AN ABSENT EDGE HAS NO BAND (33.2 review C2 CR-04). ``utils.edge_tier`` answers ``None`` for
+    it, which is stored as SQL NULL, so a game with no line carries no band in the cache, on the
+    page or in either export. Both prediction loaders band through this one function, so the
+    current-week rows cannot keep a "low" an older CSV wrote for an absent edge.
+    """
+    frame["wp_confidence"] = edge_tier_series(frame["wp_edge"], "wp")
+    frame["ats_confidence"] = edge_tier_series(frame["ats_edge"], "ats")
+    frame["ou_confidence"] = edge_tier_series(frame["ou_edge"], "ou")
+
+
 def _load_predictions(
     conn: duckdb.DuckDBPyConnection,
     outputs_dir: Path,
@@ -1794,21 +1816,7 @@ def _load_predictions(
         merged["ou_prediction"] - merged["market_total"]
     ) / market_total_safe
 
-    # The EDGE BAND from the ONE shared source (D31-23). The stored column names keep their
-    # historical ``*_confidence`` spelling -- renaming them would move every export header, which
-    # is a published figure -- but the value they carry is the edge band, not a confidence.
-    #
-    # THE VALUES NOW COME FROM A PER-TARGET RULER (CLEAN-01, D33-22). The three columns above are
-    # in three INCOMPATIBLE UNITS -- wp a probability delta, ats POINTS since Plan 33-10, ou a
-    # fraction of the market total -- and until this plan one 0.05 / 0.02 pair was applied to all
-    # three alike, which put 98.80% of ATS games in "high". ``target`` is REQUIRED with no
-    # default, so the unit each column is in is stated at the call site rather than assumed; the
-    # pairs themselves are frozen in ``backtest.cold_start_constants``. The column NAMES are
-    # unchanged, deliberately: the band each carries moved, the header it is published under
-    # did not.
-    merged["wp_confidence"] = edge_tier_series(merged["wp_edge"], "wp")
-    merged["ats_confidence"] = edge_tier_series(merged["ats_edge"], "ats")
-    merged["ou_confidence"] = edge_tier_series(merged["ou_edge"], "ou")
+    _band_edges(merged)
 
     # Compute blended predictions from blend artifact JSON (UIAP-01: no model imports).
     #
@@ -1855,8 +1863,9 @@ def _load_current_week_predictions(
     reached the site. This reads the ``predictions_<season>_week<week>.csv`` files that
     ``scripts/generate_current_week_predictions.py`` writes, one row per game, and stores each
     row as written: the model's own WP, margin and total, the market's numbers where a pre-lock
-    line exists (NULL where none does), the edge bands and the blended numbers. Nothing is
-    recomputed (UIAP-01).
+    line exists (NULL where none does), the edges and the blended numbers. The one thing derived
+    here is the edge BAND, from the stored edge through the same :func:`_band_edges` the backtest
+    rows use, so an absent edge carries no band whatever an older CSV wrote.
 
     A game the backtest rows already carry is left alone, so the 2021-2024 history the site has
     always shown is unchanged by this loader. Files in subdirectories (for example the
@@ -1903,12 +1912,11 @@ def _load_current_week_predictions(
     merged = merged.reindex(columns=PREDICTIONS_TABLE_COLUMNS)
     for column in ("home_score", "away_score", "market_ml_home", "market_ml_away"):
         merged[column] = merged[column].astype("Int64")
-    # An absent edge band is read back from the CSV as a float NaN; stored as such it would
-    # become the string 'nan' in the VARCHAR column and render as a badge. It must stay NULL.
-    for column in ("wp_confidence", "ats_confidence", "ou_confidence"):
-        merged[column] = (
-            merged[column].astype(object).where(merged[column].notna(), None)
-        )
+    # The bands are RE-DERIVED from the stored edges through the same one site as the backtest
+    # rows, never read back from the CSV: a CSV written before 33.2 review C2 CR-04 carries the
+    # band "low" for a game with no edge, and a stored band that disagrees with its own edge is
+    # the defect that fix removed.
+    _band_edges(merged)
 
     conn.execute("INSERT INTO predictions SELECT * FROM merged")
     logger.info(

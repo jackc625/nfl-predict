@@ -330,17 +330,19 @@ def test_the_vectorized_form_agrees_with_the_scalar_one_on_the_same_snapshot() -
     assert list(edge_tier_series(pd.Series(values), "wp")) == expected
 
 
-def test_an_absent_edge_bands_low_exactly_as_both_retired_helpers_did() -> None:
-    """NaN reached ``low`` via ``np.where`` in one helper and a ``pd.notna`` guard in the other.
+def test_an_absent_edge_has_no_band() -> None:
+    """An absent edge is UNBANDED (33.2 review C2 CR-04 = B WR-11).
 
-    Answering it inside the shared helper is what stops the two call sites diverging on the case
-    neither of them stated explicitly.
+    Both retired helpers answered NaN with "low" -- one via ``np.where``, one via a ``pd.notna``
+    guard -- so every game with no line was stored and exported with a band claiming a small
+    measured edge. The answer is now ``None``, still given inside the shared helper so the call
+    sites cannot diverge on it.
     """
     from utils.edge_tier import edge_tier, edge_tier_series
 
-    assert edge_tier(np.nan, "wp") == "low"
-    assert edge_tier(None, "wp") == "low"
-    assert list(edge_tier_series(pd.Series([np.nan, 0.09]), "wp")) == ["low", "high"]
+    assert edge_tier(np.nan, "wp") is None
+    assert edge_tier(None, "wp") is None
+    assert list(edge_tier_series(pd.Series([np.nan, 0.09]), "wp")) == [None, "high"]
 
 
 def test_exactly_one_function_computes_the_edge_band() -> None:
