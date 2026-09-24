@@ -911,6 +911,16 @@ def _sandbox_builder(monkeypatch, tmp_path):
     # sandbox has no snap table: without this frame the injury source would fail to load
     # and become EMPTY, and the build would run on past Stage 1.
     builder.snap_builder._snaps_df = _empty_snap_builder()._snaps_df
+    # The contextual spot flags reload silver ``elo_game_snapshots``, which this sandbox does
+    # not carry. Since 33.2 review B WR-09 a schedule that cannot be LOADED leaves the flags
+    # UNKNOWN (NaN) -- which the gate then refuses on a no_information row -- instead of the
+    # neutral 0.0. An EMPTY schedule is the honest "no spot" answer, and the spot flags are
+    # not what this module tests.
+    monkeypatch.setattr(
+        builder.contextual_calc,
+        "_load_full_season_schedule",
+        lambda seasons: pd.DataFrame(),
+    )
     # Plan 33.2-20 removed the writer's PRODUCTION default, so a caller that does not
     # name a directory no longer silently writes into outputs/diagnostics. This redirect
     # stays because the caller here is ``generate_feature_matrices`` itself, which names
