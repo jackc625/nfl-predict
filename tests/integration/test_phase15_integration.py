@@ -56,7 +56,7 @@ def _seed_duckdb(db_path: Path) -> None:
             INSERT INTO predictions VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?
             )
             """,
             [
@@ -85,6 +85,7 @@ def _seed_duckdb(db_path: Path) -> None:
                 0.60,
                 -3.2,
                 48.0,
+                None,  # market_wp
             ],
         )
 

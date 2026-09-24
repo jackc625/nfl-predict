@@ -63,6 +63,15 @@ def main() -> None:
         help="Silver data directory (default: data/silver/)",
     )
     parser.add_argument(
+        "--predictions-dir",
+        type=Path,
+        default=Path("outputs/predictions"),
+        help=(
+            "Directory of the current-week predictions_<season>_week<week>.csv files; every "
+            "game in them is shown on the site (default: outputs/predictions/)"
+        ),
+    )
+    parser.add_argument(
         "--bet-list-dir",
         type=Path,
         default=DEFAULT_BET_LIST_DIR,
@@ -86,6 +95,7 @@ def main() -> None:
         bet_list_df=sources.bet_list,
         bet_tracker_df=sources.tracker,
         bet_schedule_df=sources.schedule,
+        predictions_dir=args.predictions_dir,
     )
 
 

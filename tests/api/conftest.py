@@ -1020,7 +1020,7 @@ def test_db(tmp_path: Path) -> Path:
             INSERT INTO predictions VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?
             )
             """,
             [
@@ -1049,6 +1049,7 @@ def test_db(tmp_path: Path) -> Path:
                 game["blended_wp"],
                 game["blended_ats"],
                 game["blended_ou"],
+                game.get("market_wp"),
             ],
         )
 
@@ -1286,7 +1287,7 @@ def test_db(tmp_path: Path) -> Path:
             INSERT OR REPLACE INTO predictions VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?
             )
             """,
             [
@@ -1315,6 +1316,7 @@ def test_db(tmp_path: Path) -> Path:
                 mr_clean["blended_wp"],
                 mr_clean["blended_ats"],
                 mr_clean["blended_ou"],
+                mr_clean.get("market_wp"),
             ],
         )
 
@@ -1327,7 +1329,7 @@ def test_db(tmp_path: Path) -> Path:
             INSERT OR REPLACE INTO predictions VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?
             )
             """,
             [
@@ -1356,6 +1358,7 @@ def test_db(tmp_path: Path) -> Path:
                 sr["blended_wp"],
                 sr["blended_ats"],
                 sr["blended_ou"],
+                sr.get("market_wp"),
             ],
         )
 

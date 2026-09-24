@@ -176,6 +176,11 @@ PREDICTION_OUTPUT_COLUMNS: list[str] = [
     "market_total",
     "market_ml_home",
     "market_ml_away",
+    # The market's own home win probability: the pre-lock spread through the deployed blend's
+    # converter (D33.2-09), the same number the WP blend weighs against the model. NaN when the
+    # game has no pre-lock spread or no blend is deployed. Beside ``wp_prob`` it lets a reader see
+    # the model's own WP next to the market's for every game, whatever the blend weight.
+    "market_wp",
     "wp_edge",
     "ats_edge",
     "ou_edge",
@@ -398,7 +403,8 @@ def apply_blending(
 ) -> pd.DataFrame:
     """Apply market blending if a blend artifact is deployed.
 
-    Adds blended_wp, blended_ats, blended_ou columns, NaN where blending does not apply.
+    Adds blended_wp, blended_ats, blended_ou columns, NaN where blending does not apply, and
+    market_wp -- the market's own home win probability that the WP blend weighs the model against.
     ONE fixed weight per target (D33.2-10): the week-varying schedule is retired, so neither
     the season nor the week reaches the blender any more.
 
@@ -417,6 +423,7 @@ def apply_blending(
     predictions["blended_wp"] = np.nan
     predictions["blended_ats"] = np.nan
     predictions["blended_ou"] = np.nan
+    predictions["market_wp"] = np.nan
 
     if no_blend:
         logger.info("Blending skipped (--no-blend flag)")
@@ -458,9 +465,11 @@ def apply_blending(
                 ),
                 blender.market_probability_slope_beta,
             )
+            market_probs = np.asarray(market_probs, dtype=np.float64)
+            predictions.loc[valid_wp, "market_wp"] = market_probs
             predictions.loc[valid_wp, "blended_wp"] = blender.blend_wp(
                 merged.loc[valid_wp, "wp_prob"].to_numpy(dtype=np.float64),
-                np.asarray(market_probs, dtype=np.float64),
+                market_probs,
             )
 
     # ATS blending

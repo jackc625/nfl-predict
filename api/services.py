@@ -45,6 +45,7 @@ from api.cache import (
     BET_LIST_COLUMNS,
     BET_STATUS_LIVE,
     BET_TRACKER_BLOCK_COLUMNS,
+    PREDICTIONS_TABLE_COLUMNS,
     bet_list_populated_at_key,
     parse_season_range,
 )
@@ -107,15 +108,9 @@ def _cache_set(key: tuple, value: Any) -> None:
 # module-level constants makes schema drift a compile-time (well, import-time)
 # concern instead of a silent runtime one.
 
-_PREDICTIONS_COLUMNS = (
-    "game_id, season, week, game_date, home_team, away_team, "
-    "status, home_score, away_score, "
-    "wp_prob, wp_confidence, ats_prediction, ats_confidence, "
-    "ou_prediction, ou_confidence, "
-    "market_spread, market_total, market_ml_home, market_ml_away, "
-    "wp_edge, ats_edge, ou_edge, "
-    "blended_wp, blended_ats, blended_ou"
-)
+# Derived from the writer's list, like the bet-list columns below, so a column the cache adds
+# (``market_wp``) reaches every page and export without a second list to keep in step.
+_PREDICTIONS_COLUMNS = ", ".join(PREDICTIONS_TABLE_COLUMNS)
 
 _GAME_CONTEXT_COLUMNS = (
     "game_id, home_elo, away_elo, home_last5, away_last5, h2h_record, "

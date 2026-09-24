@@ -1,0 +1,42 @@
+{# One prediction number in plain words. Shared by the game card and the game-detail page so the
+   two cannot word the same number differently.
+
+   Conventions (DEF-31-01, measured on the stored data): a win probability is the HOME team's, and
+   a margin -- the model's predicted margin or the market spread -- is on the home-margin scale,
+   POSITIVE when the HOME team is favoured. The same convention backtest/ats_ev_chain.py prices
+   bets on. A value of None is a number we do not have: it renders as the given words, never as a
+   zero. #}
+
+{% macro absent(text) -%}
+<span class="text-gray-400 italic">{{ text }}</span>
+{%- endmacro %}
+
+{# "KC 61.2%": the favoured team and its own chance of winning. #}
+{% macro win_prob(prob, home, away, missing="No line") -%}
+{%- if prob is none -%}{{ absent(missing) }}
+{%- elif prob >= 0.5 -%}{{ home }} {{ "%.1f"|format(prob * 100) }}%
+{%- else -%}{{ away }} {{ "%.1f"|format((1 - prob) * 100) }}%
+{%- endif -%}
+{%- endmacro %}
+
+{# "KC by 3.5": the team expected to win and by how much. #}
+{% macro margin(value, home, away, missing="No line") -%}
+{%- if value is none -%}{{ absent(missing) }}
+{%- elif value|abs < 0.05 -%}Pick'em
+{%- elif value > 0 -%}{{ home }} by {{ "%.1f"|format(value) }}
+{%- else -%}{{ away }} by {{ "%.1f"|format(-value) }}
+{%- endif -%}
+{%- endmacro %}
+
+{# "44.5": total points. #}
+{% macro total(value, missing="No line") -%}
+{%- if value is none -%}{{ absent(missing) }}
+{%- else -%}{{ "%.1f"|format(value) }}
+{%- endif -%}
+{%- endmacro %}
+
+{# The market's win probability is the spread through the blend's converter, so a game with a
+   spread but no converted probability is "-", and only a game with no spread has "No line". #}
+{% macro market_wp_missing(game) -%}
+{{- "No line" if game.market_spread is none else "-" -}}
+{%- endmacro %}

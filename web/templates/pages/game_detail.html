@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "components/_prediction_values.html" as pv %}
 {% block title %}{% if game %}{{ game.away_team }} @ {{ game.home_team }}{% else %}Game Not Found{% endif %}{% endblock %}
 {% block content %}
 
@@ -65,38 +66,42 @@
             <th scope="col" class="pb-2 text-right font-semibold text-gray-600">Edge</th>
           </tr>
         </thead>
+        {# Model = OUR MODEL'S own number; Market = the pre-lock line we own ("No line" where we own
+           none -- never a zero); Blended = the published number. An absent edge is "-". #}
         <tbody class="divide-y divide-gray-100">
           <tr>
-            <td class="py-2 text-gray-700">Win Probability
-              {% if game.wp_prob is not none %}
-                <span class="block text-xs text-gray-400">Predicts {{ game.home_team if game.wp_prob > 0.5 else game.away_team }}</span>
-              {% endif %}
-            </td>
-            <td class="py-2 text-right stat-num">{{ "%.1f"|format((game.wp_prob or 0) * 100) }}%</td>
-            <td class="py-2 text-right stat-num">-</td>
-            <td class="py-2 text-right stat-num">{% if game.blended_wp %}{{ "%.1f"|format(game.blended_wp * 100) }}%{% else %}-{% endif %}</td>
-            <td class="py-2 text-right {% if (game.wp_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format((game.wp_edge or 0) * 100) }}%</td>
+            <td class="py-2 text-gray-700">Win Probability</td>
+            <td class="py-2 text-right stat-num">{{ pv.win_prob(game.wp_prob, game.home_team, game.away_team, "-") }}</td>
+            <td class="py-2 text-right stat-num">{{ pv.win_prob(game.market_wp, game.home_team, game.away_team, pv.market_wp_missing(game)) }}</td>
+            <td class="py-2 text-right stat-num">{{ pv.win_prob(game.blended_wp, game.home_team, game.away_team, "-") }}</td>
+            {% if game.wp_edge is not none %}
+            <td class="py-2 text-right {% if game.wp_edge > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format(game.wp_edge * 100) }}%</td>
+            {% else %}
+            <td class="py-2 text-right stat-num">{{ pv.absent("-") }}</td>
+            {% endif %}
           </tr>
           <tr>
             <td class="py-2 text-gray-700">Spread
               {% if game.ats_prediction is not none and game.market_spread is not none %}
                 <span class="block text-xs text-gray-400">
-                  {# Simulator sign convention (backtest/simulation.py::_determine_bet_side_ats):
-                     a more-negative model spread (ats_prediction < market_spread) = HOME covers.
-                     CR-02: prior `> -market_spread` printed the opposite cover side. #}
-                  {% if game.ats_prediction < game.market_spread %}{{ game.home_team }} covers{% else %}{{ game.away_team }} covers{% endif %}
+                  {# Home margins, POSITIVE when the home team is favoured (DEF-31-01): a model
+                     margin above the line = HOME covers, the side backtest/ats_ev_chain.py prices.
+                     See the same label in components/_game_card.html. #}
+                  {% if game.ats_prediction > game.market_spread %}{{ game.home_team }} covers{% else %}{{ game.away_team }} covers{% endif %}
                 </span>
               {% endif %}
             </td>
-            <td class="py-2 text-right stat-num">{{ "%+.1f"|format(game.ats_prediction or 0) }}</td>
-            <td class="py-2 text-right stat-num">{{ "%+.1f"|format(game.market_spread or 0) }}</td>
-            <td class="py-2 text-right stat-num">{% if game.blended_ats is not none %}{{ "%+.1f"|format(game.blended_ats) }}{% else %}-{% endif %}</td>
-            {# R13 / D33-05 (Plan 33-10): ats_edge is a POINT DIFFERENCE, not a ratio. It used to
-               be divided by |market_spread|, so rendering it as a percentage was arithmetically
-               coherent; it no longer is. Left as ``* 100 ... %`` a 3.5-point disagreement would
-               print "+350.0%". wp_edge (a probability delta) and ou_edge (a fraction of the
-               total) are still ratios and keep their percentage rendering. #}
-            <td class="py-2 text-right {% if (game.ats_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format(game.ats_edge or 0) }} pts</td>
+            <td class="py-2 text-right stat-num">{{ pv.margin(game.ats_prediction, game.home_team, game.away_team, "-") }}</td>
+            <td class="py-2 text-right stat-num">{{ pv.margin(game.market_spread, game.home_team, game.away_team) }}</td>
+            <td class="py-2 text-right stat-num">{{ pv.margin(game.blended_ats, game.home_team, game.away_team, "-") }}</td>
+            {# R13 / D33-05 (Plan 33-10): ats_edge is a POINT DIFFERENCE, not a ratio, so it renders
+               in points; wp_edge (a probability delta) and ou_edge (a fraction of the total) keep
+               their percentage rendering. #}
+            {% if game.ats_edge is not none %}
+            <td class="py-2 text-right {% if game.ats_edge > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format(game.ats_edge) }} pts</td>
+            {% else %}
+            <td class="py-2 text-right stat-num">{{ pv.absent("-") }}</td>
+            {% endif %}
           </tr>
           <tr>
             <td class="py-2 text-gray-700">Total
@@ -106,10 +111,14 @@
                 </span>
               {% endif %}
             </td>
-            <td class="py-2 text-right stat-num">{{ "%.1f"|format(game.ou_prediction or 0) }}</td>
-            <td class="py-2 text-right stat-num">{{ "%.1f"|format(game.market_total or 0) }}</td>
-            <td class="py-2 text-right stat-num">{% if game.blended_ou is not none %}{{ "%.1f"|format(game.blended_ou) }}{% else %}-{% endif %}</td>
-            <td class="py-2 text-right {% if (game.ou_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format((game.ou_edge or 0) * 100) }}%</td>
+            <td class="py-2 text-right stat-num">{{ pv.total(game.ou_prediction, "-") }}</td>
+            <td class="py-2 text-right stat-num">{{ pv.total(game.market_total) }}</td>
+            <td class="py-2 text-right stat-num">{{ pv.total(game.blended_ou, "-") }}</td>
+            {% if game.ou_edge is not none %}
+            <td class="py-2 text-right {% if game.ou_edge > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format(game.ou_edge * 100) }}%</td>
+            {% else %}
+            <td class="py-2 text-right stat-num">{{ pv.absent("-") }}</td>
+            {% endif %}
           </tr>
         </tbody>
       </table>

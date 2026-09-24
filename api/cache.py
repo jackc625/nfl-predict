@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     ou_edge DOUBLE,
     blended_wp DOUBLE,
     blended_ats DOUBLE,
-    blended_ou DOUBLE
+    blended_ou DOUBLE,
+    market_wp DOUBLE
 );
 
 CREATE TABLE IF NOT EXISTS feature_importances (
@@ -1549,6 +1550,8 @@ def _apply_blend(merged: pd.DataFrame, blend_data: dict[str, Any]) -> None:
 
     * WP blends in log-odds space, both sides clipped to [0.001, 0.999], with the market side
       the SPREAD converted through the blend's bound slope (:func:`_market_home_win_probability`).
+      That market side is also stored, unclipped, as ``market_wp`` so the site can show the
+      market's own win probability beside the model's.
       A game with no spread gets NO blended WP: the moneyline is not a fallback yardstick. The
       moneyline is still captured and stored for pricing, settlement and CLV (D33.2-11); only
       its role as the blend's market input ended.
@@ -1572,6 +1575,7 @@ def _apply_blend(merged: pd.DataFrame, blend_data: dict[str, Any]) -> None:
             merged.loc[valid_wp, "wp_prob"].to_numpy(dtype=float), clip_min, clip_max
         )
         market_clipped = np.clip(market_prob, clip_min, clip_max)
+        merged.loc[valid_wp, "market_wp"] = market_prob
         merged.loc[valid_wp, "blended_wp"] = expit(
             w * logit(model_clipped) + (1 - w) * logit(market_clipped)
         )
@@ -1600,6 +1604,38 @@ def _apply_blend(merged: pd.DataFrame, blend_data: dict[str, Any]) -> None:
         blended_ats=int(valid_spread.sum()),
         blended_ou=int(valid_total.sum()),
     )
+
+
+# The ``predictions`` table's columns in CACHE_SCHEMA order. Both loaders below select exactly this
+# list, so the positional ``INSERT ... SELECT *`` lines up with the schema for either source.
+PREDICTIONS_TABLE_COLUMNS: list[str] = [
+    "game_id",
+    "season",
+    "week",
+    "game_date",
+    "home_team",
+    "away_team",
+    "status",
+    "home_score",
+    "away_score",
+    "wp_prob",
+    "wp_confidence",
+    "ats_prediction",
+    "ats_confidence",
+    "ou_prediction",
+    "ou_confidence",
+    "market_spread",
+    "market_total",
+    "market_ml_home",
+    "market_ml_away",
+    "wp_edge",
+    "ats_edge",
+    "ou_edge",
+    "blended_wp",
+    "blended_ats",
+    "blended_ou",
+    "market_wp",
+]
 
 
 def _load_predictions(
@@ -1788,6 +1824,7 @@ def _load_predictions(
     merged["blended_wp"] = None
     merged["blended_ats"] = None
     merged["blended_ou"] = None
+    merged["market_wp"] = None
     try:
         blend_data = _read_blend_artifact(artifacts_root)
     except (FileNotFoundError, KeyError) as e:
@@ -1798,40 +1835,86 @@ def _load_predictions(
     else:
         _apply_blend(merged, blend_data)
 
-    # Select final columns matching schema order
-    final_cols = [
-        "game_id",
-        "season",
-        "week",
-        "game_date",
-        "home_team",
-        "away_team",
-        "status",
-        "home_score",
-        "away_score",
-        "wp_prob",
-        "wp_confidence",
-        "ats_prediction",
-        "ats_confidence",
-        "ou_prediction",
-        "ou_confidence",
-        "market_spread",
-        "market_total",
-        "market_ml_home",
-        "market_ml_away",
-        "wp_edge",
-        "ats_edge",
-        "ou_edge",
-        "blended_wp",
-        "blended_ats",
-        "blended_ou",
-    ]
-    final_df = merged[final_cols].copy()
+    final_df = merged[PREDICTIONS_TABLE_COLUMNS].copy()
 
     conn.execute("INSERT OR REPLACE INTO predictions SELECT * FROM final_df")
     row_count = len(final_df)
     logger.info("Predictions table populated", count=row_count)
     return row_count
+
+
+def _load_current_week_predictions(
+    conn: duckdb.DuckDBPyConnection,
+    predictions_dir: Path | None,
+    silver_dir: Path,
+) -> int:
+    """Add every game in the current-week prediction CSVs to the predictions table.
+
+    ``_load_predictions`` reads only the backtest file, so a live week -- every game the models
+    scored, whether or not it has a market line and whether or not it became a bet -- never
+    reached the site. This reads the ``predictions_<season>_week<week>.csv`` files that
+    ``scripts/generate_current_week_predictions.py`` writes, one row per game, and stores each
+    row as written: the model's own WP, margin and total, the market's numbers where a pre-lock
+    line exists (NULL where none does), the edge bands and the blended numbers. Nothing is
+    recomputed (UIAP-01).
+
+    A game the backtest rows already carry is left alone, so the 2021-2024 history the site has
+    always shown is unchanged by this loader. Files in subdirectories (for example the
+    ``superseded/`` folder old-rule rows are moved to) are not read.
+
+    Args:
+        conn: Active DuckDB connection, after ``_load_predictions`` has run.
+        predictions_dir: Directory holding the current-week CSVs; ``None`` loads nothing.
+        silver_dir: Directory containing games.parquet (scores and kickoff times).
+
+    Returns:
+        Number of rows inserted.
+    """
+    if predictions_dir is None:
+        return 0
+    paths = sorted(predictions_dir.glob("predictions_*_week*.csv"))
+    games_path = silver_dir / "games.parquet"
+    if not paths or not games_path.exists():
+        logger.info(
+            "No current-week predictions loaded",
+            n_files=len(paths),
+            games_found=games_path.exists(),
+        )
+        return 0
+
+    # An all-skipped day writes a header-only file (D33.2-05); it has no game to add.
+    frames = [frame for frame in map(pd.read_csv, paths) if not frame.empty]
+    if not frames:
+        return 0
+    current = pd.concat(frames, ignore_index=True)
+    already_loaded = conn.execute("SELECT game_id FROM predictions").df()["game_id"]
+    current = current.loc[~current["game_id"].isin(already_loaded)]
+    current = current.drop_duplicates(subset=["game_id"], keep="last")
+    if current.empty:
+        return 0
+
+    games = pd.read_parquet(
+        games_path, columns=["game_id", "home_score", "away_score", "kickoff_et"]
+    )
+    merged = current.merge(games, on="game_id", how="left")
+    merged["game_date"] = pd.to_datetime(merged["kickoff_et"])
+    merged["status"] = np.where(merged["home_score"].notna(), "completed", "scheduled")
+    # A column an older CSV predates (market_wp) is added as NULL rather than refused.
+    merged = merged.reindex(columns=PREDICTIONS_TABLE_COLUMNS)
+    for column in ("home_score", "away_score", "market_ml_home", "market_ml_away"):
+        merged[column] = merged[column].astype("Int64")
+    # An absent edge band is read back from the CSV as a float NaN; stored as such it would
+    # become the string 'nan' in the VARCHAR column and render as a badge. It must stay NULL.
+    for column in ("wp_confidence", "ats_confidence", "ou_confidence"):
+        merged[column] = (
+            merged[column].astype(object).where(merged[column].notna(), None)
+        )
+
+    conn.execute("INSERT INTO predictions SELECT * FROM merged")
+    logger.info(
+        "Current-week predictions loaded", count=len(merged), n_files=len(paths)
+    )
+    return len(merged)
 
 
 def _build_last5_records(games: pd.DataFrame) -> pd.DataFrame:
@@ -2390,6 +2473,7 @@ def populate_cache(
     bet_list_df: pd.DataFrame | None = None,
     bet_tracker_df: pd.DataFrame | None = None,
     bet_schedule_df: pd.DataFrame | None = None,
+    predictions_dir: Path | None = None,
 ) -> None:
     """Populate the DuckDB web cache from artifacts and backtest outputs.
 
@@ -2445,6 +2529,10 @@ def populate_cache(
             freeze table deliberately reads NO bet row -- the failure the stale-cache block guards
             is a MISSING bet-list insertion, in which state there may be no rows to read a freeze
             from (REVIEW-STALE).
+        predictions_dir: Directory of the current-week ``predictions_<season>_week<week>.csv``
+            files. Every game in them is added to the predictions table (see
+            :func:`_load_current_week_predictions`). ``None`` (the default) loads none, so a
+            caller that must not read production outputs names its own directory or none.
     """
     tmp_path = db_path.with_suffix(".tmp.duckdb")
     logger.info(
@@ -2509,6 +2597,10 @@ def populate_cache(
             conn, outputs_dir, silver_dir, artifacts_root=artifacts_dir
         )
         logger.info("Predictions loaded into cache", count=pred_table_count)
+
+        # Every game of every predicted live week, bet or not, market line or not.
+        cw_count = _load_current_week_predictions(conn, predictions_dir, silver_dir)
+        logger.info("Current-week predictions loaded into cache", count=cw_count)
 
         # Load game context from gold features + silver games
         gc_count = _load_game_context(conn, gold_dir, silver_dir)

@@ -1154,6 +1154,9 @@ def step_populate_web_cache() -> None:
         bet_list_df=sources.bet_list,
         bet_tracker_df=sources.tracker,
         bet_schedule_df=sources.schedule,
+        # Every game this run (and earlier runs) predicted, so the site shows the models' own
+        # numbers for each one, bet or not.
+        predictions_dir=_predictions_output_dir(),
     )
 
 
