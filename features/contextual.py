@@ -163,17 +163,25 @@ NO_PRIOR_GAME_SIGNATURE: dict[str, float] = {
     "away_letdown_spot": 0.0,
 }
 
-# Exceptions tolerated when reloading the full-season schedule for the
-# (weak, optional) spot flags -- a failure must degrade to neutral 0.0
-# flags, never break the contextual build.
+# The ONLY failures tolerated when reloading the full-season schedule for the (weak,
+# optional) spot flags: the two silver tables could not be READ. They guard the load and
+# nothing else, and they degrade to UNKNOWN (NaN) flags -- never to the neutral 0.0 that
+# NO_PRIOR_GAME_SIGNATURE value-checks, which is what let a broken input pass the gate
+# (33.2 review B WR-09). The derivation itself is not guarded: a bug in it (a renamed
+# column, a dtype change) raises instead of emitting 0.0 flags for every game of the build.
 _SCHEDULE_LOAD_ERRORS = (
-    ValueError,
-    KeyError,
-    TypeError,
-    AttributeError,
-    OSError,
     DataIngestionError,
+    FileNotFoundError,
 )
+
+#: The four spot flags, as UNKNOWN: the value a game carries when the schedule they are
+#: derived from could not be loaded. Blank, not the neutral 0.0 a real "no spot" reads as.
+UNKNOWN_SPOT_FLAGS: dict[str, float] = {
+    "home_look_ahead_spot": float("nan"),
+    "away_look_ahead_spot": float("nan"),
+    "home_letdown_spot": float("nan"),
+    "away_letdown_spot": float("nan"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1729,28 +1737,26 @@ class ContextualFeaturesCalculator:
             # Situational spot flags (D-16, SIG-03): derive look-ahead/letdown
             # from the FULL season schedule reloaded INDEPENDENTLY of the
             # (possibly target-week-filtered) games_df above (review #4 /
-            # T-28-08b). These spots are weak / optional, so any failure to load
-            # the schedule degrades to neutral 0.0 flags and never breaks the
-            # contextual build.
+            # T-28-08b). A schedule that cannot be LOADED leaves the flags
+            # UNKNOWN (NaN); a failure inside the derivation raises (B WR-09).
             spot_flags: dict[str, dict[str, float]] = {}
+            spot_flags_unknown = False
             full_schedule: pd.DataFrame | None = None
             if len(games_df) > 0:
+                target_seasons = sorted({int(s) for s in games_df["season"].unique()})
                 try:
-                    target_seasons = sorted(
-                        {int(s) for s in games_df["season"].unique()}
-                    )
                     full_schedule = self._load_full_season_schedule(target_seasons)
+                except _SCHEDULE_LOAD_ERRORS as e:
+                    logger.warning(
+                        "Situational spot-flag schedule could not be loaded; the "
+                        "look-ahead and letdown flags are UNKNOWN (NaN) for this build",
+                        error=str(e),
+                    )
+                    spot_flags_unknown = True
+                if full_schedule is not None:
                     spot_flags = self._derive_spot_flags(
                         games_df, full_schedule, locks, letdown_reads
                     )
-                except _SCHEDULE_LOAD_ERRORS as e:
-                    logger.warning(
-                        "Situational spot-flag derivation skipped; "
-                        "emitting neutral flags",
-                        error=str(e),
-                    )
-                    spot_flags = {}
-                    full_schedule = None
 
             # Rest-days source (WR-02): in the target-week (--current-week) build,
             # games_df is filtered to the target week (above), so a team's prior
@@ -1911,14 +1917,18 @@ class ContextualFeaturesCalculator:
                 # largely priced-in and not a standing bet angle (SC3); a drop
                 # in the Plan 28-07 lift screen is an expected outcome. Sourced
                 # from the full-season schedule + raw silver Elo (D-16).
-                game_spots = spot_flags.get(
-                    game_id,
-                    {
-                        "home_look_ahead_spot": 0.0,
-                        "away_look_ahead_spot": 0.0,
-                        "home_letdown_spot": 0.0,
-                        "away_letdown_spot": 0.0,
-                    },
+                game_spots = (
+                    dict(UNKNOWN_SPOT_FLAGS)
+                    if spot_flags_unknown
+                    else spot_flags.get(
+                        game_id,
+                        {
+                            "home_look_ahead_spot": 0.0,
+                            "away_look_ahead_spot": 0.0,
+                            "home_letdown_spot": 0.0,
+                            "away_letdown_spot": 0.0,
+                        },
+                    )
                 )
                 game_features.update(game_spots)
 

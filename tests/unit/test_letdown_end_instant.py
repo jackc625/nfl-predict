@@ -211,3 +211,44 @@ class TestTheRestWindowTakesTheSameRule:
             else:
                 assert frame.loc[TARGET_ID, "basis"] == "per_row"
                 assert pd.Timestamp(when) == expected
+
+
+class TestASpotFlagFailureIsNeverANeutralZero:
+    """33.2 review B WR-09: a broken spot-flag input must not read as "no spot"."""
+
+    def test_a_bug_in_the_derivation_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard used to wrap the derivation too, so a renamed column became 0.0 flags."""
+        calculator = ContextualFeaturesCalculator()
+        monkeypatch.setattr(
+            calculator, "_load_full_season_schedule", lambda seasons: pd.DataFrame()
+        )
+
+        def broken(*args: object, **kwargs: object) -> dict:
+            raise KeyError("home_elo_pre")
+
+        monkeypatch.setattr(calculator, "_derive_spot_flags", broken)
+        with pytest.raises(KeyError, match="home_elo_pre"):
+            calculator.build_features(_games(None), PRODUCTION_NOW)
+
+    def test_an_unloadable_schedule_leaves_the_flags_unknown_not_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from utils.exceptions import DataIngestionError
+
+        calculator = ContextualFeaturesCalculator()
+
+        def unreadable(seasons: list[int]) -> pd.DataFrame:
+            raise DataIngestionError("elo_game_snapshots missing")
+
+        monkeypatch.setattr(calculator, "_load_full_season_schedule", unreadable)
+        built = calculator.build_features(_games(None), PRODUCTION_NOW)
+        row = built.set_index("game_id").loc[TARGET_ID]
+        for column in (
+            "home_look_ahead_spot",
+            "away_look_ahead_spot",
+            "home_letdown_spot",
+            "away_letdown_spot",
+        ):
+            assert pd.isna(row[column]), f"{column} = {row[column]!r}, not unknown"
