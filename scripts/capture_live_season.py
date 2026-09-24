@@ -1128,6 +1128,81 @@ def refuse_an_unopened_live_season(season: int) -> None:
     raise ZoneWriteRefused(msg)
 
 
+#: The datasets EMPTY BY DEFINITION until a season's first game kicks off: no game played, no
+#: plays. D32-03's empty capture for these is proved by the recorded schedule (step 27c).
+EMPTY_UNTIL_FIRST_KICKOFF: frozenset[str] = frozenset({"pbp"})
+
+#: The capture-entry key that says WHY an empty capture was recorded in place of a refusal.
+EMPTY_CAPTURE_BASIS_KEY = "empty_capture_basis"
+
+
+def _capture_instant() -> datetime:
+    """The moment this capture asks upstream: the one clock the empty-season rule reads."""
+    return datetime.now(UTC)
+
+
+def empty_before_first_kickoff(
+    dataset: str,
+    season: int,
+    refusal: UpstreamSeasonWindowRefused,
+    *,
+    data_root: Path,
+    manifest_dir: Path,
+) -> tuple[pd.DataFrame, str] | None:
+    """The empty capture a season-window refusal stands for, or ``None`` when it proves nothing.
+
+    Step 27c, applying D32-03. nflverse serves no play-by-play for a new season until the
+    Thursday after Labor Day, and nflreadpy REFUSES the request until then -- but a season
+    opener locks the day before it is played, so its lock-day run met that refusal and the
+    build could not read the season at all. D32-03 already says what this moment is: "upstream
+    had nothing for this dataset at this moment", recorded as an explicit empty capture.
+
+    The refusal alone never proves that -- it is a fact about the REQUEST, which is why
+    :func:`fetch_live_guarded` raises it. The proof is the RECORDED SCHEDULE: when it holds the
+    season and its first kickoff is still after this capture's instant, no game has been played,
+    so there are no plays and the empty capture is the truth. Anything else keeps the refusal:
+    a dataset that is not empty-until-kickoff, a schedule not recorded (or unreadable), and --
+    the case that matters -- a season with a game already kicked off, where upstream serving
+    nothing is an outage, not an empty season.
+
+    The empty frame carries the column set and dtypes the pin already serves for the PREVIOUS
+    season's play-by-play, so every builder that concatenates the two reads the prior season
+    exactly as before (an untyped empty frame would turn integer columns to ``object`` in the
+    concatenation). What upstream itself served is recorded separately as width 0.
+
+    Returns:
+        ``(empty_frame, basis)``, or ``None`` when the refusal must stand.
+
+    Raises:
+        UpstreamPinError: the previous season's play-by-play cannot be read from the pin.
+    """
+    if dataset not in EMPTY_UNTIL_FIRST_KICKOFF:
+        return None
+    from utils.current_slate import SlateResolutionError, first_recorded_kickoff
+
+    instant = _capture_instant()
+    try:
+        first_kickoff = first_recorded_kickoff(season)
+    except SlateResolutionError:
+        return None
+    if first_kickoff is None or first_kickoff <= instant:
+        return None
+
+    from data import upstream_pin
+
+    prior = upstream_pin.load_pbp(
+        [season - 1], data_root=data_root, live_manifest_dir=manifest_dir
+    )
+    upstream_said = refusal.__cause__ if refusal.__cause__ is not None else refusal
+    basis = (
+        f"D32-03 empty capture: nflreadpy refused {dataset} season {season} as outside its "
+        f"window ('{upstream_said}') at {instant.isoformat()}, and the recorded schedule's first "
+        f"{season} kickoff is {first_kickoff.isoformat()}, after that instant -- no game had "
+        "been played, so there were no plays. Columns and dtypes are the previous season's."
+    )
+    return prior.iloc[0:0].copy(), basis
+
+
 def capture_live_dataset(
     dataset: str,
     season: int,
@@ -1194,8 +1269,20 @@ def capture_live_dataset(
         raise ZoneWriteRefused(msg)
     refuse_an_unopened_live_season(season)
 
-    raw = fetch_live_guarded(dataset, season)
-    frame = pin_upstream_snapshot.narrow(dataset, raw)
+    empty_basis: str | None = None
+    try:
+        raw = fetch_live_guarded(dataset, season)
+        frame = pin_upstream_snapshot.narrow(dataset, raw)
+    except UpstreamSeasonWindowRefused as refusal:
+        # Step 27c: before the season's first kickoff the refusal stands for an empty
+        # season, proved by the recorded schedule. Otherwise it is re-raised untouched.
+        empty = empty_before_first_kickoff(
+            dataset, season, refusal, data_root=data_root, manifest_dir=manifest_dir
+        )
+        if empty is None:
+            raise
+        frame, empty_basis = empty
+        raw = pd.DataFrame()  # upstream served nothing: no rows and no columns
 
     # D32-03: AN EMPTY LIVE CAPTURE IS RECORDED, NOT REFUSED.
     #
@@ -1208,6 +1295,11 @@ def capture_live_dataset(
     # for this dataset at this moment" is a fact worth pinning: it is digested,
     # attributable and addressable like any other capture, with ``rows: 0`` and an empty
     # ``week_digests`` map whose ``week_partition`` says which case produced it.
+    #
+    # Step 27c: nflreadpy REFUSES a new season's play-by-play until the Thursday after Labor
+    # Day, so before the opener the empty season arrives as a refusal, not as zero rows. The
+    # refusal alone claims nothing about the season; the recorded schedule does, and
+    # :func:`empty_before_first_kickoff` records the empty capture only on that proof.
     #
     # The SEALED zone keeps its refusal unchanged. A sealed season that came back empty
     # is not a fact about the world, it is a failed capture, and pinning it would starve
@@ -1279,6 +1371,8 @@ def capture_live_dataset(
     pin_upstream_snapshot.assert_round_trip_faithful(frame, path)
 
     entry = build_capture_entry(dataset, season, week, raw, frame, path, data_root)
+    if empty_basis is not None:
+        entry[EMPTY_CAPTURE_BASIS_KEY] = empty_basis
     manifest = load_live_manifest(season, manifest_dir=manifest_dir) or (
         empty_live_manifest(season)
     )

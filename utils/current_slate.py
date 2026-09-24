@@ -94,6 +94,7 @@ __all__ = [
     "ScheduleUnavailableError",
     "SlateResolutionError",
     "cli_target_season_week",
+    "first_recorded_kickoff",
     "load_recorded_schedule",
     "prepare_schedule",
     "refresh_target",
@@ -566,3 +567,19 @@ def season_has_kicked_off(
         for value in _season_rows(season, schedule)["kickoff_et"]
     ]
     return any(kickoff <= instant for kickoff in kickoffs)
+
+
+def first_recorded_kickoff(
+    season: int, *, schedule: pd.DataFrame | None = None
+) -> datetime | None:
+    """The earliest recorded kickoff of *season* (ET), or ``None`` when the store lacks it.
+
+    The one fact that PROVES a season has not begun (step 27c): a recorded first kickoff later
+    than an instant means no game of the season had been played at that instant. ``None`` proves
+    nothing either way -- the season's schedule is simply not recorded yet.
+    """
+    kickoffs = [
+        kickoff_wall_clock_et(value)
+        for value in _season_rows(season, schedule)["kickoff_et"]
+    ]
+    return min(kickoffs, default=None)

@@ -232,7 +232,9 @@ class TestTheDailyRunRollsIntoTheNextSeason:
         assert refresh_env["capture"] == (NEXT, 1, ("depth_charts", "schedules"))
         assert refresh_env["ingest"] == ((NEXT,), False)
         out = capsys.readouterr().out
-        assert f"CAPTURE_SKIPPED pbp: no {NEXT} game has kicked off" in out
+        # Was (step 27b): "no {NEXT} game has kicked off". Step 27c records an empty capture
+        # once the schedule proves that; before it is recorded, nothing proves it.
+        assert f"CAPTURE_SKIPPED pbp: the {NEXT} schedule is not recorded yet" in out
         assert "NEXT_DAY_GAMES= 0" in out
         record = json.loads((tmp_path / "daily.jsonl").read_text(encoding="utf-8"))
         assert record["outcome"] == "no_games"
@@ -265,3 +267,171 @@ class TestTheDailyRunRollsIntoTheNextSeason:
             ("depth_charts", "pbp", "schedules"),
         )
         assert refresh_env["ingest"] == ((NEXT,), True)
+
+
+# ---------------------------------------------------------------------------
+# The opener's lock day reads an empty season (step 27c, applying D32-03)
+# ---------------------------------------------------------------------------
+
+#: The 2027 opener is Thursday 2027-09-09 20:20 ET, so its lock day is Wednesday 2027-09-08.
+OPENER_LOCK_DAY = date(NEXT, 9, 8)
+#: The frozen capture instant: noon ET on the lock day, before the 18:00 lock.
+LOCK_DAY_NOON = _et(f"{NEXT}-09-08 12:00")
+#: The instant after the opener kicked off, for the outage case.
+AFTER_OPENER = _et(f"{NEXT}-09-10 12:00")
+
+#: nflreadpy's own season-window refusal, as ``load_pbp`` raises it before the Thursday flip.
+WINDOW_REFUSAL = f"Season must be between 1999 and {FIRST}"
+
+_PBP_TEXT_COLUMNS = frozenset(
+    {"game_id", "posteam", "defteam", "home_team", "away_team", "play_type"}
+)
+
+
+def _prior_season_pbp() -> pd.DataFrame:
+    """Two pass plays of the first live season, every pinned column, real-shaped dtypes."""
+    int_values = {"season": FIRST, "week": 22, "home_score": 24, "away_score": 17}
+    data: dict[str, object] = {}
+    for column in upstream_pin.PBP_PINNED_COLUMNS:
+        if column in int_values:
+            data[column] = pd.array([int_values[column]] * 2, dtype="int32")
+        elif column == "game_id":
+            data[column] = [f"{FIRST}_W22_I@J"] * 2
+        elif column in _PBP_TEXT_COLUMNS:
+            data[column] = ["I", "J"]
+        elif column == "passer_player_id":
+            data[column] = ["00-0000001", "00-0000002"]
+        else:
+            data[column] = [0.25, -0.5]
+    return pd.DataFrame(data)
+
+
+@pytest.fixture
+def live_dirs(tmp_path, monkeypatch, sealed_probe_offline):
+    """A scratch data root and live manifest directory holding the first season's plays.
+
+    The pinned reader's defaults point at them too, so a builder that calls it with no
+    arguments reads the scratch zone. The sealed probe stays offline (``sealed_probe_offline``).
+    """
+    import scripts.capture_live_season as capture
+    from data import upstream_live
+    from scripts import pin_upstream_snapshot
+
+    roots = {"data_root": tmp_path / "data", "manifest_dir": tmp_path / "upstream_live"}
+    monkeypatch.setattr(upstream_pin, "default_data_root", lambda: roots["data_root"])
+    monkeypatch.setattr(upstream_live, "LIVE_MANIFEST_DIR", roots["manifest_dir"])
+
+    prior = _prior_season_pbp()
+    monkeypatch.setattr(
+        pin_upstream_snapshot, "fetch_live", lambda dataset, season: prior.copy()
+    )
+    capture.capture_live_dataset("pbp", FIRST, 22, **roots)
+    return roots
+
+
+def _refuse_next_season(monkeypatch) -> None:
+    from scripts import pin_upstream_snapshot
+
+    def _outside_window(dataset: str, season: int) -> pd.DataFrame:
+        raise ValueError(WINDOW_REFUSAL)
+
+    monkeypatch.setattr(pin_upstream_snapshot, "fetch_live", _outside_window)
+
+
+def _freeze_capture_clock(monkeypatch, instant: datetime) -> None:
+    import scripts.capture_live_season as capture
+
+    monkeypatch.setattr(capture, "_capture_instant", lambda: instant.astimezone(UTC))
+
+
+class TestTheOpenersLockDayReadsAnEmptySeason:
+    def test_the_lock_day_run_captures_play_by_play_and_ingests_no_results(
+        self, monkeypatch, refresh_env
+    ) -> None:
+        schedule = _schedule(*FIRST_SEASON_TAIL, *NEXT_SEASON_HEAD)
+        _record_schedule(monkeypatch, schedule)
+        _served(monkeypatch, schedule)
+
+        assert daily._refresh_schedule(OPENER_LOCK_DAY, dry_run=False) == NEXT
+        assert refresh_env["capture"] == (
+            NEXT,
+            1,
+            ("depth_charts", "pbp", "schedules"),
+        )
+        assert refresh_env["ingest"] == ((NEXT,), False)
+
+    def test_the_refusal_is_recorded_as_an_empty_capture_and_the_build_reads_it(
+        self, monkeypatch, live_dirs
+    ) -> None:
+        import scripts.capture_live_season as capture
+        from features.qb_tracking import QBTracker
+
+        _record_schedule(monkeypatch, _schedule(*FIRST_SEASON_TAIL, *NEXT_SEASON_HEAD))
+        _refuse_next_season(monkeypatch)
+        _freeze_capture_clock(monkeypatch, LOCK_DAY_NOON)
+
+        entry = capture.capture_live_dataset("pbp", NEXT, 1, **live_dirs)
+
+        assert entry["rows"] == 0
+        assert entry["upstream_width"] == 0
+        assert entry["week_digests"] == {}
+        assert len(entry["sha256"]) == 64
+        assert WINDOW_REFUSAL in entry[capture.EMPTY_CAPTURE_BASIS_KEY]
+        assert f"{NEXT}-09-09T20:20:00" in entry[capture.EMPTY_CAPTURE_BASIS_KEY]
+
+        prior = upstream_pin.load_pbp([FIRST])
+        empty = upstream_pin.load_pbp([NEXT])
+        assert empty.empty
+        assert list(empty.columns) == list(prior.columns)
+        assert empty.dtypes.equals(prior.dtypes)
+
+        both = upstream_pin.load_pbp([FIRST, NEXT])
+        pd.testing.assert_frame_equal(both, prior)
+
+        # The QB builder asks for the opener's season and the one before: it now reads the
+        # prior season's plays instead of raising UpstreamPinMissing.
+        plays = QBTracker()._load_pbp_data(NEXT)
+        assert len(plays) == len(prior)
+        assert plays["season"].dtype == prior["season"].dtype
+
+    def test_a_played_game_with_nothing_upstream_still_refuses(
+        self, monkeypatch, live_dirs
+    ) -> None:
+        import scripts.capture_live_season as capture
+
+        _record_schedule(monkeypatch, _schedule(*FIRST_SEASON_TAIL, *NEXT_SEASON_HEAD))
+        _refuse_next_season(monkeypatch)
+        _freeze_capture_clock(monkeypatch, AFTER_OPENER)
+
+        with pytest.raises(upstream_pin.UpstreamSeasonWindowRefused):
+            capture.capture_live_dataset("pbp", NEXT, 1, **live_dirs)
+        manifest = json.loads(
+            (live_dirs["manifest_dir"] / f"{FIRST}.json").read_text(encoding="utf-8")
+        )
+        assert len(manifest["datasets"]["pbp"]["captures"]) == 1
+        assert not (live_dirs["manifest_dir"] / f"{NEXT}.json").exists()
+
+    def test_an_unrecorded_schedule_proves_nothing_and_still_refuses(
+        self, monkeypatch, live_dirs
+    ) -> None:
+        import scripts.capture_live_season as capture
+
+        _record_schedule(monkeypatch, _schedule(*FIRST_SEASON_TAIL))
+        _refuse_next_season(monkeypatch)
+        _freeze_capture_clock(monkeypatch, LOCK_DAY_NOON)
+
+        with pytest.raises(upstream_pin.UpstreamSeasonWindowRefused):
+            capture.capture_live_dataset("pbp", NEXT, 1, **live_dirs)
+        assert not (live_dirs["manifest_dir"] / f"{NEXT}.json").exists()
+
+    def test_only_play_by_play_is_empty_by_definition(
+        self, monkeypatch, live_dirs
+    ) -> None:
+        import scripts.capture_live_season as capture
+
+        _record_schedule(monkeypatch, _schedule(*FIRST_SEASON_TAIL, *NEXT_SEASON_HEAD))
+        _refuse_next_season(monkeypatch)
+        _freeze_capture_clock(monkeypatch, LOCK_DAY_NOON)
+
+        with pytest.raises(upstream_pin.UpstreamSeasonWindowRefused):
+            capture.capture_live_dataset("depth_charts", NEXT, 1, **live_dirs)

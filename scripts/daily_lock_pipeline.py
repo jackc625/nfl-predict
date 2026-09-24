@@ -120,8 +120,15 @@ def _refresh_schedule(run_date_et: date, *, dry_run: bool) -> int:
     ``utils.current_slate.refresh_target``: the current slate's season, or -- once the calendar
     season has turned past a completed season -- the NEXT season, whose capture is how its
     schedule gets recorded. So a new season needs no manual switch. Until one of that season's
-    games has kicked off there is no play-by-play to capture (nflverse refuses it until the
-    Thursday after Labor Day) and no result to ingest, so both are left out by name.
+    games has kicked off there is no result to ingest, so results are left out.
+
+    PLAY-BY-PLAY BEFORE THE FIRST KICKOFF (step 27c, applying D32-03): nflverse refuses a new
+    season's plays until the Thursday after Labor Day, but the opener locks before that. Once
+    the season's schedule is recorded, the capture records that refusal as an explicit empty
+    capture (proved by the recorded first kickoff), so the opener's lock-day build reads an
+    empty season and the prior season's plays. Only while the schedule is NOT recorded yet --
+    the first run of a new season, which records it -- is play-by-play left out, by name: there
+    is nothing yet to prove the season has not begun, and no game of it to predict.
 
     Raises:
         ScheduleNotPublishedError: nflverse serves no schedule for that season yet.
@@ -129,16 +136,21 @@ def _refresh_schedule(run_date_et: date, *, dry_run: bool) -> int:
     from data import upstream_pin
     from pipeline.steps import step_capture_live_season
     from scripts.ingest_games import GameDataIngester
-    from utils.current_slate import refresh_target, season_has_kicked_off
+    from utils.current_slate import (
+        first_recorded_kickoff,
+        refresh_target,
+        season_has_kicked_off,
+    )
 
     instant = slate_lock(run_date_et)
     season, week = refresh_target(instant)
     started = season_has_kicked_off(season, instant)
     datasets = sorted(upstream_pin.DATASET_COLUMNS)
-    if not started:
+    if first_recorded_kickoff(season) is None:
         datasets.remove("pbp")
         print(
-            f"CAPTURE_SKIPPED pbp: no {season} game has kicked off, so none has plays"
+            f"CAPTURE_SKIPPED pbp: the {season} schedule is not recorded yet, so nothing "
+            f"proves no {season} game has kicked off"
         )
 
     if dry_run:
