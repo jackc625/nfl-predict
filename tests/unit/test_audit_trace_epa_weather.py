@@ -209,8 +209,13 @@ class TestArea2QbAdjAndCpoe:
             assert col in df.columns
             s = df[col]
             assert s.std(skipna=True) > 0.05, f"{col} has too little variance"
-            # Normalized feature: vast majority within +-5 sigma
-            within = (s.abs() <= 5.0).mean()
+            # Normalized feature: vast majority of the REAL values within +-5 sigma.
+            # Blank cells are deliberate (no honest statistic exists there, owner rulings
+            # 2026-09-22), so they are not counted as outliers; the column must still carry
+            # real values for the range check to mean anything.
+            real = s.dropna()
+            assert len(real) > 0, f"{col} has no real values to range-check"
+            within = (real.abs() <= 5.0).mean()
             assert within > 0.99, f"{col} has implausible outliers ({within:.3f})"
 
     def test_opp_adj_epa_present_with_variance_on_gold(self):
