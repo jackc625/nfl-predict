@@ -89,8 +89,8 @@ from backtest.ev_chain_constants import (
 )
 from data import upstream_pin
 from data.quality_gates import validate_bronze_to_silver
+from data.schemas import LIVE_ODDS_CAPTURE_KEY, OddsSchema
 from data.schemas import ODDS_KEY_COLUMNS as SCHEMA_ODDS_KEY_COLUMNS
-from data.schemas import OddsSchema
 from data.storage import (
     _atomic_write_parquet,
     save_bronze_snapshot,
@@ -506,8 +506,13 @@ def assert_canonical_game_ids(odds_df: pd.DataFrame) -> None:
         raise ValueError(msg)
 
 
-def assert_one_row_per_key(odds_df: pd.DataFrame, stage: str) -> None:
-    """Raise unless exactly one row exists per (game_id, sportsbook, snapshot_ts) (clause 6).
+def assert_one_row_per_key(
+    odds_df: pd.DataFrame,
+    stage: str,
+    key_columns: tuple[str, ...] = ODDS_KEY_COLUMNS,
+) -> None:
+    """Raise unless exactly one row exists per key -- (game_id, sportsbook, snapshot_ts) by
+    default (clause 6).
 
     A violation is a HARD FAILURE naming the offending keys, never a warning: a duplicated key is
     a duplicated market observation, and a duplicated market observation double-counts a bet.
@@ -515,14 +520,16 @@ def assert_one_row_per_key(odds_df: pd.DataFrame, stage: str) -> None:
     Args:
         odds_df: The rows to check.
         stage: A human name for where the check ran, quoted in the failure message.
+        key_columns: The row identity. The live store's is ``LIVE_ODDS_CAPTURE_KEY`` (the triple
+            plus the capture instant); see :func:`assert_odds_table_keys`.
 
     Raises:
-        ValueError: naming the offending key triples and their counts.
+        ValueError: naming the offending keys and their counts.
     """
     if odds_df.empty:
         return
 
-    missing = [c for c in ODDS_KEY_COLUMNS if c not in odds_df.columns]
+    missing = [c for c in key_columns if c not in odds_df.columns]
     if missing:
         msg = (
             f"cannot check the one-row-per-key invariant at {stage}: the frame is missing "
@@ -539,28 +546,51 @@ def assert_one_row_per_key(odds_df: pd.DataFrame, stage: str) -> None:
         except (ValueError, TypeError):
             return str(value)
 
+    instant_columns = {"snapshot_ts", "created_at"}
     keys = pd.DataFrame(
         {
-            "game_id": odds_df["game_id"].astype(str),
-            "sportsbook": odds_df["sportsbook"].astype(str),
-            "snapshot_ts": odds_df["snapshot_ts"].map(_key_instant).astype(str),
+            column: (
+                odds_df[column].map(_key_instant).astype(str)
+                if column in instant_columns
+                else odds_df[column].astype(str)
+            )
+            for column in key_columns
         }
     )
-    counts = keys.groupby(list(ODDS_KEY_COLUMNS), dropna=False).size()
+    counts = keys.groupby(list(key_columns), dropna=False).size()
     offenders = counts[counts > 1]
 
     if not offenders.empty:
         named = [
-            f"{gid} / {book} / {ts} x{int(n)}"
-            for (gid, book, ts), n in offenders.head(10).items()
+            " / ".join(map(str, key)) + f" x{int(n)}"
+            for key, n in offenders.head(10).items()
         ]
         msg = (
             f"the one-row-per-key invariant FAILED at {stage} (clause 6, T-31-35): "
-            f"{len(offenders)} duplicated (game_id, sportsbook, snapshot_ts) triple(s). "
+            f"{len(offenders)} duplicated {tuple(key_columns)} key(s). "
             f"Offending keys: {named}. A duplicated market observation double-counts a bet; "
             "this is a hard failure, never a warning."
         )
         raise ValueError(msg)
+
+
+def assert_odds_table_keys(odds_df: pd.DataFrame, stage: str) -> None:
+    """The one-row-per-key invariant over a MIXED odds table, each row under its own key.
+
+    THE LIVE STORE ACCUMULATES (Plan 33.2-27). Every live capture of a game carries
+    ``snapshot_ts = lock``, so two captures legitimately share the historical triple and differ
+    only in ``created_at`` (``LIVE_ODDS_CAPTURE_KEY``). Checking the triple over the WHOLE table
+    made every historical or juice merge fail once any game had two captures from one book (33.2
+    review C1 WR-07). So the rows this ingest writes (:data:`ODDS_SPORTSBOOK_LABEL`) keep the
+    strict triple, and every other row is held to the live capture key.
+    """
+    if odds_df.empty:
+        return
+    historical = odds_df["sportsbook"].astype(str) == ODDS_SPORTSBOOK_LABEL
+    assert_one_row_per_key(odds_df.loc[historical], stage=stage)
+    assert_one_row_per_key(
+        odds_df.loc[~historical], stage=stage, key_columns=LIVE_ODDS_CAPTURE_KEY
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1223,8 +1253,10 @@ def write_odds_additively(
     4. Canonical keys on the STORED rows, so the merge cannot create a second key for one game.
     5. Stored lines carried onto the incoming rows (clause 2), so the merge adds juice without
        overwriting a stored line.
-    6. The merge itself.
-    7. The one-row-per-key invariant (clause 6), asserted on what is now on disk.
+    6. The one-row-per-key invariant (clause 6), asserted on the merged table BEFORE it is
+       written (33.2 review C1 WR-07: it used to raise only after the write).
+    7. The merge itself.
+    8. The same invariant, asserted again on what is now on disk.
 
     Args:
         incoming: The transformed rows to merge.
@@ -1262,12 +1294,24 @@ def write_odds_additively(
         rows, stored
     )
 
+    # The table the write below WILL produce -- ``upsert_silver``'s own rule, stored rows of the
+    # incoming games out, the incoming rows in -- checked BEFORE anything is written, so a key
+    # violation refuses the merge instead of reporting it after the change is made.
+    incoming_games = rows_to_write["game_id"].astype(str)
+    prospective = pd.concat(
+        [stored.loc[~stored["game_id"].astype(str).isin(incoming_games)], rows_to_write]
+        if not stored.empty
+        else [rows_to_write],
+        ignore_index=True,
+    )
+    assert_odds_table_keys(prospective, stage=f"pre-merge {table_name}")
+
     written_path = upsert_silver(
         rows_to_write, table_name, key_column="game_id", base_path=base_path
     )
 
     merged = pd.read_parquet(written_path)
-    assert_one_row_per_key(merged, stage=f"post-merge {table_name}")
+    assert_odds_table_keys(merged, stage=f"post-merge {table_name}")
 
     report = OddsWriteReport(
         path=written_path,

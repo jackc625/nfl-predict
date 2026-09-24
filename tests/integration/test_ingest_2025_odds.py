@@ -1420,9 +1420,17 @@ class TestTheWritePathInvariants:
             "is to normalize BEFORE any merge: upsert_silver keys on game_id, so a merge run "
             "first silently duplicates every Rams game rather than replacing it."
         )
-        assert sequence.index("assert_one_row_per_key") > write_at, (
-            "the one-row-per-key invariant is checked on the frame in memory rather than on "
-            "what actually landed on disk."
+        # 33.2 review C1 WR-07: the invariant runs on the merged table BEFORE the write (a gate,
+        # not a report) AND again on what actually landed on disk.
+        checks = [
+            i for i, name in enumerate(sequence) if name == "assert_odds_table_keys"
+        ]
+        assert checks and checks[0] < write_at, (
+            f"the one-row-per-key invariant does not run before the write. Call order was "
+            f"{sequence}; a violation found after the write has already changed silver."
+        )
+        assert checks[-1] > write_at, (
+            "the one-row-per-key invariant is no longer checked on what actually landed on disk."
         )
 
     def test_the_gate_fires_before_anything_is_created_on_disk(
@@ -1504,6 +1512,75 @@ class TestTheWritePathInvariants:
 
         # The clean frame passes, so the guard is discriminating rather than always-on.
         assert_one_row_per_key(duplicated.drop_duplicates(), stage="test")
+
+    def test_accumulated_live_captures_do_not_trip_the_merge_and_are_kept(
+        self, tmp_path: Path
+    ) -> None:
+        """33.2 review C1 WR-07: two live captures of one game share the historical triple.
+
+        Every live capture carries ``snapshot_ts = lock``; they differ only in ``created_at``.
+        The triple checked over the whole table made every later historical merge raise -- and
+        only AFTER it had already written silver.
+        """
+        from scripts.ingest_historical_odds import write_odds_additively
+
+        lock = pd.Timestamp("2026-09-19T22:00:00Z")
+        live_game = "2026_W02_CAR@ATL"
+        silver = tmp_path / "silver"
+        silver.mkdir()
+        pd.DataFrame(
+            {
+                "game_id": [live_game, live_game],
+                "sportsbook": ["draftkings", "draftkings"],
+                "snapshot_ts": [lock, lock],
+                "created_at": pd.to_datetime(
+                    ["2026-09-18T15:00:00Z", "2026-09-19T21:00:00Z"], utc=True
+                ),
+                "spread": [3.5, 4.0],
+                "total": [44.5, 44.5],
+            }
+        ).to_parquet(silver / "odds_snapshot.parquet", index=False)
+
+        incoming = pd.DataFrame(
+            {
+                "game_id": ["2025_W01_BUF@MIA"],
+                "sportsbook": ["consensus"],
+                "snapshot_ts": [pd.Timestamp("2025-09-06T18:00:00-04:00")],
+                "created_at": [pd.Timestamp("2026-09-24T00:00:00Z")],
+                "spread": [-3.0],
+                "total": [45.5],
+            }
+        )
+        write_odds_additively(
+            incoming,
+            base_path=tmp_path,
+            features_ou_df=pd.DataFrame({"game_id": ["2025_W01_BUF@MIA"]}),
+        )
+        stored = pd.read_parquet(silver / "odds_snapshot.parquet")
+        assert (stored["game_id"] == live_game).sum() == 2, "a live capture was lost"
+
+    def test_a_duplicated_historical_key_refuses_before_anything_is_written(
+        self, tmp_path: Path
+    ) -> None:
+        from scripts.ingest_historical_odds import write_odds_additively
+
+        freeze = pd.Timestamp("2025-09-06T18:00:00-04:00")
+        twice = pd.DataFrame(
+            {
+                "game_id": ["2025_W01_BUF@MIA", "2025_W01_BUF@MIA"],
+                "sportsbook": ["consensus", "consensus"],
+                "snapshot_ts": [freeze, freeze],
+                "spread": [-3.0, -3.5],
+                "total": [45.5, 45.5],
+            }
+        )
+        with pytest.raises(ValueError, match="pre-merge"):
+            write_odds_additively(
+                twice,
+                base_path=tmp_path,
+                features_ou_df=pd.DataFrame({"game_id": ["2025_W01_BUF@MIA"]}),
+            )
+        assert not (tmp_path / "silver" / "odds_snapshot.parquet").exists()
 
     def test_two_encodings_of_one_instant_are_ONE_key_not_two(self) -> None:
         """The invariant parses the key instant; a string key would call these two rows."""
