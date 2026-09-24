@@ -18768,3 +18768,65 @@ P332_29_CORRECTED_FROZEN_SD: tuple[tuple[str, float | None], ...] = (
 #: The derivation window (the whole honest pre-lock corpus) and the WP sub-window.
 P332_29_DERIVATION_SEASONS: tuple[int, ...] = (2020, 2021, 2022, 2023, 2024)
 P332_29_WP_DERIVATION_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024)
+
+# ---------------------------------------------------------------------------
+# THE COLD-START CORRECTION SUPERSEDING 11761c7: THE CORRECTIVE COMMIT AND THE LIVE RULE.
+#
+# APPENDED by Plan 33.2-26 Task 3 on 2026-09-23, in the WITNESS commit strictly after the
+# corrective commit it records (a commit cannot record its own sha). The name
+# COLD_START_CORRECTIVE_COMMIT_SHA is a CONTRACT: the ancestry check discovers corrective shas by
+# the token CORRECTIVE in the name, beside Plan 33.2-29's EV_CHAIN_CORRECTIVE_COMMIT_SHA. The
+# corrective commit repointed BOTH halves of the live 2026 bet rule together --
+# DEFAULT_CHAIN_FIT_PATH to the corrected chain fit, and the cold-start bias and the edge
+# thresholds to backtest.corrected_cold_start_constants -- and added the two-test win bet
+# (D33.2-11). Derived thread-pinned at 1 (DERIVATION_THREAD_LIMIT). Plan 33.2-27's daily run and
+# Phase 34's ledger read the corrective sha from here.
+# ---------------------------------------------------------------------------
+
+#: The corrective commit that repointed the live 2026 bet rule, superseding 11761c7.
+COLD_START_CORRECTIVE_COMMIT_SHA: str = "9bb7568f78c3b2714fb03da0818104ab7c10f620"
+
+#: The frozen pre-registration it supersedes (byte-unchanged).
+P332_26_SUPERSEDED_PREREGISTRATION_COMMIT: str = (
+    "11761c7ece83ab9cab8ce73ffd6d7b58158ee703"
+)
+
+#: Per-target corrected (high, medium) edge thresholds; None would mean no honest threshold and
+#: no bets for that target. No target was refused.
+P332_26_CORRECTED_EDGE_THRESHOLDS: tuple[
+    tuple[str, tuple[float, float] | None], ...
+] = (
+    ("wp", (0.05, 0.02)),
+    ("ats", (1.759, 0.7287)),
+    ("ou", (0.0438, 0.0173)),
+)
+
+#: The second test of a 2026 win bet: the side edge over the spread-derived market probability
+#: must be strictly above WP's corrected MEDIUM threshold.
+P332_26_WIN_BET_EDGE_THRESHOLD: float = 0.02
+
+#: The corrected 2026 chain-fit bias per target, the season it is for, and its strictly-prior
+#: walk-forward pool (no 2025 row).
+P332_26_CORRECTED_CHAIN_FIT_BIAS_2026: tuple[tuple[str, float], ...] = (
+    ("wp", 0.0004000931458235923),
+    ("ats", -0.8288653630898939),
+    ("ou", 0.6443360853661155),
+)
+P332_26_CHAIN_FIT_BIAS_TARGET_SEASON: int = 2026
+P332_26_CHAIN_FIT_BIAS_SEASONS: tuple[int, ...] = (
+    2017,
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+)
+
+#: The threshold derivation window (the whole honest pre-lock corpus), the WP sub-window, and the
+#: WP games excluded as no_prior_fold_converter.
+P332_26_THRESHOLD_DERIVATION_SEASONS: tuple[int, ...] = (2020, 2021, 2022, 2023, 2024)
+P332_26_WP_THRESHOLD_DERIVATION_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024)
+P332_26_WP_EXCLUDED_NO_PRIOR_FOLD_CONVERTER: int = 255
+P332_26_DERIVATION_THREAD_LIMIT: int = 1
