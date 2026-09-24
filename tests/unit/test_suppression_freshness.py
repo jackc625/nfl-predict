@@ -93,10 +93,15 @@ _EXPECTED_REASONS = (
     "no_honest_edge_threshold",
 )
 
-# The commit this plan started from (wave-3 HEAD). ``assert_real_odds`` is the LOCKED Phase-27
-# provenance guard and the Phase-27/30 record depends on its behaviour, so its body is compared
-# against this anchor rather than against "the tests still pass".
-_PROVENANCE_ANCHOR_COMMIT = "94f5f56"
+# The commit the guard's body is pinned to. ``assert_real_odds`` is the LOCKED provenance guard,
+# so its body is compared against this anchor rather than against "the tests still pass".
+#
+# Was: ``94f5f56`` (the Phase-31 wave-3 HEAD). RE-ANCHORED, deliberately and in its own commit, to
+# ``900430f`` -- Plan 33.2-27 Task 1's GREEN commit, which widened the allowlist to the real live
+# book names and removed the ``is_live`` arm (a genuine live capture tripped both). The pin keeps
+# its purpose: any FURTHER edit to the guard's body still fails here until it is re-anchored on
+# purpose.
+_PROVENANCE_ANCHOR_COMMIT = "900430f"
 
 # The suppression-label table lives in the phase's UI-SPEC, which sits under ``.planning/``. That
 # directory is GITIGNORED by project policy, so it is present in a working tree and absent from a
