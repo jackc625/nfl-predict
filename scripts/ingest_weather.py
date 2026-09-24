@@ -27,6 +27,7 @@ import httpx
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+import utils.game_lock as lock_rule
 from conf.settings import get_settings
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import WeatherSchema
@@ -1132,6 +1133,26 @@ class WeatherDataIngester:
             if kickoff_wall_clock_et(game["kickoff_et"]).astimezone(UTC) <= as_of_utc
         ]
 
+    @staticmethod
+    def locked_game_ids(games_df: pd.DataFrame, as_of_utc: datetime) -> list[str]:
+        """The games whose lock (``utils.game_lock``) is BEFORE *as_of_utc*: never captured.
+
+        At-lock is admissible, as in the one rule. Every kicked-off game is in this list too,
+        because a game's lock precedes its kickoff. The kickoff is read through
+        ``kickoff_wall_clock_et`` exactly as :meth:`played_game_ids` reads it.
+        """
+        return [
+            str(game["game_id"])
+            for _, game in games_df.iterrows()
+            if not lock_rule.is_admissible(
+                as_of_utc,
+                lock_rule.game_lock(
+                    kickoff_wall_clock_et(game["kickoff_et"]),
+                    game_id=str(game["game_id"]),
+                ),
+            )
+        ]
+
     def fetch_forecast_for_games(
         self,
         games_df: pd.DataFrame,
@@ -1324,16 +1345,20 @@ class WeatherDataIngester:
 
         season, week = self._single_season_week(games_df)
 
-        # A game that has already kicked off is LEFT OUT by name, never captured (Plan 33.2-27
-        # Task 2): the rest of the week still gets its forecast.
-        played = set(self.played_game_ids(games_df, as_of_utc))
-        if played:
+        # A game whose LOCK has passed is LEFT OUT by name, never captured (33.2 review C1 CR-03;
+        # Plan 33.2-27 Task 2 left out only games that had KICKED OFF). Silver weather is
+        # latest-wins by game_id, so a post-lock capture would REPLACE the game's pre-lock
+        # forecast with one the lock fence then refuses, and the game would be built with its
+        # weather unknown. Every entry point -- the daily slate, the Friday registry's
+        # step_ingest_weather and the CLI -- writes through here. The rest still get forecasts.
+        locked = set(self.locked_game_ids(games_df, as_of_utc))
+        if locked:
             logger.warning(
-                "Games already kicked off are not captured",
-                game_ids=sorted(played),
+                "Games whose lock has passed are not captured",
+                game_ids=sorted(locked),
                 as_of=as_of_utc.isoformat(),
             )
-            games_df = games_df[~games_df["game_id"].astype(str).isin(played)]
+            games_df = games_df[~games_df["game_id"].astype(str).isin(locked)]
             if games_df.empty:
                 return pd.DataFrame()
         if failed_games is None:

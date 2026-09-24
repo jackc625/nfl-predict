@@ -375,3 +375,44 @@ class TestNoCaptureAfterKickoff:
         assert fetched == ["44.5013"], "the played game must not even be requested"
         stored = pd.read_parquet(tmp_path / "silver" / "weather.parquet")
         assert "2026_W04_KC@BUF" not in set(stored["game_id"])
+
+
+class TestNoCaptureAfterTheLock:
+    """33.2 review C1 CR-03: a game whose LOCK has passed is never re-captured.
+
+    Silver weather is latest-wins by game_id. The week ingest left out only KICKED-OFF games,
+    so a Saturday-evening run replaced each Sunday game's pre-lock forecast with a post-lock
+    one, which the lock fence then refused: the game lost its only admissible forecast.
+    """
+
+    def test_a_locked_but_not_kicked_off_game_is_left_out_and_its_row_survives(
+        self, ingester, tmp_path: Path
+    ):
+        sunday = pd.DataFrame([_game("2026_W04_KC@BUF", "BUF00", "BUF", KICKOFF)])
+        lock = datetime(2026, 9, 26, 22, 0, tzinfo=UTC)  # Saturday 18:00 ET
+        fetched: list[str] = []
+
+        async def _fetch(latitude, *_args):
+            fetched.append(str(latitude))
+            return dict(FORECAST_RECORD)
+
+        with (
+            patch.object(ingester, "_fetch_openmeteo_forecast", _fetch),
+            patch.object(
+                ingester, "_fetch_model_run_available_at", lambda: MODEL_STAMP
+            ),
+        ):
+            ingester.ingest_week_forecast(
+                sunday, VENUES, as_of_utc=lock, forecast_time=lock, base_path=tmp_path
+            )
+            after = lock + timedelta(hours=1)
+            written = ingester.ingest_week_forecast(
+                sunday, VENUES, as_of_utc=after, forecast_time=after, base_path=tmp_path
+            )
+
+        assert written.empty, "a capture after the lock was written"
+        assert len(fetched) == 1, "the locked game must not even be requested"
+        stored = pd.read_parquet(tmp_path / "silver" / "weather.parquet")
+        assert list(pd.to_datetime(stored["forecast_time"], utc=True)) == [lock], (
+            "the at-lock forecast must survive a later run"
+        )
