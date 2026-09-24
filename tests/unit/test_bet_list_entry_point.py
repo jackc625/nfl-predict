@@ -65,8 +65,16 @@ from backtest.weekly_bet_list import (
 # caller is worse in a quieter way: ``scripts/generate_bet_list.py`` is the command the ``/bets``
 # copy and this repository's operator documents now NAME, so losing it would leave the page
 # instructing an operator to run something that is gone.
+#
+# THREE since Plan 33.2-27 moved the scheduled run to the daily lock-time cadence:
+# ``pipeline/daily_steps.py`` is the SCHEDULED producer now (``scripts/daily_lock_pipeline.py``
+# builds its registry), and ``pipeline/steps.py`` is the legacy Friday registry kept as a manual
+# operator tool. Registered here by the 33.2 review, batch 3, rather than left to fail as an
+# undeclared caller. It is still ONE library call: all three produce the pair through
+# ``generate_weekly_bet_list`` itself, and the tracker write below stays in exactly one place.
 _GENERATOR_CALLERS: frozenset[str] = frozenset(
     {
+        "pipeline/daily_steps.py",
         "pipeline/steps.py",
         "scripts/generate_bet_list.py",
     }
@@ -397,7 +405,7 @@ def _callers_of(production_files: list[pathlib.Path], name: str) -> set[str]:
     return callers
 
 
-def test_the_callers_of_the_generator_are_exactly_the_two_intended_entry_points(
+def test_the_callers_of_the_generator_are_exactly_the_intended_entry_points(
     production_files: list[pathlib.Path],
 ) -> None:
     """Exact in both directions -- see ``_GENERATOR_CALLERS`` for why each direction matters."""
