@@ -275,6 +275,82 @@ class TestNarrowingScopedWriteIsRefused:
 
 
 @pytest.mark.integration
+class TestALiveSkipNeverDeletesAHistoricalGame:
+    """33.2 review C1 CR-06 = B WR-01: a history refusal saves nothing but tomorrow's rows.
+
+    D33.2-05: a history build that meets a refusal saves nothing, and the slate is predicted
+    from the last good gold plus tomorrow's rows. The live full build used to be written in
+    replace mode without the refused game, silently deleting it from the training table.
+    """
+
+    @staticmethod
+    def _stored_history() -> pd.DataFrame:
+        return pd.concat([_matrix(2011), _matrix(2025)], ignore_index=True)
+
+    def test_the_stored_history_is_kept_and_only_tomorrows_rows_are_written(
+        self, gold_lake
+    ):
+        builder = FeatureMatrixBuilder()
+        builder.save_feature_matrices({"ats": self._stored_history()})
+        refused = "2011_W02_BUF@KC"
+        tomorrow = _matrix(2026, n=2)
+
+        # Tonight's build: the refused 2011 game excluded, history re-normalized, tomorrow in.
+        tonight = pd.concat([self._stored_history(), tomorrow], ignore_index=True).loc[
+            lambda f: f["game_id"] != refused
+        ]
+        tonight["elo_diff"] = tonight["elo_diff"] + 1000.0  # every re-built value moved
+        builder.save_feature_matrices(
+            {"ats": tonight},
+            history_refused=frozenset({refused}),
+            serve_game_ids=frozenset(tomorrow["game_id"]),
+        )
+
+        after = _read_gold(gold_lake).set_index("game_id")
+        assert refused in after.index, (
+            "the refused historical game was deleted from gold"
+        )
+        stored = self._stored_history().set_index("game_id")
+        for game_id in stored.index:
+            assert after.loc[game_id, "elo_diff"] == stored.loc[game_id, "elo_diff"], (
+                f"history row {game_id} was rewritten by a build that met a refusal"
+            )
+        for game_id in tomorrow["game_id"]:
+            assert after.loc[game_id, "elo_diff"] >= 1000.0, (
+                "tomorrow's row not written"
+            )
+        assert len(after) == len(stored) + len(tomorrow)
+
+    def test_when_the_columns_differ_the_refused_rows_are_carried_forward(
+        self, gold_lake
+    ):
+        builder = FeatureMatrixBuilder()
+        builder.save_feature_matrices({"ats": self._stored_history()})
+        refused = "2011_W02_BUF@KC"
+        tonight = (
+            pd.concat([self._stored_history(), _matrix(2026, n=1)], ignore_index=True)
+            .loc[lambda f: f["game_id"] != refused]
+            .assign(new_feature=1.0)
+        )
+        builder.save_feature_matrices(
+            {"ats": tonight},
+            history_refused=frozenset({refused}),
+            serve_game_ids=frozenset({"2026_W01_BUF@KC"}),
+        )
+
+        after = _read_gold(gold_lake).set_index("game_id")
+        assert refused in after.index, "the refused game was deleted from gold"
+        assert "new_feature" in after.columns
+        assert len(after) == len(tonight) + 1
+
+    def test_a_clean_night_still_replaces_the_table(self, gold_lake):
+        builder = FeatureMatrixBuilder()
+        builder.save_feature_matrices({"ats": self._stored_history()})
+        builder.save_feature_matrices({"ats": _matrix(2026)})
+        assert set(_read_gold(gold_lake)["season"]) == {2026}
+
+
+@pytest.mark.integration
 class TestBuildFeaturesCliScopeFlags:
     """WR-09: the documented full-rebuild flag must exist and be unambiguous."""
 

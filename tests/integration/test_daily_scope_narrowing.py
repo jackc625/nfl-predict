@@ -157,7 +157,13 @@ def test_the_daily_build_step_is_full_history_and_saves(monkeypatch) -> None:
     assert "target_season" not in kwargs and "target_week" not in kwargs
     saved, save_args, save_kwargs = calls["save"]
     assert saved is matrices
-    assert save_args == () and save_kwargs == {}
+    # No scope, and on a clean night no refused history (33.2 review C1 CR-06): the write is
+    # the full table, exactly as before.
+    assert save_args == ()
+    assert save_kwargs == {
+        "history_refused": frozenset(),
+        "serve_game_ids": frozenset(),
+    }
 
 
 def test_an_unplayed_game_survives_target_creation_with_blank_labels() -> None:
@@ -196,3 +202,31 @@ def test_a_history_build_keeps_its_label_dtypes() -> None:
     targets = instance.create_target_variables(frame)
     assert pd.api.types.is_integer_dtype(targets["home_win"])
     assert list(targets["home_win"]) == [1, 0]
+
+
+def test_a_refused_historical_game_is_passed_as_history_not_served(monkeypatch) -> None:
+    """33.2 review C1 CR-06: excluded games outside tonight's slate are HISTORY refusals."""
+    from pipeline import live_skip, steps
+
+    calls: dict[str, object] = {}
+
+    class _RecordingBuilder:
+        def generate_feature_matrices(self, *args, **kwargs):
+            calls["excluded"] = kwargs["excluded_game_ids"]
+            return {"wp": pd.DataFrame({"game_id": ["g"]})}
+
+        def save_feature_matrices(self, feature_matrices, *args, **kwargs):
+            calls["save"] = kwargs
+
+    monkeypatch.setattr(bf_mod, "FeatureMatrixBuilder", _RecordingBuilder)
+    live_skip.reset_excluded_games()
+    live_skip.exclude_games({"2011_W02_BUF@KC", "2026_W03_LA@DEN"})
+    try:
+        steps.build_and_save_gold(frozenset({"2026_W03_LA@DEN", "2026_W03_LAC@BUF"}))
+    finally:
+        live_skip.reset_excluded_games()
+
+    assert calls["save"] == {
+        "history_refused": frozenset({"2011_W02_BUF@KC"}),
+        "serve_game_ids": frozenset({"2026_W03_LAC@BUF"}),
+    }

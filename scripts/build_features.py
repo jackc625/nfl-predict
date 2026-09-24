@@ -3585,11 +3585,76 @@ class FeatureMatrixBuilder:
         )
         raise ValueError(msg)
 
+    @staticmethod
+    def _keep_history_through_a_refusal(
+        table_name: str,
+        matrix_df: pd.DataFrame,
+        *,
+        history_refused: frozenset[str],
+        serve_game_ids: frozenset[str],
+    ) -> pd.DataFrame:
+        """The gold table to write when a LIVE full build excluded HISTORICAL games.
+
+        D33.2-05, as the rule states it (33.2 review C1 CR-06 = B WR-01): a history build that
+        meets a refusal SAVES NOTHING, and tomorrow's games are predicted from the LAST GOOD
+        GOLD plus tomorrow's rows. So the stored table is kept row for row, and only the
+        *serve_game_ids* rows of this build are written into it. The full build used to be
+        written in replace mode, silently deleting every refused historical game from the
+        table every trainer reads -- again every night the defect persisted.
+
+        When that is impossible -- there is no stored gold, or this build's columns differ
+        from it, so its rows cannot be merged without a schema change -- the fallback keeps
+        the REFUSED rows: this build is written with each excluded historical game's stored
+        row carried forward (restricted to this build's columns), and any refused game that
+        no stored gold holds is named in the log.
+        """
+        try:
+            stored = load_dataframe(table_name, layer="gold", source="parquet")
+        except (DataIngestionError, FileNotFoundError, OSError) as exc:
+            logger.warning(
+                "No stored gold to keep through a history refusal; the refused games "
+                "are absent from this build and from any stored table",
+                table_name=table_name,
+                refused=sorted(history_refused),
+                error=str(exc),
+            )
+            return matrix_df
+
+        if set(stored.columns) == set(matrix_df.columns):
+            fresh = matrix_df.loc[matrix_df["game_id"].astype(str).isin(serve_game_ids)]
+            kept = stored.loc[~stored["game_id"].isin(fresh["game_id"])]
+            logger.warning(
+                "History refused: the stored gold is kept; only the served games' rows "
+                "from this build are written into it (D33.2-05)",
+                table_name=table_name,
+                refused=sorted(history_refused),
+                served_rows=len(fresh),
+                kept_rows=len(kept),
+            )
+            return pd.concat([kept, fresh[stored.columns]], ignore_index=True)
+
+        carried = stored.loc[stored["game_id"].astype(str).isin(history_refused)]
+        missing = sorted(history_refused - set(carried["game_id"].astype(str)))
+        logger.warning(
+            "History refused and this build's columns differ from the stored gold: the "
+            "build is written with the refused games' stored rows carried forward",
+            table_name=table_name,
+            carried=sorted(carried["game_id"].astype(str)),
+            not_in_stored_gold=missing,
+            new_columns=sorted(set(matrix_df.columns) - set(stored.columns)),
+            dropped_columns=sorted(set(stored.columns) - set(matrix_df.columns)),
+        )
+        carried = carried.reindex(columns=matrix_df.columns)
+        return pd.concat([matrix_df, carried], ignore_index=True)
+
     def save_feature_matrices(
         self,
         feature_matrices: dict[str, pd.DataFrame],
         target_season: int | None = None,
         target_week: int | None = None,
+        *,
+        history_refused: frozenset[str] = frozenset(),
+        serve_game_ids: frozenset[str] = frozenset(),
     ) -> None:
         """
         Save feature matrices to gold layer.
@@ -3621,13 +3686,29 @@ class FeatureMatrixBuilder:
         columns as all-null. That case is refused rather than guessed at: it
         needs a full rebuild.
 
+        A LIVE FULL BUILD THAT EXCLUDED HISTORICAL GAMES (``history_refused``) does not write
+        itself as the table: see :meth:`_keep_history_through_a_refusal` (D33.2-05). The
+        frame it hands to the one write below is still a whole table, so the write mode is
+        unchanged.
+
         Args:
             feature_matrices: Dictionary with feature matrices
             target_season: Season the matrices were built for. Not None means
                 the build is scoped, so the write merges instead of replacing.
             target_week: Week the matrices were built for. Same effect.
+            history_refused: Games a live run excluded that are NOT being served tonight --
+                historical rows the information-time gate refused. Empty on every history
+                build and every clean live night, and then nothing changes.
+            serve_game_ids: The games the live run is about to predict; with
+                ``history_refused``, the only rows of this build that are written.
         """
         full_rebuild = target_season is None and target_week is None
+        if history_refused and not full_rebuild:
+            msg = (
+                "history_refused applies to a FULL live build only; a scoped build already "
+                "merges and keeps every row it did not carry"
+            )
+            raise ValueError(msg)
         logger.info(
             "Saving feature matrices to gold layer",
             target_season=target_season,
@@ -3723,6 +3804,13 @@ class FeatureMatrixBuilder:
             # build merges instead: latest-wins on game_id, full history preserved.
             if not full_rebuild:
                 self._reject_narrowing_incremental_write(table_name, matrix_df)
+            elif history_refused:
+                matrix_df = self._keep_history_through_a_refusal(
+                    table_name,
+                    matrix_df,
+                    history_refused=history_refused,
+                    serve_game_ids=serve_game_ids,
+                )
 
             save_dataframe(
                 matrix_df,

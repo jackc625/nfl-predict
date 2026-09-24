@@ -48,8 +48,8 @@ from typing import TYPE_CHECKING
 from pipeline.steps import (
     PipelinePhase,
     StepDefinition,
+    build_and_save_gold,
     persist_current_season_elo,
-    step_build_features,
     step_build_team_form,
     step_data_qa,
     step_export_artifacts,
@@ -462,9 +462,9 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
         ),
         step(
             "build_features",
-            step_build_features,
+            lambda: build_and_save_gold(slate.game_ids),
             build,
-            description="Full-history gold build, saved",
+            description="Full-history gold build, saved; a history refusal keeps gold",
         ),
         step(
             "validate_features",

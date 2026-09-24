@@ -821,18 +821,45 @@ def step_build_features() -> None:
 
     IT SAVES WHAT IT BUILDS (Plan 33.2-27). It used to build the matrices and discard them, so
     every later step read the PREVIOUS gold and the slate being predicted was never in it. The
-    build is the full history (owner ruling 2026-09-23), so the write replaces the gold tables.
+    build is the full history (owner ruling 2026-09-23), so the write replaces the gold tables
+    -- unless a historical game was refused, when the stored history is kept (see
+    :func:`build_and_save_gold`). The games served here are the current week's.
+    """
+    from pipeline import live_skip
+
+    serve: frozenset[str] = frozenset()
+    if live_skip.excluded_games():
+        season, week = _resolve_current_week()
+        serve = frozenset(str(g) for g in _week_schedule(season, week)["game_id"])
+    build_and_save_gold(serve)
+
+
+def build_and_save_gold(serve_game_ids: frozenset[str]) -> None:
+    """Build the full-history gold, excluding the run's dropped games, and save it.
+
+    A SKIP MUST NEVER DELETE A HISTORICAL GAME FROM GOLD (33.2 review C1 CR-06 = B WR-01). An
+    excluded game that is not being served tonight is a HISTORICAL refusal, and D33.2-05 says a
+    history build that meets one saves nothing: the stored gold -- the table every trainer
+    reads -- is kept, and only the *serve_game_ids* rows of this build are written into it
+    (``FeatureMatrixBuilder.save_feature_matrices(history_refused=...)``). Before this, the
+    build was written in replace mode and the refused game silently vanished from training.
+
+    Args:
+        serve_game_ids: The games this run is about to predict (the daily slate).
     """
     from pipeline import live_skip
     from scripts.build_features import FeatureMatrixBuilder
 
+    excluded = live_skip.excluded_games()
     builder = FeatureMatrixBuilder()
-    matrices = builder.generate_feature_matrices(
-        excluded_game_ids=live_skip.excluded_games()
-    )
+    matrices = builder.generate_feature_matrices(excluded_game_ids=excluded)
     # An empty result saves nothing; ``step_verify_gold_currency`` then refuses the stale gold.
     if matrices:
-        builder.save_feature_matrices(matrices)
+        builder.save_feature_matrices(
+            matrices,
+            history_refused=excluded - serve_game_ids,
+            serve_game_ids=serve_game_ids - excluded,
+        )
 
 
 _GOLD_FEATURE_TABLES = ("features_wp", "features_ats", "features_ou")
