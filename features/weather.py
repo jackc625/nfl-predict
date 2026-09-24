@@ -568,12 +568,18 @@ def _row_is_covered(weather_data: dict[str, Any]) -> bool:
     record), because the state this flag names could not be written. A legacy
     frame therefore reads exactly as it always did, and a frame written by the
     current backfill reads the flag.
+
+    A flag that is PRESENT but NULL is NOT covered (33.2 review B IN-07). The row
+    says it knows whether it carries an observation and then does not say: that
+    is an unknown, and reading an unknown as "has an observation" is the opposite
+    of the phase's unknown-is-unknown rule. The row is built as an absence record
+    (NULL readings plus the flag), never from values nobody vouched for.
     """
     if "weather_coverage" not in weather_data:
         return True
     coverage = weather_data.get("weather_coverage")
     if _is_missing(coverage):
-        return True
+        return False
     return bool(coverage)
 
 

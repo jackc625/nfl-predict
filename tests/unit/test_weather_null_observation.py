@@ -1113,3 +1113,18 @@ class TestTheStateMatrixIsCommitted:
         assert tuple(groups["wind"]) == WIND_GROUP
         assert tuple(groups["precipitation"]) == PRECIPITATION_GROUP
         assert tuple(groups["composite"]) == COMPOSITE_GROUP
+
+
+class TestANullCoverageFlagIsNotAnObservation:
+    """33.2 review B IN-07: a PRESENT-but-null weather_coverage read as covered."""
+
+    @pytest.mark.parametrize("flag", [None, float("nan"), pd.NA])
+    def test_a_null_flag_is_not_covered(self, flag):
+        assert weather_module._row_is_covered({"weather_coverage": flag}) is False
+
+    def test_the_legacy_frame_without_the_column_still_reads_as_covered(self):
+        assert weather_module._row_is_covered({"game_id": "g"}) is True
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_a_stated_flag_is_read_as_stated(self, flag):
+        assert weather_module._row_is_covered({"weather_coverage": flag}) is flag
