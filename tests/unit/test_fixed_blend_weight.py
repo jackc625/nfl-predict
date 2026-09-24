@@ -865,3 +865,55 @@ class TestTheEndToEndFit:
         from tests.phase33_state import P332_25B_REFIT_ARTIFACT_IDS
 
         assert blend_source_artifact_ids() == dict(P332_25B_REFIT_ARTIFACT_IDS)
+
+
+# ---------------------------------------------------------------------------
+# A33.2-review WR-06: the production CLI does not import the tests package
+# ---------------------------------------------------------------------------
+
+
+class TestTheBlendCliDoesNotImportTheTestsPackage:
+    def test_backtest_tune_names_no_tests_module_in_any_import(self) -> None:
+        tree = ast.parse(TUNE_PATH.read_text(encoding="utf-8"))
+        imported: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported.append(node.module)
+            elif isinstance(node, ast.Import):
+                imported.extend(alias.name for alias in node.names)
+        assert imported, "no import was parsed; the probe proves nothing"
+        assert [m for m in imported if m == "tests" or m.startswith("tests.")] == []
+
+    def test_the_committed_ids_equal_the_test_manifests_record(self) -> None:
+        """The two records of one fact cannot drift apart without this failing."""
+        from config import blend_sources
+        from tests import phase33_state
+
+        assert (
+            blend_sources.BLEND_CONVERTER_ARTIFACT_ID
+            == phase33_state.P332_24B_CONVERTER_ARTIFACT_ID
+        )
+        assert (
+            blend_sources.BLEND_SOURCE_ARTIFACT_IDS
+            == phase33_state.P332_25B_REFIT_ARTIFACT_IDS
+        )
+        assert (
+            blend_sources.BLEND_SOURCE_GOLD_GENERATION
+            == phase33_state.P332_25B_REFIT_GOLD_GENERATION
+        )
+
+    def test_the_fit_refuses_without_a_supplied_live_gold_generation(
+        self, tmp_path: Path
+    ) -> None:
+        from backtest.tune import BlendSourceError
+
+        with pytest.raises(BlendSourceError, match="--gold-generation"):
+            _run(tmp_path, gold_generation_fn=None)
+
+    def test_the_cli_requires_the_gold_generation(self) -> None:
+        from backtest.tune import _build_cli_parser
+
+        with pytest.raises(SystemExit):
+            _build_cli_parser().parse_args([])
+        args = _build_cli_parser().parse_args(["--gold-generation", _DIGEST])
+        assert args.gold_generation == _DIGEST

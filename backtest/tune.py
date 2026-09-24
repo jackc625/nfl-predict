@@ -5,7 +5,7 @@ Run via: python -m backtest.tune
 WHAT IT DOES (Plan 33.2-24, D33.2-10)
 -------------------------------------
 1. Reads the three CORRECTED model artifacts (step 25b's re-fit with the snap coverage flag
-   left out, ids recorded in ``tests.phase33_state.P332_25B_REFIT_ARTIFACT_IDS``; was Plan
+   left out, ids recorded in ``config.blend_sources.BLEND_SOURCE_ARTIFACT_IDS``; was Plan
    33.2-23's ``P332_23_REFIT_ARTIFACT_IDS``) for their recipe: parameters, excluded
    feature groups and the gold generation they were fitted on. It reads NO pre-correction
    artifact, NOT ``artifacts/latest.json`` and NOT the incumbent blend.
@@ -36,6 +36,12 @@ that invites restoring it without the evidence.
 
 ``python -m backtest.tune`` therefore has ONE behaviour, and prints ``TUNED_TARGETS= 3`` when
 it succeeds.
+
+NO IMPORT FROM THE ``tests`` PACKAGE (A33.2-review WR-06). The recorded ids come from the
+committed ``config.blend_sources``, and the live gold generation is passed in on the command
+line (``--gold-generation``), exactly as ``models.train --gold-generation`` takes it: measure it
+with ``tests.gold_generation.gold_generation_key()`` and pass it. The fit refuses when it
+disagrees with the generation the source models were trained on.
 """
 
 from __future__ import annotations
@@ -53,6 +59,11 @@ from threadpoolctl import threadpool_limits
 
 from backtest.signal_lift import select_group_columns
 from conf.season_partition import completed_seasons_from, derive_season_partition
+from config.blend_sources import (
+    BLEND_CONVERTER_ARTIFACT_ID,
+    BLEND_SOURCE_ARTIFACT_IDS,
+    BLEND_SOURCE_GOLD_GENERATION,
+)
 from config.tuning_preregistration import PINNED_THREAD_COUNT
 from models.blending import BlendProvenance, MarketBlender, TuningResult
 from models.blending_data import (
@@ -69,11 +80,6 @@ from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WPTrainer
-from tests.phase33_state import (
-    P332_24B_CONVERTER_ARTIFACT_ID,
-    P332_25B_REFIT_ARTIFACT_IDS,
-    P332_25B_REFIT_GOLD_GENERATION,
-)
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -91,14 +97,13 @@ __all__ = [
     "walk_forward_predictions",
 ]
 
-#: The converter the blend binds, READ from its recorded slot -- never re-derived from a
-#: directory listing. Plan 33.2-24 step 24b re-fitted it on the repaired owned corpus
-#: (``P332_24B_CONVERTER_ARTIFACT_ID``: 1,344 graded games, two 2024 Christmas games the
-#: ingest had filed a week early now included). Was: the literal
-#: ``market_probability_20260923_025709`` (Plan 33.2-21, 1,342 games), which stays on disk
-#: untouched. Named ONCE; the blend records it and ``MarketBlender.from_artifacts``
-#: cross-checks it against the directory.
-BLEND_CONVERTER_ARTIFACT_ID: str = P332_24B_CONVERTER_ARTIFACT_ID
+# BLEND_CONVERTER_ARTIFACT_ID (imported above from ``config.blend_sources``, where it is
+# committed -- A33.2-review WR-06) is the converter the blend binds, READ from its recorded
+# slot -- never re-derived from a directory listing. Plan 33.2-24 step 24b re-fitted it on the
+# repaired owned corpus (1,344 graded games, two 2024 Christmas games the ingest had filed a
+# week early now included). Was: ``market_probability_20260923_025709`` (Plan 33.2-21, 1,342
+# games), which stays on disk untouched. The blend records it and
+# ``MarketBlender.from_artifacts`` cross-checks it against the directory.
 
 #: The targets, in the order everything here is reported.
 BLEND_TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
@@ -156,7 +161,7 @@ def blend_source_artifact_ids() -> dict[str, str]:
     ``artifacts/latest.json`` still names the dead pre-correction models until Plan
     33.2-25's swap, and a directory listing would silently pick whatever was written last.
     """
-    return dict(P332_25B_REFIT_ARTIFACT_IDS)
+    return dict(BLEND_SOURCE_ARTIFACT_IDS)
 
 
 def read_source_recipes(
@@ -338,13 +343,6 @@ def _gold_predictions_fn(
     return predict
 
 
-def _live_gold_generation() -> str:
-    """The content key of the gold on disk (``tests.gold_generation``, the one producer)."""
-    from tests.gold_generation import gold_generation_key
-
-    return gold_generation_key()
-
-
 def run_blend_tuning(
     artifacts_dir: Path | str = Path("artifacts"),
     silver_dir: Path | str = Path("data/silver"),
@@ -352,7 +350,7 @@ def run_blend_tuning(
     *,
     source_artifact_ids: dict[str, str] | None = None,
     converter_artifact_id: str = BLEND_CONVERTER_ARTIFACT_ID,
-    recorded_gold_generation: str = P332_25B_REFIT_GOLD_GENERATION,
+    recorded_gold_generation: str = BLEND_SOURCE_GOLD_GENERATION,
     predictions_fn: Callable[[str, SourceRecipe, list[int]], pd.DataFrame]
     | None = None,
     gold_generation_fn: Callable[[], str] | None = None,
@@ -372,8 +370,10 @@ def run_blend_tuning(
         recorded_gold_generation: The gold generation the source models must name.
         predictions_fn: ``(target, recipe, seasons) -> predictions``. Defaults to the real
             walk-forward over ``gold_dir``.
-        gold_generation_fn: Measures the live gold's generation. Defaults to
-            ``tests.gold_generation.gold_generation_key``.
+        gold_generation_fn: Returns the live gold's generation. REQUIRED: the CLI passes
+            the operator-measured ``--gold-generation``. There is no default, because the
+            one producer of the key lives in the ``tests`` package and a production fit
+            must not import it (A33.2-review WR-06).
 
     Returns:
         The :class:`BlendTuningRun`.
@@ -387,7 +387,14 @@ def run_blend_tuning(
     recipes = read_source_recipes(ids, artifacts_path)
     gold_digest = common_gold_generation(recipes, recorded_gold_generation)
 
-    live = (gold_generation_fn or _live_gold_generation)()
+    if gold_generation_fn is None:
+        msg = (
+            "no live gold generation was supplied. Measure it with "
+            "tests.gold_generation.gold_generation_key() and pass --gold-generation; this "
+            "production fit does not import the tests package to measure it for itself."
+        )
+        raise BlendSourceError(msg)
+    live = gold_generation_fn()
     if live != gold_digest:
         msg = (
             f"the gold on disk is generation {live}, but the source models were fitted on "
@@ -461,6 +468,16 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         default="artifacts",
         help="Artifacts root the sources are read from and the blend written to",
     )
+    parser.add_argument(
+        "--gold-generation",
+        type=str,
+        required=True,
+        help=(
+            "The live gold generation key, measured with "
+            "tests.gold_generation.gold_generation_key(). The fit refuses when it is not "
+            "the generation the source models were trained on."
+        ),
+    )
     return parser
 
 
@@ -494,7 +511,11 @@ def _print_run(run: BlendTuningRun) -> None:
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point: fit, write, print the record."""
     args = _build_cli_parser().parse_args(argv)
-    run = run_blend_tuning(artifacts_dir=Path(args.artifacts_dir))
+    live_generation = str(args.gold_generation)
+    run = run_blend_tuning(
+        artifacts_dir=Path(args.artifacts_dir),
+        gold_generation_fn=lambda: live_generation,
+    )
     _print_run(run)
     return 0
 
