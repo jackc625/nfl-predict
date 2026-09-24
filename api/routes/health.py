@@ -9,8 +9,15 @@ Expands the /health endpoint to include:
 Fallback rules for pipeline log (addresses HIGH review concern):
 - No log file exists     -> pipeline = None, does not affect status
 - Corrupt log (bad JSON) -> pipeline = None, status = "degraded"
-- Stale log (>7 days)    -> pipeline populated, status = "degraded"
+- Stale (>36 hours)      -> pipeline populated, status = "degraded"
 - Valid log              -> pipeline populated normally
+
+STALENESS IS JUDGED ON THE DAILY RUN (33.2 review C2 WR-11). The run fires every day: a day that
+predicts writes ``logs/friday_pipeline.json`` and a day that predicts nothing (no games tomorrow,
+the offseason, a lock already passed) appends one record to ``logs/daily_lock_runs.jsonl``. So
+the newer of the two says when the task last ran, and more than 36 hours without either means a
+day was missed. The old 7-day window was sized for the retired weekly Friday run and let a task
+that had stopped firing read "ok" for a week.
 """
 
 from __future__ import annotations
@@ -37,6 +44,10 @@ router = APIRouter(tags=["health"])
 
 # Absolute path to pipeline execution log (per D-18)
 PIPELINE_LOG_PATH = Path("logs/friday_pipeline.json").resolve()
+
+# One line per daily run that predicted nothing (scripts/daily_lock_pipeline.DAILY_RUN_RECORDS),
+# each carrying ``recorded_at``. With the pipeline log it covers every day the task runs.
+DAILY_RUN_RECORDS_PATH = Path("logs/daily_lock_runs.jsonl").resolve()
 
 # The run status a live run ends in when it DROPPED games for a post-lock input (D33.2-05,
 # Plan 33.2-03). The wire value of ``pipeline.steps.RunStatus.FINISHED_WITH_SKIPS``, spelled here
@@ -86,7 +97,45 @@ MODEL_FILES = _resolve_active_model_files()
 
 # Freshness thresholds
 DATA_FRESHNESS_HOURS = 168  # 7 days
-LOG_STALENESS_SECONDS = 7 * 24 * 3600  # 7 days in seconds
+# The run is DAILY (D33.2-01): one missed day is a stale automation. 36 hours rather than 24
+# leaves room for a late or slow run without letting a whole skipped day read as healthy.
+LOG_STALENESS_SECONDS = 36 * 3600
+
+
+def _latest_daily_record_time() -> datetime | None:
+    """The ``recorded_at`` of the newest no-prediction daily-run record, or None.
+
+    Reads the file's LAST non-empty line (the writer appends). Any read or parse failure is
+    None: this only ever lets a run count as recent, so an unreadable record makes no claim.
+    """
+    try:
+        lines = DAILY_RUN_RECORDS_PATH.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            recorded = json.loads(line).get("recorded_at")
+            return (
+                ensure_utc_aware(datetime.fromisoformat(recorded)) if recorded else None
+            )
+        except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+            return None
+    return None
+
+
+def _run_activity_is_stale(last_pipeline_run: datetime | None) -> bool:
+    """Whether the newer of the last pipeline run and the last daily record is too old.
+
+    None of either is no claim (the no-log rule above): only a KNOWN last run can be stale.
+    """
+    known = [
+        t for t in (last_pipeline_run, _latest_daily_record_time()) if t is not None
+    ]
+    if not known:
+        return False
+    return time.time() - max(known).timestamp() > LOG_STALENESS_SECONDS
 
 
 def _read_pipeline_log() -> tuple[PipelineStatusResponse | None, bool, bool]:
@@ -96,7 +145,8 @@ def _read_pipeline_log() -> tuple[PipelineStatusResponse | None, bool, bool]:
         Tuple of (pipeline_status, log_corrupt, log_stale).
         - pipeline_status: Populated PipelineStatusResponse or None
         - log_corrupt: True if log exists but has invalid JSON
-        - log_stale: True if log is older than 7 days
+        - log_stale: True if neither this log nor the daily-run records show a run within
+          ``LOG_STALENESS_SECONDS`` (see the module docstring)
     """
     if not PIPELINE_LOG_PATH.exists():
         return None, False, False
@@ -117,17 +167,14 @@ def _read_pipeline_log() -> tuple[PipelineStatusResponse | None, bool, bool]:
     # (e.g. up to 5 hours off in ET). Route through ``ensure_utc_aware`` so
     # naive datetimes are reinterpreted as UTC without shifting the wall
     # clock, matching the documented producer contract.
-    log_stale = False
     last_run_time: datetime | None = None
     if data.get("start_time"):
         try:
             parsed = datetime.fromisoformat(data["start_time"])
             last_run_time = ensure_utc_aware(parsed)
-            age_seconds = time.time() - last_run_time.timestamp()
-            if age_seconds > LOG_STALENESS_SECONDS:
-                log_stale = True
         except (ValueError, TypeError):
             pass
+    log_stale = _run_activity_is_stale(last_run_time)
 
     pipeline = PipelineStatusResponse(
         last_run_status=data.get("status"),
@@ -316,7 +363,7 @@ async def health_check(request: Request) -> HealthResponse:
       - Pipeline last_run_status == "degraded"
       - Pipeline last_run_status == "finished_with_skips"
       - Corrupt pipeline log
-      - Stale pipeline log (>7 days old)
+      - No daily run recorded for >36 hours (pipeline log or daily-run records)
       - Not cache_ready
       - Data not fresh (not all_fresh)
     Priority 3: ok (default if no issues)
