@@ -514,21 +514,29 @@ def cli_target_season_week(
     paired a CALENDAR season with a week that was the whole ``(season, week)`` TUPLE -- compared
     against the ``week`` column, so the default path could never filter to a week.
 
+    THE WEEK IS FILLED FROM TODAY'S SLATE ONLY WHEN THE SEASON WAS TOO (33.2 review B WR-13).
+    An explicit ``--season 2024`` with no ``--week`` used to return ``(2024, current.week)``,
+    silently filtering 2024 to whatever week number the live slate happened to be on. An
+    explicit season with no week now means every week of that season -- the week of today's
+    slate is a fact about TODAY's season only.
+
     Args:
         season_arg: ``--season`` as parsed, or ``None``.
         week_arg: ``--week`` as parsed: a number, ``"all"`` (every week) or ``None``.
 
     Returns:
-        ``(season, week)``; ``week`` is ``None`` for ``"all"``.
+        ``(season, week)``; ``week`` is ``None`` for ``"all"``, and for an explicit season
+        given without a week.
     """
-    if season_arg is not None and week_arg is not None:
-        return season_arg, None if week_arg == "all" else int(week_arg)
+    if season_arg is not None:
+        if week_arg is None or week_arg == "all":
+            return season_arg, None
+        return season_arg, int(week_arg)
 
     current = resolve_current_slate()
-    season = current.season if season_arg is None else season_arg
     if week_arg is None:
-        return season, current.week
-    return season, None if week_arg == "all" else int(week_arg)
+        return current.season, current.week
+    return current.season, None if week_arg == "all" else int(week_arg)
 
 
 # ---------------------------------------------------------------------------

@@ -566,6 +566,14 @@ class TestTheTrainersWeekDefault:
         ):
             assert slate.cli_target_season_week(2024, "7") == (2024, 7)
 
+    def test_an_explicit_season_without_a_week_is_every_week_of_it(self) -> None:
+        """33.2 review B WR-13: ``--season 2024`` alone was paired with TODAY's slate week."""
+        slate = _slate()
+        with patch.object(
+            slate, "resolve_current_slate", side_effect=AssertionError("resolved")
+        ):
+            assert slate.cli_target_season_week(2024, None) == (2024, None)
+
     @pytest.mark.parametrize("trainer", TRAINERS)
     def test_each_trainer_resolves_through_the_shared_default(
         self, trainer: str
