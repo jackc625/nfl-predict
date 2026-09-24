@@ -49,6 +49,7 @@ import pandas as pd
 import pytest
 
 import data.storage as storage_mod
+import scripts.ingest_odds as ingest_odds_module
 from data.storage import ParquetManager
 from scripts.ingest_odds import OddsDataIngester
 
@@ -69,6 +70,8 @@ HISTORICAL_ROW_COUNT = 5
 # Sunday afternoon, so the batch carries two different day-before locks.
 THURSDAY_KICKOFF = "2026-09-18T00:15:00Z"
 SUNDAY_KICKOFF = "2026-09-20T17:00:00Z"
+# Before the Thursday game's Wednesday 18:00 ET lock, so every game is still open.
+CAPTURED_BEFORE_LOCKS = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
 
 _TEAM_NAMES: tuple[str, ...] = (
     "Atlanta Falcons",
@@ -208,8 +211,15 @@ def sandbox_lake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def ingested(sandbox_lake: Path) -> pd.DataFrame:
-    """Run the REAL ingest path once against the stand-in client."""
+def ingested(sandbox_lake: Path, monkeypatch: pytest.MonkeyPatch) -> pd.DataFrame:
+    """Run the REAL ingest path once against the stand-in client.
+
+    The capture instant is pinned before the Thursday lock: a capture after a game's lock
+    writes nothing for it (33.2 review C1 CR-02), so the wall clock cannot be used here.
+    """
+    monkeypatch.setattr(
+        ingest_odds_module, "_observe_capture_instant", lambda: CAPTURED_BEFORE_LOCKS
+    )
     ingester = OddsDataIngester.__new__(OddsDataIngester)
     ingester.api_client = _StandInOddsClient(_payload())
     ingester.sportsbook_priority = []

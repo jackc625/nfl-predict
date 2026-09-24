@@ -45,7 +45,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -355,6 +355,10 @@ def stored_through_the_real_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             return None
 
     monkeypatch.setattr(storage_mod, "_parquet_manager", ParquetManager(str(tmp_path)))
+    # Before the lock: a post-lock capture writes nothing (33.2 review C1 CR-02).
+    monkeypatch.setattr(
+        ingest_odds_module, "_observe_capture_instant", lambda: CAPTURED_AT
+    )
     ingester = _bare_ingester()
     ingester.api_client = _StandIn()
     ingester.ingest_odds(season=2026, week=2, schedule=_schedule())
@@ -497,6 +501,10 @@ class TestEachRowCarriesItsOwnGamesLock:
 
         monkeypatch.setattr(
             storage_mod, "_parquet_manager", ParquetManager(str(tmp_path))
+        )
+        # A capture before both locks: a post-lock capture writes nothing (CR-02).
+        monkeypatch.setattr(
+            ingest_odds_module, "_observe_capture_instant", lambda: CAPTURED_AT
         )
         ingester = _bare_ingester()
         ingester.api_client = _StandIn()
@@ -689,3 +697,39 @@ class TestThePipelineStepPassesTheScheduleExplicitly:
             "no schedule to derive its per-game locks from"
         )
         assert "locks" not in calls, "the step must not derive a second lock map"
+
+
+class TestACaptureAfterTheLockIsNeverWritten:
+    """33.2 review C1 CR-02: a post-lock (or in-game) capture is refused by name.
+
+    Every live row is stamped ``snapshot_ts = lock``. Nothing compared the capture instant with
+    that lock, so a Sunday-afternoon run wrote post-lock and IN-PLAY lines labelled as known at
+    Saturday's lock, and every ``snapshot_ts <= lock`` fence admitted them. A game whose lock
+    has passed at the capture instant is now left out and named; at-lock is still admissible.
+    """
+
+    def _transform_at(self, ingester: OddsDataIngester, captured_at: datetime):
+        schedule = _schedule()
+        return ingester.transform_odds_data(
+            [_event(HOME_FAV)],
+            schedule=schedule,
+            locks=_locks(schedule),
+            captured_at=captured_at,
+        )
+
+    def test_a_capture_one_second_after_the_lock_writes_no_row_and_names_the_game(self):
+        ingester = _bare_ingester()
+        late = WEEK2_SUNDAY_LOCK.astimezone(UTC) + timedelta(seconds=1)
+        transformed = self._transform_at(ingester, late)
+
+        assert transformed.empty, "a post-lock capture was written under the lock label"
+        assert ingester.last_match_report.post_lock_games == (HOME_FAV["game_id"],)
+
+    def test_a_capture_exactly_at_the_lock_is_written_with_its_real_capture_time(self):
+        ingester = _bare_ingester()
+        at_lock = WEEK2_SUNDAY_LOCK.astimezone(UTC)
+        transformed = self._transform_at(ingester, at_lock)
+
+        row = _row_for(transformed, HOME_FAV["game_id"])
+        assert row["created_at"] == at_lock
+        assert ingester.last_match_report.post_lock_games == ()

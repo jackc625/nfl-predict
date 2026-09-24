@@ -339,6 +339,10 @@ class TestTheLiveCapturePathAccumulates:
         )
         monkeypatch.setattr(ingest_odds_module, "save_dataframe", _counting_save)
         monkeypatch.setattr(storage_mod, "upsert_silver", _counting_upsert)
+        # Pinned before the lock: a post-lock capture writes nothing (33.2 review CR-02).
+        monkeypatch.setattr(
+            ingest_odds_module, "_observe_capture_instant", lambda: FIRST_CAPTURE
+        )
 
         ingester = _bare_ingester([_event(("2026-09-25T19:00:00Z", None, None))])
         ingester.ingest_odds(season=2026, week=4, schedule=_schedule())

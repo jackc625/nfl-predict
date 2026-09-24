@@ -18,7 +18,13 @@ jobs. They are kept apart now, and the plumbing names each one:
   silver ``games`` row. The schedule, not the payload, says when a game starts.
 
 All three stored values already have ``OddsSchema`` columns, so there is no schema
-change. The public input is the slate's ``schedule``: the lock map is keyed by game ids
+change.
+
+A CAPTURE AFTER A GAME'S LOCK IS NEVER WRITTEN (33.2 review C1 CR-02). The ``snapshot_ts``
+label says "known at the lock", so a game whose lock had passed when the response was
+observed -- including a game in progress -- is left out and named in
+``LiveOddsMatchReport.post_lock_games``. Every stored live row therefore has
+``created_at <= snapshot_ts``, and ``created_at`` is its real capture time. The public input is the slate's ``schedule``: the lock map is keyed by game ids
 that only exist after the match, so no caller could supply it.
 """
 
@@ -165,10 +171,14 @@ class LiveOddsMatchReport:
         kickoff_disagreements: Game ids whose payload commence_time differs from the
             schedule kickoff by more than :data:`COMMENCE_TIME_TOLERANCE`. The schedule
             kickoff was used for every one of them.
+        post_lock_games: Game ids whose lock had already passed at the capture instant
+            (which includes every game in progress). NOTHING was written for them: a row
+            stamped ``snapshot_ts = lock`` must be a line that was known at the lock.
     """
 
     unmatched_games: tuple[str, ...] = ()
     kickoff_disagreements: tuple[str, ...] = ()
+    post_lock_games: tuple[str, ...] = ()
 
 
 # Sentinel substituted for the live API key in any logged params dict so the
@@ -910,6 +920,21 @@ class OddsDataIngester:
             return []
         lock = locks[game_id]
 
+        # NO CAPTURE AFTER THE LOCK (33.2 review C1 CR-02). Every row below is stamped
+        # snapshot_ts = lock, which every `snapshot_ts <= lock` fence reads as "known at the
+        # lock". A line observed after the lock -- or during the game, which the /odds
+        # endpoint also returns -- would be a post-lock line wearing a pre-lock label, so it is
+        # refused by name and never written. At-lock is admissible (<=), as in the one rule.
+        if not lock_rule.is_admissible(captured_at, lock):
+            self._post_lock.append(game_id)
+            logger.warning(
+                "Odds captured after the game's lock are not written",
+                game_id=game_id,
+                lock=lock.isoformat(),
+                captured_at=captured_at.isoformat(),
+            )
+            return []
+
         commence = _parse_commence_time(game_data.get("commence_time"))
         scheduled = cast(
             "datetime", pd.Timestamp(cast("Any", matched["kickoff_et"])).to_pydatetime()
@@ -953,7 +978,8 @@ class OddsDataIngester:
                 "last_update": last_update,
                 "market_last_update": latest_market_update(bookmaker),
                 "created_at": captured_at,
-                "is_live": False,  # Assume pre-game for now
+                # Pre-game by construction: a capture after the lock never reaches here.
+                "is_live": False,
                 **h2h_odds,
                 **spread_odds,
                 **total_odds,
@@ -985,6 +1011,7 @@ class OddsDataIngester:
 
         self._unmatched: list[str] = []
         self._kickoff_disagreements: list[str] = []
+        self._post_lock: list[str] = []
         all_odds_records = []
 
         for game_data in raw_odds:
@@ -1004,6 +1031,7 @@ class OddsDataIngester:
         self.last_match_report = LiveOddsMatchReport(
             unmatched_games=tuple(self._unmatched),
             kickoff_disagreements=tuple(self._kickoff_disagreements),
+            post_lock_games=tuple(self._post_lock),
         )
 
         logger.info(
@@ -1012,6 +1040,7 @@ class OddsDataIngester:
             output_records=len(odds_df),
             unmatched_games=len(self._unmatched),
             kickoff_disagreements=len(self._kickoff_disagreements),
+            post_lock_games=len(self._post_lock),
         )
 
         return odds_df
