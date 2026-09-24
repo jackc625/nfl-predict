@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from datetime import datetime, time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,7 @@ from deployment.setup_scheduling import SchedulingSetup
 # XML-content test is independent of pytest's working directory.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCHEDULER_XML = _REPO_ROOT / "deployment" / "windows_scheduler.xml"
+_NS = "{http://schemas.microsoft.com/windows/2004/02/mit/task}"
 
 
 @pytest.fixture()
@@ -27,7 +29,7 @@ def setup_with_mock_home(tmp_path: Path) -> SchedulingSetup:
     # Create the expected directory structure
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
-    (scripts_dir / "friday_pipeline.py").write_text("# unified pipeline")
+    (scripts_dir / "daily_lock_pipeline.py").write_text("# daily lock-time pipeline")
 
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
@@ -43,11 +45,17 @@ def setup_with_mock_home(tmp_path: Path) -> SchedulingSetup:
 class TestValidatePrerequisites:
     """Tests for validate_prerequisites()."""
 
-    def test_setup_scheduling_validates_friday_pipeline(self, tmp_path: Path) -> None:
-        """Verify validate_prerequisites() checks for friday_pipeline.py."""
+    def test_setup_scheduling_validates_daily_lock_pipeline(
+        self, tmp_path: Path
+    ) -> None:
+        """Verify validate_prerequisites() checks for the script it schedules.
+
+        Was (Plan 33.2-28): ``test_setup_scheduling_validates_friday_pipeline``, checking
+        ``friday_pipeline.py``. The scheduled entry point is now ``daily_lock_pipeline.py``.
+        """
         scripts_dir = tmp_path / "scripts"
         scripts_dir.mkdir()
-        (scripts_dir / "friday_pipeline.py").write_text("# pipeline")
+        (scripts_dir / "daily_lock_pipeline.py").write_text("# pipeline")
         (tmp_path / "logs").mkdir()
 
         setup = SchedulingSetup.__new__(SchedulingSetup)
@@ -63,10 +71,10 @@ class TestValidatePrerequisites:
     def test_setup_scheduling_validates_rejects_missing_script(
         self, tmp_path: Path
     ) -> None:
-        """Verify validate_prerequisites() returns False when friday_pipeline.py missing."""
+        """Verify validate_prerequisites() returns False when daily_lock_pipeline.py missing."""
         scripts_dir = tmp_path / "scripts"
         scripts_dir.mkdir()
-        # Do NOT create friday_pipeline.py
+        # Do NOT create daily_lock_pipeline.py
         (tmp_path / "logs").mkdir()
 
         setup = SchedulingSetup.__new__(SchedulingSetup)
@@ -274,11 +282,18 @@ class TestWindowsSchedulerXml:
         assert "S4U" in xml
         assert "HighestAvailable" in xml
 
-        # Trigger: 18:00 local = 6 PM ET, no timezone offset (D-09). The StartBoundary
-        # anchor is a real Friday (2026-09-11, the first Friday of the 2026 season),
-        # matching the ScheduleByWeek DaysOfWeek=Friday trigger (WR-03).
-        assert "2026-09-11T18:00:00" in xml
-        assert "17:00" not in xml
+        # Trigger: a DAILY trigger ahead of the 18:00 ET lock, no timezone offset (D-09,
+        # D33.2-18). Was (Plan 33.2-28): the literal Friday "2026-09-11T18:00:00" and "17:00"
+        # absent. The time is read off the PARSED element here only to confirm it is before the
+        # lock; the measured margin is asserted in ONE place,
+        # tests/unit/test_scheduler_xml_unchanged.py, so two checks cannot disagree.
+        root = ET.fromstring(xml)
+        (start_boundary,) = [
+            (e.text or "").strip() for e in root.iter(f"{_NS}StartBoundary")
+        ]
+        fires = datetime.fromisoformat(start_boundary)
+        assert fires.tzinfo is None
+        assert fires.time() < time(18, 0)
 
         # Command: uv-run invocation, not the .venv python.exe (D-10).
         # The Command may be a bare "uv" or an absolute path ending in "uv.exe"
@@ -287,15 +302,20 @@ class TestWindowsSchedulerXml:
         assert re.search(
             r"<Command>(?:[^<]*[\\/])?uv(?:\.exe)?</Command>", xml, re.IGNORECASE
         ), "expected <Command> to resolve to uv (bare 'uv' or an absolute '...uv.exe')"
-        assert "run python scripts/friday_pipeline.py" in xml
-        assert "friday_pipeline.py" in xml
+        # Was (Plan 33.2-28): "run python scripts/friday_pipeline.py".
+        (arguments,) = [(e.text or "").strip() for e in root.iter(f"{_NS}Arguments")]
+        assert arguments == "run python scripts/daily_lock_pipeline.py"
         assert ".venv\\Scripts\\python.exe" not in xml
 
         # Robustness settings preserved (D-10)
         assert "IgnoreNew" in xml
         assert "PT2H" in xml
         assert "WakeToRun" in xml
-        assert "StartWhenAvailable" in xml
+        # Was (Plan 33.2-28): present only. Now present AND false: a missed trigger must never
+        # run late, after the lock.
+        assert [
+            (e.text or "").strip() for e in root.iter(f"{_NS}StartWhenAvailable")
+        ] == ["false"]
         assert "RunOnlyIfNetworkAvailable" in xml
 
     def test_windows_scheduler_xml_declares_utf16(self) -> None:
@@ -341,10 +361,10 @@ class TestWindowsSchedulerXmlWellFormed:
         assert _cmd == "uv" or _cmd.endswith("uv.exe"), (
             f"expected Command to resolve to uv (bare 'uv' or '...uv.exe'), got {command.text!r}"
         )
+        # The trigger TIME is asserted in one place only (the parsed margin assertion in
+        # tests/unit/test_scheduler_xml_unchanged.py). Deleted by ruling (Plan 33.2-28): the
+        # literal equality with the retired Friday "2026-09-11T18:00:00".
         assert start_boundary is not None
-        # The StartBoundary anchor is a real Friday (2026-09-11), matching the
-        # ScheduleByWeek DaysOfWeek=Friday trigger (WR-03); 18:00 = 6 PM ET preserved.
-        assert start_boundary.text == "2026-09-11T18:00:00"
 
     def test_windows_scheduler_xml_comment_has_no_double_hyphen(self) -> None:
         """Verify the header comment contains no '--' (illegal inside an XML comment).
