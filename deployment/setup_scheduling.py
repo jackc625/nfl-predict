@@ -81,18 +81,93 @@ def require_eastern_time_zone(zone: str) -> None:
 
 _TASK_NS = "{http://schemas.microsoft.com/windows/2004/02/mit/task}"
 
-#: The fields the read-back compares, in the order it prints them.
+#: The fields the read-back compares, in the order it prints them. ``RunAs``, ``Enabled`` and
+#: ``WorkingDirectory`` were added by 33.2 review C2 WR-07: without them a task installed under
+#: the wrong principal (SYSTEM cannot see the owner's ``.env``), a disabled task, or one started
+#: in the wrong directory all read back as a MATCH.
 READBACK_FIELDS: tuple[str, ...] = (
     "Trigger",
     "StartTime",
     "Command",
     "Arguments",
     "StartWhenAvailable",
+    "RunAs",
+    "Enabled",
+    "WorkingDirectory",
 )
 
 
 def _local(tag: str) -> str:
     return tag.rsplit("}", maxsplit=1)[-1]
+
+
+def _lookup_account_sid(account: str) -> str | None:
+    """The string SID of a Windows account name, or None when it cannot be resolved."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    sid_size, domain_size, use = wintypes.DWORD(0), wintypes.DWORD(0), wintypes.DWORD()
+    advapi32.LookupAccountNameW(
+        None,
+        account,
+        None,
+        ctypes.byref(sid_size),
+        None,
+        ctypes.byref(domain_size),
+        ctypes.byref(use),
+    )
+    if not sid_size.value:
+        return None
+    sid = ctypes.create_string_buffer(sid_size.value)
+    domain = ctypes.create_unicode_buffer(max(domain_size.value, 1))
+    if not advapi32.LookupAccountNameW(
+        None,
+        account,
+        sid,
+        ctypes.byref(sid_size),
+        domain,
+        ctypes.byref(domain_size),
+        ctypes.byref(use),
+    ):
+        return None
+    text = wintypes.LPWSTR()
+    if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+        return None
+    try:
+        return text.value
+    finally:
+        kernel32.LocalFree(text)
+
+
+def _principal(user_id: str) -> str:
+    """The run-as account as ONE comparable value: its SID where Windows can resolve it.
+
+    Windows exports the installed task's ``UserId`` as a SID (measured 2026-09-24:
+    ``S-1-5-21-...-1001``) while the committed XML names the account (``jackc``), so the two are
+    compared as SIDs. Where a name cannot be resolved (another machine, another OS) the name is
+    compared case-insensitively without any ``DOMAIN\\`` prefix.
+    """
+    text = user_id.strip()
+    if not text:
+        return ""
+    if text.upper().startswith("S-1-"):
+        return text.upper()
+    sid = _lookup_account_sid(text)
+    if sid is not None:
+        return sid.upper()
+    return text.rsplit("\\", maxsplit=1)[-1].casefold()
+
+
+def _enabled(element: ET.Element | None) -> str:
+    """An ``<Enabled>`` child's value; absent means the schema default, ``true``."""
+    if element is None:
+        return "true"
+    flag = element.find(f"{_TASK_NS}Enabled")
+    return "true" if flag is None else (flag.text or "").strip().lower()
 
 
 def _trigger_signature(trigger: ET.Element) -> str:
@@ -115,7 +190,10 @@ def task_fields(xml_text: str) -> dict[str, str]:
     Windows' export omits settings left at their schema default, so an absent
     ``StartWhenAvailable`` reads as ``false`` (the schema default). The start is compared as a
     time of day (plus any zone suffix, which would be a real change); the command
-    case-insensitively, as Windows resolves it; the arguments with whitespace collapsed.
+    case-insensitively, as Windows resolves it; the arguments with whitespace collapsed. The
+    run-as account is compared as a SID (:func:`_principal`), an absent ``<Enabled>`` reads as
+    its default ``true``, and the working directory case-insensitively without a trailing
+    separator.
     """
     root = ET.fromstring(xml_text.strip())
     triggers = root.find(f"{_TASK_NS}Triggers")
@@ -130,6 +208,7 @@ def task_fields(xml_text: str) -> dict[str, str]:
         return [(e.text or "").strip() for e in root.iter(f"{_TASK_NS}{name}")]
 
     start_when_available = _texts("StartWhenAvailable")
+    trigger_flags = [_enabled(t) for t in (triggers if triggers is not None else [])]
     return {
         "Trigger": "; ".join(
             _trigger_signature(t) for t in (triggers if triggers is not None else [])
@@ -138,6 +217,16 @@ def task_fields(xml_text: str) -> dict[str, str]:
         "Command": "; ".join(c.casefold() for c in _texts("Command")),
         "Arguments": "; ".join(" ".join(a.split()) for a in _texts("Arguments")),
         "StartWhenAvailable": (start_when_available or ["false"])[0].lower(),
+        "RunAs": "; ".join(_principal(u) for u in _texts("UserId")),
+        # The TASK's own flag (under <Settings>) and each trigger's: either one false means the
+        # daily run never fires.
+        "Enabled": (
+            f"task={_enabled(root.find(f'{_TASK_NS}Settings'))}; "
+            f"triggers={','.join(trigger_flags)}"
+        ),
+        "WorkingDirectory": "; ".join(
+            w.rstrip("\\/").casefold() for w in _texts("WorkingDirectory")
+        ),
     }
 
 

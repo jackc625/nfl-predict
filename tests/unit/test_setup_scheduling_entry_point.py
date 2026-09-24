@@ -207,7 +207,82 @@ def test_the_weekly_task_does_not_read_back_as_the_daily_one() -> None:
         )
         if not match
     }
-    assert mismatched == {"Trigger", "StartTime", "Arguments", "StartWhenAvailable"}
+    # The weekly export names no principal and no working directory, so those differ too.
+    assert mismatched == {
+        "Trigger",
+        "StartTime",
+        "Arguments",
+        "StartWhenAvailable",
+        "RunAs",
+        "WorkingDirectory",
+    }
+
+
+# 33.2 review C2 WR-07: the run-as user, the enabled flags and the working directory are compared.
+
+
+def _mismatches(installed: str) -> set[str]:
+    return {
+        name
+        for name, _want, _got, match in scheduling.compare_task_fields(
+            _COMMITTED, installed
+        )
+        if not match
+    }
+
+
+def _nth_enabled_false(text: str, n: int) -> str:
+    """*text* with its *n*-th ``<Enabled>true</Enabled>`` (0 = the trigger's) set false."""
+    parts = text.split("<Enabled>true</Enabled>")
+    assert len(parts) == 3, "the committed XML has a trigger flag and a settings flag"
+    return "<Enabled>true</Enabled>".join(parts[: n + 1]) + (
+        "<Enabled>false</Enabled>" + "<Enabled>true</Enabled>".join(parts[n + 1 :])
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        (
+            lambda x: x.replace("<UserId>jackc</UserId>", "<UserId>SYSTEM</UserId>"),
+            "RunAs",
+        ),
+        (lambda x: _nth_enabled_false(x, 0), "Enabled"),  # the trigger disabled
+        (lambda x: _nth_enabled_false(x, 1), "Enabled"),  # the task disabled
+        (
+            lambda x: x.replace(
+                r"<WorkingDirectory>C:\Users\jackc\Code\nfl-predict<",
+                r"<WorkingDirectory>C:\Users\jackc<",
+            ),
+            "WorkingDirectory",
+        ),
+    ],
+)
+def test_a_wrong_user_a_disabled_task_or_a_wrong_directory_is_a_mismatch(
+    change, field: str
+) -> None:
+    exported = _daily_export()
+    changed = change(exported)
+    assert changed != exported, "the fixture edit did not apply"
+    assert _mismatches(changed) == {field}
+
+
+def test_the_exported_sid_matches_the_committed_account_name() -> None:
+    """Windows exports the principal as a SID; the committed XML names the account."""
+    sid = scheduling._lookup_account_sid("jackc")
+    if sid is None:
+        pytest.skip("the committed account does not resolve on this machine")
+    exported = _daily_export().replace(
+        "<UserId>jackc</UserId>", f"<UserId>{sid}</UserId>"
+    )
+    assert "RunAs" not in _mismatches(exported)
+    assert scheduling.task_fields(exported)["RunAs"] == sid.upper()
+
+
+def test_the_default_valued_enabled_flags_read_as_true_when_omitted() -> None:
+    exported = _daily_export().replace("<Enabled>true</Enabled>", "")
+    assert scheduling.task_fields(exported)["Enabled"] == "task=true; triggers=true"
+    assert "Enabled" not in _mismatches(exported)
 
 
 def _fake_schtasks(export: str, listing: str):
