@@ -51,6 +51,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from data.write_sink import current_sink
+
 __all__ = [
     "IDEMPOTENCY_KEY",
     "NULLABLE_ENTRY_KEYS",
@@ -279,6 +281,10 @@ def append_skip_record(
         return False
 
     resolved = _resolved(path)
+    # The write sink (Plan 33.2-27 Task 2b). Under a RecordingSink the append is recorded and
+    # True means the line WOULD have been appended; nothing is written.
+    if not current_sink().authorize(resolved.as_posix(), "append_skip_record"):
+        return True
     resolved.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(dict(entry), sort_keys=True, default=str)
     with resolved.open("a", encoding="utf-8", newline="\n") as handle:

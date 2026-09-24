@@ -68,6 +68,7 @@ from data.upstream_pin import (
     UpstreamPinError,
     digest_file,
 )
+from data.write_sink import current_sink
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -509,6 +510,10 @@ def write_live_manifest(
     attempted here.
     """
     path = live_manifest_path(int(manifest["season"]), manifest_dir=manifest_dir)
+    # The write sink (Plan 33.2-27 Task 2b): the manifest is COMMITTED; a dry run records the
+    # write and leaves the file untouched.
+    if not current_sink().authorize(path.as_posix(), "write_live_manifest"):
+        return path
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Serialise BEFORE opening anything: a serialiser that raises must not be able to

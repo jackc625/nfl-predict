@@ -44,6 +44,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from data.write_sink import current_sink
+
 __all__ = [
     "REQUIRED_ENTRY_KEYS",
     "SEALED_PROBE_LOG_PATH",
@@ -140,6 +142,10 @@ def append_probe_entry(
         raise SealedProbeLogCorrupt(msg)
 
     resolved = _resolved(path)
+    # The write sink (Plan 33.2-27 Task 2b): this file is COMMITTED, so a dry run that appended
+    # to it would forge the very record it exists to keep.
+    if not current_sink().authorize(resolved.as_posix(), "append_probe_entry"):
+        return
     resolved.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(entry, sort_keys=True, default=str)
     with resolved.open("a", encoding="utf-8", newline="\n") as handle:

@@ -13,6 +13,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from conf.settings import get_settings
+from data.write_sink import current_sink
 from utils import DataIngestionError, get_logger
 
 logger = get_logger(__name__)
@@ -1015,6 +1016,13 @@ def save_dataframe(
             table are left untouched on disk but no longer participate (the
             single file takes read precedence in ``ParquetManager.load``).
     """
+    # THE WRITE SINK (Plan 33.2-27 Task 2b): under a RecordingSink the write is recorded and
+    # nothing -- parquet, DuckDB or directory -- is touched. The target is resolved WITHOUT
+    # get_parquet_manager(), which would create the root as a side effect of asking.
+    target = (_reader_parquet_root() / layer / f"{table_name}.parquet").as_posix()
+    if not current_sink().authorize(target, "save_dataframe", len(df)):
+        return
+
     combined_df = df
 
     if replace_mode:
@@ -1214,6 +1222,11 @@ def save_bronze_snapshot(
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     filename = f"{table_name}_raw_bronze_{season}_W{week:02d}_{ts}.parquet"
     filepath = base_path / "bronze" / filename
+    # The write sink (Plan 33.2-27 Task 2b), consulted before the first filesystem operation.
+    if not current_sink().authorize(
+        filepath.as_posix(), "save_bronze_snapshot", len(df)
+    ):
+        return filepath
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     # Deliberately NOT _atomic_write_parquet: every call writes a NEW timestamped
@@ -1466,6 +1479,11 @@ def upsert_silver(
         base_path = Path(settings.config.data.root_path)
 
     silver_path = base_path / "silver" / f"{table_name}.parquet"
+    # The write sink (Plan 33.2-27 Task 2b), consulted before the first filesystem operation.
+    if not current_sink().authorize(
+        silver_path.as_posix(), "upsert_silver", len(new_df)
+    ):
+        return silver_path
     silver_path.parent.mkdir(parents=True, exist_ok=True)
 
     if silver_path.exists():
@@ -1604,6 +1622,11 @@ def upsert_silver_composite(
         base_path = Path(settings.config.data.root_path)
 
     silver_path = base_path / "silver" / f"{table_name}.parquet"
+    # The write sink (Plan 33.2-27 Task 2b), consulted before the first filesystem operation.
+    if not current_sink().authorize(
+        silver_path.as_posix(), "upsert_silver_composite", len(new_df)
+    ):
+        return silver_path
     silver_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fail fast on naive snapshot_ts BEFORE any read/concat/dedupe.
@@ -1674,6 +1697,13 @@ def append_odds_captures(new_df: pd.DataFrame, base_path: Path | None = None) ->
 
     if base_path is None:
         base_path = _reader_parquet_root()
+    silver_path = Path(base_path) / "silver" / "odds_snapshot.parquet"
+    # The write sink (Plan 33.2-27 Task 2b). Consulted HERE, so a dry run records this writer
+    # by its own name; under production the composite upsert below consults it again, a no-op.
+    if not current_sink().authorize(
+        silver_path.as_posix(), "append_odds_captures", len(new_df)
+    ):
+        return silver_path
     frame = _canonicalize_snapshot_ts_utc(new_df, column="created_at")
     return upsert_silver_composite(
         frame,
