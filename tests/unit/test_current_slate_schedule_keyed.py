@@ -462,6 +462,21 @@ class TestRefusals:
         with pytest.raises(MissingKickoffError, match="2040_W01_C@D"):
             _slate().resolve_current_slate(_et("2040-09-08 12:00"), schedule=frame)
 
+    def test_a_naive_kickoff_is_refused_exactly_as_the_lock_refuses_it(self) -> None:
+        """33.2 review B IN-04: slate placement ET-localized a naive kickoff; the lock refused it.
+
+        One game then had a slate and no lock. Both now go through the one strict parser.
+        """
+        from scripts.ingest_historical_odds import NaiveTimestampError
+
+        frame = _schedule(*SEASON_2040_HEAD)
+        frame["kickoff_et"] = frame["kickoff_et"].astype(object)
+        frame.loc[1, "kickoff_et"] = pd.Timestamp("2040-09-09 13:00")
+        with pytest.raises(NaiveTimestampError):
+            game_lock(frame.loc[1, "kickoff_et"])
+        with pytest.raises(NaiveTimestampError):
+            _slate().prepare_schedule(frame)
+
     def test_a_day_that_names_two_slates_is_refused(self) -> None:
         slate = _slate()
         clash = ("2040_W02_Z@Y", 2040, 2, "2040-09-10 13:00", "REG")

@@ -232,9 +232,11 @@ def prepare_schedule(schedule: pd.DataFrame) -> pd.DataFrame:
         ScheduleUnavailableError: when a required column is absent.
         utils.game_lock.MissingKickoffError: naming every game with no kickoff. A game with no
             kickoff has no day, so it cannot be placed in any slate.
+        scripts.ingest_historical_odds.NaiveTimestampError: a naive kickoff, refused exactly
+            as ``utils.game_lock.game_lock`` refuses it -- never ET-localized here.
         AmbiguousSlateError: naming each ET day that carries two slates.
     """
-    from utils.game_lock import MissingKickoffError
+    from utils.game_lock import MissingKickoffError, _require_aware
 
     missing_columns = [c for c in SCHEDULE_COLUMNS if c not in schedule.columns]
     if missing_columns:
@@ -257,7 +259,12 @@ def prepare_schedule(schedule: pd.DataFrame) -> pd.DataFrame:
     frame["season"] = frame["season"].astype(int)
     frame["week"] = frame["week"].astype(int)
     frame["game_type"] = frame["game_type"].astype(str)
-    frame["et_day"] = [kickoff_wall_clock_et(v).date() for v in frame["kickoff_et"]]
+    # THE STRICT PARSER FIRST (33.2 review B IN-04). ``kickoff_wall_clock_et`` ET-localizes a
+    # naive kickoff while ``utils.game_lock`` refuses one, so a naive value got a slate here and
+    # no lock there -- two answers for one game. Both now go through the same refusal.
+    frame["et_day"] = [
+        kickoff_wall_clock_et(_require_aware(v)).date() for v in frame["kickoff_et"]
+    ]
     frame["et_ordinal"] = [day.toordinal() for day in frame["et_day"]]
 
     slates_per_day = frame.groupby("et_ordinal")[["season", "week"]].nunique()
