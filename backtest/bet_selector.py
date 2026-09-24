@@ -792,20 +792,34 @@ class BetSelector:
     def _provenance_frame(self, rows: list[dict[str, Any]]) -> pd.DataFrame:
         """The subset of ``rows`` that carries provenance for ``assert_real_odds`` to judge.
 
-        A row carrying NEITHER a sportsbook NOR any of its target's market values is a skeleton:
+        A row carrying NEITHER a sportsbook NOR any of its target's MARKET values is a skeleton:
         it makes no provenance claim, so there is nothing to check and it is labelled rather than
         raised on. Every other row -- in particular every row carrying a sportsbook -- is handed
         to the guard unchanged. ``assert_real_odds`` already treats a frame with no ``sportsbook``
         column as carrying no provenance; this applies the SAME rule per row.
+
+        A MODEL value is not a market value (33.2 review, batch 1a follow-up). The weekly
+        candidates are a left join of the scored games onto the odds store, so a game the model
+        scored and no book priced carries its prediction beside a NaN sportsbook. Counting the
+        prediction as a provenance claim sent that one game into the guard, and the guard's
+        "no sportsbook" refusal sank the WHOLE bet list; the game is a market gap, labelled
+        ``missing_snapshot`` downstream, and gets no bet.
         """
+
+        def _market_fields(row: dict[str, Any]) -> list[str]:
+            strategy = self._strategy_for(row.get("target"))
+            model_fields = _prediction_field_names(strategy)
+            return [
+                name
+                for name in strategy.required_market_fields
+                if name not in model_fields
+            ]
+
         checked = [
             row
             for row in rows
             if not _is_absent(row.get("sportsbook"))
-            or any(
-                not _is_absent(row.get(name))
-                for name in self._strategy_for(row.get("target")).required_market_fields
-            )
+            or any(not _is_absent(row.get(name)) for name in _market_fields(row))
         ]
         return pd.DataFrame(checked)
 

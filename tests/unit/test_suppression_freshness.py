@@ -612,6 +612,35 @@ class TestProvenanceFrameScope:
         }
         assert skeleton_reasons == {"missing_snapshot"}
 
+    def test_a_game_the_model_scored_with_no_odds_row_gets_no_bet_not_a_crash(
+        self,
+    ) -> None:
+        """33.2 review, batch 1a follow-up: one game with NO odds row must not sink the list.
+
+        The weekly candidates are a LEFT join of the scored games onto the odds store, so a game
+        the model scored and the market never priced arrives with its model value present and
+        its sportsbook, line and snapshot all NaN. A model value is not a provenance claim:
+        the row is a market gap, suppressed as ``missing_snapshot`` with its reason, and every
+        other game of the week is still decided.
+        """
+        schedule = _schedule(3)
+        nan = float("nan")
+        unpriced = _candidate(
+            schedule[0]["game_id"],
+            "totals",
+            sportsbook=nan,
+            closing_total=nan,
+            snapshot_ts=nan,
+        )
+        rows = [unpriced, *_full_week(schedule[1:], ["totals"])]
+        result = _selector([_totals_strategy()]).select(rows, scheduled_games=schedule)
+
+        by_game = {r["game_id"]: r for r in result.rejected}
+        assert by_game[schedule[0]["game_id"]]["rejection_reason"] == "missing_snapshot"
+        assert {r["game_id"] for r in result.selected} == {
+            game["game_id"] for game in schedule[1:]
+        }
+
     def test_a_disallowed_sportsbook_still_raises(self) -> None:
         """One offending row in the same skeleton week still hard-fails (OUM-06 unchanged).
 
