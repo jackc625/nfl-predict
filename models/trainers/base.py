@@ -1243,6 +1243,22 @@ class BaseTrainer(ABC):
 
         outer_season = outer_comparison_season(full_features_df["season"])
 
+        # A33.2-review WR-03: "a season neither arm saw" is CHECKED against this trainer's
+        # own split, not assumed. The outer season is derived from gold alone while X_train
+        # is train_seasons + hp_val_seasons from self.config -- which models.train builds
+        # from the user-overridable --config-*-seasons flags. A config that puts the outer
+        # season inside the search window would have both arms refit on it and the margin
+        # read in-sample, then published as out-of-sample.
+        seen_seasons = set(self.config.train_seasons) | set(self.config.hp_val_seasons)
+        if outer_season in seen_seasons:
+            msg = (
+                f"outer comparison season {outer_season} is inside the search window "
+                f"{sorted(seen_seasons)} (train_seasons + hp_val_seasons). Both arms would "
+                "be refit on it, and the adoption margin would be read in-sample while "
+                "being recorded as out-of-sample. Refusing."
+            )
+            raise RuntimeError(msg)
+
         arms: dict[str, dict[str, Any]] = {}
         results: dict[str, TuningResult] = {}
         adopted_params_by_arm: dict[str, dict] = {}

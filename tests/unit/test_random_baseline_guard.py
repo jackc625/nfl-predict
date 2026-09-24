@@ -370,6 +370,31 @@ class TestTheBudget:
         with pytest.raises(RuntimeError, match="full_features_df"):
             trainer.tune_hyperparameters(X_train, y_train)
 
+    def test_an_outer_season_inside_the_search_window_is_refused(
+        self, pinned_budget: dict[str, int], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """WR-03: "a season neither arm saw" is checked against the trainer's own split.
+
+        ``_full_frame`` derives 2024 as the outer season; a config that puts 2024 into
+        hp_val would have both arms refit on it. The refusal comes BEFORE any search runs.
+        """
+        from models.temporal import TemporalSplitConfig
+
+        def must_not_search(self: OptunaTuner, objective_fn: Any) -> TuningResult:
+            raise AssertionError("a search ran before the outer-season check")
+
+        monkeypatch.setattr(OptunaTuner, "optimize", must_not_search)
+        trainer = _DummyTrainer()
+        trainer.config = TemporalSplitConfig(
+            train_seasons=[2020, 2021], hp_val_seasons=[2024], holdout_seasons=[2025]
+        )
+        trainer.use_phase332_tuning()
+        X_train, y_train = _training_frame()
+        with pytest.raises(RuntimeError, match="inside the search window"):
+            trainer.tune_hyperparameters(
+                X_train, y_train, full_features_df=_full_frame()
+            )
+
     def test_the_legacy_path_is_byte_identical(self, tmp_path: Path) -> None:
         """A trainer that does NOT opt in keeps the single-arm, 100-trial default."""
         trainer = _DummyTrainer()
