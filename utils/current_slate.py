@@ -169,7 +169,19 @@ class ScheduleNotRecordedError(SlateResolutionError):
 
 
 class ScheduleIncompleteError(SlateResolutionError):
-    """The store stops short of today in a way that is not one unrecorded playoff round."""
+    """The store stops short of today in a way that is not one unrecorded playoff round.
+
+    Attributes:
+        season: The recorded season whose re-capture would heal the store, when known.
+        week: The week that re-capture is filed under (the first week the store lacks).
+    """
+
+    def __init__(
+        self, message: str, *, season: int | None = None, week: int | None = None
+    ) -> None:
+        super().__init__(message)
+        self.season = season
+        self.week = week
 
 
 class AmbiguousSlateError(SlateResolutionError):
@@ -392,7 +404,7 @@ def _opening_slate(
             "week 1; its opening weeks are missing, so no slate can be read from it. Re-ingest "
             f"the season: `{_INGEST_COMMAND.format(season=season)}`"
         )
-        raise ScheduleIncompleteError(msg)
+        raise ScheduleIncompleteError(msg, season=season, week=1)
 
     opener_lock_day = game_lock(
         opener["kickoff_et"], game_id=str(opener["game_id"])
@@ -447,7 +459,7 @@ def _slate_after_the_last_recorded_game(
         f"current slate is unknown. Refresh the schedule: "
         f"`{_INGEST_COMMAND.format(season=season)}`"
     )
-    raise ScheduleIncompleteError(msg)
+    raise ScheduleIncompleteError(msg, season=season, week=week + 1)
 
 
 def resolve_current_slate(
@@ -526,21 +538,34 @@ def cli_target_season_week(
 
 def refresh_target(
     now: datetime | None = None, *, schedule: pd.DataFrame | None = None
-) -> tuple[int, int]:
-    """The ``(season, week)`` a daily run captures and ingests to refresh the schedule.
+) -> tuple[int, int] | None:
+    """The ``(season, week)`` a daily run captures and ingests to refresh the schedule, or None.
 
-    The current slate whenever the schedule names one -- in season, or the documented offseason
-    value. Once the calendar season has turned past a completed season whose successor is not
-    recorded (:class:`ScheduleNotRecordedError`), it is that NEXT season's week 1: capturing it is
-    how its schedule gets recorded, so the new season needs no manual switch. Every other refusal
-    propagates.
+    * IN SEASON: the current slate.
+    * THE CALENDAR SEASON HAS TURNED past a completed season whose successor is not recorded
+      (:class:`ScheduleNotRecordedError`, August onward): that NEXT season's week 1 -- capturing
+      it is how its schedule gets recorded, so the new season needs no manual switch.
+    * OFFSEASON WITH THE NEXT SEASON RECORDED (August until the opener's lock day): the next
+      season's week 1, so a moved opener is picked up from a current record (33.2 review B WR-03
+      = C1 WR-03; this used to refresh the COMPLETED season, filed under "week 18").
+    * OFFSEASON OTHERWISE (the spring): ``None`` -- nothing to refresh. The completed season
+      cannot change, and capturing it daily appended ~200 git-tracked capture entries a year,
+      then failed every day once that season was sealed.
+
+    Every other refusal propagates.
     """
     try:
-        return resolve_current_slate(now, schedule=schedule).as_tuple()
+        slate = resolve_current_slate(now, schedule=schedule)
     except ScheduleNotRecordedError as due:
         if due.season is None:
             raise
         return due.season, 1
+    if slate.in_season:
+        return slate.as_tuple()
+    following = slate.season + 1
+    if first_recorded_kickoff(following, schedule=schedule) is not None:
+        return following, 1
+    return None
 
 
 def _season_rows(season: int, schedule: pd.DataFrame | None) -> pd.DataFrame:

@@ -166,8 +166,48 @@ class ScheduleNotPublishedError(RuntimeError):
     """nflverse serves no schedule yet for the season the run has to refresh."""
 
 
-def _refresh_schedule(run_date_et: date, *, dry_run: bool) -> int:
+def _final_game_awaits_result(season: int, instant: datetime) -> bool:
+    """Whether *season*'s last recorded game has kicked off with no result stored in silver.
+
+    The one game whose result can land AFTER its season has gone to the offseason is the last
+    one -- the Super Bowl: every earlier game's result arrives while the season is still being
+    refreshed daily. So the offseason refreshes the completed season until that one result is
+    in, and never again.
+    """
+    import pandas as pd
+
+    from data.storage import load_dataframe
+
+    games = load_dataframe("games", layer="silver")
+    played = games.loc[
+        (games["season"] == season)
+        & (pd.to_datetime(games["kickoff_et"], utc=True) <= instant)
+    ]
+    if played.empty:
+        return False
+    last = played.sort_values("kickoff_et").iloc[-1]
+    return bool(pd.isna(last["home_score"]) or pd.isna(last["away_score"]))
+
+
+def _offseason_target(instant: datetime) -> tuple[int, int] | None:
+    """What an offseason day refreshes: the completed season while its final result is due."""
+    from utils.current_slate import resolve_current_slate
+
+    completed = resolve_current_slate(instant)
+    if _final_game_awaits_result(completed.season, instant):
+        return completed.season, completed.week
+    return None
+
+
+def _refresh_schedule(run_date_et: date, *, dry_run: bool) -> int | None:
     """Capture what nflverse serves now, ingest the schedule from it, and return the season.
+
+    Returns ``None`` on an offseason day with nothing to refresh (33.2 review B WR-03 = C1
+    WR-03): no capture, no probe line, no ingest -- a clean no-op, not a daily capture of a
+    season that cannot change. The next season's schedule is still picked up: from August it is
+    either not recorded yet (refreshing it is how it gets recorded) or recorded and refreshed
+    daily until its opener. The completed season is refreshed only while its final game's
+    result is due (:func:`_final_game_awaits_result`).
 
     The schedule ingest reads the LIVE-ZONE capture, never the network directly, so the capture
     must come first -- the Friday registry's order. Daily, this is what picks up results, moved
@@ -201,7 +241,14 @@ def _refresh_schedule(run_date_et: date, *, dry_run: bool) -> int:
     )
 
     instant = slate_lock(run_date_et)
-    season, week = refresh_target(instant)
+    target = refresh_target(instant) or _offseason_target(instant)
+    if target is None:
+        print(
+            "REFRESH_SKIPPED offseason: no season is being played or due, and the completed "
+            "season's results are all recorded; nothing is captured or ingested"
+        )
+        return None
+    season, week = target
     started = season_has_kicked_off(season, instant)
     datasets = sorted(upstream_pin.DATASET_COLUMNS)
     if first_recorded_kickoff(season) is None:
@@ -371,6 +418,11 @@ def _run_the_day(
     """Steps 1-3 of one daily run. The selected slate is left in *progress* for the caller."""
     # 1-2. Refresh the schedule, then select tomorrow's games.
     season = _refresh_schedule(run_date_et, dry_run=dry_run)
+    if season is None:
+        # The offseason: no season has a slate to predict, and nothing was refreshed.
+        _record_no_prediction(run_date_et, "offseason", [])
+        _print_contract(sink, dry_run=dry_run, lock_passed=0, next_day_games=0)
+        return 0
     from data.storage import load_dataframe
 
     games = load_dataframe("games", layer="silver")

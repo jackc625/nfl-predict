@@ -93,14 +93,24 @@ class TestTheSeasonComesFromTheSchedule:
             _et(f"{NEXT}-08-02 18:00"), schedule=frame
         ) == (NEXT, 1)
 
-    def test_the_spring_still_refreshes_the_completed_season(self) -> None:
-        frame = _schedule(*FIRST_SEASON_TAIL)
-        season, _week = current_slate.refresh_target(
-            _et(f"{NEXT}-03-15 18:00"), schedule=frame
-        )
-        assert season == FIRST
+    def test_the_spring_refreshes_nothing(self) -> None:
+        """33.2 review B WR-03 = C1 WR-03. Was: the spring refreshed the COMPLETED season.
 
-    def test_once_recorded_the_new_season_opens_on_its_openers_lock_day(self) -> None:
+        That appended a git-tracked capture every day for a season that cannot change, and
+        failed every day once the season was sealed.
+        """
+        frame = _schedule(*FIRST_SEASON_TAIL)
+        assert (
+            current_slate.refresh_target(_et(f"{NEXT}-03-15 18:00"), schedule=frame)
+            is None
+        )
+
+    def test_once_recorded_the_new_season_is_refreshed_until_its_opener(self) -> None:
+        """Was: August refreshed the completed season as "week 18" and never the new one.
+
+        A moved opener would then be missed, because the opener's lock day is read from the
+        new season's record.
+        """
         frame = _schedule(*FIRST_SEASON_TAIL, *NEXT_SEASON_HEAD)
         before = current_slate.refresh_target(
             _et(f"{NEXT}-08-20 18:00"), schedule=frame
@@ -108,7 +118,7 @@ class TestTheSeasonComesFromTheSchedule:
         lock_day = current_slate.refresh_target(
             _et(f"{NEXT}-09-08 18:00"), schedule=frame
         )
-        assert before[0] == FIRST  # the documented offseason value, not a guess
+        assert before == (NEXT, 1)
         assert lock_day == (NEXT, 1)
 
     def test_every_other_refusal_still_propagates(self) -> None:
@@ -238,6 +248,45 @@ class TestTheDailyRunRollsIntoTheNextSeason:
         assert "NEXT_DAY_GAMES= 0" in out
         record = json.loads((tmp_path / "daily.jsonl").read_text(encoding="utf-8"))
         assert record["outcome"] == "no_games"
+
+    def test_a_spring_day_is_a_clean_no_op_with_no_capture_and_no_ingest(
+        self, monkeypatch, refresh_env, tmp_path, capsys
+    ) -> None:
+        """33.2 review B WR-03 = C1 WR-03: no capture entry, no probe line, no re-ingest."""
+        recorded = _schedule(*FIRST_SEASON_TAIL)
+        _record_schedule(monkeypatch, recorded)
+        scored = recorded.assign(home_score=20.0, away_score=17.0)
+        monkeypatch.setattr(
+            "data.storage.load_dataframe", lambda *_a, **_k: scored.copy()
+        )
+
+        run_date = date(NEXT, 4, 15)
+        start = slate_lock(run_date).astimezone(UTC) - timedelta(hours=1)
+        assert daily.run_daily(run_date, start=start, dry_run=False) == 0
+
+        assert "capture" not in refresh_env
+        assert "ingest" not in refresh_env
+        out = capsys.readouterr().out
+        assert "REFRESH_SKIPPED offseason" in out
+        record = json.loads((tmp_path / "daily.jsonl").read_text(encoding="utf-8"))
+        assert record["outcome"] == "offseason"
+
+    def test_the_offseason_refreshes_the_completed_season_until_its_final_result_lands(
+        self, monkeypatch, refresh_env
+    ) -> None:
+        recorded = _schedule(*FIRST_SEASON_TAIL)
+        _record_schedule(monkeypatch, recorded)
+        _served(monkeypatch, recorded)
+        # The Super Bowl has been played; its result is not ingested yet.
+        pending = recorded.assign(home_score=20.0, away_score=17.0)
+        pending.loc[pending["game_type"] == "SB", ["home_score", "away_score"]] = None
+        monkeypatch.setattr(
+            "data.storage.load_dataframe", lambda *_a, **_k: pending.copy()
+        )
+
+        assert daily._refresh_schedule(date(NEXT, 2, 16), dry_run=False) == FIRST
+        assert refresh_env["capture"][:2] == (FIRST, 22)
+        assert refresh_env["ingest"] == ((FIRST,), True)
 
     def test_an_unpublished_next_schedule_is_refused_by_name(
         self, monkeypatch, refresh_env
