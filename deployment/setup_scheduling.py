@@ -580,6 +580,15 @@ def main():
 
     if args.test:
         success = setup.test_scripts(rehearsal_date=args.rehearsal_date)
+        # A failed rehearsal GATES everything after it (33.2 review C2 WR-09). This used to be
+        # overwritten by the install's own result, so `--test --install` with a failing rehearsal
+        # installed the task anyway and reported success with exit 0.
+        if not success and (args.install or args.dry_run):
+            logger.error(
+                "The rehearsal failed, so the task was not installed. Fix the daily run and "
+                "re-run with --test before installing."
+            )
+            return 1
 
     if args.install:
         try:

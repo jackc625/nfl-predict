@@ -148,6 +148,58 @@ def test_an_install_on_an_eastern_machine_proceeds(
     assert installed == [False]
 
 
+@pytest.mark.parametrize("action", ["--install", "--dry-run"])
+def test_a_failed_rehearsal_is_never_overwritten_by_an_install(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    """33.2 review C2 WR-09: ``--test --install`` with a failing rehearsal installs NOTHING.
+
+    The rehearsal's result used to be overwritten by the install's, so the task was installed
+    anyway and the run reported success with exit 0.
+    """
+    monkeypatch.setattr(
+        scheduling, "read_windows_time_zone", lambda: "Eastern Standard Time"
+    )
+    monkeypatch.setattr(
+        SchedulingSetup, "test_scripts", lambda _self, rehearsal_date=None: False
+    )
+    installed: list[bool] = []
+    monkeypatch.setattr(
+        SchedulingSetup,
+        "setup_windows_scheduler",
+        lambda _self, dry_run=False: installed.append(dry_run) or True,
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["setup_scheduling.py", "--platform", "windows", "--test", action]
+    )
+
+    assert scheduling.main() == 1
+    assert installed == []
+
+
+def test_a_passing_rehearsal_still_installs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The control: the gate is on a FAILED rehearsal, not on rehearsing at all."""
+    monkeypatch.setattr(
+        scheduling, "read_windows_time_zone", lambda: "Eastern Standard Time"
+    )
+    monkeypatch.setattr(
+        SchedulingSetup, "test_scripts", lambda _self, rehearsal_date=None: True
+    )
+    installed: list[bool] = []
+    monkeypatch.setattr(
+        SchedulingSetup,
+        "setup_windows_scheduler",
+        lambda _self, dry_run=False: installed.append(dry_run) or True,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["setup_scheduling.py", "--platform", "windows", "--test", "--install"],
+    )
+
+    assert scheduling.main() == 0
+    assert installed == [False]
+
+
 # ---------------------------------------------------------------------------
 # The installed-task read-back
 # ---------------------------------------------------------------------------
