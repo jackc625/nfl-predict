@@ -121,6 +121,23 @@ def admissible_market_rows(odds_df: pd.DataFrame, locks: pd.Series) -> pd.DataFr
     return admitted
 
 
+def _consensus_moneyline(values: pd.Series) -> int:
+    """The consensus American moneyline of several books: the median of their PROBABILITIES.
+
+    NEVER THE MEDIAN OF THE ODDS (33.2 review B WR-12). American odds jump from -100 to +100 with
+    nothing between, so the median of a -105 and a +100 is -2 -- not a price, and
+    ``moneyline_to_probability(-2)`` is 0.0196. Each book's line is converted to its implied
+    probability, the median is taken there, and the result is converted back (rounded to the
+    nearest whole price): -105 and +100 give -102, a valid pick'em favourite.
+    """
+    implied = float(
+        pd.Series([moneyline_to_probability(int(v)) for v in values]).median()
+    )
+    if implied >= 0.5:
+        return round(-100 * implied / (1 - implied))
+    return round(100 * (1 - implied) / implied)
+
+
 def _as_float(value: object) -> float:
     """*value* as a float, NULL (NaN) when it is missing."""
     return float(cast("float", value)) if pd.notna(value) else float("nan")
@@ -693,14 +710,18 @@ class MarketAnchorFeaturesCalculator:
                 # Calculate consensus for each market
                 consensus = {"game_id": game_id}
 
-                # Moneyline consensus (median)
+                # Moneyline consensus: the median PROBABILITY, as a price (33.2 review B WR-12)
                 ml_home_values = group[ml_home_col].dropna()
                 ml_away_values = group[ml_away_col].dropna()
 
                 if len(ml_home_values) > 0:
-                    consensus["consensus_ml_home"] = ml_home_values.median()
+                    consensus["consensus_ml_home"] = _consensus_moneyline(
+                        ml_home_values
+                    )
                 if len(ml_away_values) > 0:
-                    consensus["consensus_ml_away"] = ml_away_values.median()
+                    consensus["consensus_ml_away"] = _consensus_moneyline(
+                        ml_away_values
+                    )
 
                 # Spread consensus (median)
                 spread_values = group[spread_col].dropna()
@@ -1270,15 +1291,21 @@ class MarketAnchorFeaturesCalculator:
         open_spread = opening_lines["spread"].dropna().median()
         open_total = opening_lines["total"].dropna().median()
 
-        prob_home_fair = float("nan")
-        snap_ml_home_vals = snapshot_lines["ml_home"].dropna()
-        snap_ml_away_vals = snapshot_lines["ml_away"].dropna()
-        if len(snap_ml_home_vals) > 0 and len(snap_ml_away_vals) > 0:
-            prob_home_raw = moneyline_to_probability(int(snap_ml_home_vals.median()))
-            prob_away_raw = moneyline_to_probability(int(snap_ml_away_vals.median()))
-            prob_home_fair, _ = devig_probabilities(
-                prob_home_raw, prob_away_raw, method=self.devig_method
-            )
+        # EACH BOOK is de-vigged on its own pair, and the median is taken over the resulting
+        # PROBABILITIES (33.2 review B WR-12). The median of the raw American odds crossed the
+        # +/-100 discontinuity -- -105 and +100 gave -2, "probability" 0.0196.
+        priced = snapshot_lines.dropna(subset=["ml_home", "ml_away"])
+        fair_by_book = [
+            devig_probabilities(
+                moneyline_to_probability(int(home)),
+                moneyline_to_probability(int(away)),
+                method=self.devig_method,
+            )[0]
+            for home, away in zip(priced["ml_home"], priced["ml_away"], strict=True)
+        ]
+        prob_home_fair = (
+            float(pd.Series(fair_by_book).median()) if fair_by_book else float("nan")
+        )
 
         return {
             "game_id": game_id,

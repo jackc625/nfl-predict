@@ -35,7 +35,20 @@ def moneyline_to_probability(moneyline: int) -> float:
 
     Returns:
         Implied probability (0.0 to 1.0)
+
+    Raises:
+        ValueError: for a value strictly between -100 and +100. American odds have no such
+            price, and the formulas below turn one into nonsense (-2 -> 0.0196, 0 -> 1.0) -- which
+            is how a median taken ACROSS the +/-100 discontinuity became a "probability"
+            (33.2 review B WR-12). Refused rather than converted.
     """
+    if -100 < moneyline < 100:
+        msg = (
+            f"{moneyline!r} is not an American moneyline: no price lies strictly between -100 "
+            "and +100. A value there is usually a median taken across the +/-100 discontinuity; "
+            "convert each line to a probability first and take the median of those."
+        )
+        raise ValueError(msg)
     if moneyline < 0:
         # Negative moneyline (favorite)
         return abs(moneyline) / (abs(moneyline) + 100)
