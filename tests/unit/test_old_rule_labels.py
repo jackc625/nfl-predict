@@ -134,6 +134,20 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "'not clean evidence' (D33.2-07); it names no pre-fix model and no gate baseline, so "
         "the old-rule addendum does not describe it."
     ),
+    "COLD-START-CORRECTION.md": (
+        "Plan 33.2-26's superseding correction of the 2026 cold-start rule frozen at 11761c7, "
+        "re-derived on the three corrected models and on lines owned before each game's lock. It "
+        "names the superseded record but reports no result from it, and labels its figures 'not "
+        "clean evidence' (D33.2-07); it rests on no pre-fix model, so the old-rule addendum does "
+        "not describe it."
+    ),
+    "EV-CHAIN-CORRECTION.md": (
+        "Plan 33.2-29's re-derivation of the EV floor and frozen residual SD on the three "
+        "corrected models and on lines owned before each game's lock. It lists the superseded "
+        "ee20773 values only as the numbers being replaced and labels its figures 'not clean "
+        "evidence' (D33.2-07); it rests on no pre-fix model, so the old-rule addendum does not "
+        "describe it."
+    ),
     "PROFITABILITY-PREREGISTRATION.md": (
         "A sealed pre-registration whose ancestry anchor is checked by "
         "tests/unit/test_preregistration_ancestry.py; editing it in place would destroy that "
