@@ -584,6 +584,23 @@ def train_target(
     }
 
 
+def _pooled_brier(holdout_predictions: pd.DataFrame | None) -> float | None:
+    """Mean squared error of the pooled out-of-sample WP probabilities, or None.
+
+    Args:
+        holdout_predictions: The trainer's per-game out-of-sample record
+            (``prediction`` / ``actual``), or None.
+
+    Returns:
+        The Brier score, or None when there is no out-of-sample prediction to score.
+    """
+    if holdout_predictions is None or holdout_predictions.empty:
+        return None
+    prediction = holdout_predictions["prediction"].to_numpy(dtype=float)
+    actual = holdout_predictions["actual"].to_numpy(dtype=float)
+    return float(np.mean((prediction - actual) ** 2))
+
+
 def print_summary(results: dict[str, dict]) -> None:
     """Print a clean summary table of training results to stdout.
 
@@ -628,7 +645,11 @@ def print_summary(results: dict[str, dict]) -> None:
             # WP has accuracy from season metrics
             accuracies = [s.get("accuracy", 0) for s in season_results]
             avg_accuracy = np.mean(accuracies) if accuracies else 0
-            brier_str = f"{metadata.get('ece', '-'):.3f}" if "ece" in metadata else "-"
+            # A33.2-review IN-03: this column printed the ECE under the Brier heading. The
+            # Brier score is now computed from the trainer's own pooled out-of-sample
+            # predictions, and is "-" when there are none -- never another metric.
+            brier = _pooled_brier(model.get("holdout_predictions"))
+            brier_str = f"{brier:.3f}" if brier is not None else "-"
             ece_str = f"{metadata.get('ece', '-'):.3f}" if "ece" in metadata else "-"
         else:
             # ATS/OU have MAE from season metrics

@@ -365,3 +365,30 @@ def test_gold_parquet_is_byte_unchanged_across_a_selection(target: str) -> None:
         f"({digest_before[:12]} -> {digest_after[:12]}). The in-memory selection must never "
         "write under data/ (Plan 30-01 prohibition)."
     )
+
+
+def test_the_summary_brier_column_is_the_brier_score_not_the_ece(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A33.2-review IN-03: the Brier column used to print metadata['ece']."""
+    from models.train import print_summary
+
+    holdout = pd.DataFrame({"prediction": [0.8, 0.3], "actual": [1.0, 0.0]})
+    print_summary(
+        {
+            "wp": {
+                "model_metrics": {
+                    "season_results": [{"season": 2024, "accuracy": 1.0, "n_games": 2}],
+                    "metadata": {"ece": 0.777},
+                    "holdout_predictions": holdout,
+                },
+                "market_baseline": None,
+            }
+        }
+    )
+    row = next(
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("WP")
+    )
+    brier = (0.2**2 + 0.3**2) / 2
+    assert f"{brier:.3f}" in row
+    assert row.count("0.777") == 1, "the ECE must appear once, in its own column"
