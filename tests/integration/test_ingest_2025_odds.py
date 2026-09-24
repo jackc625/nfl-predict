@@ -110,7 +110,12 @@ def ats_bias_block() -> dict:
     )
 
     before = silver_parquet_digests()
-    block = measure_ats_residual_bias()
+    # THE SERVING MODEL IS MEASURED, AND THE PHASE-31 DIRECTION IS NOT IMPOSED ON IT (33.2
+    # review, batch 3). Since the Plan 33.2-25 swap ``latest.json`` names ats_20260923_172148;
+    # the Phase-31 pre-registration's "pooled mean strictly positive" claim was made about
+    # ats_20260605_220128. Imposing it here raised in this fixture, so every case below
+    # errored before it could assert anything about the model actually serving.
+    block = measure_ats_residual_bias(require_pooled_direction=False)
     assert_silver_unchanged(before, "measure_ats_residual_bias (test)")
     return block
 
@@ -128,7 +133,11 @@ DRIFT_XFAIL_REASON = (
     "in the terminal summary and a return to the ratified values fails loudly instead of "
     "passing unnoticed. Both value sets are recorded in "
     "tests/phase31_state.ATS_RESIDUAL_LIVE_UPSTREAM_ONLY and "
-    "ATS_RESIDUAL_LIVE_AFTER_FULL_REBUILD."
+    "ATS_RESIDUAL_LIVE_AFTER_FULL_REBUILD. SINCE THE PLAN 33.2-25 SWAP the live re-score "
+    "scores the SERVING model ats_20260923_172148, not the retired ats_20260605_220128 the "
+    "ratified constants belong to -- and current gold can no longer score the retired model "
+    "at all (D33.2-03 removed two of its 25 features) -- so these comparisons can never "
+    "pass again; they stay strict so the record cannot silently change."
 )
 
 
@@ -148,21 +157,77 @@ class TestTheAppendedATSResidualConstantsStillHold:
     ``strict=True`` means the day gold returns to the ratified numbers this turns into an
     unexpected PASS -- a failure -- forcing DEF-31-06 to be closed rather than forgotten.
 
-    ``test_the_scored_artifact_is_the_one_the_constants_name`` is NOT marked: the artifact
-    identity did not drift and must keep passing, because a different artifact would mean a
-    different number for a reason the ruling does not cover.
+    ``test_the_scored_artifact_is_the_one_the_constants_name`` was NOT marked: the artifact
+    identity did not drift and had to keep passing. The Plan 33.2-25 swap then retired that
+    artifact, and the 33.2 review (batch 3) re-pointed the two unmarked cases at the SERVING
+    model -- they used to error in fixture setup, because the Phase-31 direction guard raised
+    on a model it was never a claim about. The marked cases below still compare the ratified
+    Phase-31 constants and stay strict xfails, now across two models rather than one.
     """
 
-    def test_the_scored_artifact_is_the_one_the_constants_name(
+    def test_the_scored_artifact_is_the_serving_model_not_the_one_the_constants_name(
         self, ats_bias_block: dict
     ) -> None:
-        expected = ATS_RESIDUAL_POOLED_PROVENANCE["artifact_id"]
-        assert ats_bias_block["artifact_id"] == expected, (
-            f"the live re-score scored artifact {ats_bias_block['artifact_id']!r} but "
-            f"tests/phase31_state.py records {expected!r}. The bias the pre-registration "
-            "freezes must be attributable to a NAMED deployed model (T-31-08); a different "
-            "artifact means a different number, and the constants must be re-measured by a "
-            "new plan rather than edited in place."
+        """The re-score measures the model SERVING, and says which model the constants name.
+
+        Rewritten by the 33.2 review, batch 3. It asserted that the scored artifact IS
+        ``ats_20260605_220128``, the model the Phase-31 constants were measured on. That model
+        was retired by the Plan 33.2-25 swap, and it cannot even be scored on today's gold:
+        D33.2-03 removed the market columns it reads. So the constants are a RECORD of a
+        retired model, and what is checkable is that the re-score is attributable to the
+        model the live chain's own constants were derived from.
+        """
+        import json
+
+        from backtest.corrected_ev_chain_constants import CORRECTED_SOURCE_ARTIFACT_IDS
+
+        serving = CORRECTED_SOURCE_ARTIFACT_IDS["ats"]
+        assert ats_bias_block["artifact_id"] == serving, (
+            f"the live re-score scored {ats_bias_block['artifact_id']!r}, not the serving ATS "
+            f"model {serving!r} the corrected EV chain was derived from (T-31-08)"
+        )
+        assert ats_bias_block["artifact_id_from_latest_json"] == serving
+
+        retired = ATS_RESIDUAL_POOLED_PROVENANCE["artifact_id"]
+        assert retired != serving
+        features = json.loads(
+            (Path("artifacts") / retired / "feature_list.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        gold_columns = set(pd.read_parquet(_GOLD_ATS).columns)
+        assert [f for f in features if f not in gold_columns], (
+            f"the retired {retired} can be scored on today's gold after all; the Phase-31 "
+            "constants would then be re-derivable and this case must be revisited"
+        )
+
+    def test_the_phase31_direction_is_not_gated_on_the_serving_model(
+        self, ats_bias_block: dict
+    ) -> None:
+        """The serving model's pooled residual and its live chain agree: no positive bias.
+
+        Rewritten by the 33.2 review, batch 3, from ``..._pooled_direction_is_positive...``.
+        The Phase-31 guard asserted a strictly positive pooled mean for ITS model. The serving
+        model's pooled 2021-2024 mean is NOT positive, and the corrected chain it bets through
+        corrects a NEGATIVE bias in every season -- two measurements that agree. The rules the
+        original guarded are kept: no per-season sign is gated and no tolerance is used.
+        """
+        from backtest.weekly_bet_list import load_frozen_chain_fit
+
+        assert ats_bias_block["pooled_direction_asserted"] is False
+        assert ats_bias_block["pooled_direction_holds"] is False, (
+            "the serving ATS model's pooled residual is now strictly positive; the live "
+            "chain corrects a NEGATIVE bias, so the two measurements no longer agree"
+        )
+        chain_bias = load_frozen_chain_fit()["ats"].season_bias_by_season
+        assert chain_bias and all(value < 0.0 for value in chain_bias.values()), (
+            f"the live ATS chain's season biases are {chain_bias}; not all negative"
+        )
+        assert ats_bias_block["per_season_sign_asserted"] is False
+        assert ats_bias_block["numeric_tolerance_used"] is None, (
+            "a numeric tolerance appeared in the ATS bias measurement. Choosing a magnitude "
+            "threshold after seeing the measured values is the post-hoc threshold selection "
+            "this phase forbids everywhere else (T-31-08c)."
         )
 
     @pytest.mark.xfail(strict=True, reason=DRIFT_XFAIL_REASON)
@@ -193,31 +258,6 @@ class TestTheAppendedATSResidualConstantsStillHold:
                 f"pooled field '{field}' drifted: live {live[field]} vs the value "
                 f"{expected} appended by Plan 31-02 Task 2."
             )
-
-    def test_the_pooled_direction_is_positive_and_only_the_pooled_sign_is_gated(
-        self, ats_bias_block: dict
-    ) -> None:
-        """The guard the pre-registration rests on, and the guard it deliberately does NOT have.
-
-        The O/U residual contract corrects a NEGATIVE bias, so an ATS sign guard copied from it
-        would assert the wrong direction. The pooled ATS mean is POSITIVE and that is asserted.
-        The per-season signs are NOT asserted: 2022 is negative, and a per-season gate would
-        hard-stop the phase on a fact that is simply true (REVIEW-ATS).
-
-        THIS CASE STILL PASSES AND IS DELIBERATELY NOT MARKED. The one assertion it carried
-        that DID drift -- the negative-season set -- was split into the case below rather
-        than dragging these three guards into an xfail with it. Marking the whole test would
-        have silently stopped asserting the pooled direction claim the entire ATS arm of the
-        pre-registration rests on, which is a loss of protection the ruling did not ask for.
-        """
-        assert float(ats_bias_block["pooled"]["mean"]) > 0.0
-        assert ats_bias_block["pooled_direction_asserted"] is True
-        assert ats_bias_block["per_season_sign_asserted"] is False
-        assert ats_bias_block["numeric_tolerance_used"] is None, (
-            "a numeric tolerance appeared in the ATS bias measurement. Choosing a magnitude "
-            "threshold after seeing the measured values is the post-hoc threshold selection "
-            "this phase forbids everywhere else (T-31-08c)."
-        )
 
     @pytest.mark.xfail(strict=True, reason=DRIFT_XFAIL_REASON)
     def test_the_negative_mean_season_set_is_still_exactly_2022(

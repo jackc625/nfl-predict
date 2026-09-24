@@ -567,6 +567,8 @@ def _residual_stats(residuals: pd.Series) -> dict[str, Any]:
 
 def measure_ats_residual_bias(
     artifacts_dir: str | Path = "artifacts",
+    *,
+    require_pooled_direction: bool = True,
 ) -> dict[str, Any]:
     """Re-derive the ATS residual bias from the DEPLOYED artifact (closes assumption A1).
 
@@ -584,10 +586,20 @@ def measure_ats_residual_bias(
     them surfaces as a failure instead of silently widening the window this number is measured
     over.
 
+    Args:
+        artifacts_dir: The artifacts root whose ``latest.json`` names the ATS model scored.
+        require_pooled_direction: Refuse a pooled mean that is not strictly positive -- the
+            Phase-31 pre-registration's claim about ITS model (``ats_20260605_220128``).
+            The Phase-31 audit keeps the default. A caller measuring a model that claim was
+            never made about (the model serving since the Plan 33.2-25 swap, whose corrected
+            chain corrects a NEGATIVE bias) passes False and reads
+            ``pooled_direction_holds`` instead (33.2 review, batch 3).
+
     Raises:
         AssertionError: if the holdout constants are not 2021/2024, if the resolved artifact
-            id disagrees with ``artifacts/latest.json``, or if the POOLED mean residual is not
-            strictly positive.
+            id disagrees with ``artifacts/latest.json``, or -- when
+            ``require_pooled_direction`` -- if the POOLED mean residual is not strictly
+            positive.
     """
     from scipy.stats import norm
 
@@ -637,7 +649,8 @@ def measure_ats_residual_bias(
     pooled = _residual_stats(frame["residual"])
 
     # THE DIRECTION GUARD -- pooled sign only, no per-season sign, no tolerance.
-    if not pooled["mean_float"] > 0.0:
+    pooled_direction_holds = bool(pooled["mean_float"] > 0.0)
+    if require_pooled_direction and not pooled_direction_holds:
         msg = (
             f"POOLED ATS residual mean is {pooled['mean']}, which is not strictly positive. "
             f"The pre-registration's claim is: {POOLED_DIRECTION_CLAIM}. A non-positive "
@@ -679,7 +692,8 @@ def measure_ats_residual_bias(
             key: value for key, value in pooled.items() if not key.endswith("_float")
         },
         "pooled_direction_claim": POOLED_DIRECTION_CLAIM,
-        "pooled_direction_asserted": True,
+        "pooled_direction_asserted": require_pooled_direction,
+        "pooled_direction_holds": pooled_direction_holds,
         "per_season_sign_asserted": False,
         "numeric_tolerance_used": None,
         "seasons_with_negative_mean": negative_seasons,
