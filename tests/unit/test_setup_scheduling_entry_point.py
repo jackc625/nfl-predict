@@ -146,3 +146,100 @@ def test_an_install_on_an_eastern_machine_proceeds(
 
     assert scheduling.main() == 0
     assert installed == [False]
+
+
+# ---------------------------------------------------------------------------
+# The installed-task read-back
+# ---------------------------------------------------------------------------
+
+_COMMITTED = (
+    (Path(scheduling.__file__).parent / "windows_scheduler.xml")
+    .read_bytes()
+    .decode("utf-16")
+)
+
+# The shape Windows exports (measured 2026-09-24 with schtasks /query /xml on the WEEKLY task this
+# plan replaces): default-valued settings omitted, a SID for the user, ANSI text.
+_WEEKLY_EXPORT = r"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Settings>
+    <StartWhenAvailable>true</StartWhenAvailable>
+  </Settings>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-09-12T18:00:00</StartBoundary>
+      <ScheduleByWeek>
+        <WeeksInterval>1</WeeksInterval>
+        <DaysOfWeek>
+          <Friday />
+        </DaysOfWeek>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Users\jackc\AppData\Roaming\Python\Python313\Scripts\uv.exe</Command>
+      <Arguments>run python scripts/friday_pipeline.py --log-level INFO</Arguments>
+    </Exec>
+  </Actions>
+</Task>"""
+
+
+def _daily_export() -> str:
+    """The committed definition as Windows would export it: StartWhenAvailable (false) omitted."""
+    return _COMMITTED.replace("<StartWhenAvailable>false</StartWhenAvailable>", "")
+
+
+def test_the_committed_definition_reads_back_as_itself() -> None:
+    rows = scheduling.compare_task_fields(_COMMITTED, _daily_export())
+    assert [name for name, *_ in rows] == list(scheduling.READBACK_FIELDS)
+    assert all(match for *_, match in rows), rows
+    fields = scheduling.task_fields(_daily_export())
+    assert fields["StartWhenAvailable"] == "false"
+    assert fields["Trigger"] == "CalendarTrigger ScheduleByDay(DaysInterval=1)"
+
+
+def test_the_weekly_task_does_not_read_back_as_the_daily_one() -> None:
+    mismatched = {
+        name
+        for name, _want, _got, match in scheduling.compare_task_fields(
+            _COMMITTED, _WEEKLY_EXPORT
+        )
+        if not match
+    }
+    assert mismatched == {"Trigger", "StartTime", "Arguments", "StartWhenAvailable"}
+
+
+def _fake_schtasks(export: str, listing: str):
+    def _run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        if "/xml" in cmd:
+            return MagicMock(returncode=0, stdout=export.encode("ascii"))
+        return MagicMock(returncode=0, stdout=listing)
+
+    return _run
+
+
+@pytest.mark.parametrize(
+    ("listing", "expected"),
+    [
+        ('"\\NFL_Predict_Pipeline","9/24/2026 5:00:00 PM","Ready"\n', True),
+        (
+            '"\\NFL_Predict_Pipeline","9/24/2026 5:00:00 PM","Ready"\n'
+            '"\\NFL_Predict_Predictions","N/A","Ready"\n',
+            False,
+        ),
+    ],
+)
+def test_the_read_back_needs_every_field_and_exactly_one_nfl_task(
+    capsys: pytest.CaptureFixture[str], listing: str, expected: bool
+) -> None:
+    setup = _bare_setup(Path(scheduling.__file__).resolve().parents[1])
+    with patch.object(
+        scheduling.subprocess,
+        "run",
+        side_effect=_fake_schtasks(_daily_export(), listing),
+    ):
+        assert setup.verify_installed() is expected
+    out = capsys.readouterr().out
+    assert f"READBACK_MATCH= {expected}" in out
+    assert "StartWhenAvailable= false | false | MATCH" in out

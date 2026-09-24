@@ -14,14 +14,18 @@ Usage:
     python deployment/setup_scheduling.py --platform windows --install
     python deployment/setup_scheduling.py --platform windows --dry-run
     python deployment/setup_scheduling.py --platform windows --test [--rehearsal-date YYYY-MM-DD]
+    python deployment/setup_scheduling.py --platform windows --verify-installed
 """
 
 import argparse
+import csv
+import io
 import os
 import platform
 import subprocess
 import sys
-from datetime import date
+import xml.etree.ElementTree as ET
+from datetime import date, datetime
 from pathlib import Path
 
 from utils.logging_config import get_logger
@@ -69,6 +73,107 @@ def require_eastern_time_zone(zone: str) -> None:
             "on an Eastern machine; refusing to install."
         )
         raise NonEasternTimeZoneError(msg)
+
+
+# ---------------------------------------------------------------------------
+# The installed-task read-back (Plan 33.2-28 Task 3)
+# ---------------------------------------------------------------------------
+
+_TASK_NS = "{http://schemas.microsoft.com/windows/2004/02/mit/task}"
+
+#: The fields the read-back compares, in the order it prints them.
+READBACK_FIELDS: tuple[str, ...] = (
+    "Trigger",
+    "StartTime",
+    "Command",
+    "Arguments",
+    "StartWhenAvailable",
+)
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", maxsplit=1)[-1]
+
+
+def _trigger_signature(trigger: ET.Element) -> str:
+    """A trigger's kind and schedule, e.g. ``CalendarTrigger ScheduleByDay(DaysInterval=1)``."""
+    parts = [_local(trigger.tag)]
+    for child in trigger:
+        if _local(child.tag).startswith("ScheduleBy"):
+            inner = sorted(
+                _local(e.tag) + (f"={e.text.strip()}" if (e.text or "").strip() else "")
+                for e in child.iter()
+                if e is not child
+            )
+            parts.append(f"{_local(child.tag)}({','.join(inner)})")
+    return " ".join(parts)
+
+
+def task_fields(xml_text: str) -> dict[str, str]:
+    """The compared fields of a task definition, NORMALISED so only a real difference differs.
+
+    Windows' export omits settings left at their schema default, so an absent
+    ``StartWhenAvailable`` reads as ``false`` (the schema default). The start is compared as a
+    time of day (plus any zone suffix, which would be a real change); the command
+    case-insensitively, as Windows resolves it; the arguments with whitespace collapsed.
+    """
+    root = ET.fromstring(xml_text.strip())
+    triggers = root.find(f"{_TASK_NS}Triggers")
+    boundaries = [(e.text or "").strip() for e in root.iter(f"{_TASK_NS}StartBoundary")]
+    starts = []
+    for boundary in boundaries:
+        instant = datetime.fromisoformat(boundary)
+        zone = "" if instant.tzinfo is None else f" {instant.utcoffset()}"
+        starts.append(instant.time().isoformat() + zone)
+
+    def _texts(name: str) -> list[str]:
+        return [(e.text or "").strip() for e in root.iter(f"{_TASK_NS}{name}")]
+
+    start_when_available = _texts("StartWhenAvailable")
+    return {
+        "Trigger": "; ".join(
+            _trigger_signature(t) for t in (triggers if triggers is not None else [])
+        ),
+        "StartTime": "; ".join(starts),
+        "Command": "; ".join(c.casefold() for c in _texts("Command")),
+        "Arguments": "; ".join(" ".join(a.split()) for a in _texts("Arguments")),
+        "StartWhenAvailable": (start_when_available or ["false"])[0].lower(),
+    }
+
+
+def compare_task_fields(
+    committed_xml: str, installed_xml: str
+) -> list[tuple[str, str, str, bool]]:
+    """``(field, committed, installed, match)`` for each of :data:`READBACK_FIELDS`."""
+    committed, installed = task_fields(committed_xml), task_fields(installed_xml)
+    return [
+        (name, committed[name], installed[name], committed[name] == installed[name])
+        for name in READBACK_FIELDS
+    ]
+
+
+def _decode_task_export(raw: bytes) -> str:
+    """``schtasks /query /xml`` output: UTF-16 with a BOM, or the console's ANSI text."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("mbcs" if sys.platform == "win32" else "latin-1")
+
+
+def _emit(line: str) -> None:
+    """One read-back line on stdout, where the owner and the plan's verify read it."""
+    sys.stdout.write(line + "\n")
+
+
+def nfl_task_names(csv_listing: str) -> list[str]:
+    """Every scheduled task whose name mentions NFL, from ``schtasks /query /fo csv /nh``."""
+    names = []
+    for row in csv.reader(io.StringIO(csv_listing)):
+        if row and "nfl" in row[0].casefold():
+            names.append(row[0].lstrip("\\"))
+    return sorted(set(names))
 
 
 class SchedulingSetup:
@@ -276,6 +381,40 @@ class SchedulingSetup:
         except Exception as e:
             logger.error(f"Error checking scheduled tasks: {e}")
 
+    def verify_installed(self) -> bool:
+        """Compare the INSTALLED task with the committed XML, field by field. Read-only.
+
+        Prints one ``FIELD= committed | installed | MATCH`` line per compared field, the NFL
+        tasks installed on this machine, and ``READBACK_MATCH= True|False``. True needs every
+        field to match AND exactly one NFL task installed -- this one -- so no weekly task can be
+        left firing beside the daily one.
+        """
+        committed = (
+            (self.nfl_predict_home / "deployment" / "windows_scheduler.xml")
+            .read_bytes()
+            .decode("utf-16")
+        )
+        export = subprocess.run(
+            ["schtasks", "/query", "/tn", TASK_NAME, "/xml"], capture_output=True
+        )
+        if export.returncode != 0:
+            _emit(f"TASK_NAME= {TASK_NAME} is not installed")
+            _emit("READBACK_MATCH= False")
+            return False
+        listing = subprocess.run(
+            ["schtasks", "/query", "/fo", "csv", "/nh"], capture_output=True, text=True
+        )
+        installed_tasks = nfl_task_names(listing.stdout)
+
+        _emit(f"TASK_NAME= {TASK_NAME}")
+        rows = compare_task_fields(committed, _decode_task_export(export.stdout))
+        for name, want, got, match in rows:
+            _emit(f"{name}= {want} | {got} | {'MATCH' if match else 'MISMATCH'}")
+        _emit(f"NFL_TASKS= {installed_tasks}")
+        matched = all(match for *_row, match in rows) and installed_tasks == [TASK_NAME]
+        _emit(f"READBACK_MATCH= {matched}")
+        return matched
+
 
 def main():
     """Main entry point."""
@@ -310,6 +449,11 @@ def main():
         "--status", action="store_true", help="Show current scheduling status"
     )
     parser.add_argument(
+        "--verify-installed",
+        action="store_true",
+        help="Compare the installed task with the committed XML (read-only)",
+    )
+    parser.add_argument(
         "--project-home", default=".", help="Path to NFL prediction project root"
     )
 
@@ -341,6 +485,9 @@ def main():
 
     if args.status:
         setup.show_status()
+
+    if args.verify_installed:
+        return 0 if setup.verify_installed() else 1
 
     if args.test:
         success = setup.test_scripts(rehearsal_date=args.rehearsal_date)
