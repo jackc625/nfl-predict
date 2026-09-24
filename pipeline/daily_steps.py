@@ -52,17 +52,13 @@ from pipeline.steps import (
     persist_current_season_elo,
     step_build_team_form,
     step_data_qa,
-    step_export_artifacts,
     step_ingest_injuries,
     step_ingest_snaps,
     step_populate_web_cache,
     step_validate_features,
     step_validate_models,
-    step_validate_predictions,
     step_verify_data_artifacts,
-    step_verify_gold_currency,
     step_verify_output_files,
-    step_verify_prediction_currency,
 )
 from utils.logging_config import get_logger
 
@@ -272,8 +268,18 @@ def build_slate_weather_features(slate: DailySlate) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _merge_into_week_file(frame: pd.DataFrame, path: Path, kind: str) -> None:
-    """Replace this run's games in the week's CSV, keep every other game's row, write it."""
+def _merge_into_week_file(
+    frame: pd.DataFrame,
+    path: Path,
+    kind: str,
+    *,
+    drop_game_ids: frozenset[str] = frozenset(),
+) -> None:
+    """Replace this run's games in the week's CSV, keep every other game's row, write it.
+
+    *drop_game_ids* are removed from the stored file as well: a slate game this run DROPPED
+    (D33.2-05) must have no prediction row, even one an earlier run of the same day wrote.
+    """
     import pandas as pd
 
     from data.write_sink import write_csv
@@ -281,11 +287,17 @@ def _merge_into_week_file(frame: pd.DataFrame, path: Path, kind: str) -> None:
     if path.exists():
         stored = pd.read_csv(path)
         if not stored.empty:
-            stored = stored.loc[
-                ~stored["game_id"].astype(str).isin(frame["game_id"].astype(str))
-            ]
+            replaced = set(frame["game_id"].astype(str)) | set(drop_game_ids)
+            stored = stored.loc[~stored["game_id"].astype(str).isin(replaced)]
             frame = pd.concat([stored, frame], ignore_index=True)
     write_csv(frame, path, kind=kind)
+
+
+def _week_file(slate: DailySlate, prefix: str) -> Path:
+    """The slate week's ``{prefix}_{season}_week{week}.csv`` under the predictions directory."""
+    from pipeline.steps import _predictions_output_dir
+
+    return _predictions_output_dir() / f"{prefix}_{slate.season}_week{slate.week}.csv"
 
 
 def predict_slate(slate: DailySlate) -> None:
@@ -297,7 +309,6 @@ def predict_slate(slate: DailySlate) -> None:
     import pandas as pd
 
     from pipeline import live_skip
-    from pipeline.steps import _predictions_output_dir
     from scripts.generate_current_week_predictions import (
         PREDICTION_OUTPUT_COLUMNS,
         build_game_context,
@@ -310,11 +321,18 @@ def predict_slate(slate: DailySlate) -> None:
 
     excluded = live_skip.excluded_games()
     in_scope = slate.game_ids - excluded
-    combined = build_predictions(
-        slate.season,
-        slate.week,
-        excluded_game_ids=excluded,
-        only_game_ids=in_scope,
+    # AN ALL-SKIPPED SLATE SCORES NOTHING (33.2 review B WR-02): every slate game was dropped,
+    # so there is nothing to hand the models -- and asking gold for the week would refuse
+    # "no rows" when the dropped games were the only ones of the week built so far.
+    combined = (
+        build_predictions(
+            slate.season,
+            slate.week,
+            excluded_game_ids=excluded,
+            only_game_ids=in_scope,
+        )
+        if in_scope
+        else pd.DataFrame(columns=pd.Index(PREDICTION_OUTPUT_COLUMNS))
     )
 
     # FINISH BEFORE THE LOCK (Task 2c). The computation instant is judged against each game's
@@ -338,10 +356,12 @@ def predict_slate(slate: DailySlate) -> None:
     rows["information_cutoff_utc"] = slate.lock.astimezone(UTC).isoformat()
     rows["computed_at_utc"] = computed_at.isoformat()
 
-    output_dir = _predictions_output_dir()
-    stem = f"{slate.season}_week{slate.week}"
+    dropped = frozenset(slate.game_ids & excluded)
     _merge_into_week_file(
-        rows, output_dir / f"predictions_{stem}.csv", "daily_predictions_csv"
+        rows,
+        _week_file(slate, "predictions"),
+        "daily_predictions_csv",
+        drop_game_ids=dropped,
     )
     context = (
         build_game_context(sorted(scored), slate.season, slate.week)
@@ -349,8 +369,144 @@ def predict_slate(slate: DailySlate) -> None:
         else pd.DataFrame(columns=pd.Index(["game_id"]))
     )
     _merge_into_week_file(
-        context, output_dir / f"game_context_{stem}.csv", "daily_game_context_csv"
+        context,
+        _week_file(slate, "game_context"),
+        "daily_game_context_csv",
+        drop_game_ids=dropped,
     )
+
+
+# ---------------------------------------------------------------------------
+# The slate's own currency checks (33.2 review B WR-02)
+# ---------------------------------------------------------------------------
+#
+# The Friday registry's checks ask about the whole WEEK, and the daily run excludes at SLATE
+# grain. When every slate game was dropped (they share one lock, so a late collection drops all
+# of them at once) and no earlier slate of the week has a row -- the Thursday game -- the week
+# checks found no gold row, an empty prediction file and "no rows", and the run ended FAILED
+# with a stale-artifact message sending the operator to a rebuild. The honest outcome is a
+# recorded skip of the whole slate, FINISHED_WITH_SKIPS. These variants judge the slate.
+
+
+def _slate_in_scope(slate: DailySlate) -> frozenset[str]:
+    """The slate games this run has not dropped."""
+    from pipeline import live_skip
+
+    return slate.game_ids - live_skip.excluded_games()
+
+
+def verify_slate_gold(slate: DailySlate) -> None:
+    """Every slate game still in scope has a row in every gold matrix. All dropped: passes.
+
+    Raises:
+        RuntimeError: a gold matrix is missing.
+        pipeline.steps.StaleDataArtifactError: a matrix lacks an in-scope slate game, named.
+    """
+    import pandas as pd
+
+    from pipeline.steps import (
+        _GOLD_FEATURE_TABLES,
+        ARTIFACT_BOUNDARY_GOLD,
+        StaleDataArtifactError,
+        _verify_artifacts_at_boundary,
+    )
+
+    in_scope = _slate_in_scope(slate)
+    if not in_scope:
+        logger.warning("Every slate game was dropped; no gold row is required")
+        return
+    _verify_artifacts_at_boundary(ARTIFACT_BOUNDARY_GOLD, slate.season, slate.week)
+    for table in _GOLD_FEATURE_TABLES:
+        ids = pd.read_parquet(f"data/gold/{table}.parquet", columns=["game_id"])
+        missing = sorted(in_scope - set(ids["game_id"].astype(str)))
+        if missing:
+            msg = (
+                f"gold {table} carries no row for slate game(s) {missing}; they cannot be "
+                "scored. Rebuild gold before predicting."
+            )
+            raise StaleDataArtifactError(msg)
+
+
+def verify_slate_predictions(slate: DailySlate) -> None:
+    """The week file holds a row made at THIS slate's lock for every in-scope game.
+
+    And no row for a game this run dropped. All dropped: only the second holds.
+
+    Raises:
+        RuntimeError: the file is missing, or a dropped game has a row.
+        pipeline.steps.StaleDataArtifactError: an in-scope slate game has no row for this lock.
+    """
+    import pandas as pd
+
+    from pipeline import live_skip
+    from pipeline.steps import StaleDataArtifactError
+
+    path = _week_file(slate, "predictions")
+    if not path.exists():
+        raise RuntimeError(f"Missing data artifacts: {path.as_posix()}")
+    frame = pd.read_csv(path)
+    ids = set(frame["game_id"].astype(str)) if "game_id" in frame.columns else set()
+    leaked = sorted(live_skip.excluded_games() & ids)
+    if leaked:
+        msg = (
+            f"{path.as_posix()} carries prediction rows for game(s) this run DROPPED under "
+            f"the live-skip rule: {leaked}. A dropped game must have no prediction."
+        )
+        raise RuntimeError(msg)
+    in_scope = _slate_in_scope(slate)
+    if not in_scope:
+        return
+    made_for_slate: set[str] = set()
+    if not frame.empty and "information_cutoff_utc" in frame.columns:
+        cutoff = pd.to_datetime(frame["information_cutoff_utc"], utc=True)
+        made_for_slate = set(
+            frame.loc[cutoff == pd.Timestamp(slate.lock), "game_id"].astype(str)
+        )
+    missing = sorted(in_scope - made_for_slate)
+    if missing:
+        msg = (
+            f"{path.as_posix()} has no prediction made at this slate's lock for {missing}; "
+            "publishing it would show an older row, or none, as tonight's."
+        )
+        raise StaleDataArtifactError(msg)
+
+
+def export_slate_week(slate: DailySlate) -> None:
+    """Export the slate week's prediction CSV to JSON beside it -- the SLATE's week."""
+    import pandas as pd
+
+    pred_csv = _week_file(slate, "predictions")
+    if not pred_csv.exists():
+        raise RuntimeError(f"Cannot export -- predictions CSV missing: {pred_csv}")
+    pd.read_csv(pred_csv).to_json(
+        pred_csv.with_suffix(".json"), orient="records", indent=2
+    )
+
+
+def validate_slate_predictions(slate: DailySlate) -> None:
+    """The slate's in-scope rows carry every published prediction and a WP in [0, 1].
+
+    Raises:
+        RuntimeError: naming the defect.
+    """
+    import pandas as pd
+
+    path = _week_file(slate, "predictions")
+    if not path.exists():
+        raise RuntimeError(f"Prediction validation failed -- missing file: {path}")
+    frame = pd.read_csv(path)
+    in_scope = _slate_in_scope(slate)
+    if not in_scope:
+        return
+    required = ["game_id", "wp_prob", "ats_prediction", "ou_prediction"]
+    missing = [c for c in required if c not in frame.columns]
+    if missing:
+        raise RuntimeError(
+            f"Prediction validation failed -- missing columns: {missing}"
+        )
+    rows = frame.loc[frame["game_id"].astype(str).isin(in_scope)]
+    if not rows["wp_prob"].between(0.0, 1.0).all():
+        raise RuntimeError("Prediction validation failed -- wp_prob outside [0, 1]")
 
 
 def recommend_slate(slate: DailySlate) -> None:
@@ -474,7 +630,7 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
         ),
         step(
             "verify_gold_currency",
-            step_verify_gold_currency,
+            lambda: verify_slate_gold(slate),
             build,
             description="Gold carries the week",
         ),
@@ -488,7 +644,7 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
         ),
         step(
             "verify_prediction_currency",
-            step_verify_prediction_currency,
+            lambda: verify_slate_predictions(slate),
             build,
             description="The week's prediction file is current",
         ),
@@ -500,13 +656,13 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
         ),
         step(
             "export_artifacts",
-            step_export_artifacts,
+            lambda: export_slate_week(slate),
             build,
             description="Export predictions JSON",
         ),
         step(
             "validate_predictions",
-            step_validate_predictions,
+            lambda: validate_slate_predictions(slate),
             build,
             description="Validate the week's predictions",
         ),

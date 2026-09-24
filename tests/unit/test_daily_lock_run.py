@@ -555,3 +555,75 @@ def test_the_fixture_odds_capture_never_opens_the_network(monkeypatch):
     with pytest.raises(DataIngestionError):
         daily_steps.ingest_slate_odds(slate, fixture=True)
     assert boards == [(2026, 3)]
+
+
+# ---------------------------------------------------------------------------
+# An all-skipped slate finishes with skips, not a stale-artifact failure (B WR-02)
+# ---------------------------------------------------------------------------
+
+
+def test_an_all_skipped_slate_finishes_with_skips(monkeypatch, tmp_path):
+    """Every slate game locked before collection closed: all are dropped and recorded.
+
+    The week has no other slate with rows yet (the Thursday-game case), so the week-level
+    checks found no gold row and an empty file and ended the run FAILED as a stale artifact.
+    """
+    import pipeline.steps as steps_mod
+    from pipeline import orchestrator, skip_log
+    from pipeline.alert import PipelineAlertManager
+    from pipeline.health import PipelineHealthChecker
+    from pipeline.staleness import StalenessGate, StalenessResult
+    from pipeline.steps import RunStatus
+
+    monkeypatch.setattr(steps_mod, "_predictions_output_dir", lambda: tmp_path)
+    monkeypatch.setattr(orchestrator, "LOG_PATH", tmp_path / "pipeline.json")
+    monkeypatch.setattr(skip_log, "SKIP_RECORD_PATH", tmp_path / "skips.jsonl")
+    monkeypatch.setattr(
+        StalenessGate, "run_all_checks", lambda _s: StalenessResult(passed=True)
+    )
+    monkeypatch.setattr(
+        PipelineHealthChecker, "run_preflight", lambda _s: {"status": "healthy"}
+    )
+    monkeypatch.setattr(
+        PipelineHealthChecker, "run_postrun", lambda _s: {"status": "healthy"}
+    )
+    for name in (
+        "alert_pipeline_success",
+        "alert_finished_with_skips",
+        "alert_degraded_completion",
+        "alert_pipeline_failure",
+        "alert_staleness_warning",
+    ):
+        monkeypatch.setattr(PipelineAlertManager, name, lambda *_a, **_k: None)
+
+    def _no_scoring(*_a, **_k):
+        raise AssertionError("an all-skipped slate asked the models to score")
+
+    import scripts.generate_current_week_predictions as gen
+
+    monkeypatch.setattr(gen, "build_predictions", _no_scoring)
+
+    slate = _slate(-30)  # its lock is long past: close_collection refuses every game
+    wanted = (
+        "close_collection",
+        "verify_gold_currency",
+        "generate_predictions",
+        "verify_prediction_currency",
+        "export_artifacts",
+        "validate_predictions",
+    )
+    registry = [
+        step
+        for step in daily_steps.build_daily_step_registry(slate)
+        if step.name in wanted
+    ]
+    live_skip.reset_excluded_games()
+    try:
+        log = orchestrator.FridayPipeline(steps=registry).run()
+    finally:
+        live_skip.reset_excluded_games()
+
+    assert log.status == RunStatus.FINISHED_WITH_SKIPS.value
+    assert set(log.skipped_games) == set(slate.game_ids)
+    written = pd.read_csv(tmp_path / "predictions_2026_week3.csv")
+    assert written.empty
