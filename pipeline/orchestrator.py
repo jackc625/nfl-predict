@@ -62,7 +62,11 @@ class FridayPipeline:
     """
 
     def __init__(
-        self, force: bool = False, mode: str = "full", history_mode: bool = False
+        self,
+        force: bool = False,
+        mode: str = "full",
+        history_mode: bool = False,
+        steps: list[StepDefinition] | None = None,
     ) -> None:
         """Initialize the pipeline.
 
@@ -76,8 +80,11 @@ class FridayPipeline:
                 and a predictions-only live night and a full live night are both LIVE. The
                 default is the live run this orchestrator exists for; a caller building
                 history must say so.
+            steps: The steps to run instead of the Friday registry -- the daily lock-time run
+                passes its own (Plan 33.2-27). ``None`` runs ``build_step_registry()``.
         """
         self.force = force
+        self._steps = steps
         self.mode = mode
         self.history_mode = history_mode
 
@@ -225,13 +232,12 @@ class FridayPipeline:
         plus one, derived from the registry); a refusal naming an already-excluded game raises
         ``SkipNotConvergingError`` on the first repeat. Either way the step FAILS, loudly.
 
-        THE COST, STATED RATHER THAN DISCOVERED IN PRODUCTION. At this wave
-        ``step_build_features`` rebuilds ALL seasons (measured 591.5 s), so a skip round inside
-        it repeats that whole build. D33.2-19 scopes the nightly build to the current season
-        plus tomorrow's games and Plan 33.2-27 implements it, after which a round costs
-        seconds. The POLICY belongs here because Plan 33.2-05 depends on it; the SCOPING belongs
-        there and is deliberately not pre-empted. Until then a refusal from a HISTORICAL row
-        drops that historical game (named in the skip record) rather than tonight's slate.
+        THE COST, STATED RATHER THAN DISCOVERED IN PRODUCTION. ``step_build_features`` rebuilds
+        ALL seasons (measured 591.5 s), so a skip round inside it repeats that whole build. The
+        owner ruled on 2026-09-23 to keep the full rebuild nightly (a one-season build diverges
+        from it on 139 of 186 columns), superseding D33.2-19's scoped build, so the daily run's
+        start time must leave room for a round. A refusal from a HISTORICAL row drops that
+        historical game (named in the skip record) rather than tonight's slate.
 
         Returns:
             The transient-retry count of the final, successful call.
@@ -356,7 +362,7 @@ class FridayPipeline:
         # ---------------------------------------------------------------
         # Phase C: Step execution
         # ---------------------------------------------------------------
-        all_steps = build_step_registry()
+        all_steps = self._steps if self._steps is not None else build_step_registry()
         steps = self._filter_steps(all_steps)
 
         # A FRESH exclusion register for every run (T-33.2-03-10): games dropped by an earlier
@@ -524,6 +530,6 @@ class FridayPipeline:
         Returns:
             List of 'name: description' strings.
         """
-        all_steps = build_step_registry()
+        all_steps = self._steps if self._steps is not None else build_step_registry()
         steps = self._filter_steps(all_steps)
         return [f"{s.name}: {s.description}" for s in steps]

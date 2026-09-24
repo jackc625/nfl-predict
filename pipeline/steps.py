@@ -607,11 +607,51 @@ def step_build_elo() -> None:
     Raises:
         EloSnapshotNotPersistedError: When snapshots were computed and not written.
     """
+    persist_current_season_elo()
+
+
+def persist_current_season_elo(
+    provisional_game_ids: frozenset[str] = frozenset(),
+) -> None:
+    """Re-derive the current season's Elo and persist it, plus provisional rows for some games.
+
+    *provisional_game_ids* names unplayed games that need a pre-game rating NOW (Plan 33.2-27):
+    the daily run passes tomorrow's slate. Without such a row an unplayed game has no Elo
+    snapshot, and the full gold build leaves it out, so it could never be predicted. Each row is
+    flagged ``is_provisional`` (``EloBuilder.snapshot_upcoming_week``), is replaced in place when
+    the result lands, and is refused by every trainer. Empty (the Friday step's call) persists
+    exactly what it always did.
+
+    Raises:
+        EloSnapshotNotPersistedError: When snapshots were computed and not written.
+    """
+    import pandas as pd
+
     from scripts.build_elo import EloBuilder, EloSnapshotNotPersistedError
 
     builder = EloBuilder()
     update = builder.update_current_season()
-    builder.save_live_append(update.season, snapshots=update.snapshots)
+    snapshots = update.snapshots
+    if provisional_game_ids:
+        season_schedule = builder.load_games_data([update.season])
+        weeks = season_schedule.loc[
+            season_schedule["game_id"].astype(str).isin(sorted(provisional_game_ids)),
+            "week",
+        ].unique()
+        provisional = pd.concat(
+            [
+                builder.snapshot_upcoming_week(
+                    update.season, int(week), games=season_schedule
+                )
+                for week in weeks
+            ],
+            ignore_index=True,
+        )
+        provisional = provisional.loc[
+            provisional["game_id"].astype(str).isin(sorted(provisional_game_ids))
+        ]
+        snapshots = pd.concat([snapshots, provisional], ignore_index=True)
+    builder.save_live_append(update.season, snapshots=snapshots)
 
     if builder.pending_snapshot_rows:
         raise EloSnapshotNotPersistedError(
@@ -767,12 +807,21 @@ def step_build_features() -> None:
     dropped are removed from every source before the information-time gate, so a re-run after a
     skip checks the REMAINING games rather than re-refusing a game already recorded. The register
     is empty on a clean run, and the call is then the one it always was.
+
+    IT SAVES WHAT IT BUILDS (Plan 33.2-27). It used to build the matrices and discard them, so
+    every later step read the PREVIOUS gold and the slate being predicted was never in it. The
+    build is the full history (owner ruling 2026-09-23), so the write replaces the gold tables.
     """
     from pipeline import live_skip
     from scripts.build_features import FeatureMatrixBuilder
 
     builder = FeatureMatrixBuilder()
-    builder.generate_feature_matrices(excluded_game_ids=live_skip.excluded_games())
+    matrices = builder.generate_feature_matrices(
+        excluded_game_ids=live_skip.excluded_games()
+    )
+    # An empty result saves nothing; ``step_verify_gold_currency`` then refuses the stale gold.
+    if matrices:
+        builder.save_feature_matrices(matrices)
 
 
 _GOLD_FEATURE_TABLES = ("features_wp", "features_ats", "features_ou")

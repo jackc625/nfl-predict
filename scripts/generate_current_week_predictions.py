@@ -206,6 +206,7 @@ def run_predictions(
     week: int,
     *,
     excluded_game_ids: frozenset[str] = frozenset(),
+    only_game_ids: frozenset[str] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Run model predictions for all three targets.
 
@@ -218,6 +219,8 @@ def run_predictions(
             COMPUTED for them -- not computed and then filtered. The week-emptiness refusal in
             ``load_gold_features`` still runs first, so "no game scheduled" keeps refusing while
             "every game excluded" returns empty frames.
+        only_game_ids: When given, only these games of the week are scored -- the daily run's
+            slate (Plan 33.2-27). ``None`` scores the whole week, as before.
 
     Returns:
         Dict mapping target -> DataFrame with game_id and prediction columns.
@@ -235,6 +238,10 @@ def run_predictions(
         gold_df = _without_excluded(
             load_gold_features(target, season, week), excluded_game_ids
         )
+        if only_game_ids is not None:
+            gold_df = gold_df.loc[
+                gold_df["game_id"].astype(str).isin(sorted(only_game_ids))
+            ].copy()
         if gold_df.empty:
             # Every game of the week was excluded: an honestly all-skipped day, not an
             # unscheduled one (that refused above). Nothing is handed to the model.
@@ -644,10 +651,66 @@ def generate_and_write(
         output_dir=str(output_dir),
     )
 
-    # 1. Run model predictions for all three targets, excluded games dropped before scoring
     n_excluded = _count_excluded_in_week(season, week, excluded_game_ids)
+    combined = build_predictions(
+        season,
+        week,
+        artifacts_dir=artifacts_dir,
+        no_blend=no_blend,
+        excluded_game_ids=excluded_game_ids,
+    )
+    if combined.empty:
+        return _write_all_skipped_week(season, week, output_dir, n_excluded)
+    game_ids = combined["game_id"].tolist()
+
+    # Write outputs
+    pred_path = write_predictions(combined, season, week, output_dir)
+    context_df = build_game_context(game_ids, season, week)
+    context_path = write_game_context(context_df, season, week, output_dir)
+
+    n_blended = int(combined["blended_wp"].notna().sum())
+    logger.info(
+        "Prediction generation complete",
+        n_games=len(combined),
+        blending_applied=n_blended > 0,
+        n_blended=n_blended,
+        predictions_file=str(pred_path),
+        context_file=str(context_path),
+    )
+    return {
+        "n_games": len(combined),
+        "n_excluded": n_excluded,
+        "n_blended": n_blended,
+        "predictions_path": pred_path,
+        "context_path": context_path,
+    }
+
+
+def build_predictions(
+    season: int,
+    week: int,
+    *,
+    artifacts_dir: Path = Path("artifacts"),
+    no_blend: bool = False,
+    excluded_game_ids: frozenset[str] = frozenset(),
+    only_game_ids: frozenset[str] | None = None,
+) -> pd.DataFrame:
+    """Score, price and blend one week's games, and WRITE NOTHING.
+
+    The body ``generate_and_write`` always ran before its writes, split out so the daily run
+    (Plan 33.2-27) can score only its slate and merge the rows into the week's file itself.
+
+    Returns:
+        One row per scored game, in the columns ``write_predictions`` publishes; EMPTY when
+        every game was excluded.
+    """
+    # 1. Run model predictions for all three targets, excluded games dropped before scoring
     prediction_results = run_predictions(
-        artifacts_dir, season, week, excluded_game_ids=excluded_game_ids
+        artifacts_dir,
+        season,
+        week,
+        excluded_game_ids=excluded_game_ids,
+        only_game_ids=only_game_ids,
     )
 
     # 2. Merge predictions into a single DataFrame
@@ -661,7 +724,7 @@ def generate_and_write(
     combined["week"] = week
 
     if combined.empty:
-        return _write_all_skipped_week(season, week, output_dir, n_excluded)
+        return combined
 
     # 3. Load market data
     game_ids = combined["game_id"].tolist()
@@ -688,29 +751,7 @@ def generate_and_write(
         combined.rename(columns={"ml_away": "market_ml_away"}, inplace=True)
 
     # 6. Apply market blending (the deployed fixed-weight blend artifact)
-    combined = apply_blending(combined, market_df, artifacts_dir, no_blend)
-
-    # 7. Write outputs
-    pred_path = write_predictions(combined, season, week, output_dir)
-    context_df = build_game_context(game_ids, season, week)
-    context_path = write_game_context(context_df, season, week, output_dir)
-
-    n_blended = int(combined["blended_wp"].notna().sum())
-    logger.info(
-        "Prediction generation complete",
-        n_games=len(combined),
-        blending_applied=n_blended > 0,
-        n_blended=n_blended,
-        predictions_file=str(pred_path),
-        context_file=str(context_path),
-    )
-    return {
-        "n_games": len(combined),
-        "n_excluded": n_excluded,
-        "n_blended": n_blended,
-        "predictions_path": pred_path,
-        "context_path": context_path,
-    }
+    return apply_blending(combined, market_df, artifacts_dir, no_blend)
 
 
 def _count_excluded_in_week(

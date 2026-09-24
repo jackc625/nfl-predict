@@ -23,8 +23,9 @@ THE PRIMITIVES THAT CONSULT IT
 ``data.storage``: ``save_dataframe``, ``save_bronze_snapshot``, ``upsert_silver``,
 ``upsert_silver_composite`` and the live accumulating writer ``append_odds_captures``;
 ``data.sealed_probe_log.append_probe_entry`` and ``data.upstream_live.write_live_manifest`` (the
-two git-tracked config records a live capture appends to); and
-``pipeline.skip_log.append_skip_record``.
+two git-tracked config records a live capture appends to);
+``pipeline.skip_log.append_skip_record``; and this module's own :func:`write_csv` and
+:func:`append_jsonl`, which the daily entry point uses for its prediction files and run records.
 
 WHAT THE SEAM DOES NOT COVER, stated rather than hidden
 -------------------------------------------------------
@@ -39,9 +40,15 @@ behind the sink.
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,29 @@ _SINK_VAR: ContextVar[WriteSink] = ContextVar("write_sink", default=_PRODUCTION)
 def current_sink() -> WriteSink:
     """The sink in force. Every write primitive calls this, and nothing re-derives it."""
     return _SINK_VAR.get()
+
+
+def write_csv(frame: pd.DataFrame, path: Path, *, kind: str) -> bool:
+    """Write *frame* to *path* as CSV, through the sink. Returns True when it was written.
+
+    The daily entry point persists through this and :func:`append_jsonl` and never calls
+    ``to_csv`` or ``open`` itself, so a dry run cannot write through a side door.
+    """
+    if not current_sink().authorize(str(path), kind, len(frame)):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False)
+    return True
+
+
+def append_jsonl(path: Path, record: dict[str, Any], *, kind: str) -> bool:
+    """Append one JSON line to *path*, through the sink. Returns True when it was written."""
+    if not current_sink().authorize(str(path), kind, 1):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+    return True
 
 
 @contextlib.contextmanager

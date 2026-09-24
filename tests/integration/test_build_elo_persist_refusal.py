@@ -145,17 +145,34 @@ class TestTheStepReachesBothVerbs:
     """An AST assertion, so the wiring cannot be quietly unhooked again."""
 
     def test_step_build_elo_calls_the_update_and_the_live_append(self) -> None:
+        """Re-expressed (Plan 33.2-27), intent kept: the step still reaches both verbs.
+
+        Was: both calls read directly off ``step_build_elo``'s body. The body now delegates to
+        ``persist_current_season_elo`` (which the daily run also calls, with its slate's
+        provisional rows), so the step must call that function and THAT function must reach
+        the update and the live append.
+        """
         source = (REPO_ROOT / "pipeline" / "steps.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
-        function = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "step_build_elo"
-        )
+
+        def _function(name: str) -> ast.FunctionDef:
+            return next(
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == name
+            )
+
+        step_calls = {
+            node.func.id
+            for node in ast.walk(_function("step_build_elo"))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert "persist_current_season_elo" in step_calls, step_calls
+
         calls = sorted(
             {
                 node.func.attr
-                for node in ast.walk(function)
+                for node in ast.walk(_function("persist_current_season_elo"))
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             }
         )

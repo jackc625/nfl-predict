@@ -974,11 +974,17 @@ class FeatureMatrixBuilder:
             # reaches gold, so it is what the gate checks.
             try:
                 team_form_df = load_dataframe("team_form_features", layer="silver")
-                if target_season and target_week:
+                # WR-10's shape, as the games block above (Plan 33.2-27): a season alone
+                # narrows, and a week narrows further. It used to need BOTH, so a
+                # season-only build left this source unfiltered.
+                if target_season:
                     team_form_df = team_form_df[
-                        (team_form_df["target_season"] == target_season)
-                        & (team_form_df["target_week"] == target_week)
+                        team_form_df["target_season"] == target_season
                     ]
+                    if target_week:
+                        team_form_df = team_form_df[
+                            team_form_df["target_week"] == target_week
+                        ]
                 team_form_df = self._team_form_per_game(team_form_df, games_df)
                 feature_sources["team_form"] = team_form_df
                 logger.info("Loaded team form features", records=len(team_form_df))
@@ -1053,11 +1059,11 @@ class FeatureMatrixBuilder:
             # naming the source changes nothing now and closes the way back.
             try:
                 weather_df = load_dataframe("weather_features", "silver", "parquet")
-                if target_season and target_week:
-                    weather_df = weather_df[
-                        (weather_df["season"] == target_season)
-                        & (weather_df["week"] == target_week)
-                    ]
+                # WR-10's shape (Plan 33.2-27): a season alone narrows, a week further.
+                if target_season:
+                    weather_df = weather_df[weather_df["season"] == target_season]
+                    if target_week:
+                        weather_df = weather_df[weather_df["week"] == target_week]
                 # SCOPED TO THIS BUILD'S GAMES (Plan 33.2-12). The frame is left-merged
                 # onto `games`, so a row for a game outside the build never reached gold;
                 # but the information-time gate checks the SOURCE frame one-to-one
@@ -3175,8 +3181,12 @@ class FeatureMatrixBuilder:
             target_df["away_score"], errors="coerce"
         )
 
-        # Remove games with missing scores
+        # Labels are computed on the PLAYED games only. An unplayed game is KEPT and rejoins
+        # below with every label blank (Plan 33.2-27): this line used to DELETE it, so the
+        # slate the daily run predicts never reached gold. A history build has no unplayed game,
+        # so its output, dtypes included, is unchanged.
         score_mask = target_df["home_score"].notna() & target_df["away_score"].notna()
+        unplayed = target_df[~score_mask]
         target_df = target_df[score_mask].copy()
 
         # Win Probability target (1 = home win, 0 = away win)
@@ -3237,8 +3247,11 @@ class FeatureMatrixBuilder:
             wp_targets=target_df["target_wp"].notna().sum(),
             ats_targets=target_df["home_margin"].notna().sum(),
             ou_targets=target_df["total_points"].notna().sum(),
+            unplayed_kept=len(unplayed),
         )
 
+        if len(unplayed) > 0:
+            target_df = pd.concat([target_df, unplayed]).loc[features_df.index]
         return target_df
 
     def generate_feature_matrices(
@@ -3444,29 +3457,32 @@ class FeatureMatrixBuilder:
             # line-derived column rung 9 removes -- which would have left this matrix
             # unbuilt, and which (recomputed from the raw silver line) would have cut it
             # from 6,499 rows to the ~2,140 games that carry a stored line at all.
+            #
+            # EVERY GAME, PLAYED OR NOT (Plan 33.2-27), exactly as the WP matrix. Keeping only
+            # rows with a label removed every unplayed game, so tomorrow's slate never reached
+            # the ATS and O/U tables and could not be predicted. An unplayed game is in a full
+            # build only through a PROVISIONAL Elo snapshot, which every trainer refuses at its
+            # gold-loading boundary, so such a row is served and never trained on. Historical
+            # rows are unchanged: every played game carries its label.
             if "home_margin" in final_features.columns:
                 ats_target_cols = [
                     c
                     for c in ["home_margin", "point_differential"]
                     if c in final_features.columns
                 ]
-                ats_games = final_features["home_margin"].notna()
-                ats_matrix = final_features.loc[
-                    ats_games,
-                    [*meta_cols, *score_cols, *ats_target_cols, *feature_cols],
+                ats_matrix = final_features[
+                    [*meta_cols, *score_cols, *ats_target_cols, *feature_cols]
                 ].copy()
                 feature_matrices["ats"] = ats_matrix
 
             # O/U matrix, on ``total_points`` -- ``OUTrainer._get_target_column``'s own
-            # target, also derived from the scores. Was: ``target_ou``, same reasoning.
+            # target, also derived from the scores. Every game, for the same reason.
             if "total_points" in final_features.columns:
                 ou_target_cols = [
                     c for c in ["total_points"] if c in final_features.columns
                 ]
-                ou_games = final_features["total_points"].notna()
-                ou_matrix = final_features.loc[
-                    ou_games,
-                    [*meta_cols, *score_cols, *ou_target_cols, *feature_cols],
+                ou_matrix = final_features[
+                    [*meta_cols, *score_cols, *ou_target_cols, *feature_cols]
                 ].copy()
                 feature_matrices["ou"] = ou_matrix
 
