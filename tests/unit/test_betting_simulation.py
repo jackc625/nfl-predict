@@ -368,7 +368,8 @@ def _spread_row_for_p_cover(p_cover: float) -> dict:
     ``model_spread = threshold + sd * Phi_inv(p_cover)``. The threshold is the SLIPPED STORED
     SPREAD, un-negated (-2.5 for a home-cover bet on a -3.0 stored spread) -- the measured
     convention DEF-31-01 was ruled onto on 2026-09-04, in which the stored spread already IS the
-    home margin the bet must clear. The legacy simulator branch keeps its older reading (DEF-31-02).
+    home margin the bet must clear. The legacy simulator branch reads it the same way since step
+    33.2-26c (DEF-31-02).
     """
     from scipy.stats import norm
 

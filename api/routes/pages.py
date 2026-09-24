@@ -100,8 +100,8 @@ def _compute_week_summary(games: list[dict]) -> dict[str, Any]:
     ``/season`` numbers EXACTLY -- a single source of truth for the locked
     simulator sign convention (CR-01/CR-02/WR-03). Those classifiers fold in:
 
-    * the home-perspective ATS/OU sign convention (``ats_prediction <
-      market_spread`` -> home_cover) WITH 0.5-pt slippage,
+    * the home-margin ATS convention (``ats_prediction > market_spread`` ->
+      home_cover, DEF-31-01) and the O/U side rule, WITH 0.5-pt slippage,
     * push/tie exclusion (a game landing on the slipped line, or a WP tie, is
       EXCLUDED from the denominator rather than silently scored), and
     * NaN-safe score/line coercion.

@@ -694,23 +694,27 @@ class BettingSimulator:
                     outcome = selector_decision["outcome"]
 
                 elif target == "ats":
-                    # Legacy path (no BetSelector injected): grade the spread bet so /betting's
-                    # published bet POPULATION does not move (D31-04). The side and grading here
-                    # are the PRE-EXISTING convention and are deliberately left alone; see the
-                    # note in `backtest/ats_ev_chain.py`'s module docstring on the two sign
-                    # conventions, and `ATSStrategy`, which converts at both seams.
+                    # Legacy path (no BetSelector injected): grade the spread bet at a flat stake.
+                    # Both numbers are home MARGINS, POSITIVE when the home team is favoured
+                    # (DEF-31-01; re-measured in step 33.2-26c: corr(model_spread, margin) = +0.41,
+                    # corr(spread, margin) = +0.44). The two helpers below are written in the
+                    # opposite line convention, so both margins are negated into them exactly as
+                    # `ATSStrategy` does: the model above the line bets the home side, and the
+                    # slipped line moves AGAINST the bettor. This used to call them un-negated,
+                    # which bet the other side and gave it a free half point (DEF-31-02). The bet
+                    # POPULATION is unchanged: the no-bet band is symmetric under the negation.
                     if "model_spread" not in row.index:
                         continue
                     model_spread = float(row["model_spread"])
                     closing_spread = float(row["spread"])
                     bet_side = self._determine_bet_side_ats(
-                        model_spread, closing_spread
+                        -model_spread, -closing_spread
                     )
                     if bet_side is None:
                         continue
 
-                    slipped_line = apply_slippage_spread(
-                        closing_spread, bet_side, config.slippage_points
+                    slipped_line = -apply_slippage_spread(
+                        -closing_spread, bet_side, config.slippage_points
                     )
 
                     model_value = model_spread

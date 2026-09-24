@@ -1,9 +1,10 @@
 """Unit tests for ``api.season_metrics`` (the season-tracking pure-math module).
 
 These exercise the LOCKED per-target hit-rate convention (CONTEXT D-05): WP
-excludes tie games; ATS/OU use the authoritative ``BettingSimulator`` sign
-convention WITH 0.5-pt slippage so the season page reproduces the ``/betting``
-numbers (ATS ~51%, NOT the sign-flipped ~78% from ``_compute_week_summary``);
+excludes tie games; ATS grades on the home-margin convention (DEF-31-01,
+re-measured in step 33.2-26c: model above the line = home_cover) and ATS/OU
+apply 0.5-pt slippage against the bettor (NOT the ~78% ``-market_spread``
+artifact the old ``_compute_week_summary`` produced);
 pushes/ties are excluded from every denominator; the cumulative series uses a
 count-based denominator so a push/tie never advances it.
 
@@ -75,44 +76,40 @@ def _naive_ats_hit(ats_prediction: float, market_spread: float, margin: float) -
     return (margin > -market_spread) == (ats_prediction > -market_spread)
 
 
-def test_ats_convention_single_disagreement_row_returns_simulator_answer() -> None:
-    """A row where the naive and simulator conventions DISAGREE.
+def test_ats_convention_single_disagreement_row_returns_home_margin_answer() -> None:
+    """A row where the home-margin rule, the naive rule and the retired rule disagree.
 
-    Scenario (18-RESEARCH "Critical correctness properties" #2): home underdog
-    (market_spread > 0), the model leans home (ats_prediction < market_spread =>
-    home_cover side), and the away team blows out (large negative margin). The
-    simulator scores this a MISS (home was picked to cover but got crushed); the
-    sign-flipped naive convention wrongly scores it a HIT.
+    Home favoured by 7 (market_spread=+7.0); the model expects the home team to win
+    by only 3 (ats_prediction=+3.0), so it picks the AWAY side; the home team wins
+    by 10 and covers.
 
-    Row: ats_prediction=-6.0, market_spread=+2.0, home 10 / away 31 (margin -21).
-      Simulator: side=home_cover, slipped = 2.0 - 0.5 = 1.5; home_covers =
-        (-21 > 1.5) = False; home_cover hit = False -> MISS.
-      Naive: (margin > -ms)=(-21 > -2.0)=False; (pred > -ms)=(-6.0 > -2.0)=False;
-        False == False -> True -> HIT.
-    The module MUST return the simulator answer (a miss).
+      Home-margin rule: pred < line => away_cover, slipped = 7.0 - 0.5 = 6.5;
+        home_covers = (10 > 6.5) = True -> away pick MISSES.
+      Naive: (margin > -ms)=(10 > -7)=True; (pred > -ms)=(3 > -7)=True -> HIT.
+      Retired rule (pred < line => home_cover, slipped 6.5): 10 > 6.5 -> HIT.
+    The module MUST return the home-margin answer (a miss).
     """
     from api.season_metrics import _ats_outcome
 
     row = _game(
         season=2021,
         week=1,
-        ats_prediction=-6.0,
-        market_spread=2.0,
-        home_score=10,
-        away_score=31,
+        ats_prediction=3.0,
+        market_spread=7.0,
+        home_score=27,
+        away_score=17,
     )
-    # Module (simulator convention) -> MISS (False).
     assert _ats_outcome(row) is False
     # The naive convention would have called it a HIT -> proves they disagree.
-    assert _naive_ats_hit(-6.0, 2.0, -21) is True
+    assert _naive_ats_hit(3.0, 7.0, 10) is True
 
 
 def test_ats_convention_aggregate_is_about_51_not_78() -> None:
-    """The aggregate season ATS hit-rate reproduces the /betting ~51.4%, NOT ~78%.
+    """The aggregate season ATS hit-rate is hits over decided games, NOT ~78%.
 
     Build a controlled fixture of decided ATS games with exactly 18 hits and 17
-    misses (35 decided) => 51.43%, within +-2 points of the betting_bets-derived
-    51.4%. A ~78% result (the sign-flipped bug) would fail ``ats_rate < 60``.
+    misses (35 decided) => 51.43%. A ~78% result (the old ``-market_spread``
+    artifact) would fail ``ats_rate < 60``.
 
     Every row uses a clean home_cover/away_cover decision with no push (the
     actual margin never lands on the slipped line), so all 35 are decided.
@@ -121,31 +118,31 @@ def test_ats_convention_aggregate_is_about_51_not_78() -> None:
 
     rows: list[dict] = []
     week = 1
-    # 18 hits: model picks home_cover (pred < ms) and home covers the slipped line.
-    #   ms=-3.0 -> slipped=-3.5; margin=+10 (> -3.5) -> home_covers -> HIT.
+    # 18 hits: model picks home_cover (pred > ms) and home covers the slipped line.
+    #   ms=-3.0 -> slipped=-2.5; margin=+10 (> -2.5) -> home_covers -> HIT.
     for _ in range(18):
         rows.append(
             _game(
                 season=2021,
                 week=week,
-                ats_prediction=-6.0,  # < market_spread (-3.0) => home_cover
+                ats_prediction=0.0,  # > market_spread (-3.0) => home_cover
                 market_spread=-3.0,
                 home_score=24,
-                away_score=14,  # margin +10 > slipped -3.5 => home covers => HIT
+                away_score=14,  # margin +10 > slipped -2.5 => home covers => HIT
             )
         )
         week += 1
     # 17 misses: model picks home_cover but home fails to cover the slipped line.
-    #   ms=-3.0 -> slipped=-3.5; margin=-10 (< -3.5) -> home does NOT cover -> MISS.
+    #   ms=-3.0 -> slipped=-2.5; margin=-10 (< -2.5) -> home does NOT cover -> MISS.
     for _ in range(17):
         rows.append(
             _game(
                 season=2021,
                 week=week,
-                ats_prediction=-6.0,  # < market_spread (-3.0) => home_cover
+                ats_prediction=0.0,  # > market_spread (-3.0) => home_cover
                 market_spread=-3.0,
                 home_score=14,
-                away_score=24,  # margin -10 < slipped -3.5 => home fails => MISS
+                away_score=24,  # margin -10 < slipped -2.5 => home fails => MISS
             )
         )
         week += 1
@@ -153,9 +150,8 @@ def test_ats_convention_aggregate_is_about_51_not_78() -> None:
     kpis = compute_season_kpis(rows)
     ats_rate = kpis["ats_hit_rate"]
 
-    # Honest, betting-consistent number — NOT the ~78% sign-flipped artifact.
+    # Hits over decided games — NOT the ~78% ``-market_spread`` artifact.
     assert ats_rate == pytest.approx(18 / 35 * 100, abs=1e-6)
-    assert abs(ats_rate - 51.4) <= 2.0  # within +-2 of the /betting 51.4%
     assert ats_rate < 60  # a ~78% result (the bug) would FAIL here
     assert kpis["ats_decided"] == 35  # all rows decided (no pushes)
 
@@ -267,25 +263,17 @@ def test_wp_known_correct_row_is_hit() -> None:
 def test_ats_push_on_slipped_line_excluded() -> None:
     """A row whose actual margin lands exactly on the slipped line is excluded.
 
-    ats_prediction=-6.0 < market_spread=-3.0 => home_cover, slipped=-3.5.
-    Set the margin to exactly -3.5 (home loses by 3.5 is impossible with ints,
-    so use a half-point via scores 20.5/24 is not valid; instead use a market
-    spread that produces an integer slipped line). Use market_spread=+2.0 =>
-    home_cover slipped = 1.5 still half. Use away_cover: ats_prediction >
-    market_spread. ats_prediction=+1.0 > market_spread=0.0 => away_cover,
-    slipped = 0.0 + 0.5 = 0.5 (half). To land EXACTLY on the slipped line we need
-    a half-point actual margin, which integer scores cannot make — so instead set
-    market_spread such that slipped is an integer: market_spread=-3.5 =>
-    home_cover slipped = -4.0; margin = -4 (home loses by 4) lands on -4.0.
+    Integer scores need an integer slipped line, so the line is a half point:
+    ats_prediction=0.0 > market_spread=-3.5 => home_cover, slipped = -3.5 + 0.5
+    = -3.0; margin = 21 - 24 = -3 lands exactly on it -> push.
     """
     from api.season_metrics import _ats_outcome, compute_season_kpis
 
-    # home_cover, slipped = -3.5 - 0.5 = -4.0; margin = 20 - 24 = -4 -> push.
     row = _game(
-        ats_prediction=-6.0,
+        ats_prediction=0.0,
         market_spread=-3.5,
-        home_score=20,
-        away_score=24,  # margin -4.0 == slipped -4.0 => push
+        home_score=21,
+        away_score=24,  # margin -3.0 == slipped -3.0 => push
     )
     assert _ats_outcome(row) is None
 
@@ -326,15 +314,19 @@ def test_ou_known_correct_over_is_hit() -> None:
 
 
 def test_ats_known_cover_is_hit() -> None:
-    """A correct ATS home_cover call scores hit==True.
+    """Correct ATS calls on each side score hit==True.
 
-    ats_prediction=-6.0 < market_spread=-3.0 => home_cover, slipped=-3.5; margin
-    = 24 - 14 = +10 (> -3.5) -> home covers -> home_cover hit == True.
+    Home: ats_prediction=0.0 > market_spread=-3.0 => home_cover, slipped=-2.5;
+    margin = 24 - 14 = +10 (> -2.5) -> home covers -> hit.
+    Away: ats_prediction=-6.0 < market_spread=-3.0 => away_cover, slipped=-3.5;
+    margin = 14 - 24 = -10 (< -3.5) -> home fails to cover -> away hit.
     """
     from api.season_metrics import _ats_outcome
 
-    row = _game(ats_prediction=-6.0, market_spread=-3.0, home_score=24, away_score=14)
-    assert _ats_outcome(row) is True
+    home = _game(ats_prediction=0.0, market_spread=-3.0, home_score=24, away_score=14)
+    assert _ats_outcome(home) is True
+    away = _game(ats_prediction=-6.0, market_spread=-3.0, home_score=14, away_score=24)
+    assert _ats_outcome(away) is True
 
 
 # ---------------------------------------------------------------------------

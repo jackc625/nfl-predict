@@ -20,19 +20,21 @@ Contents
 
 LOCKED HIT-RATE CONVENTION (CONTEXT D-05, post-research)
 --------------------------------------------------------
-ATS/OU use the authoritative ``BettingSimulator`` SIGN CONVENTION WITH 0.5-pt
-slippage so the season page reproduces the ``/betting`` numbers exactly
-(ATS ~51.4%, OU ~49.3%, WP ~67.7%). This is NOT the This-Week-banner summary
-math in ``api/routes/pages.py``, which reads ``ats_prediction`` as a home
-margin (sign-flipped) and yields a spurious ~78% ATS hit-rate. WP additionally
-excludes tie games (``margin == 0``). Pushes (actual lands exactly on the
-slipped line) are excluded from every denominator.
+ATS/OU grade the model's side WITH 0.5-pt slippage against the bettor. For ATS
+both ``ats_prediction`` and ``market_spread`` are home MARGINS, POSITIVE when
+the home team is favoured (DEF-31-01), so the model above the line picks the
+home side. Step 33.2-26c re-measured this on the 2021-2024 backtest rows
+(corr with the realized home margin: model +0.41, line +0.44) and corrected
+this module, which had graded the opposite side with the half point in the
+bettor's favour (an inflated ~52.5% instead of the honest ~47.5%). The old
+~78% banner figure came from a different defect: it compared both numbers to
+``-market_spread``. WP additionally excludes tie games (``margin == 0``).
+Pushes (actual lands exactly on the slipped line) are excluded from every
+denominator.
 
-The sign convention is COPIED (with source-citing comments) from
-``backtest/simulation.py`` — ``_determine_bet_side_ats`` (284-297),
-``_determine_bet_side_ou`` (299-312), ``apply_slippage_spread`` (163-189),
-``apply_slippage_total`` (192-218), ``_resolve_ats_outcome`` (324-342),
-``_resolve_ou_outcome`` (344-357) — but NEVER imported (UIAP-01).
+The O/U rule and the push/grading shape mirror ``backtest/simulation.py``
+(``_determine_bet_side_ou``, ``apply_slippage_total``, ``_resolve_ats_outcome``,
+``_resolve_ou_outcome``) but are NEVER imported (UIAP-01).
 
 UIAP-01 COMPLIANCE
 ------------------
@@ -70,8 +72,9 @@ BREAKEVEN_WIN_RATE: float = 0.524
 
 # Half-point slippage against the bettor. Source: backtest.simulation
 # SLIPPAGE_POINTS (NOT imported — UIAP-01). Applied so the season hit-rate
-# reproduces the /betting page: home_cover -> line - 0.5, away_cover -> line +
-# 0.5; over -> line + 0.5, under -> line - 0.5 (always against the bettor).
+# grades on the line the bettor actually got: home_cover -> line + 0.5, away_cover
+# -> line - 0.5 (home margins); over -> line + 0.5, under -> line - 0.5 (always
+# against the bettor).
 SLIPPAGE_POINTS: float = 0.5
 
 # Canonical target order used throughout the public surface.
@@ -159,16 +162,17 @@ def _wp_outcome(row: dict) -> bool | None:
 
 
 def _ats_outcome(row: dict) -> bool | None:
-    """ATS hit using the LOCKED simulator sign convention WITH 0.5-pt slippage.
+    """ATS hit on the home-margin convention WITH 0.5-pt slippage against the bettor.
 
-    ``market_spread`` is the HOME-perspective closing spread. The model picks a
-    side by comparing ``ats_prediction`` (== model_spread) to ``market_spread``
-    (simulation.py::_determine_bet_side_ats):
+    ``ats_prediction`` (== model_spread) and ``market_spread`` are both home
+    MARGINS, POSITIVE when the home team is favoured (DEF-31-01; re-measured in
+    step 33.2-26c). The model picks a side by comparing the two, the rule
+    ``backtest.selector_strategies.ATSStrategy`` bets on:
 
-    * ``ats_prediction < market_spread`` -> ``home_cover``, slipped =
-      ``market_spread - 0.5``.
-    * ``ats_prediction > market_spread`` -> ``away_cover``, slipped =
+    * ``ats_prediction > market_spread`` -> ``home_cover``, slipped =
       ``market_spread + 0.5``.
+    * ``ats_prediction < market_spread`` -> ``away_cover``, slipped =
+      ``market_spread - 0.5``.
     * equal -> no directional pick -> EXCLUDED.
 
     With ``actual_margin = home_score - away_score``: a push (``abs(actual_margin
@@ -191,11 +195,11 @@ def _ats_outcome(row: dict) -> bool | None:
         return None
     pred = float(ats_prediction)
 
-    if pred < market_spread:
-        slipped = market_spread - SLIPPAGE_POINTS  # home_cover (against bettor)
+    if pred > market_spread:
+        slipped = market_spread + SLIPPAGE_POINTS  # home_cover (against bettor)
         side = "home_cover"
-    elif pred > market_spread:
-        slipped = market_spread + SLIPPAGE_POINTS  # away_cover (against bettor)
+    elif pred < market_spread:
+        slipped = market_spread - SLIPPAGE_POINTS  # away_cover (against bettor)
         side = "away_cover"
     else:
         return None  # no directional pick -> EXCLUDE

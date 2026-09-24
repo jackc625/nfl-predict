@@ -40,7 +40,8 @@ TWO SCALES AND TWO PRICES, STATED ONCE HERE BECAUSE BOTH ARE EASY TO GET SILENTL
     and re-implements neither. ``BettingSimulator._resolve_ats_outcome`` already grades
     ``actual_margin > slipped_line`` and needs no conversion at all.
     ``backtest/ats_ev_chain.py``'s module docstring records the measurement, the two halves of the
-    ruling that were declined, and the legacy simulator path left on its older reading.
+    ruling that were declined, and the legacy simulator path (moved onto this convention in
+    step 33.2-26c).
   * EVERY target is priced at the price a book actually offered, through the OPTIONAL ``bet_odds``
     member. WP reads the side's own moneyline. The two LINE targets read the stored two-sided
     juice -- ``spread_ju_home`` / ``spread_ju_away`` for the spread and ``total_over_ju`` /

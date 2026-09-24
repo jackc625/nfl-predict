@@ -1647,7 +1647,7 @@ class TestNameCollisionTrapIsDocumented:
 #      ``apply_slippage_spread`` are the two helpers written in the OPPOSITE "line" convention, so
 #      the strategy NEGATES INTO them and NEGATES BACK OUT. ``_resolve_ats_outcome`` already
 #      compares an actual margin against its threshold, so the slipped market spread reaches it
-#      UN-negated. The legacy simulator path keeps its pre-existing convention (DEF-31-02).
+#      UN-negated. The legacy simulator path does the same since step 33.2-26c (DEF-31-02).
 #      Every assertion below is paired with a control proving the OLD reading gives a DIFFERENT
 #      answer on the same row -- a test that passes under both conventions would pin nothing.
 #   2. Neither new strategy has an eligibility gate (D31-05), and neither can emit ``not_subpop``.

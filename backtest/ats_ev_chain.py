@@ -80,9 +80,10 @@ TWO THINGS THIS RULING DELIBERATELY DID NOT CHANGE, recorded so neither reads as
     baseline rule. That ``actual_cover`` feeds ONLY ``_compute_ats_baseline``, a reported
     market-accuracy diagnostic that trains nothing, and correcting it would move a published
     figure from 0.5618 to about 0.472. The owner declined that half.
-  * The legacy no-selector simulator ATS path keeps its pre-existing convention (DEF-31-02),
-    because D31-04 forbids moving /betting's published 1073-row spread population. The
-    phase's bet list and 2025 verdict route through the selector, not that branch.
+  * The legacy no-selector simulator ATS path was left on the line reading (DEF-31-02) to
+    protect /betting's published spread figures. Step 33.2-26c moved it onto the measured
+    convention (it now negates into both helpers, as ``ATSStrategy`` does); the 1073-row bet
+    population is unchanged, and the published ledger moves only when it is regenerated.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
