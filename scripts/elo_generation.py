@@ -32,6 +32,8 @@ the row-table tuple, so callers and tests have one name to import either way.
 from __future__ import annotations
 
 import json
+import re
+import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -74,6 +76,16 @@ ELO_GENERATION_POINTER_NAME: str = "elo_generation.json"
 ELO_GENERATION_POINTER_PATH: Path = (
     Path("data") / "silver" / ELO_GENERATION_POINTER_NAME
 )
+
+#: How many staged generations survive a publish (C1 IN-03). Every daily run stages a full
+#: ``elo_game_snapshots`` copy, and nothing pruned them -- 365 copies a year. The newest few
+#: are kept (the published one is always among them) so a bad publish can still be diffed
+#: against the ones before it.
+ELO_GENERATIONS_KEPT: int = 5
+
+#: The shape :func:`new_generation_id` writes. Pruning removes ONLY directories whose name
+#: matches it, so nothing else placed under the generation tree is ever deleted.
+_GENERATION_ID_PATTERN: re.Pattern[str] = re.compile(r"^\d{8}T\d{12}$")
 
 
 class EloGenerationIncompleteError(RuntimeError):
@@ -238,6 +250,47 @@ class EloGenerationPublisher:
         return path
 
 
+def prune_elo_generations(
+    silver_root: Path,
+    *,
+    published_id: str,
+    keep: int = ELO_GENERATIONS_KEPT,
+) -> list[Path]:
+    """Delete all but the newest *keep* staged generations; never the published one.
+
+    Only a plain directory whose name is a generation id is a candidate. A symlink or a
+    junction is skipped rather than followed: deleting through a reparse point would delete
+    its TARGET, which is not a generation this module staged.
+
+    Args:
+        silver_root: The silver layer the generation tree lives under.
+        published_id: The generation the pointer names; always kept.
+        keep: How many of the newest generations to keep (at least 1).
+
+    Returns:
+        The directories removed, oldest first.
+    """
+    root = Path(silver_root) / ELO_GENERATION_DIRNAME
+    if not root.is_dir():
+        return []
+    generations = sorted(
+        entry
+        for entry in root.iterdir()
+        if _GENERATION_ID_PATTERN.match(entry.name)
+        and entry.is_dir()
+        and not entry.is_symlink()
+        and not entry.is_junction()
+    )
+    newest = {entry.name for entry in generations[-max(keep, 1) :]}
+    removed: list[Path] = []
+    for entry in generations:
+        if entry.name in newest or entry.name == published_id:
+            continue
+        shutil.rmtree(entry)
+        removed.append(entry)
+    return removed
+
+
 def publish_elo_generation(
     staged: Mapping[str, Any],
     generation_id: str,
@@ -265,6 +318,9 @@ def publish_elo_generation(
     Raises:
         EloGenerationIncompleteError: When a member is missing or the members
             disagree. Nothing live is written and the pointer does not move.
+
+    Older staged generations are pruned only AFTER the pointer has moved
+    (:func:`prune_elo_generations`), so a failed publish never loses one.
     """
     publisher = EloGenerationPublisher(
         generation_id=generation_id,
@@ -277,4 +333,6 @@ def publish_elo_generation(
 
     publisher.validate()
     publish_live()
-    return publisher.move_pointer(**pointer_fields)
+    pointer = publisher.move_pointer(**pointer_fields)
+    prune_elo_generations(Path(silver_root), published_id=generation_id)
+    return pointer

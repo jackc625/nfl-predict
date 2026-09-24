@@ -286,3 +286,59 @@ class TestAnIncompleteGenerationIsNeverPublished:
         assert read_elo_generation_pointer(silver) == before_pointer, (
             "the pointer moved for a generation that was never complete"
         )
+
+
+class TestOldStagedGenerationsArePruned:
+    """C1 IN-03: every daily run staged a full snapshot copy and nothing pruned them."""
+
+    @staticmethod
+    def _stage_dirs(root, ids: list[str]) -> None:
+        from scripts.elo_generation import ELO_GENERATION_DIRNAME
+
+        for generation_id in ids:
+            directory = root / ELO_GENERATION_DIRNAME / generation_id
+            directory.mkdir(parents=True)
+            (directory / "elo_game_snapshots.parquet").write_bytes(b"x")
+
+    def test_all_but_the_newest_are_removed_and_the_published_one_is_kept(
+        self, tmp_path
+    ) -> None:
+        from scripts.elo_generation import ELO_GENERATION_DIRNAME, prune_elo_generations
+
+        ids = [f"2026091{d}T120000000000" for d in range(8)]
+        self._stage_dirs(tmp_path, ids)
+        # A foreign directory under the tree is never a candidate.
+        (tmp_path / ELO_GENERATION_DIRNAME / "notes").mkdir()
+
+        removed = prune_elo_generations(tmp_path, published_id=ids[0], keep=3)
+
+        left = sorted(p.name for p in (tmp_path / ELO_GENERATION_DIRNAME).iterdir())
+        assert left == sorted([ids[0], *ids[-3:], "notes"])
+        assert [p.name for p in removed] == ids[1:5]
+
+    def test_a_publish_prunes_after_the_pointer_moves(self, tmp_path) -> None:
+        import pandas as pd
+
+        from scripts.elo_generation import (
+            ELO_GENERATION_DIRNAME,
+            ELO_GENERATIONS_KEPT,
+            new_generation_id,
+            publish_elo_generation,
+            read_elo_generation_pointer,
+        )
+
+        old = [f"2020010{d}T000000000000" for d in range(1, 9)]
+        self._stage_dirs(tmp_path, old)
+        generation_id = new_generation_id()
+        publish_elo_generation(
+            {"elo_game_snapshots": pd.DataFrame({"game_id": ["g"], "season": [2026]})},
+            generation_id,
+            silver_root=tmp_path,
+            publish_live=lambda: None,
+        )
+
+        pointer = read_elo_generation_pointer(tmp_path)
+        assert pointer is not None and pointer["generation_id"] == generation_id
+        left = sorted(p.name for p in (tmp_path / ELO_GENERATION_DIRNAME).iterdir())
+        assert len(left) == ELO_GENERATIONS_KEPT
+        assert generation_id in left
