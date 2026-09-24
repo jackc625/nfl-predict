@@ -367,6 +367,9 @@ def test_the_non_critical_set_is_exactly_the_declared_four() -> None:
     each re-captures a season, and a failed capture leaves the previous, honestly stamped capture
     in place -- a snap row is timed by its game's end and an injury row only by a stamp at or
     before the lock -- so a failure degrades to older honest data and cannot leak.
+    FIVE AFTER 33.2 REVIEW BATCH 3. ``build_market_anchors`` LEFT the registry altogether: the
+    table it wrote was read by nothing and existed on no disk, so the step was retired rather
+    than kept non-critical.
     """
     non_critical = {step.name for step in build_step_registry() if not step.critical}
     assert non_critical == {
@@ -374,7 +377,6 @@ def test_the_non_critical_set_is_exactly_the_declared_four() -> None:
         "ingest_snaps",
         "ingest_injuries",
         "verify_output_files",
-        "build_market_anchors",
         CACHE_STEP,
     }, f"the non-critical set moved: {sorted(non_critical)}"
 

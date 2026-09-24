@@ -130,9 +130,9 @@ It accepts (the phase flags are mutually exclusive):
 
 | Flag | Effect |
 |------|--------|
-| (none) | Full pipeline: all 24 steps (DATA + PREDICTIONS). |
+| (none) | Full pipeline: all 23 steps (DATA + PREDICTIONS). |
 | `--data-only` | DATA phase only (the 11 DATA-phase steps). |
-| `--predictions-only` | PREDICTIONS phase only (the 13 PREDICTIONS-phase steps); logs a "ensure data artifacts are fresh" warning. |
+| `--predictions-only` | PREDICTIONS phase only (the 12 PREDICTIONS-phase steps); logs a "ensure data artifacts are fresh" warning. |
 | `--dry-run` | List the steps that would execute (filtered by mode); execute nothing; exit 0. Works year-round: `--dry-run` bypasses the offseason no-op short-circuit so steps can be inspected out of season without `--force` (WR-04). |
 | `--force` | Bypass the pre-flight staleness/season checks AND the offseason no-op short-circuit; pre-flight health becomes advisory. |
 | `--log-level {DEBUG,INFO,WARNING,ERROR}` | Logging verbosity (default INFO). |
@@ -158,7 +158,7 @@ flow:
   checks (database connectivity, model artifacts, disk space). Without `--force`,
   `unhealthy` aborts (failure alert + raise). With `--force`, `unhealthy` is advisory:
   it appends the warning `"Pre-flight health: unhealthy (forced)"` and continues.
-- **C. Step execution:** the 24-step registry (`pipeline/steps.py`), phase-filtered by
+- **C. Step execution:** the 23-step registry (`pipeline/steps.py`), phase-filtered by
   mode, run in order. The log is written atomically after each step (incremental
   snapshot). A **critical** step failure sets `status="failed"`, fires
   `alert_pipeline_failure` (CRITICAL) and raises immediately. A **non-critical** step
@@ -202,10 +202,11 @@ no-op there would skip a live slate, which is the failure step 24c removed.
 
 ---
 
-## 3. The 24 orchestrator steps
+## 3. The 23 orchestrator steps
 
-The registry (`pipeline.steps.build_step_registry`) is exactly 24 `StepDefinition`
-entries: 11 in the DATA phase, 13 in the PREDICTIONS phase. Each step uses deferred
+The registry (`pipeline.steps.build_step_registry`) is exactly 23 `StepDefinition`
+entries: 11 in the DATA phase, 12 in the PREDICTIONS phase. (`build_market_anchors` was
+retired in the 33.2 review, batch 3: the silver table it wrote was read by nothing.) Each step uses deferred
 imports (inside the function body) to avoid argparse collisions and module-level side
 effects. `critical=True` means a failure aborts the run; `retryable=True` means transient
 errors trigger retry.
@@ -224,18 +225,17 @@ errors trigger retry.
 | 10 | `build_weather_features` | DATA | yes | no | Build weather-based features for outdoor games. |
 | 11 | `verify_data_artifacts` | DATA | yes | no | Verify the DATA-boundary silver artifacts exist AND carry a row for the current (season, week). Gold is NOT checked here -- it is built in the PREDICTIONS phase, so a currency check here would report an ordering fact as a stale artifact. |
 | 12 | `ingest_odds` | PREDICTIONS | yes | yes (3) | Capture the odds snapshot from The Odds API. |
-| 13 | `build_market_anchors` | PREDICTIONS | no | no | Build market-anchor features from the odds snapshot. |
-| 14 | `build_features` | PREDICTIONS | yes | no | Assemble the unified per-target gold feature matrices. |
-| 15 | `validate_features` | PREDICTIONS | yes | no | Validate features for data leakage / quality. |
-| 16 | `verify_gold_currency` | PREDICTIONS | yes | no | Verify the three gold matrices carry a row for the current (season, week). R9's "gold has no rows for this week" refusal, at the first point in the run where gold exists. |
-| 17 | `validate_models` | PREDICTIONS | yes | no | Validate WP/ATS/OU models are available + loadable (via `artifacts/latest.json`). |
-| 18 | `generate_predictions` | PREDICTIONS | yes | no | Generate current-week predictions (loads artifacts, applies market blend). |
-| 19 | `verify_prediction_currency` | PREDICTIONS | yes | no | Verify the prediction file's ROWS are the current week, not only its filename. Runs before anything consumes it. |
-| 20 | `generate_recommendations` | PREDICTIONS | yes | no | Select the week's +EV bet list through `BetSelector` and write the durable bet-list artifacts. |
-| 21 | `export_artifacts` | PREDICTIONS | yes | no | Export the predictions CSV to JSON. |
-| 22 | `validate_predictions` | PREDICTIONS | yes | no | Validate the prediction file (non-empty, required columns, `wp_prob` in [0,1]). |
-| 23 | `verify_output_files` | PREDICTIONS | no | no | Verify the expected output files exist (advisory; warns on missing). |
-| 24 | `populate_web_cache` | PREDICTIONS | no | no | Rebuild `data/web_cache.duckdb` so the served bet list is this run's. |
+| 13 | `build_features` | PREDICTIONS | yes | no | Assemble the unified per-target gold feature matrices. |
+| 14 | `validate_features` | PREDICTIONS | yes | no | Validate features for data leakage / quality. |
+| 15 | `verify_gold_currency` | PREDICTIONS | yes | no | Verify the three gold matrices carry a row for the current (season, week). R9's "gold has no rows for this week" refusal, at the first point in the run where gold exists. |
+| 16 | `validate_models` | PREDICTIONS | yes | no | Validate WP/ATS/OU models are available + loadable (via `artifacts/latest.json`). |
+| 17 | `generate_predictions` | PREDICTIONS | yes | no | Generate current-week predictions (loads artifacts, applies market blend). |
+| 18 | `verify_prediction_currency` | PREDICTIONS | yes | no | Verify the prediction file's ROWS are the current week, not only its filename. Runs before anything consumes it. |
+| 19 | `generate_recommendations` | PREDICTIONS | yes | no | Select the week's +EV bet list through `BetSelector` and write the durable bet-list artifacts. |
+| 20 | `export_artifacts` | PREDICTIONS | yes | no | Export the predictions CSV to JSON. |
+| 21 | `validate_predictions` | PREDICTIONS | yes | no | Validate the prediction file (non-empty, required columns, `wp_prob` in [0,1]). |
+| 22 | `verify_output_files` | PREDICTIONS | no | no | Verify the expected output files exist (advisory; warns on missing). |
+| 23 | `populate_web_cache` | PREDICTIONS | no | no | Rebuild `data/web_cache.duckdb` so the served bet list is this run's. |
 
 > Note: retry is handled by `tenacity` (`Retrying` with `wait_exponential` backoff) and
 > fires ONLY on `TRANSIENT_EXCEPTIONS` (`ConnectionError`, `TimeoutError`, `OSError`,
@@ -277,7 +277,7 @@ freeze has passed is never rewritten by a later run.
 This boundary MOVED. Until plan 31-18 the orchestrator did not rebuild the web cache and this
 document said so; that statement is now false and has been replaced by this section.
 
-`populate_web_cache` is step **24**, the LAST entry in the registry. It rebuilds
+`populate_web_cache` is step **23**, the LAST entry in the registry. It rebuilds
 `data/web_cache.duckdb` from the model artifacts, the backtest outputs, the gold/silver layers
 and the two `outputs/bet_list/` artifacts, so the bet list the site serves after a Friday run is
 the one that run selected rather than whatever a previous manual `scripts/populate_cache.py`
@@ -366,9 +366,9 @@ and `1` only for `failed`. The AUTO-01 keystone test
 registry (no stubbed registry -- that stubbing was the `cb61042` blind spot) and asserts
 `log.status == "success"`, the predictions CSV exists, `game_id` is present, and
 `wp_prob` is in `[0,1]` -- proving the triad's `success` branch produces a real,
-leakage-safe predictions file. The registry itself is unstubbed, but three of the ten
-PREDICTIONS-phase step BODIES are no-op'd (`step_ingest_odds`, `step_build_market_anchors`,
-`step_build_features`) so the committed gold supplies their inputs; the remaining
+leakage-safe predictions file. The registry itself is unstubbed, but two of the
+PREDICTIONS-phase step BODIES are no-op'd (`step_ingest_odds`, `step_build_features`;
+`step_build_market_anchors` has since been retired) so the committed gold supplies their inputs; the remaining
 generate/validate/export/verify steps run for real (matching the test's docstring). An owner-confirmed one-time live forced run produced a
 real predictions file offline (16 rows, `wp_prob` 0.176-0.867, all market rows matched
 from the on-disk odds snapshot with NO live pull) with NO model artifact re-fit.
@@ -697,7 +697,8 @@ Section 10 -- it is NOT a matter of populating config keys.
   the non-existent `self.settings.monitoring`; (c) add the SMTP fields to `Settings`
   (sourced from `.env`, never committed). Until then, alerts are console/log only and the
   default log-only behavior is the working behavior.
-- **STEP10-UNCONSUMED-SILVER -- step 10 writes a silver table no downstream step reads.**
+- **STEP10-UNCONSUMED-SILVER -- CLOSED in the 33.2 review, batch 3: the step, its writer and
+  the unread silver table are retired.** The original record follows.
   `pipeline/steps.py:211` (`step_build_market_anchors`) saves the deprecated
   `build_market_anchor_features` output to silver `market_anchor_features`, but the
   canonical gold is built on the fly by the separate Protocol `build_features`

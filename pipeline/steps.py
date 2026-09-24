@@ -771,7 +771,7 @@ def step_verify_data_artifacts() -> None:
     _verify_artifacts_at_boundary(ARTIFACT_BOUNDARY_DATA, season, week)
 
 
-# PREDICTIONS PHASE (13 steps) ------------------------------------------
+# PREDICTIONS PHASE (12 steps) ------------------------------------------
 
 
 def step_ingest_odds() -> None:
@@ -789,34 +789,6 @@ def step_ingest_odds() -> None:
     schedule = ingest_odds_module.load_schedule_slice(season, week)
     ingester = ingest_odds_module.OddsDataIngester()
     ingester.ingest_odds(season=season, week=week, schedule=schedule)
-
-
-def step_build_market_anchors() -> None:
-    """Build market anchor features from the odds snapshot into silver. OUTPUT IS UNREAD.
-
-    REGISTERED NON-CRITICAL (WR-13). It was ``critical=True``, so a raise anywhere in
-    ``build_market_anchor_features`` aborted the ENTIRE Friday run -- including the prediction and
-    bet-list work that follows it. What it produces, silver ``market_anchor_features``, is read by
-    no production code (``AUTOMATION.md``): the gold build calls
-    ``MarketAnchorFeaturesCalculator.build_features`` directly at
-    ``scripts/build_features.py``, not this table. Killing a run that has already ingested odds
-    over a table nothing consumes is the wrong direction, so its failure now DEGRADES the run.
-
-    The method it calls is ``@deprecated`` and fires a ``DeprecationWarning`` on every scheduled
-    run. That warning is left in place deliberately: it is the honest signal that this step is on
-    the deprecated path, and silencing it would hide the thing a future author needs to see.
-
-    IF THIS STEP EVER GAINS A CONSUMER, revisit the criticality along with it -- a step whose
-    output feeds gold should fail loudly. See WR-01 for the parse this path used to use.
-    """
-    from data.storage import load_dataframe, save_dataframe
-    from features.market_anchors import MarketAnchorFeaturesCalculator
-
-    games_df = load_dataframe("games", layer="silver")
-    calculator = MarketAnchorFeaturesCalculator()
-    features_df = calculator.build_market_anchor_features(games_df=games_df)
-    if len(features_df) > 0:
-        save_dataframe(features_df, table_name="market_anchor_features", layer="silver")
 
 
 def step_build_features() -> None:
@@ -1385,7 +1357,7 @@ def build_step_registry() -> list[StepDefinition]:
             retryable=False,
             description="Verify data artifacts before predictions",
         ),
-        # PREDICTIONS PHASE (13 steps)
+        # PREDICTIONS PHASE (12 steps)
         StepDefinition(
             "ingest_odds",
             step_ingest_odds,
@@ -1395,17 +1367,9 @@ def build_step_registry() -> list[StepDefinition]:
             max_retries=3,
             description="Capture odds snapshot",
         ),
-        StepDefinition(
-            "build_market_anchors",
-            step_build_market_anchors,
-            PipelinePhase.PREDICTIONS,
-            # NON-CRITICAL (WR-13): its silver output is read by no production code, so a failure
-            # here must not abort the prediction and bet-list work that follows. See the step's
-            # own docstring for the full reasoning and for when to revisit this.
-            critical=False,
-            retryable=False,
-            description="Build market anchor features (silver output currently unread)",
-        ),
+        # ``build_market_anchors`` is RETIRED (33.2 review batch 3, the retirement Plan 33.2-27
+        # routed here): its silver ``market_anchor_features`` table was read by no production
+        # code and is on no disk. The gold build calls MarketAnchorFeaturesCalculator itself.
         StepDefinition(
             "build_features",
             step_build_features,

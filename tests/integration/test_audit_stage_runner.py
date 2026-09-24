@@ -60,7 +60,6 @@ PIPELINE_STAGE_SCRIPTS = [
     "build_team_form.py",
     "build_contextual.py",
     "build_weather.py",
-    "build_market_anchors.py",
     "build_features.py",
     # Stage 3: train
     "train_models.py",

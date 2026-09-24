@@ -205,20 +205,6 @@ def _drive_line_movement(_tmp: Path) -> None:
     LineMovementBuilder._game_lock(_SUNDAY_KICKOFF.to_pydatetime())
 
 
-def _drive_market_anchors(_tmp: Path) -> None:
-    from features.market_anchors import MarketAnchorFeaturesCalculator
-
-    odds = pd.DataFrame(
-        {
-            "game_id": ["2026_W02_CAR@ATL"],
-            "sportsbook": ["consensus"],
-            "snapshot_ts": ["2026-09-18T18:00:00-04:00"],
-            "total": [44.5],
-        }
-    )
-    MarketAnchorFeaturesCalculator().select_snapshot_lines_at_lock(odds, _games())
-
-
 def _drive_live_odds_ingest(_tmp: Path) -> None:
     from scripts.ingest_odds import OddsDataIngester
 
@@ -273,18 +259,16 @@ READERS: tuple[tuple[str, Callable[[Path], None]], ...] = (
     ),
     ("backtest.weekly_bet_list.build_bet_week_schedule", _drive_bet_week_schedule),
     ("features.line_movement.LineMovementBuilder._game_lock", _drive_line_movement),
-    (
-        "features.market_anchors.MarketAnchorFeaturesCalculator."
-        "select_snapshot_lines_at_lock",
-        _drive_market_anchors,
-    ),
     ("scripts.ingest_odds.OddsDataIngester.ingest_odds", _drive_live_odds_ingest),
     ("scripts.ingest_odds_timeline.game_lock_instants", _drive_timeline_locks),
     ("features.provenance.build_lock_frame", _drive_provenance_lock_frame),
 )
 
 # The declared reader count. An edit that quietly shrinks READERS fails the non-vacuity control.
-DECLARED_READER_COUNT = 11
+# 11 -> 10 (33.2 review batch 3): ``MarketAnchorFeaturesCalculator.select_snapshot_lines_at_lock``
+# was deleted with the retired market-anchors step it served; the gold builder's market source
+# reaches the rule through ``utils.game_lock.lock_frame``.
+DECLARED_READER_COUNT = 10
 
 
 class TestEveryReaderResolvesToTheOneRule:

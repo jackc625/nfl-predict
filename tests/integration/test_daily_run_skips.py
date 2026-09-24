@@ -138,7 +138,6 @@ PLANTED_SOURCE = "injury"
 # No-op'd by derived adapter name; everything else in the phase runs for real.
 _NO_OP_STEPS: tuple[str, ...] = (
     "ingest_odds",
-    "build_market_anchors",
     "validate_features",
     "validate_models",
     "populate_web_cache",

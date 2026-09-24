@@ -126,7 +126,7 @@ There are 11 common operations. Each section gives the `uv run` PowerShell comma
 tell it succeeded, and a verification-basis label. The canonical commands match `PIPELINE.md`;
 for "Build features" this runbook summarizes the stage down to its final assembly step
 (`build_features.py`) -- `PIPELINE.md` lists the full per-component build sequence (build_elo,
-build_team_form, build_contextual, build_weather, build_market_anchors, then build_features).
+build_team_form, build_contextual, build_weather, then build_features).
 When in doubt, `PIPELINE.md` is the command source of truth. Operations 1-8 follow the
 8-stage PIPELINE order (Promote is stage 4, between Train and Backtest); Rollback (operation
 9) reverses a Promote, Run automation (operation 10) is the Friday orchestrator, and Rebuild

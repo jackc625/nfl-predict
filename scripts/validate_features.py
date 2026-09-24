@@ -488,7 +488,8 @@ def main():
                 "elo_features",
                 "contextual_features",
                 "weather_features",
-                "market_anchor_features",
+                # ``market_anchor_features`` is gone: its writer (the deprecated
+                # build_market_anchors step) is retired and the table is on no disk.
             ]
 
             feature_dfs = []

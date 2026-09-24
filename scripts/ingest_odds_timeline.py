@@ -442,8 +442,8 @@ def normalize_envelope_to_timeline_rows(
 ) -> list[dict[str, Any]]:
     """Normalize a raw historical API envelope into consensus timeline rows.
 
-    A DEDICATED raw-response normalizer (review 29-03 MED): the upstream
-    ``create_consensus_lines`` expects already ``opening_``/``snapshot_``-
+    A DEDICATED raw-response normalizer (review 29-03 MED): the upstream (now retired)
+    ``create_consensus_lines`` expected already ``opening_``/``snapshot_``-
     prefixed rows, NOT raw API game envelopes. Here each ``envelope["data"]``
     game is KEYED TO ITS SCHEDULED GAME (:func:`match_event_to_schedule`), its
     per-book totals (and spreads when requested) are read, and ONE consensus-median

@@ -170,8 +170,8 @@ _WEATHER_UNSUPPLIED_GROUP = "weather_unsupplied"
 # THE SEAM SPLIT IS A DECISION, NOT AN OVERSIGHT, and it is the one difference from
 # line_movement. The MERGE block was removed; the ``feature_sources["market"]``
 # REGISTRATION was RETAINED. The market source is where the R2 information-time gate
-# checks the lock-fenced odds selection in ``features/market_anchors.py``, and the same
-# calculator feeds grading and CLV through ``pipeline/steps.py::step_build_market_anchors``.
+# checks the lock-fenced odds selection in ``features/market_anchors.py`` (the deprecated
+# ``step_build_market_anchors`` path, which wrote an unread silver table, is retired).
 # Deleting the registration would retire that check silently. So after rung 9 the market
 # source is CHECKED by the gate and MERGED nowhere; Plan 33.2-20 records exactly that as
 # the key's ``checked_not_merged`` disposition and asserts its inverse -- zero market

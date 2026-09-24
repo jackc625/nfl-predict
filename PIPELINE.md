@@ -47,13 +47,12 @@ uv run python scripts/build_elo.py --all-seasons --full-rebuild
 uv run python scripts/build_team_form.py --all-seasons
 uv run python scripts/build_contextual.py --all-seasons
 uv run python scripts/build_weather.py --all-seasons
-uv run python scripts/build_market_anchors.py --season <YEAR>
 uv run python scripts/build_features.py --all-seasons
 ```
 
 - **Live entry point:** `scripts/build_*.py`.
 - **Produces:** `data/silver/elo_game_snapshots.parquet`, `data/silver/team_form_features.parquet`,
-  contextual / weather / market-anchor feature tables, then the Gold matrices
+  contextual / weather feature tables, then the Gold matrices
   `data/gold/features_wp.parquet`, `data/gold/features_ats.parquet`,
   `data/gold/features_ou.parquet`.
 
@@ -292,7 +291,7 @@ uv run python scripts/friday_pipeline.py --log-level INFO
 ```
 
 - **Live entry point:** `scripts/friday_pipeline.py` ->
-  `pipeline.orchestrator.FridayPipeline` (24-step registry in `pipeline/steps.py`).
+  `pipeline.orchestrator.FridayPipeline` (23-step registry in `pipeline/steps.py`).
 - **Produces:** refreshed Silver/Gold for the current week, current-week predictions
   and recommendations, exports, a rebuilt `data/web_cache.duckdb`, and a run log at
   `logs/friday_pipeline.json`.

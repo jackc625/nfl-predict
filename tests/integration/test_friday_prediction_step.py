@@ -145,9 +145,9 @@ def test_orchestrator_predictions_phase_e2e(tmp_path, monkeypatch):
     here would void the proof.
 
     Offseason-safe and no-live-network: the week is pinned to the committed 2024
-    gold, and the three network/rebuild-touching predictions-phase steps
-    (``step_ingest_odds``, ``step_build_market_anchors``, ``step_build_features``)
-    are no-op'd because the committed gold already contains those features
+    gold, and the two network/rebuild-touching predictions-phase steps
+    (``step_ingest_odds``, ``step_build_features``; ``step_build_market_anchors`` was
+    retired in 33.2 review batch 3) are no-op'd because the committed gold already contains those features
     (carried Phase 20 D-04: no live odds pull). The generate / validate / export /
     verify step bodies still run for real.
     """
@@ -184,7 +184,6 @@ def test_orchestrator_predictions_phase_e2e(tmp_path, monkeypatch):
     # already contains the odds/market/feature-matrix inputs, so we keep the REAL
     # orchestrator loop + REAL generate/validate/export bodies without a live pull.
     monkeypatch.setattr(steps, "step_ingest_odds", lambda: None)
-    monkeypatch.setattr(steps, "step_build_market_anchors", lambda: None)
     monkeypatch.setattr(steps, "step_build_features", lambda: None)
 
     # And the step plan 31-18 added, for the SAME reason plus a harder one: its real body
