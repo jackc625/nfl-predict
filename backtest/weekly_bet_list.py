@@ -351,6 +351,14 @@ class LockPassedError(RuntimeError):
     """
 
 
+class PublishDeadlinePassedError(RuntimeError):
+    """The bet list was ready to be written only AFTER its ``publish_by`` deadline.
+
+    Nothing was written (33.2 review C2 WR-08 / C1 WR-05): a bet row decided before a game's
+    lock must not be PUBLISHED after it either. The caller names the games it could not publish.
+    """
+
+
 class MissingDecidedAtError(ValueError):
     """A FORWARD row carries no instant for the write-time assertion to compare (D33-27).
 
@@ -2423,8 +2431,14 @@ def generate_weekly_bet_list(
     bankroll: float = DEFAULT_BANKROLL,
     now: datetime | None = None,
     excluded_game_ids: frozenset[str] = frozenset(),
+    publish_by: datetime | None = None,
 ) -> pd.DataFrame:
     """Select one week, merge it into the durable artifacts, grade what is settled, and persist.
+
+    *publish_by* (keyword-only, None by default): when given, the clock is read again
+    immediately before the artifacts are written, and past it NOTHING is written --
+    :class:`PublishDeadlinePassedError` names the deadline. The daily run passes its slate's
+    lock: a selection that ran long must not publish bets after the games locked.
 
     *excluded_game_ids* (keyword-only, empty by default) names games the run has decided not
     to bet (D33.2-05's live skip, wired by Plan 33.2-03). They are passed through
@@ -2519,6 +2533,17 @@ def generate_weekly_bet_list(
         {strategy.target: strategy for strategy in strategies},
         gold_dir=gold_dir,
     )
+    if publish_by is not None:
+        from scripts.ingest_historical_odds import require_aware_snapshot_ts
+
+        deadline = require_aware_snapshot_ts(publish_by)
+        write_instant = datetime.now(tz=UTC)
+        if write_instant > deadline:
+            msg = (
+                f"the {season} week {week} bet list was ready at {write_instant.isoformat()}, "
+                f"after its publish deadline {deadline.isoformat()}; nothing was written."
+            )
+            raise PublishDeadlinePassedError(msg)
     blocks = write_bet_list_pair(graded, output_dir)
 
     logger.info(

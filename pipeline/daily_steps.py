@@ -392,13 +392,6 @@ def predict_slate(slate: DailySlate) -> None:
         else pd.DataFrame(columns=pd.Index(PREDICTION_OUTPUT_COLUMNS))
     )
 
-    # FINISH BEFORE THE LOCK (Task 2c). The computation instant is judged against each game's
-    # own lock; a late game is refused and recorded, never back-dated.
-    computed_at = datetime.now(UTC)
-    live_skip.refuse_passed_locks(
-        slate.schedule, decided_at=computed_at, excluded_game_ids=excluded
-    )
-
     scored = set(combined["game_id"].astype(str)) if not combined.empty else set()
     unpredicted = sorted(in_scope - scored)
     if unpredicted:
@@ -409,6 +402,15 @@ def predict_slate(slate: DailySlate) -> None:
         raise RuntimeError(msg)
 
     rows = combined.reindex(columns=PREDICTION_OUTPUT_COLUMNS)
+
+    # FINISH BEFORE THE LOCK (Task 2c), judged on the REAL CLOCK IMMEDIATELY BEFORE THE WRITE
+    # (33.2 review C2 WR-08 / C1 WR-05): no game's prediction is published after its own lock.
+    # A late game is refused BY NAME (the live-skip records it and this step re-runs without
+    # it), never back-dated; the stamp is this same instant.
+    computed_at = datetime.now(UTC)
+    live_skip.refuse_passed_locks(
+        slate.schedule, decided_at=computed_at, excluded_game_ids=excluded
+    )
     rows["captured_at_utc"] = slate.captured_at_utc.isoformat()
     rows["information_cutoff_utc"] = slate.lock.astimezone(UTC).isoformat()
     rows["computed_at_utc"] = computed_at.isoformat()
@@ -567,8 +569,17 @@ def validate_slate_predictions(slate: DailySlate) -> None:
 
 
 def recommend_slate(slate: DailySlate) -> None:
-    """Select the slate's bets. ``decided_at_utc`` is the true computation instant (Task 2c)."""
-    from backtest.weekly_bet_list import generate_weekly_bet_list
+    """Select the slate's bets. ``decided_at_utc`` is the true computation instant (Task 2c).
+
+    NEVER PUBLISHED AFTER THE LOCK (33.2 review C2 WR-08): the bet list is written only if the
+    real clock is still at or before the slate's lock when the write happens
+    (``publish_by``). A list that was ready too late writes nothing, and its games are refused
+    by name through the same passed-lock refusal as a late decision.
+    """
+    from backtest.weekly_bet_list import (
+        PublishDeadlinePassedError,
+        generate_weekly_bet_list,
+    )
     from pipeline import live_skip
     from pipeline.steps import _bet_list_output_dir, _week_schedule
 
@@ -579,13 +590,28 @@ def recommend_slate(slate: DailySlate) -> None:
     )
     week_ids = {str(g) for g in _week_schedule(slate.season, slate.week)["game_id"]}
     outside_slate = frozenset(week_ids - slate.game_ids)
-    generate_weekly_bet_list(
-        season=slate.season,
-        week=slate.week,
-        output_dir=_bet_list_output_dir(),
-        now=decided_at,
-        excluded_game_ids=live_skip.excluded_games() | outside_slate,
-    )
+    in_scope = sorted(slate.game_ids - excluded)
+    try:
+        generate_weekly_bet_list(
+            season=slate.season,
+            week=slate.week,
+            output_dir=_bet_list_output_dir(),
+            now=decided_at,
+            excluded_game_ids=live_skip.excluded_games() | outside_slate,
+            publish_by=slate.lock if in_scope else None,
+        )
+    except PublishDeadlinePassedError as late:
+        published_at = datetime.now(UTC).isoformat()
+        raise live_skip.GamesLockPassedError(
+            f"{late} Refusing the bets of {in_scope}.",
+            {
+                "source": live_skip.DECISION_INSTANT_SOURCE,
+                "game_ids": in_scope,
+                "information_times": [published_at] * len(in_scope),
+                "locks": [slate.lock.isoformat()] * len(in_scope),
+                "violation_type": "lock_passed",
+            },
+        ) from late
 
 
 # ---------------------------------------------------------------------------

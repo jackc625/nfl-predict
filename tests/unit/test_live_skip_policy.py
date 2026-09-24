@@ -353,6 +353,48 @@ class TestTheStepSeam:
         assert result.error is not None and "did not converge" in result.error
         assert counter["n"] == 4, "three skip rounds, then the fourth refusal stops it"
 
+    def test_a_re_run_that_cannot_finish_before_the_deadline_is_not_started(
+        self, pipeline_factory: Any, record_path: Path
+    ) -> None:
+        """33.2 review C1 WR-05: skip rounds of a ten-minute build could run past the lock."""
+        body = _RaisesOnceFor(_late(_GAME))
+        pipeline = pipeline_factory()
+        pipeline.deadline = datetime.now(UTC) - timedelta(seconds=1)
+
+        result = pipeline._execute_step(_step(body))
+
+        assert result.status is StepStatus.FAILED
+        assert result.error is not None and "before the deadline" in result.error
+        assert body.calls == 1, "the step was re-run past the deadline"
+        # The refused game is still recorded by name.
+        assert [r["game_id"] for r in skip_log.read_skip_records(record_path)] == [
+            _GAME
+        ]
+
+    def test_a_passed_lock_refusal_is_still_recorded_and_re_run_past_the_deadline(
+        self, pipeline_factory: Any, record_path: Path
+    ) -> None:
+        """Its re-run is the cheap path that drops the late games; it is never time-bounded."""
+        exc = GamesLockPassedError(
+            "passed", {"source": "decision_instant", "game_ids": [_GAME]}
+        )
+        pipeline = pipeline_factory()
+        pipeline.deadline = datetime.now(UTC) - timedelta(seconds=1)
+
+        result = pipeline._execute_step(_step(_RaisesOnceFor(exc)))
+
+        assert result.status is StepStatus.SUCCESS
+        assert excluded_games() == frozenset({_GAME})
+
+    def test_a_re_run_that_fits_before_the_deadline_proceeds(
+        self, pipeline_factory: Any, record_path: Path
+    ) -> None:
+        body = _RaisesOnceFor(_late(_GAME))
+        pipeline = pipeline_factory()
+        pipeline.deadline = datetime.now(UTC) + timedelta(hours=1)
+        assert pipeline._execute_step(_step(body)).status is StepStatus.SUCCESS
+        assert body.calls == 2
+
     def test_the_cap_is_derived_from_the_feature_source_registry(self) -> None:
         from scripts import build_features
 
@@ -370,7 +412,9 @@ class TestTheStepSeam:
 
         from pipeline import orchestrator
 
-        source = inspect.getsource(orchestrator.FridayPipeline.run)
+        # The body lives in ``_run``; ``run`` only finalizes the log on an abnormal exit
+        # (33.2 review C1 CR-05).
+        source = inspect.getsource(orchestrator.FridayPipeline._run)
         tree = ast.parse(source.lstrip())
         calls = [
             node.lineno

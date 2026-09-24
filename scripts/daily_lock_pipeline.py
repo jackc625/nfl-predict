@@ -513,7 +513,10 @@ def _run_the_day(
     from pipeline.orchestrator import FridayPipeline
     from pipeline.steps import RunStatus
 
-    pipeline = FridayPipeline(steps=build_daily_step_registry(slate))
+    # The deadline bounds live-skip re-runs by the slate's lock (33.2 review C1 WR-05).
+    pipeline = FridayPipeline(
+        steps=build_daily_step_registry(slate), deadline=slate.lock
+    )
     log = pipeline.run()
     _print_contract(
         sink, dry_run=False, lock_passed=0, next_day_games=len(slate.game_ids)

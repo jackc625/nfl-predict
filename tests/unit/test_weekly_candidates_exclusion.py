@@ -424,3 +424,44 @@ class TestAGameWithNoOddsRowGetsNoBet:
         assert set(frame["game_id"]) == set(_GAME_IDS)
         assert set(frame["status"]) == {"suppressed"}
         assert set(frame["rejection_reason"]) == {"missing_snapshot"}
+
+
+class TestTheBetListIsNeverPublishedAfterItsDeadline:
+    """33.2 review C2 WR-08: a list ready after the lock writes nothing, and says so."""
+
+    def _generate(self, tmp_path: Path, monkeypatch, publish_by):
+        import json
+
+        from api.cache import BET_LIST_COLUMNS
+        from tests.fixtures.decision_frame import chain_fit_record
+
+        fit_path = tmp_path / "verdict.json"
+        fit_path.write_text(json.dumps(chain_fit_record(0.0)), encoding="utf-8")
+        monkeypatch.setattr(
+            weekly_bet_list,
+            "build_weekly_decision_frame",
+            lambda *_a, **_k: pd.DataFrame(columns=pd.Index(BET_LIST_COLUMNS)),
+        )
+        return weekly_bet_list.generate_weekly_bet_list(
+            SEASON,
+            WEEK,
+            output_dir=tmp_path / "bet_list",
+            chain_fit_path=fit_path,
+            now=_RUN_INSTANT,
+            publish_by=publish_by,
+        )
+
+    def test_a_list_ready_after_the_deadline_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        passed = datetime(2020, 1, 1, tzinfo=UTC)
+        with pytest.raises(weekly_bet_list.PublishDeadlinePassedError):
+            self._generate(tmp_path, monkeypatch, passed)
+        assert not (tmp_path / "bet_list").exists()
+
+    def test_a_list_ready_before_the_deadline_is_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ahead = datetime(2100, 1, 1, tzinfo=UTC)
+        self._generate(tmp_path, monkeypatch, ahead)
+        assert (tmp_path / "bet_list").exists()

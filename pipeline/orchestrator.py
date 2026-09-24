@@ -12,7 +12,7 @@ Per D-23: Uses existing get_logger() for all logging.
 
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from tenacity import (
@@ -22,6 +22,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from backtest.weekly_bet_list import LockPassedError
 from pipeline import live_skip
 from pipeline.alert import PipelineAlertManager
 from pipeline.execution_log import (
@@ -49,6 +50,14 @@ LOG_PATH = Path("logs/friday_pipeline.json").resolve()
 logger = get_logger(__name__)
 
 
+class SkipRoundPastDeadlineError(Exception):
+    """Another live-skip round of a step could not finish before the run's deadline.
+
+    An ``Exception`` for the reason ``live_skip.SkipNotConvergingError`` is one: this
+    repository's catch-tuples swallow ``RuntimeError`` / ``ValueError`` and degrade quietly.
+    """
+
+
 class FridayPipeline:
     """Unified Friday pipeline orchestrator.
 
@@ -67,6 +76,7 @@ class FridayPipeline:
         mode: str = "full",
         history_mode: bool = False,
         steps: list[StepDefinition] | None = None,
+        deadline: datetime | None = None,
     ) -> None:
         """Initialize the pipeline.
 
@@ -82,11 +92,15 @@ class FridayPipeline:
                 history must say so.
             steps: The steps to run instead of the Friday registry -- the daily lock-time run
                 passes its own (Plan 33.2-27). ``None`` runs ``build_step_registry()``.
+            deadline: The instant after which nothing the run decides can be published -- the
+                daily run's slate lock. A live-skip re-run of a step that could not finish
+                before it is not started (33.2 review C1 WR-05). ``None``: unbounded in time.
         """
         self.force = force
         self._steps = steps
         self.mode = mode
         self.history_mode = history_mode
+        self.deadline = deadline
 
         season, week = get_current_nfl_week()
 
@@ -251,9 +265,11 @@ class FridayPipeline:
         cap: int | None = None
         rounds = 0
         while True:
+            attempt_started = time.perf_counter()
             try:
                 return self._invoke(step)
             except live_skip.LIVE_SKIP_EXCEPTIONS as refusal:
+                attempt_seconds = time.perf_counter() - attempt_started
                 if cap is None:
                     cap = live_skip.max_skip_rounds()
                 rounds += 1
@@ -268,12 +284,41 @@ class FridayPipeline:
                     refusal, run_id=self._log.start_time, run_date_et=self._run_date_et
                 )
                 self._log.skipped_games = sorted(live_skip.excluded_games())
+                self._refuse_a_round_past_the_deadline(step, refusal, attempt_seconds)
                 logger.warning(
                     "Per-game refusal: games dropped, re-running step on the rest",
                     step=step.name,
                     dropped=sorted(dropped),
                     skip_round=rounds,
                 )
+
+    def _refuse_a_round_past_the_deadline(
+        self, step: StepDefinition, refusal: Exception, attempt_seconds: float
+    ) -> None:
+        """Stop re-running *step* when another round cannot finish before the deadline.
+
+        33.2 review C1 WR-05: a live-skip refusal re-runs the WHOLE step, and the daily build
+        takes about ten minutes, so a few historical refusals pushed the build, prediction and
+        emission past the 18:00 lock -- losing the entire slate to rows of old seasons. The
+        next round is assumed to take as long as the one that just refused. The games refused
+        so far are already recorded; the step then fails, loudly, and the daily entry point
+        records the slate as unpredicted.
+
+        A passed-lock refusal is exempt: its re-run is the cheap path that records those games
+        and proceeds without them, and at or after the lock it is the only honest outcome.
+        """
+        if self.deadline is None or isinstance(refusal, LockPassedError):
+            return
+        finish = datetime.now(ET) + timedelta(seconds=attempt_seconds)
+        if finish <= self.deadline:
+            return
+        msg = (
+            f"the live skip cannot re-run step {step.name!r} before the deadline "
+            f"{self.deadline.isoformat()}: its last attempt took {attempt_seconds:.0f} s and "
+            f"another would end about {finish.isoformat()}. Excluded so far (each recorded): "
+            f"{sorted(live_skip.excluded_games())}."
+        )
+        raise SkipRoundPastDeadlineError(msg) from refusal
 
     # -- Finalization helpers ------------------------------------------------
 
