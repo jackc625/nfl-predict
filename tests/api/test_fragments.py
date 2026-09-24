@@ -6,6 +6,7 @@ HTMX innerHTML swaps, not full page responses.
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -127,3 +128,28 @@ def test_season_fragment_default_no_param(test_client: TestClient):
     html = response.text
     assert "<!DOCTYPE" not in html
     assert f'data-chart-id="season_cumulative_{latest}"' in html
+
+
+# 33.2 review C2 WR-03: a malformed query string degrades to the default on every fragment
+# route, exactly as it does on the full pages -- never a 500.
+_MALFORMED = ["abc", "--5", "\u00b2", "", " 12 ", "1.5"]
+
+
+@pytest.mark.parametrize("raw", _MALFORMED)
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/fragments/games?week={raw}",
+        "/fragments/games?season={raw}",
+        "/fragments/performance?season={raw}",
+        "/fragments/season?season={raw}",
+    ],
+)
+def test_a_malformed_fragment_query_degrades_rather_than_500ing(
+    test_client: TestClient, route: str, raw: str
+):
+    response = test_client.get(route.format(raw=raw))
+    assert response.status_code == 200, (
+        f"{route.format(raw=raw)!r} returned {response.status_code}; an unparseable value "
+        "degrades to the default, it does not raise"
+    )

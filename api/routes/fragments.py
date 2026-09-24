@@ -24,6 +24,7 @@ from api.routes.pages import (
     _compute_week_summary,
     _normalize_betting_scope,
     _normalize_season,
+    _parse_int_param,
     _pivot_season_metrics,
     _rows_seasons,
 )
@@ -47,9 +48,13 @@ def games_fragment(
 
     When season changes and week is empty, defaults to the latest week
     for that season.
+
+    Every integer goes through ``pages._parse_int_param`` (33.2 review C2 WR-03): a bare
+    ``int(week)`` made ``/fragments/games?week=abc`` a 500, and an unparseable value now
+    degrades to the default exactly as it does on the full pages.
     """
-    week_int = int(week) if week and week.strip() else None
-    season_int = int(season) if season and season.strip() else None
+    week_int = _parse_int_param(week)
+    season_int = _parse_int_param(season)
 
     # When season changes, default to latest week for that season
     if week_int is None and season_int is not None:
@@ -90,7 +95,7 @@ def performance_fragment(
     Renders only the season metrics table portion of the performance
     page, used when the season selector dropdown changes.
     """
-    season_int = int(season) if season and season.strip() else None
+    season_int = _parse_int_param(season)
     raw_metrics = service.get_backtest_metrics(season=season_int)
     season_metrics = _pivot_season_metrics(raw_metrics)
 
@@ -168,9 +173,9 @@ def season_fragment(
     (WR-02); the T-V5-01 whitelist in ``_normalize_season`` still gates the cache id.
     """
     available = service.get_prediction_seasons()
-    season_int = (
-        int(season) if season and season.strip().lstrip("-").isdigit() else None
-    )
+    # The SHARED parser (33.2 review C2 WR-03): the old ``lstrip("-").isdigit()`` guard let
+    # ``"--5"`` through to ``int("--5")``, a 500, exactly as pages.py WR-07 documented.
+    season_int = _parse_int_param(season)
     season_resolved = _normalize_season(season_int, available)
     context = _build_season_context(service, season_resolved, request)
     template_response = templates.TemplateResponse(
