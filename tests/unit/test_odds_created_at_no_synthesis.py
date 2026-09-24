@@ -143,6 +143,24 @@ class TestTheAppendPathThatReachesTheMigration:
         assert created_at_preserved(before, after)
 
 
+class TestAMissingCreatedAtColumnIsNeverManufactured:
+    def test_an_existing_table_with_no_created_at_gains_it_as_null(
+        self, sandbox: Path
+    ) -> None:
+        """33.2 review B IN-06: the migration stamped ``now`` on every existing row."""
+        existing = _odds(["a", "b"], [None, None]).drop(columns="created_at")
+        existing.to_parquet(sandbox / "silver" / "odds_snapshot.parquet", index=False)
+        save_dataframe(_new_row(), "odds_snapshot", layer="silver", save_to_db=False)
+        after = pd.read_parquet(sandbox / "silver" / "odds_snapshot.parquet").set_index(
+            "game_id"
+        )
+        assert pd.isna(after.at["a", "created_at"])
+        assert pd.isna(after.at["b", "created_at"])
+        assert after.at["2026_W03_KC@BUF", "created_at"] == pd.Timestamp(
+            "2026-09-21 12:00:00.123456", tz="UTC"
+        )
+
+
 class TestTheIdentityCheckCatchesTheOldBehaviour:
     def test_a_wholesale_now_replacement_is_detected(self) -> None:
         before = _existing_with_nulls()

@@ -929,14 +929,18 @@ def _migrate_schema_for_append(
     # Handle created_at column migration
     if "created_at" in new_df.columns:
         if "created_at" not in migrated_df.columns:
-            # Missing created_at column - add with default timestamp.
+            # Missing created_at column - add it as NULL (33.2 review B IN-06).
             #
-            # DELIBERATELY ASYMMETRIC with the two conversion branches below (Plan 33.2-08). A
-            # column that never existed has no true value to preserve, so stamping the
-            # migration instant is honest here. An EXISTING column that fails to parse is the
-            # opposite case: its values are real records, and replacing them would destroy them.
-            logger.info("Adding missing created_at column to existing data")
-            migrated_df["created_at"] = datetime.now(UTC)
+            # It used to be stamped with the migration instant. ``created_at`` is the
+            # information time of a market line, and a manufactured "now" on rows captured
+            # at some earlier, unknown time is exactly the P1 pitfall: a fabricated capture
+            # time. A row whose capture time was never recorded carries an honest unknown,
+            # as the two conversion branches below already keep for a value that fails to
+            # parse.
+            logger.info("Adding missing created_at column to existing data as NULL")
+            migrated_df["created_at"] = pd.Series(
+                pd.NaT, index=migrated_df.index, dtype="datetime64[ns, UTC]"
+            )
 
         elif migrated_df["created_at"].dtype in ["int64", "float64"]:
             # Legacy integer seconds. This read is how silver odds_snapshot got 1,855 values in
