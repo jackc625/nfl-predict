@@ -11,10 +11,12 @@
 <span class="text-gray-400 italic">{{ text }}</span>
 {%- endmacro %}
 
-{# "KC 61.2%": the favoured team and its own chance of winning. #}
+{# "KC 61.2%": the favoured team and its own chance of winning. The home team is named only
+   ABOVE 0.5 -- the one comparison the card's "Predicted:" line and season_metrics._wp_outcome
+   use, so an exact 0.5 names the same team everywhere (33.2 review C2 IN-05). #}
 {% macro win_prob(prob, home, away, missing="No line") -%}
 {%- if prob is none -%}{{ absent(missing) }}
-{%- elif prob >= 0.5 -%}{{ home }} {{ "%.1f"|format(prob * 100) }}%
+{%- elif prob > 0.5 -%}{{ home }} {{ "%.1f"|format(prob * 100) }}%
 {%- else -%}{{ away }} {{ "%.1f"|format((1 - prob) * 100) }}%
 {%- endif -%}
 {%- endmacro %}

@@ -331,3 +331,36 @@ def test_game_date_is_the_eastern_kickoff_whatever_the_server_zone(
     game = DataService(conn).get_game_detail(GAME_ID)
     assert game is not None
     assert str(game["game_date"]) == "2026-09-13 16:25:00"
+
+
+def test_equal_numbers_render_no_pick_and_an_even_wp_names_one_team() -> None:
+    """33.2 review C2 IN-05: the labels agree with the grading on every equality case.
+
+    ``_ats_outcome`` / ``_ou_outcome`` exclude a model number equal to the line as "no pick", but
+    the card said "{away} covers" and "Under"; and "Predicted:" named the away team at exactly
+    0.5 while the WP figure named the home team.
+    """
+    game = {
+        **dict.fromkeys(PREDICTION_OUTPUT_COLUMNS),
+        "game_id": GAME_ID,
+        "home_team": "KC",
+        "away_team": "DEN",
+        "status": "completed",
+        "home_score": 24,
+        "away_score": 20,
+        "wp_prob": 0.5,
+        "ats_prediction": 3.0,
+        "market_spread": 3.0,
+        "ou_prediction": 44.5,
+        "market_total": 44.5,
+    }
+    card = (
+        Environment(loader=FileSystemLoader(TEMPLATES))
+        .get_template("components/_game_card.html")
+        .render(game=game)
+    )
+    assert card.count("No pick") == 2
+    assert "DEN covers" not in card
+    assert "Under" not in card
+    assert "Predicted: DEN 50% WP" in " ".join(card.split())
+    assert "DEN 50.0%" in card and "KC 50.0%" not in card

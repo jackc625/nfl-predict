@@ -89,7 +89,7 @@
                   {# Home margins, POSITIVE when the home team is favoured (DEF-31-01): a model
                      margin above the line = HOME covers, the side backtest/ats_ev_chain.py prices.
                      See the same label in components/_game_card.html. #}
-                  {% if game.ats_prediction > game.market_spread %}{{ game.home_team }} covers{% else %}{{ game.away_team }} covers{% endif %}
+                  {% if game.ats_prediction > game.market_spread %}{{ game.home_team }} covers{% elif game.ats_prediction < game.market_spread %}{{ game.away_team }} covers{% else %}No pick{% endif %}
                 </span>
               {% endif %}
             </td>
@@ -109,7 +109,7 @@
             <td class="py-2 text-gray-700">Total
               {% if game.ou_prediction is not none and game.market_total is not none %}
                 <span class="block text-xs text-gray-400">
-                  {% if game.ou_prediction > game.market_total %}Over{% else %}Under{% endif %} {{ "%.1f"|format(game.market_total) }}
+                  {% if game.ou_prediction > game.market_total %}Over {{ "%.1f"|format(game.market_total) }}{% elif game.ou_prediction < game.market_total %}Under {{ "%.1f"|format(game.market_total) }}{% else %}No pick{% endif %}
                 </span>
               {% endif %}
             </td>
