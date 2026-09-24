@@ -306,6 +306,11 @@ def _rate(hits: int, decided: int) -> float | None:
     """
     if decided == 0:
         return None
+    return _percent(hits, decided)
+
+
+def _percent(hits: int, decided: int) -> float:
+    """``hits / decided`` as a percentage; the caller guarantees ``decided > 0``."""
     return hits / decided * 100.0
 
 
@@ -464,7 +469,8 @@ def compute_weekly_series(
                 bucket[0] += 1  # hits
 
         weeks = sorted(per_week)
-        values = [_rate(per_week[w][0], per_week[w][1]) for w in weeks]
+        # Every week here has at least one decided game (a week with none is never added).
+        values = [_percent(per_week[w][0], per_week[w][1]) for w in weeks]
         rolling = _rolling_average(values, ROLLING_WINDOW)
         series[target] = {"weeks": weeks, "values": values, "rolling": rolling}
     return series
