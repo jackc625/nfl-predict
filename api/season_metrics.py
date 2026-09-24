@@ -297,10 +297,15 @@ def _completed_sorted(rows: Sequence[dict]) -> list[dict]:
     return completed
 
 
-def _rate(hits: int, decided: int) -> float:
-    """Hit-rate as a percentage over decided games; ``0.0`` when none decided."""
+def _rate(hits: int, decided: int) -> float | None:
+    """Hit-rate as a percentage over decided games; ``None`` when none is decided.
+
+    NONE, NOT ``0.0`` (33.2 review C2 WR-02). A rate over zero decided games was not measured,
+    and ``0.0`` rendered on ``/season`` as a measured-looking "0.0%" for a season or a target with
+    nothing graded yet.
+    """
     if decided == 0:
-        return 0.0
+        return None
     return hits / decided * 100.0
 
 
@@ -314,18 +319,21 @@ def compute_season_kpis(rows: Sequence[dict]) -> dict[str, Any]:
 
     Returns a dict with, per target ``t`` in (wp, ats, ou):
 
-    * ``{t}_hit_rate`` — hits / decided * 100 (pushes/ties excluded).
+    * ``{t}_hit_rate`` — hits / decided * 100 (pushes/ties excluded), or ``None``
+      when the target has no decided game.
     * ``{t}_decided``  — decided game count (hits + misses).
     * ``{t}_hits``     — hit count.
 
     plus a straight-up W-L record (correct/incorrect WP calls, ties excluded):
 
     * ``record_wins`` / ``record_losses`` — int counts.
-    * ``record`` — ``"<wins>-<losses>"`` display string.
+    * ``record`` — ``"<wins>-<losses>"`` display string, or ``None`` when no WP
+      call is decided.
 
     Only completed games (``status='completed'`` with usable scores) contribute.
-    Empty / all-excluded input returns zeroed values (record ``"0-0"``) and
-    never raises.
+    Empty / all-excluded input returns zero counts with ``None`` rates and record
+    (33.2 review C2 WR-02: never a measured-looking "0.0%" or "0-0") and never
+    raises.
     """
     completed = [r for r in rows if _is_completed(r)]
 
@@ -350,8 +358,17 @@ def compute_season_kpis(rows: Sequence[dict]) -> dict[str, Any]:
     record_losses = kpis["wp_decided"] - kpis["wp_hits"]
     kpis["record_wins"] = record_wins
     kpis["record_losses"] = record_losses
-    kpis["record"] = f"{record_wins}-{record_losses}"
+    kpis["record"] = f"{record_wins}-{record_losses}" if kpis["wp_decided"] else None
     return kpis
+
+
+def season_has_graded_games(kpis: dict[str, Any]) -> bool:
+    """Whether a season KPI blob carries any decided game, for any target (33.2 review C2 WR-02).
+
+    The ``/season`` page shows its empty state when this is False: a blob of zero counts is a
+    season with nothing graded yet, not a season scoring 0%.
+    """
+    return any(int(_num(kpis.get(f"{t}_decided"))) > 0 for t in _TARGETS)
 
 
 # ---------------------------------------------------------------------------

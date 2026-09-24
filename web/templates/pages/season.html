@@ -39,18 +39,18 @@
    scope when the season has nothing to show, so the empty state below carries no label. #}
 {% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
 
-{# Whole-season empty guard FIRST (D-02): a season with zero completed games has
-   no KPI blob and no rendered charts, so render a single empty state instead of
-   the KPI strip + charts. This is the offseason reality for a not-yet-played
-   season -- it is "no data" (gray), NOT an error.
+{# Whole-season empty guard FIRST (D-02): a season with no GRADED game renders a
+   single empty state instead of the KPI strip + charts. The route passes an EMPTY
+   kpis for such a season (33.2 review C2 WR-02): its KPI blob exists, since
+   population builds one for every season in predictions, but its counts are all
+   zero, and rendering it showed "0.0%" and "0-0" as if they were measurements.
+   This is the offseason reality for a not-yet-played season -- it is "no data"
+   (gray), NOT an error.
    WR-04: gate on `current_season is none` explicitly first (empty DB ->
-   _normalize_season returns None -> the "...None" chart_ids are absent from the
-   `charts` dict). Use `charts.get(...)` rather than `charts[...]` so the guard
-   does not lean on Jinja's default Undefined-is-falsy behavior -- this stays
-   correct even under StrictUndefined instead of 500ing the empty-DB page. #}
-{% if current_season is none or (not kpis and not charts.get(cumulative_id) and not charts.get(weekly_id)) %}
+   _normalize_season returns None). #}
+{% if current_season is none or not kpis %}
   {% with heading="No completed games yet",
-          body="This season has no completed games in the cache yet. Once results arrive from the Friday pipeline, weekly and cumulative accuracy will appear here.",
+          body="This season has no completed game with a pick to grade in the cache yet. Once results arrive from the daily run, weekly and cumulative accuracy will appear here.",
           action_text=none, action_url=none %}
     {% include "components/_empty_state.html" %}
   {% endwith %}
@@ -75,7 +75,7 @@
     </div>
     <div class="bg-white rounded-lg border border-gray-200 p-4 text-center">
       <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Record (W-L)</p>
-      <p class="text-2xl font-semibold text-gray-900 mt-1 stat-num">{{ kpis.record|default("--") }}</p>
+      <p class="text-2xl font-semibold text-gray-900 mt-1 stat-num">{{ kpis.record if kpis.record else "--" }}</p>
     </div>
   </div>
   <p class="text-xs text-gray-500 mt-3 max-w-3xl">Pushes are excluded from the denominator.</p>

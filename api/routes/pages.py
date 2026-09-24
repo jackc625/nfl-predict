@@ -28,7 +28,12 @@ from api.cache import (
 )
 from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
-from api.season_metrics import _ats_outcome, _ou_outcome, _wp_outcome
+from api.season_metrics import (
+    _ats_outcome,
+    _ou_outcome,
+    _wp_outcome,
+    season_has_graded_games,
+)
 from api.services import DataService
 from utils import get_logger
 
@@ -297,9 +302,14 @@ def _build_season_context(
             f"season_weekly_{season}"
         )
     kpis = service.get_season_kpis(season) if season is not None else {}
-    # The template shows its empty state -- no numbers -- when a season has no KPI blob and no
-    # chart, so the scope is known-empty in exactly that case and the season otherwise.
-    shows_numbers = season is not None and (bool(kpis) or any(charts.values()))
+    # A season with NOTHING GRADED shows the empty state, not "0.0%" and "0-0" (33.2 review C2
+    # WR-02). Its KPI blob exists -- population builds one for every season in ``predictions``,
+    # live weeks included -- so the test is on the decided counts, and the charts, which always
+    # render an empty-chart div, are not consulted. The old-rule scope is known-empty in exactly
+    # that case and the season otherwise.
+    if not season_has_graded_games(kpis):
+        kpis = {}
+    shows_numbers = season is not None and bool(kpis)
     return {
         "request": request,
         "charts": charts,

@@ -165,7 +165,8 @@ def test_ats_convention_no_directional_pick_is_excluded() -> None:
 
     kpis = compute_season_kpis([row])
     assert kpis["ats_decided"] == 0
-    assert kpis["ats_hit_rate"] == 0.0
+    # Nothing decided is NOT MEASURED, never a measured-looking 0.0 (33.2 review C2 WR-02).
+    assert kpis["ats_hit_rate"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -482,16 +483,30 @@ def test_compute_season_kpis_ignores_non_completed_games() -> None:
     assert kpis["wp_hit_rate"] == pytest.approx(100.0)
 
 
-def test_compute_season_kpis_empty_input_is_zeroed() -> None:
-    """compute_season_kpis([]) returns zeroed values without raising."""
-    from api.season_metrics import compute_season_kpis
+def test_compute_season_kpis_empty_input_is_not_measured() -> None:
+    """compute_season_kpis([]) returns zero counts and NO rate or record, without raising.
+
+    33.2 review C2 WR-02: the zeroed 0.0 rates and "0-0" record rendered on /season as
+    measurements for a season with nothing graded.
+    """
+    from api.season_metrics import compute_season_kpis, season_has_graded_games
 
     kpis = compute_season_kpis([])
-    assert kpis["wp_hit_rate"] == 0.0
-    assert kpis["ats_hit_rate"] == 0.0
-    assert kpis["ou_hit_rate"] == 0.0
+    assert kpis["wp_hit_rate"] is None
+    assert kpis["ats_hit_rate"] is None
+    assert kpis["ou_hit_rate"] is None
     assert kpis["wp_decided"] == 0
-    assert kpis["record"] == "0-0"
+    assert kpis["record"] is None
+    assert season_has_graded_games(kpis) is False
+
+
+def test_season_has_graded_games_reads_the_decided_counts() -> None:
+    """One decided game on any target is a season with something to show."""
+    from api.season_metrics import season_has_graded_games
+
+    assert season_has_graded_games({"wp_decided": 0, "ats_decided": 1, "ou_decided": 0})
+    assert not season_has_graded_games({"wp_decided": 0, "ats_decided": 0})
+    assert not season_has_graded_games({})
 
 
 def test_breakeven_win_rate_constant_is_copied_value() -> None:

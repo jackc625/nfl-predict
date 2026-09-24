@@ -729,3 +729,40 @@ def test_the_landing_page_sort_by_band_is_unchanged(test_client: TestClient) -> 
     sorted_response = test_client.get("/", params={"sort": "confidence"})
     assert sorted_response.status_code == 200
     assert default_html.count("game-card") == sorted_response.text.count("game-card")
+
+
+def test_a_season_with_nothing_graded_renders_the_empty_state_not_zeroes() -> None:
+    """33.2 review C2 WR-02: a KPI blob of zero counts is "nothing graded", not "0.0%" / "0-0".
+
+    Population builds a KPI blob for every season in ``predictions``, live weeks included, so a
+    new season has a blob whose counts are all zero -- and the charts always render an empty-chart
+    div. The page used to show "0.0%" hit rates and a "0-0" record as measurements.
+    """
+    from api.routes.pages import _build_season_context
+    from api.season_metrics import compute_season_kpis
+
+    class _Service:
+        def get_chart_html(self, chart_id: str) -> str:
+            return f'<div data-chart-id="{chart_id}">empty chart</div>'
+
+        def get_season_kpis(self, season: int) -> dict:
+            return compute_season_kpis([])
+
+        def get_prediction_seasons(self) -> list[int]:
+            return [2026]
+
+        def get_cache_meta(self) -> dict:
+            return {}
+
+    class _Request:
+        def url_for(self, name: str, **path_params: object) -> str:
+            return f"/{name}/{path_params.get('path', '')}"
+
+    context = _build_season_context(_Service(), 2026, _Request())  # type: ignore[arg-type]
+    assert context["kpis"] == {}
+    assert context["old_rule_scope"]["contains_old_rule_results"] is False
+
+    html = templates.env.get_template("pages/season.html").render(context)
+    assert "No completed games yet" in html
+    assert "0.0%" not in html
+    assert "0-0" not in html
