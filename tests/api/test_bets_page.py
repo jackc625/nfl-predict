@@ -458,7 +458,7 @@ _UNRECOGNISED_REASON = "reason_invented_by_a_future_plan"
 _EXPECTED_LABELS: dict[str, str] = {
     "ev_below_floor": "Expected value below the floor",
     "not_subpop": "Outside the eligible sub-population",
-    "stale_line": "Line older than the freeze",
+    "stale_line": "Line captured after the lock",
     "missing_snapshot": "No market line for this bet type",
     "missing_prediction": "No model prediction for this game",
     "real_odds_failed": "Odds failed the real-market check",
@@ -642,7 +642,7 @@ def test_suppressed_rows_are_in_the_document_while_collapsed(tmp_path: Path) -> 
 
     assert "<details open" not in body, "the disclosure was not collapsed"
     assert "SEA @ SFO" in body
-    assert "Line older than the freeze" in body
+    assert "Line captured after the lock" in body
 
 
 def test_the_caption_is_present_whether_or_not_the_disclosure_is_expanded(
@@ -755,8 +755,8 @@ _BANNER_EYEBROW = "Not wagering advice"
 # Authored LITERALLY in the template rather than interpolated, so its apostrophes are not
 # HTML-escaped -- unlike the two _error_state.html slots, which pass through {{ }}.
 _PER_GAME_FREEZE_SENTENCE = (
-    "Lines frozen at 6:00 PM Eastern on the Friday before each game's own kickoff "
-    "-- a Thursday game freezes a week earlier than that week's Sunday games."
+    "Each game's line locks at 6:00 PM Eastern the day before its own kickoff "
+    "-- a Thursday game locks on the Wednesday, that week's Sunday games on the Saturday."
 )
 _FORBIDDEN_WEEK_LEVEL_CLAIMS = (
     "before this week",
@@ -1914,8 +1914,8 @@ _REPLAY_CAPTION = (
     "data to show how the selection rule would have behaved. Do not read them as a track record."
 )
 _FORWARD_CAPTION = (
-    "Each of these was written to the cache on the Friday before its game, before the result "
-    "existed. This is the only block that is a track record."
+    "Each of these was decided before its game locked at 6:00 PM Eastern the day before "
+    "kickoff, before the result existed. This is the only block that is a track record."
 )
 _PUSH_FOOTNOTE = (
     "A push returns the stake. Pushes are excluded from the hit-rate denominator and are never "
@@ -3446,3 +3446,46 @@ def test_population_stamps_the_in_season_slate_and_nothing_in_the_offseason(
 
     assert parse_current_slate("garbage") is None
     assert parse_current_slate(None) is None
+
+
+def test_no_rendered_page_states_the_retired_friday_rule(
+    tmp_path: Path, bets_client: TestClient
+) -> None:
+    """33.2 review C2 WR-10: /bets and /season no longer state the retired Friday rule.
+
+    Since D33.2-01 each game locks at 6:00 PM Eastern the day before its own kickoff and the run
+    is daily. The pages still told readers that lines froze "on the Friday before" each game and
+    that the forward record was "written to the cache on the Friday before its game".
+    """
+    rows = [_suppressed_row("2023_W01_SEA@SFO", "ats", "stale_line")]
+    with _client_for(tmp_path, rows, "friday_suppressed") as client:
+        suppressed = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    blocked = _blocked_cache(
+        tmp_path,
+        "friday_blocked",
+        bet_rows=[],
+        freeze_weeks=[
+            {
+                "game_id": "2023_W01_DET@KC",
+                "season": _SEASON,
+                "week": _WEEK,
+                "game_freeze_ts": _LATER_FREEZE,
+            }
+        ],
+        week_rows=[{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}],
+        stamp=(_SEASON, _WEEK),
+    )
+    with contextmanager(_client)(blocked) as client:
+        refused = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    bodies = {
+        "/bets": bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text,
+        "/bets suppressed": suppressed,
+        "/bets refused": refused,
+        "/season": bets_client.get("/season").text,
+    }
+    for page, body in bodies.items():
+        assert "friday" not in body.lower(), (
+            f"{page} still states the retired Friday rule"
+        )
+    assert _PER_GAME_FREEZE_SENTENCE in bodies["/bets"]

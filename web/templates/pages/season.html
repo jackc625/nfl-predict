@@ -23,7 +23,7 @@
    yet" empty state below, which is a no-data case, not a failure. #}
 <template id="season-error-template">
   {% with message="Could not load season data",
-          recovery_text="Refresh the page or rebuild the cache. If the problem persists, re-run the Friday pipeline." %}
+          recovery_text="Refresh the page or rebuild the cache. If the problem persists, re-run the daily pipeline." %}
     {% include "components/_error_state.html" %}
   {% endwith %}
 </template>
