@@ -1959,7 +1959,14 @@ def _load_current_week_predictions(
     """
     if predictions_dir is None:
         return 0
-    paths = sorted(predictions_dir.glob("predictions_*_week*.csv"))
+    # Oldest file first, so the ``keep="last"`` below keeps a game's MOST RECENT prediction when
+    # it appears in two week files (a game moved to another week after its first prediction was
+    # written). A plain lexicographic sort put ``..._week10.csv`` before ``..._week2.csv`` and
+    # kept whichever NAME sorted last (33.2 review C2 IN-01). The name breaks an mtime tie.
+    paths = sorted(
+        predictions_dir.glob("predictions_*_week*.csv"),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+    )
     games_path = silver_dir / "games.parquet"
     if not paths or not games_path.exists():
         logger.info(

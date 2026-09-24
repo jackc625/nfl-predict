@@ -230,3 +230,55 @@ def test_the_prediction_script_takes_the_wp_edge_against_market_wp() -> None:
     assert result.loc[0, "wp_confidence"] == "medium"
     assert pd.isna(result.loc[1, "wp_edge"])
     assert result.loc[1, "wp_confidence"] is None
+
+
+def test_a_game_in_two_week_files_keeps_its_most_recent_prediction(
+    tmp_path: Path,
+) -> None:
+    """33.2 review C2 IN-01: the NEWER file wins, not the file whose name sorts last.
+
+    ``predictions_2026_week10.csv`` sorts before ``predictions_2026_week2.csv``, so the old
+    lexicographic order kept week 2's row for a game present in both, whichever was written last.
+    """
+    import os
+
+    predictions_dir = tmp_path / "predictions"
+    predictions_dir.mkdir()
+    for week, wp_prob, age_seconds in ((2, 0.30, 0), (10, 0.70, 3600)):
+        row = dict.fromkeys(PREDICTION_OUTPUT_COLUMNS)
+        row.update(
+            game_id=GAME_ID,
+            season=2026,
+            week=week,
+            home_team="KC",
+            away_team="DEN",
+            wp_prob=wp_prob,
+            ats_prediction=4.2,
+            ou_prediction=45.1,
+        )
+        path = predictions_dir / f"predictions_2026_week{week}.csv"
+        pd.DataFrame([row], columns=PREDICTION_OUTPUT_COLUMNS).to_csv(path, index=False)
+        # week 2 is the NEWER file: week 10 was written an hour earlier.
+        stamp = 1_800_000_000 - age_seconds
+        os.utime(path, (stamp, stamp))
+    silver_dir = tmp_path / "silver"
+    silver_dir.mkdir()
+    pd.DataFrame(
+        {
+            "game_id": [GAME_ID],
+            "home_score": [None],
+            "away_score": [None],
+            "kickoff_et": [pd.Timestamp("2026-09-13 16:25", tz="America/New_York")],
+        }
+    ).to_parquet(silver_dir / "games.parquet")
+
+    conn = duckdb.connect(":memory:")
+    for statement in CACHE_SCHEMA.strip().split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    assert _load_current_week_predictions(conn, predictions_dir, silver_dir) == 1
+
+    game = DataService(conn).get_game_detail(GAME_ID)
+    assert game is not None
+    assert game["wp_prob"] == pytest.approx(0.30), "the older week-10 row survived"
+    assert game["week"] == 2
