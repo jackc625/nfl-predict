@@ -176,9 +176,28 @@ def test_an_away_bet_is_judged_on_the_away_side_s_market_probability() -> None:
 def test_a_win_bet_with_no_spread_derived_probability_is_suppressed_not_priced() -> (
     None
 ):
-    """The threshold test cannot run without its yardstick; the row is not a bet."""
-    result = _select([_wp_row("g_no_market", None, PRICE_GOOD)])
+    """The threshold test cannot run without its yardstick; the row is not a bet.
+
+    The column present but EMPTY for this game means the game had no spread -- a market gap.
+    """
+    rows = [
+        _wp_row("g_priced", MARKET_CLEARS, PRICE_GOOD),
+        _wp_row("g_no_market", None, PRICE_GOOD),
+    ]
+    result = _select(rows)
     assert _wp_outcome(result, "g_no_market") == "missing_snapshot"
+    assert _wp_outcome(result, "g_priced") == "bet"
+
+
+def test_no_bound_converter_is_named_as_such_not_as_a_market_gap() -> None:
+    """A33.2-review IN-06: the column ABSENT everywhere means no converter was bound.
+
+    ``_attach_spread_market_probability`` adds the column only when the live blend binds a
+    converter. Labelling that ``missing_snapshot`` sent the reader to the odds feed for an
+    artifact fault.
+    """
+    result = _select([_wp_row("g_unbound", None, PRICE_GOOD)])
+    assert _wp_outcome(result, "g_unbound") == "no_bound_converter"
 
 
 def test_the_live_threshold_is_the_corrected_wp_medium_value() -> None:

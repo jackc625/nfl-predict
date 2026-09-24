@@ -452,7 +452,7 @@ def test_empty_week_renders_empty_state_not_500(bets_client: TestClient) -> None
 
 _UNRECOGNISED_REASON = "reason_invented_by_a_future_plan"
 
-# The twelve labels the page maps REJECTION_REASONS onto, transcribed from the UI-SPEC's
+# The thirteen labels the page maps REJECTION_REASONS onto, transcribed from the UI-SPEC's
 # suppression-reason table. Kept here as a LITERAL rather than imported from the template so a
 # silent edit to either side is a test failure rather than a tautology.
 _EXPECTED_LABELS: dict[str, str] = {
@@ -469,6 +469,8 @@ _EXPECTED_LABELS: dict[str, str] = {
     # Plan 33.2-26: the second test of a 2026 win bet, and a bet type with no honest threshold.
     "edge_below_threshold": "Win edge over the spread line below the threshold",
     "no_honest_edge_threshold": "No honest edge threshold for this bet type",
+    # A33.2-review IN-06: no converter bound, told apart from a market-data gap.
+    "no_bound_converter": "No spread converter bound to the blend",
 }
 
 _BLANK_REASON_CELL = (

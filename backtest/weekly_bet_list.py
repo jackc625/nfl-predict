@@ -882,7 +882,8 @@ def _bound_spread_slope(artifacts_dir: Path) -> float | None:
     never fitted on it. Read through the one blend loader, the same way the current-week
     predictions read it. With no blend deployed there is no yardstick for a win bet's second
     test, so :func:`_attach_spread_market_probability` leaves the column absent and the selector
-    suppresses those rows as a market gap rather than betting on one test.
+    suppresses those rows as ``no_bound_converter`` -- a missing converter, not a market-data
+    gap (A33.2-review IN-06) -- rather than betting on one test.
     """
     from models.blending import MarketBlender
 
@@ -1373,7 +1374,8 @@ def select_weekly_bets(
         else candidates
     )
     selector = BetSelector(
-        frozen_sd=float(fits["ou"].frozen_sd or 0.0),
+        # A33.2-review IN-05: the same refusal build_strategies uses, never ``or 0.0``.
+        frozen_sd=require_frozen_sd(fits["ou"]),
         season_bias_by_season={},
         ev_floor_t={
             target: require_ev_floor(fit)

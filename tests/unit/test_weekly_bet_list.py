@@ -59,6 +59,7 @@ from backtest.weekly_bet_list import (
     grade_row,
     load_frozen_chain_fit,
     read_bet_list_artifact,
+    select_weekly_bets,
     upsert_bet_list_rows,
     wp_fallback_is_active,
     write_bet_list_artifact,
@@ -703,6 +704,24 @@ def test_an_unusable_residual_sd_raises_rather_than_becoming_zero(
     """
     with pytest.raises(FrozenChainFitError, match=repr(target)):
         build_strategies(_fits(**{target: bad_sd}))
+
+
+def test_the_selector_s_own_ou_sd_is_refused_too_even_with_explicit_strategies() -> (
+    None
+):
+    """A33.2-review IN-05: ``select_weekly_bets`` built its selector on ``frozen_sd or 0.0``.
+
+    With explicit strategies ``build_strategies`` is never called, so that was the one path
+    left on which an absent O/U SD became a silent 0.0.
+    """
+    strategies = build_strategies(_fits())
+    with pytest.raises(FrozenChainFitError, match="'ou'"):
+        select_weekly_bets(
+            pd.DataFrame(),
+            pd.DataFrame(columns=["game_id", "season", "week", "gameday"]),
+            _fits(ou=None),
+            strategies=strategies,
+        )
 
 
 def test_a_usable_residual_sd_still_builds_all_three_strategies() -> None:

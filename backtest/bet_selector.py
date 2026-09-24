@@ -150,6 +150,11 @@ REJECTION_REASONS: tuple[str, ...] = (
     # so it places no bets and each of its games is recorded (Plan 33.2-26, SPEC R14). Emitted
     # by ``backtest.weekly_bet_list.select_weekly_bets``, not here.
     "no_honest_edge_threshold",
+    # a 2026 WIN bet whose second test cannot run because NO converter is bound: the deployed
+    # blend binds none, so no spread can be turned into a market win probability. A missing
+    # converter, not a market-data gap -- ``missing_snapshot`` would send the operator to the
+    # odds feed for a fault in the artifacts (A33.2-review IN-06).
+    "no_bound_converter",
 )
 
 #: The candidate column carrying the SPREAD-DERIVED market probability of a home win, converted
@@ -904,8 +909,11 @@ class BetSelector:
         if missing_prediction:
             return record, "missing_prediction"
         # The spread-derived probability is MARKET data the threshold test needs; without it the
-        # second test cannot run, so the row is suppressed as a market gap rather than priced on
-        # one test alone.
+        # second test cannot run, so the row is suppressed rather than priced on one test alone.
+        # A column ABSENT from the candidate means no converter was bound (the weekly layer
+        # attaches it only when one is); a PRESENT-but-empty value means this game had no spread.
+        if two_test and SPREAD_MARKET_PROB_FIELD not in row:
+            return record, "no_bound_converter"
         if two_test and _is_absent(row.get(SPREAD_MARKET_PROB_FIELD)):
             return record, "missing_snapshot"
 

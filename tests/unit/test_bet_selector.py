@@ -1491,6 +1491,8 @@ class TestFacadePublicSurface:
             # Plan 33.2-26: a win bet's second test (D33.2-11) and no honest edge threshold.
             "edge_below_threshold",
             "no_honest_edge_threshold",
+            # A33.2-review IN-06: a win bet with no bound converter is not a market gap.
+            "no_bound_converter",
         )
 
 
