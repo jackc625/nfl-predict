@@ -298,11 +298,17 @@ class TestBetSelectorRealOddsGuard:
     """OUM-06: mock/synthetic odds hard-fail BEFORE any selection."""
 
     def test_mock_odds_hard_fail(self) -> None:
-        """assert_real_odds raises ValueError naming offenders on a bad sportsbook or is_live=True.
+        """assert_real_odds raises ValueError naming offenders on an unknown or absent sportsbook.
 
-        A clean consensus/draftkings, is_live=False frame passes. A frame with a sportsbook outside
-        {consensus, draftkings} OR an is_live=True row raises a ValueError naming the offending
-        game_ids (OUM-06). The selector calls this BEFORE selecting.
+        A clean consensus/draftkings frame passes. A frame with a sportsbook no real source uses,
+        or a row with no sportsbook at all, raises a ValueError naming the offending game_ids
+        (OUM-06). The selector calls this BEFORE selecting.
+
+        Was (Plan 33.2-27 Task 1, re-expressed keeping the intent -- a synthetic row is refused):
+        the bad book was ``bovada`` and the second arm was ``is_live=True``. Both are what a
+        GENUINE live capture returns, so the allowlist was widened to the real book names and
+        ``is_live`` stopped being a contamination signal; the unknown and the absent book are the
+        synthetic shapes that remain.
         """
         from backtest.bet_selector import assert_real_odds
 
@@ -316,27 +322,27 @@ class TestBetSelectorRealOddsGuard:
         # Clean frame: no raise.
         assert_real_odds(clean)
 
-        # Bad sportsbook.
+        # Unknown sportsbook.
         bad_book = pd.DataFrame(
             {
                 "game_id": ["2021_W03_E@F"],
-                "sportsbook": ["bovada"],
+                "sportsbook": ["mock_book"],
                 "is_live": [False],
             }
         )
         with pytest.raises(ValueError, match="2021_W03_E@F"):
             assert_real_odds(bad_book)
 
-        # is_live=True row.
-        live = pd.DataFrame(
+        # Absent sportsbook.
+        absent = pd.DataFrame(
             {
                 "game_id": ["2021_W04_G@H"],
-                "sportsbook": ["consensus"],
-                "is_live": [True],
+                "sportsbook": [None],
+                "is_live": [False],
             }
         )
         with pytest.raises(ValueError, match="2021_W04_G@H"):
-            assert_real_odds(live)
+            assert_real_odds(absent)
 
     def test_select_hard_fails_on_mock_raw_odds(self) -> None:
         """select() raises if a mock raw_odds_df is supplied (provenance check BEFORE selection)."""
@@ -546,8 +552,10 @@ class TestPhase27ReviewFixes:
         """
         from backtest.bet_selector import assert_real_odds
 
+        # Was: ``bovada``, now a real live book (Plan 33.2-27 Task 1); an unknown name keeps the
+        # intent -- an offending row on a frame with no game_id.
         df = pd.DataFrame(
-            {"sportsbook": ["bovada"], "is_live": [False]}
+            {"sportsbook": ["mock_book"], "is_live": [False]}
         )  # bad book, no game_id
         with pytest.raises(ValueError, match="provenance"):
             assert_real_odds(df)

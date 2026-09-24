@@ -138,6 +138,20 @@ class GameSchema(BaseModel):
         return self
 
 
+#: ONE market observation per key -- the historical ingest's one-row-per-key invariant
+#: (``scripts.ingest_historical_odds.assert_one_row_per_key``). Defined here, in the data
+#: layer, so the live writer in ``data.storage`` and the historical ingest share ONE key
+#: convention rather than two spellings of it.
+ODDS_KEY_COLUMNS: tuple[str, ...] = ("game_id", "sportsbook", "snapshot_ts")
+
+#: The LIVE store's row identity: the historical key plus the capture instant (Plan 33.2-27).
+#: Since Plan 33.2-02 a live row's ``snapshot_ts`` is its game's LOCK, which every pull of that
+#: game shares, so the triple alone would still collapse a second pull onto the first. The
+#: capture instant ``created_at`` is what makes two pulls two captures; an identical re-write
+#: of one capture is still idempotent.
+LIVE_ODDS_CAPTURE_KEY: tuple[str, ...] = (*ODDS_KEY_COLUMNS, "created_at")
+
+
 class OddsSchema(BaseModel):
     """Schema for odds data (silver layer)."""
 
@@ -167,11 +181,36 @@ class OddsSchema(BaseModel):
     is_live: bool | None = Field(False, description="Whether odds are live/in-game")
     last_update: datetime | None = Field(None, description="Last odds update time")
 
+    # THE MARKET-LEVEL UPSTREAM TIME (Plan 33.2-27 Task 1, D33.2-18). A real Odds API payload
+    # stamps each MARKET (h2h / spreads / totals) with its own ``last_update`` beside the
+    # bookmaker-level one; it used to be discarded into bronze. The row keeps the LATEST of its
+    # markets' stamps: the row's prices are no fresher than that. NULL when the payload carries
+    # none -- never our own clock.
+    #
+    # DECLARED IN THE SAME TASK THAT EMITS IT (RESEARCH P-6): ``validate_bronze_to_silver`` and the
+    # live ingest rebuild each row as ``OddsSchema(**row).model_dump()`` and Pydantic v2 defaults to
+    # extra='ignore', so an emitted-but-undeclared column disappears with no error.
+    market_last_update: datetime | None = Field(
+        None,
+        description=(
+            "Latest market-level last_update among the row's markets (the bookmaker's own "
+            "time); NULL when absent. tz-aware UTC; a naive value is refused"
+        ),
+    )
+
     # Data lineage metadata
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         description="Timestamp when record was created/ingested",
     )
+
+    @field_validator("market_last_update", mode="before")
+    @classmethod
+    def refuse_naive_market_last_update(cls, v):
+        """NaN / NaT / None -> None; a present value must be tz-aware, never relabelled."""
+        if _is_missing(v):
+            return None
+        return _aware_utc(v, "market_last_update")
 
     @field_validator(
         "ml_home",

@@ -89,6 +89,7 @@ from backtest.ev_chain_constants import (
 )
 from data import upstream_pin
 from data.quality_gates import validate_bronze_to_silver
+from data.schemas import ODDS_KEY_COLUMNS as SCHEMA_ODDS_KEY_COLUMNS
 from data.schemas import OddsSchema
 from data.storage import (
     _atomic_write_parquet,
@@ -132,8 +133,10 @@ JUICE_COLUMNS: tuple[str, ...] = (
 # The four stored values clause 2 forbids overwriting.
 PROTECTED_LINE_COLUMNS: tuple[str, ...] = ("spread", "total", "ml_home", "ml_away")
 
-# The triple clause 6 requires to be unique after any ingest.
-ODDS_KEY_COLUMNS: tuple[str, ...] = ("game_id", "sportsbook", "snapshot_ts")
+# The triple clause 6 requires to be unique after any ingest. Defined ONCE in the data layer
+# (``data.schemas.ODDS_KEY_COLUMNS``) and re-exported here under its historical name, so the live
+# accumulating writer and this ingest share one key convention (Plan 33.2-27).
+ODDS_KEY_COLUMNS = SCHEMA_ODDS_KEY_COLUMNS
 
 # Where each juice column is read from on an nflreadpy schedule row.
 _SCHEDULE_JUICE_SOURCE: dict[str, str] = {

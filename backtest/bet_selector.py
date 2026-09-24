@@ -93,7 +93,6 @@ from typing import Any
 import pandas as pd
 
 from backtest.diagnose import clv_significance
-from backtest.ou_divergence import _ALLOWED_SPORTSBOOKS
 from backtest.ou_ev_chain import (
     american_to_payout,
     per_bet_ev,
@@ -321,14 +320,47 @@ def _freshness_context(
     return snapshot, lock, lock_rule.is_admissible(snapshot_value, lock)
 
 
+#: The bookmaker keys a REAL live Odds API response returns, MEASURED rather than recalled: every
+#: key on the two genuine live pulls held in bronze (``odds_raw_bronze_2025_W01.parquet`` and
+#: ``_W05.parquet``, read 2026-09-24; their per-market ``last_update`` stamps and "DraftKings"-style
+#: titles distinguish them from the mock generator's output). Plan 33.2-27 Task 1.
+LIVE_CAPTURE_SPORTSBOOKS: frozenset[str] = frozenset(
+    {
+        "betmgm",
+        "betonlineag",
+        "betrivers",
+        "betus",
+        "bovada",
+        "draftkings",
+        "fanduel",
+        "lowvig",
+        "mybookieag",
+    }
+)
+
+#: The provenance guard's allowlist. WIDENED DELIBERATELY (Plan 33.2-27 Task 1): it used to be
+#: Phase 26's ``{consensus, draftkings}``, which rejected every other real book a live capture
+#: returns -- so the first genuine live row would have raised. Its PURPOSE is unchanged: a row
+#: with no sportsbook, or a name no real source uses (a mock or placeholder), is still refused.
+#: ``consensus`` is the historical closing-line label, ``consensus_median`` the owned line
+#: history's own label. ``backtest.ou_divergence._ALLOWED_SPORTSBOOKS`` is Phase 26's LOCKED
+#: harness constant and is deliberately NOT widened; this module no longer reads it.
+_ALLOWED_SPORTSBOOKS: frozenset[str] = LIVE_CAPTURE_SPORTSBOOKS | {
+    "consensus",
+    "consensus_median",
+}
+
+
 def assert_real_odds(raw_odds_df: pd.DataFrame) -> None:
     """Hard-fail on mock/synthetic odds BEFORE any selection (OUM-06, T-27-07).
 
-    Replicates the LOCKED ``ou_divergence.integrity_preamble`` provenance guard logic (the
-    allowlist + is_live check) directly on a passed frame, so the selector can validate an
-    arbitrary candidate/odds frame without the harness's silver-parquet read. A row is offending if
-    its ``sportsbook`` is outside {consensus, draftkings} OR its ``is_live`` is True. Raises a
-    ValueError naming the offending game_ids; a clean frame passes silently.
+    A row is offending if its ``sportsbook`` is absent or outside :data:`_ALLOWED_SPORTSBOOKS`.
+    Raises a ValueError naming the offending game_ids; a clean frame passes silently.
+
+    ``is_live`` IS NO LONGER A CONTAMINATION SIGNAL (Plan 33.2-27 Task 1). Phase 26 treated it as
+    one because no stored row had ever carried it; a genuine live capture legitimately can, and
+    whether a row's information is admissible at its game's lock is the lock fence's question
+    (``utils.game_lock``), not a provenance one.
 
     Args:
         raw_odds_df: A frame carrying at least ``game_id`` and ``sportsbook`` (and optionally
@@ -346,13 +378,7 @@ def assert_real_odds(raw_odds_df: pd.DataFrame) -> None:
     ):
         return
 
-    bad_book_mask = ~raw_odds_df["sportsbook"].isin(_ALLOWED_SPORTSBOOKS)
-    if "is_live" in raw_odds_df.columns:
-        live_mask = raw_odds_df["is_live"].fillna(False).astype(bool)
-    else:
-        live_mask = pd.Series(False, index=raw_odds_df.index)
-
-    offending_mask = bad_book_mask | live_mask
+    offending_mask = ~raw_odds_df["sportsbook"].isin(_ALLOWED_SPORTSBOOKS)
     if not offending_mask.any():
         return
 
@@ -366,11 +392,12 @@ def assert_real_odds(raw_odds_df: pd.DataFrame) -> None:
         offenders = raw_odds_df.index[offending_mask].tolist()[:10]
         offender_label = f"offending row indices (no game_id column)={offenders}"
     bad_books = sorted(
-        set(raw_odds_df.loc[bad_book_mask, "sportsbook"].dropna().unique())
+        set(raw_odds_df.loc[offending_mask, "sportsbook"].dropna().unique())
     )
+    absent_books = int(raw_odds_df.loc[offending_mask, "sportsbook"].isna().sum())
     msg = (
         "Odds provenance check FAILED (mock/synthetic-odds contamination, OUM-06): "
-        f"unexpected sportsbooks={bad_books}, is_live rows={int(live_mask.sum())}; "
+        f"unexpected sportsbooks={bad_books}, rows with no sportsbook={absent_books}; "
         f"{offender_label}"
     )
     raise ValueError(msg)

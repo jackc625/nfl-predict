@@ -1504,8 +1504,10 @@ def upsert_silver(
     return silver_path
 
 
-def _canonicalize_snapshot_ts_utc(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy of *df* with ``snapshot_ts`` as tz-aware UTC datetime64.
+def _canonicalize_snapshot_ts_utc(
+    df: pd.DataFrame, column: str = "snapshot_ts"
+) -> pd.DataFrame:
+    """Return a copy of *df* with *column* (default ``snapshot_ts``) as tz-aware UTC datetime64.
 
     FAILS FAST on any naive (timezone-unaware) ``snapshot_ts`` value rather
     than silently assuming UTC (review 29-02 HIGH). This closes the
@@ -1519,21 +1521,21 @@ def _canonicalize_snapshot_ts_utc(df: pd.DataFrame) -> pd.DataFrame:
     object-typed) also makes the parquet round-trip lossless, which is what the
     composite-key dedupe relies on for idempotency across re-runs.
     """
-    if "snapshot_ts" not in df.columns:
+    if column not in df.columns:
         return df
 
     df = df.copy()
-    col = df["snapshot_ts"]
+    col = df[column]
 
     if pd.api.types.is_datetime64_any_dtype(col):
         if getattr(col.dt, "tz", None) is None:
             raise ValueError(
-                "upsert_silver_composite: 'snapshot_ts' is timezone-naive. "
+                f"upsert_silver_composite: {column!r} is timezone-naive. "
                 "Trajectory timestamps must be tz-aware UTC; naive values are "
                 "rejected and never silently coerced. Use "
                 "utils.date_utils.ensure_utc_aware() to fix-forward."
             )
-        df["snapshot_ts"] = col.dt.tz_convert("UTC")
+        df[column] = col.dt.tz_convert("UTC")
         return df
 
     # Object dtype (strings / Python datetimes / pandas Timestamps / mixed):
@@ -1544,7 +1546,7 @@ def _canonicalize_snapshot_ts_utc(df: pd.DataFrame) -> pd.DataFrame:
         ts = pd.Timestamp(x)
         if ts.tzinfo is None:
             raise ValueError(
-                "upsert_silver_composite: 'snapshot_ts' contains a "
+                f"upsert_silver_composite: {column!r} contains a "
                 f"timezone-naive value ({x!r}). Trajectory timestamps must be "
                 "tz-aware UTC; naive values are rejected and never silently "
                 "coerced to UTC."
@@ -1552,7 +1554,7 @@ def _canonicalize_snapshot_ts_utc(df: pd.DataFrame) -> pd.DataFrame:
         return ts
 
     col.map(_require_aware)  # raises on the first naive value
-    df["snapshot_ts"] = pd.to_datetime(col, utc=True)
+    df[column] = pd.to_datetime(col, utc=True)
     return df
 
 
@@ -1610,10 +1612,17 @@ def upsert_silver_composite(
     if silver_path.exists():
         existing = pd.read_parquet(silver_path, engine="pyarrow")
         existing = _canonicalize_snapshot_ts_utc(existing)
-        combined = (
-            pd.concat([existing, new_df], ignore_index=True)
-            .drop_duplicates(subset=key_columns, keep="last")
-            .reset_index(drop=True)
+        # The same dtype discipline upsert_silver applies (Plan 33.2-15): a stored column read
+        # back as datetime64[us, UTC] and a fresh one as datetime64[ns, UTC] would otherwise
+        # concat to object and be written as TEXT -- and a key column of mixed representations
+        # would no longer de-duplicate an identical instant.
+        existing, aligned_new = _align_aware_datetime_columns(existing, new_df)
+        stacked = pd.concat([existing, aligned_new], ignore_index=True)
+        _refuse_datetime_columns_turned_object(
+            table_name, existing, aligned_new, stacked
+        )
+        combined = stacked.drop_duplicates(subset=key_columns, keep="last").reset_index(
+            drop=True
         )
     else:
         combined = new_df.drop_duplicates(subset=key_columns, keep="last").reset_index(
@@ -1636,6 +1645,42 @@ def upsert_silver_composite(
         rows=len(combined),
     )
     return silver_path
+
+
+def append_odds_captures(new_df: pd.DataFrame, base_path: Path | None = None) -> Path:
+    """Write live odds captures to silver ``odds_snapshot`` WITHOUT destroying earlier ones.
+
+    THE LIVE ODDS STORE ACCUMULATES (Plan 33.2-27 Task 1). The live capture used to go through
+    :func:`save_dataframe`, whose append merge removes every stored row whose ``game_id``
+    matches an incoming one -- so a second pull of a game deleted the first, and what the
+    market said at the earlier instant was lost. Here each row's identity is the CAPTURE,
+    ``data.schemas.LIVE_ODDS_CAPTURE_KEY`` = ``(game_id, sportsbook, snapshot_ts, created_at)``:
+    two pulls of one game are two rows, two books at one instant are two rows, and an identical
+    re-write of one capture is idempotent. :func:`save_dataframe` and :func:`upsert_silver`
+    stay for callers that genuinely want latest-wins; the live capture does not use them.
+
+    ``created_at`` must be tz-aware: it is a key column, and a naive capture instant is refused
+    rather than relabelled UTC, exactly as ``snapshot_ts`` is.
+
+    Args:
+        new_df: Validated ``OddsSchema`` rows from one capture.
+        base_path: Data root. Defaults to the root ``load_dataframe`` reads, so a sandboxed
+            parquet manager keeps the write sandboxed.
+
+    Returns:
+        Path to the silver file.
+    """
+    from data.schemas import LIVE_ODDS_CAPTURE_KEY
+
+    if base_path is None:
+        base_path = _reader_parquet_root()
+    frame = _canonicalize_snapshot_ts_utc(new_df, column="created_at")
+    return upsert_silver_composite(
+        frame,
+        "odds_snapshot",
+        key_columns=list(LIVE_ODDS_CAPTURE_KEY),
+        base_path=base_path,
+    )
 
 
 def get_latest_bronze_file(

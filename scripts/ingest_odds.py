@@ -41,7 +41,12 @@ from tenacity import (
 import utils.game_lock as lock_rule
 from conf.settings import get_settings
 from data.schemas import OddsSchema
-from data.storage import get_db_connection, load_dataframe, save_dataframe
+from data.storage import (
+    append_odds_captures,
+    get_db_connection,
+    load_dataframe,
+    save_dataframe,
+)
 from utils import (
     DataIngestionError,
     ExternalAPIError,
@@ -95,6 +100,37 @@ def _parse_commence_time(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return None
     return parsed.astimezone(UTC)
+
+
+def _parse_upstream_instant(value: Any) -> datetime | None:
+    """A payload ``last_update`` as an aware instant, or None when absent, unparseable or naive.
+
+    An upstream time the payload does not give is UNKNOWN and stays NULL; it is never filled
+    with our own capture instant (RESEARCH P1).
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def latest_market_update(bookmaker: Mapping[str, Any]) -> datetime | None:
+    """The latest per-market ``last_update`` a bookmaker entry carries (Plan 33.2-27).
+
+    Real Odds API payloads stamp every market (h2h, spreads, totals) with its own
+    ``last_update`` (measured on bronze ``odds_raw_bronze_2025_W01.parquet``). One stored row
+    combines a bookmaker's markets, so it keeps the LATEST of those stamps: none of the row's
+    prices is fresher than that. None when no market carries a parseable aware stamp.
+    """
+    stamps = [
+        stamp
+        for market in bookmaker.get("markets", [])
+        if (stamp := _parse_upstream_instant(market.get("last_update"))) is not None
+    ]
+    return max(stamps) if stamps else None
 
 
 def load_schedule_slice(season: int, week: int) -> pd.DataFrame:
@@ -894,16 +930,9 @@ class OddsDataIngester:
 
             # An absent or unparseable bookmaker time is UNKNOWN and stays NULL. Filling
             # it with our own capture instant (or the lock) would make a manufactured
-            # stamp read as the bookmaker's own (RESEARCH P1, T-33.2-02-12). Plan 33.2-27
-            # adds the market-level last_update as a real fallback.
-            last_update: datetime | None = None
-            if raw_update:
-                try:
-                    parsed = datetime.fromisoformat(raw_update.replace("Z", "+00:00"))
-                except (ValueError, TypeError, AttributeError):
-                    parsed = None
-                if parsed is not None and parsed.tzinfo is not None:
-                    last_update = parsed
+            # stamp read as the bookmaker's own (RESEARCH P1, T-33.2-02-12). The
+            # market-level stamps are kept beside it in market_last_update (Plan 33.2-27).
+            last_update = _parse_upstream_instant(raw_update)
 
             # Extract all market types
             sides = {
@@ -920,6 +949,7 @@ class OddsDataIngester:
                 "snapshot_ts": lock,
                 "sportsbook": sportsbook,
                 "last_update": last_update,
+                "market_last_update": latest_market_update(bookmaker),
                 "created_at": captured_at,
                 "is_live": False,  # Assume pre-game for now
                 **h2h_odds,
@@ -1140,14 +1170,14 @@ class OddsDataIngester:
             # scripts/generate_current_week_predictions.py, api/routes/health.py), and it
             # rewrote the whole merged history as hash-named files under snapshot_ts=
             # directories: the G-01 cross-table contamination. Same correction CR-01 /
-            # D-10 made for gold and 25c364f made for the silver builders. The default
-            # append merge is KEPT, so historical rows survive the write.
-            save_dataframe(
-                validated_df,
-                "odds_snapshot",
-                layer="silver",
-                save_to_db=False,  # Skip DuckDB due to timestamp conversion issues
-            )
+            # D-10 made for gold and 25c364f made for the silver builders.
+            #
+            # THE STORE ACCUMULATES (Plan 33.2-27 Task 1). save_dataframe's append merge
+            # removed every stored row sharing an incoming game_id, so a second pull of a
+            # game destroyed the first. append_odds_captures keys each row on the CAPTURE
+            # (game_id, sportsbook, snapshot_ts, created_at): earlier captures and the
+            # historical rows both survive.
+            append_odds_captures(validated_df)
 
             log_data_operation(
                 operation="ingest",

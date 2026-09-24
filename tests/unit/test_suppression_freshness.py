@@ -608,18 +608,28 @@ class TestProvenanceFrameScope:
         assert skeleton_reasons == {"missing_snapshot"}
 
     def test_a_disallowed_sportsbook_still_raises(self) -> None:
-        """One offending row in the same skeleton week still hard-fails (OUM-06 unchanged)."""
+        """One offending row in the same skeleton week still hard-fails (OUM-06 unchanged).
+
+        Was: ``bovada``, which Plan 33.2-27 Task 1 admitted as a real live book; an unknown name
+        keeps the intent.
+        """
         schedule = _schedule(4)
-        rows = [_candidate(schedule[0]["game_id"], "totals", sportsbook="bovada")]
+        rows = [_candidate(schedule[0]["game_id"], "totals", sportsbook="mock_book")]
         with pytest.raises(ValueError, match="provenance check FAILED"):
             _selector([_totals_strategy()]).select(rows, scheduled_games=schedule)
 
-    def test_an_is_live_row_still_raises(self) -> None:
-        """The second arm of the guard is equally untouched by the narrowing."""
+    def test_an_is_live_row_is_no_longer_refused(self) -> None:
+        """The guard's is_live arm was REMOVED by Plan 33.2-27 Task 1, and the narrowing did not.
+
+        Was: ``test_an_is_live_row_still_raises``. A genuine live capture legitimately carries
+        ``is_live``; admissibility at the lock is the lock fence's question, not provenance's.
+        The intent kept: the frame narrowing does not change what the guard decides -- here, that
+        a real book's row passes whether or not it is live.
+        """
         schedule = _schedule(4)
         rows = [_candidate(schedule[0]["game_id"], "totals", is_live=True)]
-        with pytest.raises(ValueError, match="provenance check FAILED"):
-            _selector([_totals_strategy()]).select(rows, scheduled_games=schedule)
+        result = _selector([_totals_strategy()]).select(rows, scheduled_games=schedule)
+        assert len(result.unfiltered) == 4
 
     def test_assert_real_odds_body_is_unchanged_since_the_anchor_commit(self) -> None:
         """The LOCKED guard's body is byte-identical to the commit this plan started from.

@@ -243,7 +243,7 @@ def _build_scored_candidates(
         "n_with_line": n_with_line,
         "n_excluded": n_excluded,
         "coverage": float(n_with_line / n_total) if n_total else 0.0,
-        "provenance": "OUM-06: assert_real_odds passed (consensus/draftkings, is_live all False)",
+        "provenance": "OUM-06: assert_real_odds passed (every sportsbook on the allowlist)",
     }
     return with_line, coverage
 
