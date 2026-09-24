@@ -377,3 +377,87 @@ def test_the_non_critical_set_is_exactly_the_declared_four() -> None:
         "build_market_anchors",
         CACHE_STEP,
     }, f"the non-critical set moved: {sorted(non_critical)}"
+
+
+# ---------------------------------------------------------------------------
+# The DAILY lock-time registry (Plan 33.2-27)
+# ---------------------------------------------------------------------------
+
+# The first step of the build stage. Every collection step must sit before it.
+FIRST_BUILD_STEP = "data_qa"
+
+
+def _daily_registry() -> list[StepDefinition]:
+    """The daily registry for a one-game fixture slate. Built only; nothing is run."""
+    from datetime import date
+
+    import pandas as pd
+
+    from pipeline.daily_steps import DailySlate, build_daily_step_registry, slate_lock
+
+    run_date = date(2026, 9, 26)
+    schedule = pd.DataFrame(
+        {
+            "game_id": ["2026_W03_LAC@BUF"],
+            "season": [2026],
+            "week": [3],
+            "kickoff_et": [pd.Timestamp("2026-09-27 17:00", tz="UTC")],
+        }
+    )
+    slate = DailySlate(
+        run_date_et=run_date, lock=slate_lock(run_date), schedule=schedule
+    )
+    return build_daily_step_registry(slate)
+
+
+def daily_collection_violations(registry: list[StepDefinition]) -> list[str]:
+    """Every collection step that is absent, or does not sit before the first build step."""
+    from pipeline.daily_steps import COLLECTION_STEP_NAMES
+
+    positions = _index_by_name(registry)
+    if FIRST_BUILD_STEP not in positions:
+        return [f"{FIRST_BUILD_STEP!r} is absent from the daily registry"]
+    problems = [
+        f"{name!r} is absent" for name in COLLECTION_STEP_NAMES if name not in positions
+    ]
+    problems += [
+        f"{name!r} is at index {positions[name]}, after the build starts at "
+        f"{positions[FIRST_BUILD_STEP]}"
+        for name in COLLECTION_STEP_NAMES
+        if name in positions and positions[name] > positions[FIRST_BUILD_STEP]
+    ]
+    return problems
+
+
+def test_daily_collection_stage_including_snaps_and_injuries_precedes_the_build() -> (
+    None
+):
+    """D33.2-16: snaps and injuries are captured BEFORE tomorrow's games are built."""
+    from pipeline.daily_steps import COLLECTION_STEP_NAMES
+
+    registry = _daily_registry()
+    assert {"ingest_snaps", "ingest_injuries"} <= set(COLLECTION_STEP_NAMES)
+    assert [step.name for step in registry[: len(COLLECTION_STEP_NAMES)]] == list(
+        COLLECTION_STEP_NAMES
+    )
+    assert not daily_collection_violations(registry)
+
+
+def test_daily_collection_check_reports_a_snap_step_moved_after_the_build() -> None:
+    """The guard can fail: moving ingest_snaps to the end is reported by name."""
+    registry = _daily_registry()
+    snaps = next(step for step in registry if step.name == "ingest_snaps")
+    moved = [step for step in registry if step.name != "ingest_snaps"] + [snaps]
+    violations = daily_collection_violations(moved)
+    assert len(violations) == 1
+    assert "'ingest_snaps'" in violations[0]
+
+
+def test_daily_predictions_follow_the_saved_build_and_the_cache_is_last() -> None:
+    registry = _daily_registry()
+    positions = _index_by_name(registry)
+    assert positions["build_features"] < positions["generate_predictions"]
+    assert positions["generate_predictions"] < positions["generate_recommendations"]
+    assert not order_violations(registry)
+    assert registry[-1].name == CACHE_STEP
+    assert registry[-1].critical is False
