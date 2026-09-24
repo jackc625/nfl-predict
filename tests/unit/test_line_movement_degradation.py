@@ -50,6 +50,22 @@ def _games(n: int = 3) -> pd.DataFrame:
     )
 
 
+def _date_every_fixture_game(
+    monkeypatch: pytest.MonkeyPatch, builder, games: pd.DataFrame
+) -> None:
+    """Give every fixture game an Elo snapshot, so the full-rebuild Elo scope is inert.
+
+    Plan 33.2-20: a full rebuild (no ``--season`` / ``--week``) keeps only the games
+    ``elo_calc._load_snapshots()`` can date, and drops an UNPLAYED game with none. The
+    ``_games`` fixture carries no scores, so without this every fixture game is dropped
+    and ``sources["games"]`` is empty -- the scope working, not the guard under test.
+    Stubbing the loader also keeps this module off the real ``elo_game_snapshots``
+    table. ``tests/unit/test_full_rebuild_elo_scope.py`` measures the scope itself.
+    """
+    snapshots = pd.DataFrame({"game_id": games["game_id"]})
+    monkeypatch.setattr(builder.elo_calc, "_load_snapshots", lambda: snapshots)
+
+
 class TestDataIngestionErrorIsCaught:
     """The exception the review found escaping."""
 
@@ -126,6 +142,7 @@ class TestLoadAllFeatureSourcesDegrades:
         monkeypatch.setattr(
             build_features_module, "load_dataframe", lambda *a, **k: _games(2)
         )
+        _date_every_fixture_game(monkeypatch, builder, _games(2))
         # Keep the other on-the-fly builders cheap: each returns an empty frame.
         for calc_attr in (
             "elo_calc",
@@ -158,6 +175,7 @@ class TestLoadAllFeatureSourcesDegrades:
         monkeypatch.setattr(
             build_features_module, "load_dataframe", lambda *a, **k: _games(2)
         )
+        _date_every_fixture_game(monkeypatch, builder, _games(2))
         for calc_attr in (
             "elo_calc",
             "contextual_calc",
