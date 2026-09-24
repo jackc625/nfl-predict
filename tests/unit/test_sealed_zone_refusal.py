@@ -459,7 +459,11 @@ class TestTheSealedZoneRefusesARewrite:
     def test_capturing_a_2027_season_refuses_and_names_the_deferred_seal_tool(
         self, tmp_path: Path, fetching_is_a_failure: list[str]
     ) -> None:
+        """Was: refused as "NO zone owns it" (step 27b: every later season is LIVE). Intent
+        kept: the SEALED pin still refuses it before any fetch, with no override, and names
+        the one-way human seal as the only way it ever becomes sealed."""
         manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        before = manifest_path.read_bytes()
 
         with pytest.raises(ZoneWriteRefused) as error:
             pin.capture(
@@ -469,7 +473,9 @@ class TestTheSealedZoneRefusesARewrite:
             )
 
         message = str(error.value)
-        assert "NO zone owns it" in message
+        assert "LIVE zone" in message
+        assert "--allow-sealed-rewrite" not in message
+        assert manifest_path.read_bytes() == before
         assert "seal_season.py" in message
         assert "SEALED_THROUGH_SEASON" in message
         assert "one-way" in message.lower()
@@ -566,15 +572,13 @@ class TestEveryRefusalCarriesARunnableRecoveryCommand:
     # Each row is an id, the builder method's name, whether the refusal is about an
     # UNCOVERED season, and whether it names a runnable command at all.
     #
-    # ``uncovered_season_beyond_the_live_zone`` is the ONE scenario that names no
-    # command, and that is the honest answer rather than an omission: NO tool captures a
-    # season no zone owns, and the recovery is a human edit to SEALED_THROUGH_SEASON
-    # made once the live season has actually ended. Printing a command there would be
-    # precisely the defect this class exists to catch -- advice the tooling rejects.
+    # ``uncovered_later_live_season`` named no command until step 27b, when every season
+    # after the first live one became LIVE: the live capture opens it once the season before
+    # it has ended, so its refusal names that capture like any live season's.
     SCENARIOS = (
         ("uncovered_sealed_season", "_uncovered_sealed", True, True),
         ("uncovered_live_season", "_uncovered_live", True, True),
-        ("uncovered_season_beyond_the_live_zone", "_uncovered_beyond", True, False),
+        ("uncovered_later_live_season", "_uncovered_beyond", True, True),
         ("pinned_season_whose_bytes_are_absent", "_missing_bytes", False, True),
         ("pinned_season_whose_digest_moved", "_digest_moved", False, True),
         ("sealed_rewrite_without_the_override", "_sealed_rewrite", False, True),

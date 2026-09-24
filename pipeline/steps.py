@@ -413,7 +413,11 @@ class LiveCaptureUsageError(RuntimeError):
     """
 
 
-def step_capture_live_season() -> None:
+def step_capture_live_season(
+    season: int | None = None,
+    week: int | None = None,
+    datasets: list[str] | None = None,
+) -> None:
     """Capture what nflverse is serving RIGHT NOW, before anything consumes it (D32-04).
 
     THE FIRST STEP OF THE WHOLE REGISTRY, and the position is the point. This records the
@@ -437,7 +441,14 @@ def step_capture_live_season() -> None:
 
     THE WEEK COMES FROM THE SHARED RESOLVER, not from a second resolution inside this step.
     Two resolutions can disagree across a midnight boundary, and a capture filed under a
-    week nobody ingested is worse than no capture.
+    week nobody ingested is worse than no capture. The daily run passes its own
+    ``season``/``week``/``datasets`` instead (step 27b): it resolves them once, from the
+    schedule, including the next season's opening capture before that season is recorded.
+
+    Args:
+        season: The season to capture; with *week*, overrides the shared resolver.
+        week: The week being predicted.
+        datasets: The datasets to capture; default every pinned dataset.
 
     Raises:
         LiveCaptureUsageError: the live tool was asked for a season it does not own, or for
@@ -452,8 +463,10 @@ def step_capture_live_season() -> None:
         run_capture,
     )
 
-    season, week = _resolve_current_week()
-    datasets = sorted(DATASET_COLUMNS)
+    if season is None or week is None:
+        season, week = _resolve_current_week()
+    if datasets is None:
+        datasets = sorted(DATASET_COLUMNS)
 
     try:
         code = run_capture(
@@ -468,9 +481,7 @@ def step_capture_live_season() -> None:
         # has to do the same or the operator gets a bare traceback naming a zone rule.
         raise LiveCaptureUsageError(
             f"the live capture refused {season} week {week}: {refusal}. Nothing was "
-            "fetched and nothing was written. This season is not the LIVE one -- the "
-            "SEALED pin owns it, and `scripts/pin_upstream_snapshot.py` is the tool for "
-            "that zone. Point the run at the season the live zone owns."
+            "fetched and nothing was written."
         ) from refusal
 
     if code == EXIT_OK:

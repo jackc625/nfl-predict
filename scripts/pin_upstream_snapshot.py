@@ -46,9 +46,8 @@ Regenerate the committed sealed-zone lock after a deliberate sealed change::
 WHICH SEASONS THIS TOOL OWNS. It owns the SEALED zone only -- seasons at or before
 ``data.upstream_pin.SEALED_THROUGH_SEASON``. A live-zone season is refused outright and
 pointed at ``scripts/capture_live_season.py``, which captures week by week into
-``config/upstream_live/<season>.json``; a season beyond the live zone is refused because
-no zone owns it yet. Both refusals are raised BEFORE any fetch, so a mis-aimed run makes
-no network call and leaves the manifest byte-identical.
+``config/upstream_live/<season>.json``. The refusal is raised BEFORE any fetch, so a
+mis-aimed run makes no network call and leaves the manifest byte-identical.
 
 Capturing a season that is already pinned REPLACES that season's manifest entry and
 writes a NEW timestamped bronze file. For a SEALED season that is exactly the silent
@@ -77,7 +76,6 @@ from data.upstream_pin import (
     DATASET_LOADERS,
     DATASET_TABLE_NAMES,
     LIVE_MANIFEST_DIR_TEXT,
-    LIVE_ZONE_FIRST_SEASON,
     MANIFEST_PATH,
     MANIFEST_SCHEMA_VERSION,
     SEALED_LOCK_PATH,
@@ -85,7 +83,6 @@ from data.upstream_pin import (
     SEALED_THROUGH_SEASON,
     ZONE_LIVE,
     ZONE_SEALED,
-    ZONE_UNKNOWN,
     ZoneWriteRefused,
     digest_file,
     load_manifest,
@@ -363,8 +360,6 @@ def assert_write_allowed(
             zone = zone_for_season(season)
             if zone == ZONE_LIVE:
                 raise ZoneWriteRefused(_live_zone_refusal(dataset, season, manifest))
-            if zone == ZONE_UNKNOWN:
-                raise ZoneWriteRefused(_no_zone_refusal(dataset, season, manifest))
             if season in covered and not allow_sealed_rewrite:
                 raise ZoneWriteRefused(
                     _sealed_rewrite_refusal(dataset, season, manifest)
@@ -416,32 +411,6 @@ def _live_zone_refusal(dataset: str, season: int, manifest: dict | None) -> str:
         "data.upstream_pin.SEALED_THROUGH_SEASON, made once the season is over. "
         "scripts/seal_season.py is deliberately NOT built (D32-02) -- it cannot be "
         "exercised against a real live zone until the live season actually ends."
-    )
-
-
-def _no_zone_refusal(dataset: str, season: int, manifest: dict | None) -> str:
-    return (
-        f"Refusing to capture {dataset} season {season}: NO zone owns it. The sealed "
-        f"zone ends at {SEALED_THROUGH_SEASON} (this pin covers "
-        f"{_covered_text(dataset, manifest)}) and the live zone is exactly "
-        f"{LIVE_ZONE_FIRST_SEASON}.\n"
-        "\n"
-        "A season beyond the live zone is refused rather than silently admitted to it, "
-        "because admitting it would capture it under semantics nobody ratified and "
-        "would quietly move a boundary whose whole value is that it only moves when a "
-        "human moves it.\n"
-        "\n"
-        f"{_WHY_THE_SEALED_ZONE_EXISTS}\n"
-        "\n"
-        "Do ONE of these, deliberately:\n"
-        f"  1. Wait. Moving the boundary forward promotes {LIVE_ZONE_FIRST_SEASON} from "
-        "live to sealed and is ONE-WAY: it is a human edit to "
-        "data.upstream_pin.SEALED_THROUGH_SEASON, made once that season has actually "
-        "ended. scripts/seal_season.py is deliberately NOT built in this phase "
-        "(D32-02), because it cannot be exercised against a real live zone until then.\n"
-        f"  2. Capture the season the live zone DOES own:\n"
-        f"       {_LIVE_CLI} --season {LIVE_ZONE_FIRST_SEASON} --week <W> "
-        f"--dataset {dataset}"
     )
 
 

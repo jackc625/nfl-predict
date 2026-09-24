@@ -125,7 +125,6 @@ from data.upstream_pin import (
     SEALED_LOCK_PATH,
     SEALED_THROUGH_SEASON,
     ZONE_LIVE,
-    ZONE_SEALED,
     UpstreamPinCorrupt,
     UpstreamPinError,
     UpstreamSeasonWindowRefused,
@@ -1101,6 +1100,34 @@ def exit_code_for(verdicts: dict[str, dict]) -> int:
     return _EXIT_BY_SEVERITY_RANK[loudest]
 
 
+def refuse_an_unopened_live_season(season: int) -> None:
+    """Refuse a live season after the first until the season before it is over (step 27b).
+
+    OPENING a season needs no human -- the owner's requirement is that August needs no manual
+    step -- but it is never guessed from the calendar either: season ``N`` may be written
+    only once the RECORDED schedule holds season ``N - 1``'s Super Bowl. So the daily run can
+    capture next season's schedule the first day it is due, and nothing can capture a season
+    two ahead, or one whose predecessor is still being played.
+
+    Raises:
+        ZoneWriteRefused: naming the season and the missing Super Bowl. Nothing is fetched.
+    """
+    if season <= LIVE_ZONE_FIRST_SEASON:
+        return
+    from utils.current_slate import season_is_complete
+
+    if season_is_complete(season - 1):
+        return
+    msg = (
+        f"Refusing to open live season {season}: the recorded schedule holds no Super Bowl "
+        f"for season {season - 1}, so that season is not over and {season} cannot have "
+        "begun. A live season opens only after the one before it ends. Nothing was fetched "
+        f"and nothing was written. If season {season - 1} has in fact ended, refresh its "
+        f"schedule first: `uv run python -m scripts.ingest_games --season {season - 1}`"
+    )
+    raise ZoneWriteRefused(msg)
+
+
 def capture_live_dataset(
     dataset: str,
     season: int,
@@ -1153,22 +1180,19 @@ def capture_live_dataset(
     """
     zone = zone_for_season(season)
     if zone != ZONE_LIVE:
-        owner = (
-            "scripts.pin_upstream_snapshot, which owns the SEALED zone"
-            if zone == ZONE_SEALED
-            else "no tool -- that season lies beyond the live zone"
-        )
         msg = (
             f"Refusing to write a LIVE capture for season {season}: it is in the "
-            f"{zone!r} zone, not {ZONE_LIVE!r}. The live zone is exactly season "
+            f"{zone!r} zone, not {ZONE_LIVE!r}. The live zone starts at season "
             f"{LIVE_ZONE_FIRST_SEASON}; everything at or before {SEALED_THROUGH_SEASON} "
-            f"is sealed and immutable. That season belongs to {owner}.\n"
+            "is sealed and immutable. That season belongs to "
+            "scripts.pin_upstream_snapshot, which owns the SEALED zone.\n"
             "\n"
             "Nothing was fetched and nothing was written. The two zones have opposite "
             "mutability contracts, so a capture aimed at the wrong one is refused "
             "before it can rewrite bytes a published verdict was measured against."
         )
         raise ZoneWriteRefused(msg)
+    refuse_an_unopened_live_season(season)
 
     raw = fetch_live_guarded(dataset, season)
     frame = pin_upstream_snapshot.narrow(dataset, raw)
@@ -1615,7 +1639,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--season",
         type=int,
         required=True,
-        help=f"The live season to capture (the live zone is {LIVE_ZONE_FIRST_SEASON}).",
+        help=(
+            f"The live season to capture (the live zone starts at {LIVE_ZONE_FIRST_SEASON}; "
+            "a later season opens once the one before it has ended)."
+        ),
     )
     parser.add_argument(
         "--week",

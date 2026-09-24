@@ -53,14 +53,16 @@ TWO ZONES: SEALED AND LIVE
 Phase 32 splits the pin in two along a season boundary. Seasons at or before
 :data:`SEALED_THROUGH_SEASON` are SEALED: they are captured once into
 ``config/upstream_pin.json`` and their bytes never move again, so a diff on that file is
-always a red flag. Season :data:`LIVE_ZONE_FIRST_SEASON` is LIVE: it is captured week by
-week into ``config/upstream_live/<season>.json`` (see :mod:`data.upstream_live`), it grows
-by design, and a diff on THAT file is always expected. The two records must never be one
-file, because their diffs mean opposite things.
+always a red flag. Every season from :data:`LIVE_ZONE_FIRST_SEASON` on is LIVE: it is
+captured week by week into ``config/upstream_live/<season>.json`` (see
+:mod:`data.upstream_live`), it grows by design, and a diff on THAT file is always expected.
+The two records must never be one file, because their diffs mean opposite things.
 
-Seasons beyond the live zone belong to NO zone and are refused rather than silently
-admitted. Promoting the boundary forward is a deliberate, one-way act that cannot be
-rehearsed before the live season actually ends.
+SEALING stays a deliberate, one-way human act: moving :data:`SEALED_THROUGH_SEASON` forward.
+OPENING the next live season is not a boundary move and needs no human (step 27b, owner
+requirement "no manual August step"): the live capture writes a season after
+:data:`LIVE_ZONE_FIRST_SEASON` only once the recorded schedule holds the previous season's
+Super Bowl, so no season is ever captured before the one before it is over.
 
 WHAT IS PINNED, AND WHAT IS NOT
 -------------------------------
@@ -140,8 +142,9 @@ SEALED_LOCK_SCHEMA_VERSION: int = 1
 #   ``zone_for_season``, by ``scripts/capture_live_season.py`` (which refuses to write
 #   anything at or below it) and, from Plan 32-02, by ``scripts/pin_upstream_snapshot.py``
 #   (which refuses to REWRITE anything at or below it without an explicit override).
-# LIVE_ZONE_FIRST_SEASON -- the one season the live, append-only, per-week zone owns. Read
-#   by ``data/upstream_live.py`` and by the live capture CLI.
+# LIVE_ZONE_FIRST_SEASON -- the first season of the live, append-only, per-week zone, which
+#   owns every later season too. Read by ``data/upstream_live.py`` and by the live capture
+#   CLI, which opens each later season only once the previous one's Super Bowl is recorded.
 #
 # WHY A LITERAL AND NOT ``nflreadpy.get_current_season()``: that helper flips to the new
 # season on the Thursday following Labor Day. A computed boundary would therefore move the
@@ -154,7 +157,6 @@ LIVE_ZONE_FIRST_SEASON: int = SEALED_THROUGH_SEASON + 1
 
 ZONE_SEALED = "sealed"
 ZONE_LIVE = "live"
-ZONE_UNKNOWN = "unknown"
 
 # The committed live-zone manifest directory, as TEXT. ``data/upstream_live.py`` owns the
 # real ``Path`` constant; naming it here as a string keeps this module free of an
@@ -295,20 +297,19 @@ class UpstreamPinBypassedWarning(UserWarning):
 def zone_for_season(season: int) -> str:
     """Return which pin zone *season* belongs to.
 
-    Exactly three answers, and the third is not an error case to be tidied away later:
-
     * :data:`ZONE_SEALED` -- at or before :data:`SEALED_THROUGH_SEASON`. Immutable.
-    * :data:`ZONE_LIVE` -- exactly :data:`LIVE_ZONE_FIRST_SEASON`. Append-only, per week.
-    * :data:`ZONE_UNKNOWN` -- anything later. Deliberately owned by NEITHER zone: the
-      one-way promotion that would move the boundary forward cannot be exercised until
-      the live season actually ends, so a later season must REFUSE rather than be
-      silently admitted to the live zone and captured under semantics nobody ratified.
+    * :data:`ZONE_LIVE` -- every later season. Append-only, per week, under the live-zone
+      semantics ratified in D32-13.
+
+    Until step 27b a season after :data:`LIVE_ZONE_FIRST_SEASON` belonged to NO zone, so
+    August 2027 needed a human edit before the daily run could capture its schedule. When a
+    later season may first be WRITTEN is now the live capture's rule
+    (``scripts.capture_live_season``: the previous season's Super Bowl must be recorded), and
+    a READ of a season nobody captured still refuses, naming the capture command.
     """
     if season <= SEALED_THROUGH_SEASON:
         return ZONE_SEALED
-    if season == LIVE_ZONE_FIRST_SEASON:
-        return ZONE_LIVE
-    return ZONE_UNKNOWN
+    return ZONE_LIVE
 
 
 def digest_file(path: Path) -> str:
@@ -525,7 +526,6 @@ def _recovery_options(
     """
     sealed = [season for season in missing if zone_for_season(season) == ZONE_SEALED]
     live = [season for season in missing if zone_for_season(season) == ZONE_LIVE]
-    unknown = [season for season in missing if zone_for_season(season) == ZONE_UNKNOWN]
 
     covered = set(pinned_seasons(dataset, manifest))
     unpinned = sorted(season for season in sealed if season not in covered)
@@ -575,16 +575,6 @@ def _recovery_options(
             f"{LIVE_MANIFEST_DIR_TEXT}/<season>.json and timestamped snapshots under "
             "data/bronze/). <W> is the week being PREDICTED, not the last week present "
             "in the data:\n" + commands
-        )
-    if unknown:
-        options.append(
-            "Season(s) "
-            + ", ".join(str(season) for season in unknown)
-            + " lie BEYOND the live zone, which ends at "
-            f"{LIVE_ZONE_FIRST_SEASON}. NO tool captures them, deliberately: moving the "
-            "boundary forward promotes a season from live to sealed and is one-way. It "
-            "is a human edit to data.upstream_pin.SEALED_THROUGH_SEASON, made once the "
-            "season has actually ended -- never a side effect of a load."
         )
     options.append(
         "Allow a live fetch for this run only, accepting that its output is NOT "

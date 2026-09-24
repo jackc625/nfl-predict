@@ -58,7 +58,6 @@ from data.upstream_pin import (
     SEALED_THROUGH_SEASON,
     ZONE_LIVE,
     ZONE_SEALED,
-    ZONE_UNKNOWN,
     UpstreamLiveCaptureMissing,
     UpstreamLiveCorrupt,
     UpstreamPinBypassedWarning,
@@ -940,25 +939,28 @@ class TestTheCommittedManifestIsTheProvenanceRecord:
 
 
 class TestTheZoneBoundaryIsAFixedLiteral:
-    """Phase 32 (PIN-01): three zones, and the third is not a tidy-up case."""
+    """Phase 32 (PIN-01): the SEALED boundary is a literal; the live zone follows it.
+
+    Step 27b: the third "unknown" zone for every season after the first live one is gone --
+    August 2027 needed a human edit before the daily run could capture its schedule. When a
+    later season may first be WRITTEN is the live capture's schedule rule, pinned in
+    ``tests/unit/test_daily_season_rollover.py``.
+    """
 
     def test_every_season_at_or_before_the_boundary_is_sealed(self) -> None:
         for season in (1999, 2002, 2020, SEALED_THROUGH_SEASON):
             assert zone_for_season(season) == ZONE_SEALED
 
-    def test_exactly_one_season_is_live(self) -> None:
+    def test_the_live_zone_starts_right_after_the_sealed_zone(self) -> None:
         assert zone_for_season(LIVE_ZONE_FIRST_SEASON) == ZONE_LIVE
         assert LIVE_ZONE_FIRST_SEASON == SEALED_THROUGH_SEASON + 1
 
-    def test_beyond_the_live_zone_belongs_to_no_zone(self) -> None:
-        """2027 must REFUSE rather than be silently admitted to the live zone.
-
-        The one-way promotion that moves the boundary forward cannot be exercised until
-        the live season actually ends. A season that quietly became "live" would be
-        captured under semantics nobody ratified.
-        """
+    def test_every_later_season_is_live_and_never_sealed(self) -> None:
+        """Was: 2027 belonged to no zone (step 27b). Intent kept: nothing after the
+        boundary is ever SEALED by a load or a capture -- sealing is still the human edit
+        pinned below -- and a later season is written only under the live-zone rules."""
         for season in (LIVE_ZONE_FIRST_SEASON + 1, LIVE_ZONE_FIRST_SEASON + 5):
-            assert zone_for_season(season) == ZONE_UNKNOWN
+            assert zone_for_season(season) == ZONE_LIVE
 
     def test_the_boundary_is_a_literal_and_not_a_computed_current_season(self) -> None:
         """``get_current_season()`` flips on the Thursday after Labor Day.
@@ -1065,9 +1067,12 @@ class TestTheRefusalNamesTheZoneAndItsTool:
         assert "capture_live_season" not in message
         assert network_is_a_failure == []
 
-    def test_a_season_beyond_the_live_zone_is_told_no_tool_captures_it(
+    def test_an_uncaptured_later_season_is_refused_and_names_the_live_tool(
         self, tmp_path: Path, network_is_a_failure: list[str]
     ) -> None:
+        """Was: "told no tool captures it" (step 27b). Intent kept: a later season nobody
+        captured is REFUSED by name with no network fetch; it now names the live capture,
+        which is the tool that opens it once the season before it has ended."""
         with pytest.raises(UpstreamPinMissing) as error:
             upstream_pin.load_pbp(
                 [LIVE_ZONE_FIRST_SEASON + 1],
@@ -1077,9 +1082,8 @@ class TestTheRefusalNamesTheZoneAndItsTool:
             )
 
         message = str(error.value)
-        assert f"{LIVE_ZONE_FIRST_SEASON + 1}  zone unknown" in message
-        assert "one-way" in message
-        assert "SEALED_THROUGH_SEASON" in message
+        assert f"{LIVE_ZONE_FIRST_SEASON + 1}  zone live" in message
+        assert "scripts.capture_live_season" in message
         assert network_is_a_failure == []
 
 

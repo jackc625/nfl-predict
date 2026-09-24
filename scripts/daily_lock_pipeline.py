@@ -10,7 +10,9 @@ WHAT ONE RUN DOES
    tomorrow's games has already locked, so the run records a named refusal and exits having made
    ZERO network requests. A missed day is never back-filled.
 1. Refreshes the schedule: captures what nflverse serves now and ingests the season from that
-   capture, so results, moved games and each new playoff round arrive with no manual step.
+   capture, so results, moved games and each new playoff round arrive with no manual step. The
+   season is read from the recorded schedule, and rolls to the next one on its own once the
+   last is over and the calendar season has turned (step 27b) -- August needs no manual step.
 2. Selects tomorrow's games -- the games whose lock is today's 18:00 ET. None: a no-op record.
 3. Runs ``pipeline.daily_steps``: collection, the FULL-HISTORY gold build, then prediction and
    emission, all before the lock (owner ruling "Finish before 6 PM").
@@ -39,7 +41,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -57,7 +59,7 @@ from pipeline.daily_steps import (
     build_daily_step_registry,
     slate_lock,
 )
-from utils.date_utils import ET, get_current_nfl_season
+from utils.date_utils import ET
 from utils.logging_config import get_logger
 
 if TYPE_CHECKING:
@@ -102,6 +104,10 @@ def _record_no_prediction(run_date_et: date, outcome: str, game_ids: list[str]) 
     )
 
 
+class ScheduleNotPublishedError(RuntimeError):
+    """nflverse serves no schedule yet for the season the run has to refresh."""
+
+
 def _refresh_schedule(run_date_et: date, *, dry_run: bool) -> int:
     """Capture what nflverse serves now, ingest the schedule from it, and return the season.
 
@@ -109,9 +115,31 @@ def _refresh_schedule(run_date_et: date, *, dry_run: bool) -> int:
     must come first -- the Friday registry's order. Daily, this is what picks up results, moved
     games and the next playoff round with no manual step. A no-write run cannot capture (see
     :data:`DRY_RUN_UNSUPPORTED_STEPS`), so it ingests from the latest existing capture.
+
+    THE SEASON COMES FROM THE SCHEDULE (step 27b), resolved once at the run date's lock through
+    ``utils.current_slate.refresh_target``: the current slate's season, or -- once the calendar
+    season has turned past a completed season -- the NEXT season, whose capture is how its
+    schedule gets recorded. So a new season needs no manual switch. Until one of that season's
+    games has kicked off there is no play-by-play to capture (nflverse refuses it until the
+    Thursday after Labor Day) and no result to ingest, so both are left out by name.
+
+    Raises:
+        ScheduleNotPublishedError: nflverse serves no schedule for that season yet.
     """
+    from data import upstream_pin
     from pipeline.steps import step_capture_live_season
     from scripts.ingest_games import GameDataIngester
+    from utils.current_slate import refresh_target, season_has_kicked_off
+
+    instant = slate_lock(run_date_et)
+    season, week = refresh_target(instant)
+    started = season_has_kicked_off(season, instant)
+    datasets = sorted(upstream_pin.DATASET_COLUMNS)
+    if not started:
+        datasets.remove("pbp")
+        print(
+            f"CAPTURE_SKIPPED pbp: no {season} game has kicked off, so none has plays"
+        )
 
     if dry_run:
         print(
@@ -119,12 +147,16 @@ def _refresh_schedule(run_date_et: date, *, dry_run: bool) -> int:
             f"{DRY_RUN_UNSUPPORTED_STEPS['capture_live_season']}"
         )
     else:
-        step_capture_live_season()
-    tomorrow_noon = datetime.combine(
-        run_date_et + timedelta(days=1), time(12), tzinfo=ET
-    )
-    season = get_current_nfl_season(tomorrow_noon)
-    GameDataIngester().ingest_games(seasons=[season])
+        step_capture_live_season(season=season, week=week, datasets=datasets)
+
+    if upstream_pin.load_schedules([season]).empty:
+        msg = (
+            f"nflverse serves no {season} schedule yet, so tomorrow's games cannot be "
+            f"selected. The run refreshes {season} because the recorded schedule says it is "
+            "due; it will pick the schedule up on the first day nflverse publishes it."
+        )
+        raise ScheduleNotPublishedError(msg)
+    GameDataIngester().ingest_games(seasons=[season], include_results=started)
     return season
 
 

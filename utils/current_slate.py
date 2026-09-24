@@ -45,6 +45,8 @@ THE BRANCHES WHERE THE SCHEDULE NAMES NO SLATE, EACH EXPLICIT
   season has already turned (August onward). The next schedule has been published since spring;
   resolving the offseason here would hide the season opener behind a missing ingest, which is the
   silent in-season failure this module exists to remove. Refused by name, with the command.
+  The daily run is the one caller that answers it itself: :func:`refresh_target` names that
+  next season, whose capture and ingest record its schedule (step 27b).
 * ``next_unrecorded_round`` -- a season is in its playoffs and the next round is not recorded yet
   (nflverse adds each round's games only once the previous round is decided, so a store refreshed
   before the weekend it describes lacks them). The next round is the recorded week plus one: the
@@ -94,8 +96,11 @@ __all__ = [
     "cli_target_season_week",
     "load_recorded_schedule",
     "prepare_schedule",
+    "refresh_target",
     "resolve_current_slate",
     "retired_calendar_week",
+    "season_has_kicked_off",
+    "season_is_complete",
 ]
 
 #: The slate is a recorded week of the schedule.
@@ -151,7 +156,15 @@ class ScheduleUnavailableError(SlateResolutionError):
 
 
 class ScheduleNotRecordedError(SlateResolutionError):
-    """The calendar season has turned and its schedule is not in the store."""
+    """The calendar season has turned and its schedule is not in the store.
+
+    Attributes:
+        season: The season whose schedule is due and not recorded, when the raiser knows it.
+    """
+
+    def __init__(self, message: str, *, season: int | None = None) -> None:
+        super().__init__(message)
+        self.season = season
 
 
 class ScheduleIncompleteError(SlateResolutionError):
@@ -407,7 +420,7 @@ def _slate_after_the_last_recorded_game(
                 "a missing ingest. Record it first: "
                 f"`{_INGEST_COMMAND.format(season=calendar_season)}`"
             )
-            raise ScheduleNotRecordedError(msg)
+            raise ScheduleNotRecordedError(msg, season=calendar_season)
         return _offseason(now, completed_season=season)
 
     days_since_last = (today - last["et_day"]).days
@@ -503,3 +516,53 @@ def cli_target_season_week(
     if week_arg is None:
         return season, current.week
     return season, None if week_arg == "all" else int(week_arg)
+
+
+# ---------------------------------------------------------------------------
+# The season a daily run refreshes (step 27b)
+# ---------------------------------------------------------------------------
+
+
+def refresh_target(
+    now: datetime | None = None, *, schedule: pd.DataFrame | None = None
+) -> tuple[int, int]:
+    """The ``(season, week)`` a daily run captures and ingests to refresh the schedule.
+
+    The current slate whenever the schedule names one -- in season, or the documented offseason
+    value. Once the calendar season has turned past a completed season whose successor is not
+    recorded (:class:`ScheduleNotRecordedError`), it is that NEXT season's week 1: capturing it is
+    how its schedule gets recorded, so the new season needs no manual switch. Every other refusal
+    propagates.
+    """
+    try:
+        return resolve_current_slate(now, schedule=schedule).as_tuple()
+    except ScheduleNotRecordedError as due:
+        if due.season is None:
+            raise
+        return due.season, 1
+
+
+def _season_rows(season: int, schedule: pd.DataFrame | None) -> pd.DataFrame:
+    frame = load_recorded_schedule() if schedule is None else prepare_schedule(schedule)
+    return frame.loc[frame["season"] == season]
+
+
+def season_is_complete(season: int, *, schedule: pd.DataFrame | None = None) -> bool:
+    """Whether the recorded schedule holds *season*'s Super Bowl."""
+    return _SUPER_BOWL in set(_season_rows(season, schedule)["game_type"])
+
+
+def season_has_kicked_off(
+    season: int, now: datetime, *, schedule: pd.DataFrame | None = None
+) -> bool:
+    """Whether any recorded game of *season* kicked off at or before *now*.
+
+    ``False`` for a season the store does not hold yet: none of its games can be on record as
+    played.
+    """
+    instant = _require_aware(now)
+    kickoffs = [
+        kickoff_wall_clock_et(value)
+        for value in _season_rows(season, schedule)["kickoff_et"]
+    ]
+    return any(kickoff <= instant for kickoff in kickoffs)
