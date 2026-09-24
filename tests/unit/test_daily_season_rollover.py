@@ -121,11 +121,29 @@ class TestTheSeasonComesFromTheSchedule:
         assert before == (NEXT, 1)
         assert lock_day == (NEXT, 1)
 
-    def test_every_other_refusal_still_propagates(self) -> None:
-        """A store stale mid-season is not a season roll: it stays a named refusal."""
+    def test_a_store_stale_by_more_than_one_round_refreshes_the_stale_season(
+        self,
+    ) -> None:
+        """33.2 review C1 WR-04. Was: re-raised, so the capture that heals it never ran.
+
+        The machine was off from the final regular week (Jan 10) to Jan 30: the resolver
+        cannot name today's slate, but the season to re-record is known -- re-capturing it is
+        how the missing rounds reach the store.
+        """
         truncated = _schedule(FIRST_SEASON_TAIL[0])
         with pytest.raises(current_slate.ScheduleIncompleteError):
-            current_slate.refresh_target(_et(f"{NEXT}-01-30 18:00"), schedule=truncated)
+            current_slate.resolve_current_slate(
+                _et(f"{NEXT}-01-30 18:00"), schedule=truncated
+            )
+        assert current_slate.refresh_target(
+            _et(f"{NEXT}-01-30 18:00"), schedule=truncated
+        ) == (FIRST, 19)
+
+    def test_a_store_missing_its_opening_weeks_refreshes_that_season(self) -> None:
+        missing_openers = _schedule(NEXT_SEASON_HEAD[2])  # week 2 only
+        assert current_slate.refresh_target(
+            _et(f"{NEXT}-09-15 18:00"), schedule=missing_openers
+        ) == (NEXT, 1)
 
     def test_kicked_off_is_read_from_the_recorded_kickoffs(self) -> None:
         frame = _schedule(*FIRST_SEASON_TAIL, *NEXT_SEASON_HEAD)
@@ -286,6 +304,18 @@ class TestTheDailyRunRollsIntoTheNextSeason:
 
         assert daily._refresh_schedule(date(NEXT, 2, 16), dry_run=False) == FIRST
         assert refresh_env["capture"][:2] == (FIRST, 22)
+        assert refresh_env["ingest"] == ((FIRST,), True)
+
+    def test_a_run_after_a_long_gap_re_records_the_stale_season_on_its_own(
+        self, monkeypatch, refresh_env
+    ) -> None:
+        """33.2 review C1 WR-04: the machine was off from the final regular week to Jan 30."""
+        stale = _schedule(FIRST_SEASON_TAIL[0])
+        _record_schedule(monkeypatch, stale)
+        _served(monkeypatch, _schedule(*FIRST_SEASON_TAIL))
+
+        assert daily._refresh_schedule(date(NEXT, 1, 30), dry_run=False) == FIRST
+        assert refresh_env["capture"][:2] == (FIRST, 19)
         assert refresh_env["ingest"] == ((FIRST,), True)
 
     def test_an_unpublished_next_schedule_is_refused_by_name(

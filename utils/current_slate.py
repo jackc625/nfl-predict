@@ -551,6 +551,11 @@ def refresh_target(
     * OFFSEASON OTHERWISE (the spring): ``None`` -- nothing to refresh. The completed season
       cannot change, and capturing it daily appended ~200 git-tracked capture entries a year,
       then failed every day once that season was sealed.
+    * THE STORE STOPS SHORT BY MORE THAN ONE ROUND (:class:`ScheduleIncompleteError`, e.g. the
+      machine was off over New Year): the stale season itself, filed under the first week it
+      lacks, so the run re-records it and heals without a manual ingest (33.2 review C1 WR-04).
+      This used to re-raise, and since the capture that would record the next round never ran,
+      every later day failed the same way. The caller re-reads the schedule after that ingest.
 
     Every other refusal propagates.
     """
@@ -560,6 +565,10 @@ def refresh_target(
         if due.season is None:
             raise
         return due.season, 1
+    except ScheduleIncompleteError as stale:
+        if stale.season is None or stale.week is None:
+            raise
+        return stale.season, stale.week
     if slate.in_season:
         return slate.as_tuple()
     following = slate.season + 1
