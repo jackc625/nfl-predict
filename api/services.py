@@ -45,8 +45,10 @@ from api.cache import (
     BET_LIST_COLUMNS,
     BET_STATUS_LIVE,
     BET_TRACKER_BLOCK_COLUMNS,
+    CURRENT_SLATE_KEY,
     PREDICTIONS_TABLE_COLUMNS,
     bet_list_populated_at_key,
+    parse_current_slate,
     parse_season_range,
 )
 from utils import get_logger
@@ -865,6 +867,34 @@ class DataService:
             return None
         row = result.fetchone()
         return row[0] if row else None
+
+    def get_current_slate(self) -> tuple[int, int] | None:
+        """The in-season ``(season, week)`` population stamped, or None (33.2 review C2 WR-01)."""
+        return parse_current_slate(self.get_cache_meta().get(CURRENT_SLATE_KEY))
+
+    def get_latest_built_bet_week(self, season: int | None) -> int | None:
+        """The latest week of *season* that carries any bet-list row, or None.
+
+        Navigation only -- the fallback ``/bets`` opens on when no current slate is stamped.
+        """
+        if season is None:
+            return None
+        key = ("latest_built_bet_week", season)
+        cached = _cache_get(key)
+        if cached is not None:
+            return int(cached)
+        try:
+            row = self._conn.execute(
+                "SELECT week FROM bet_list WHERE season = ? ORDER BY week DESC LIMIT 1",
+                [season],
+            ).fetchone()
+        except duckdb.Error:
+            logger.warning("bet_list table not available in cache")
+            return None
+        if row is None:
+            return None
+        _cache_set(key, int(row[0]))
+        return int(row[0])
 
     def get_bet_game_locks(
         self, season: int | None, week: int | None

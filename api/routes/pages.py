@@ -347,10 +347,13 @@ def _normalize_week(
 
     Resolution order:
 
-    * ``season`` in the available set passes through; anything else (including ``None``) falls
-      back to the latest available season -- never a hardcoded year.
-    * ``week`` in that season's available set passes through; anything else falls back to the
-      latest available week of the resolved season.
+    * ``season`` in the available set passes through. Anything else (including ``None``) falls
+      back to the CURRENT SLATE's season when population stamped one, else to the latest
+      available season -- never a hardcoded year.
+    * ``week`` in that season's available set passes through. Anything else falls back to the
+      current slate's week when it is in that season (33.2 review C2 WR-01: the default used to be
+      the season's LAST scheduled week, a January week with nothing in it), else to the latest
+      week of the season that carries a bet list, else to the latest scheduled week.
     * When ``available_bet_weeks`` is EMPTY the pair resolves to ``(None, None)`` so the page
       renders its no-current-week empty state. It deliberately does NOT fall back to
       ``get_available_weeks`` / ``get_available_seasons``: those read ``predictions`` and
@@ -361,15 +364,27 @@ def _normalize_week(
     if not available_seasons:
         return None, None
 
-    resolved_season = season if season in available_seasons else available_seasons[0]
+    slate = service.get_current_slate()
+    if season in available_seasons:
+        resolved_season = season
+    elif slate is not None and slate[0] in available_seasons:
+        resolved_season = slate[0]
+    else:
+        resolved_season = available_seasons[0]
 
     weeks = service.get_available_bet_weeks(season=resolved_season)
     if not weeks:
         return resolved_season, None
 
     valid_weeks = {row["week"] for row in weeks}
-    resolved_week = week if week in valid_weeks else weeks[0]["week"]
-    return resolved_season, resolved_week
+    if week in valid_weeks:
+        return resolved_season, week
+    if slate is not None and slate[0] == resolved_season and slate[1] in valid_weeks:
+        return resolved_season, slate[1]
+    latest_built = service.get_latest_built_bet_week(resolved_season)
+    if latest_built in valid_weeks:
+        return resolved_season, latest_built
+    return resolved_season, weeks[0]["week"]
 
 
 def _as_utc(value: Any) -> datetime | None:

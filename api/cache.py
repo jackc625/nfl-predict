@@ -2470,6 +2470,75 @@ def stamp_old_rule_season_ranges(
     return stamped
 
 
+# ---------------------------------------------------------------------------
+# The current slate, stamped for /bets' default week (33.2 review C2 WR-01)
+# ---------------------------------------------------------------------------
+# /bets used to open on the LAST scheduled week of the latest season -- week 18, a January week with
+# nothing in it. The week it should open on is the current slate, which only the recorded schedule
+# can name (utils.current_slate, the one resolver). The request path reads the cache only
+# (UIAP-01), so the slate is resolved HERE, at population, and stamped into cache_meta. The daily
+# run repopulates on every day it builds a list, so the stamp is at most a few days behind, and
+# between a week's last game and the next week's first run it names the week just played.
+
+CURRENT_SLATE_KEY = "current_slate"
+_CURRENT_SLATE_SEPARATOR = ":"
+
+
+def format_current_slate(season: int, week: int) -> str:
+    """Render a slate as ``"SEASON:WEEK"``."""
+    return f"{int(season)}{_CURRENT_SLATE_SEPARATOR}{int(week)}"
+
+
+def parse_current_slate(value: str | None) -> tuple[int, int] | None:
+    """Read a stamped slate back as ``(season, week)``; None when absent or unreadable."""
+    if not value or value.count(_CURRENT_SLATE_SEPARATOR) != 1:
+        return None
+    season, week = value.split(_CURRENT_SLATE_SEPARATOR)
+    if not (season.isdecimal() and week.isdecimal()):
+        return None
+    return int(season), int(week)
+
+
+def stamp_current_slate(
+    conn: duckdb.DuckDBPyConnection, silver_dir: Path, now: datetime
+) -> str | None:
+    """Stamp the in-season slate at *now* into ``cache_meta``; stamp nothing otherwise.
+
+    The slate comes from ``utils.current_slate.resolve_current_slate`` over the silver schedule
+    this population reads. No schedule, a refusal by the resolver, or the offseason (no slate is
+    open) stamps nothing, and ``/bets`` then falls back to the latest week with a bet list.
+
+    Returns:
+        The stamped value, or None when nothing was stamped.
+    """
+    from utils.current_slate import (
+        SCHEDULE_COLUMNS,
+        SlateResolutionError,
+        resolve_current_slate,
+    )
+
+    games_path = silver_dir / "games.parquet"
+    if not games_path.exists():
+        return None
+    try:
+        schedule = pd.read_parquet(games_path, columns=list(SCHEDULE_COLUMNS))
+        slate = resolve_current_slate(now, schedule=schedule)
+    except (SlateResolutionError, ValueError, KeyError, OSError) as exc:
+        logger.warning(
+            "Current slate not resolved; /bets will open on the latest built week",
+            error=str(exc),
+        )
+        return None
+    if not slate.in_season:
+        return None
+    value = format_current_slate(slate.season, slate.week)
+    conn.execute(
+        "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+        [CURRENT_SLATE_KEY, value, now],
+    )
+    return value
+
+
 def _prerender_charts(
     conn: duckdb.DuckDBPyConnection,
 ) -> int:
@@ -2754,11 +2823,14 @@ def populate_cache(
         )
         # The season span behind each pre-rendered block family (R16 / D33.2-07).
         old_rule_spans = stamp_old_rule_season_ranges(conn, now)
+        # The slate /bets opens on (33.2 review C2 WR-01).
+        current_slate = stamp_current_slate(conn, silver_dir, now)
 
         logger.info(
             "Cache metadata set",
             prediction_count=pred_count,
             season_range=season_range,
+            current_slate=current_slate,
             **old_rule_spans,
         )
 

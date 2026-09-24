@@ -3315,3 +3315,134 @@ def test_a_well_formed_negative_week_is_still_parsed_and_then_whitelisted_away(
     assert _parse_int_param(None) is None
     # A parsed-but-unavailable week still resolves to a real scheduled week (T-31-01).
     assert bets_client.get("/bets?week=-5").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 33.2 review C2 WR-01: /bets opens on the current slate, not the season's last week
+# ---------------------------------------------------------------------------
+
+
+def _three_week_cache(
+    tmp_path: Path, name: str, *, slate: str | None, built_week: int
+) -> Path:
+    """Weeks 1-3 of ``_SEASON`` scheduled, one game with a list in *built_week* only."""
+    from api.cache import CURRENT_SLATE_KEY
+
+    clear_cache()
+    db_path = tmp_path / f"{name}.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_bet_list(
+            conn,
+            pd.DataFrame(
+                [_live_row(f"2023_W0{built_week}_DET@KC", "ou", week=built_week)]
+            ),
+        )
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [
+                    {
+                        "game_id": f"2023_W0{week}_DET@KC",
+                        "season": _SEASON,
+                        "week": week,
+                    }
+                    for week in (1, 2, 3)
+                ]
+            ),
+        )
+        if slate is not None:
+            conn.execute(
+                "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+                [CURRENT_SLATE_KEY, slate, datetime(2023, 9, 10, 12, 0)],
+            )
+    finally:
+        conn.close()
+    return db_path
+
+
+def test_bets_opens_on_the_stamped_current_slate(tmp_path: Path) -> None:
+    """With a current slate stamped, a bare /bets opens on that week -- not on week 3."""
+    db_path = _three_week_cache(tmp_path, "slate", slate=f"{_SEASON}:2", built_week=1)
+    with contextmanager(_client)(db_path) as client:
+        body = client.get("/bets").text
+
+    assert f"Live bets -- {_SEASON} Week 2" in body
+
+
+def test_bets_without_a_slate_opens_on_the_latest_built_week(tmp_path: Path) -> None:
+    """No slate (offseason, or an older cache): the latest week with a list, not the last week."""
+    db_path = _three_week_cache(tmp_path, "no_slate", slate=None, built_week=2)
+    with contextmanager(_client)(db_path) as client:
+        body = client.get("/bets").text
+
+    assert f"Live bets -- {_SEASON} Week 2" in body
+    assert f"Live bets -- {_SEASON} Week 3" not in body
+
+
+def test_an_explicit_week_still_wins_over_the_slate(tmp_path: Path) -> None:
+    """The slate is a DEFAULT only: a valid requested week passes through unchanged."""
+    db_path = _three_week_cache(
+        tmp_path, "explicit", slate=f"{_SEASON}:2", built_week=1
+    )
+    with contextmanager(_client)(db_path) as client:
+        body = client.get(f"/bets?season={_SEASON}&week=3").text
+
+    assert f"Live bets -- {_SEASON} Week 3" in body
+
+
+def _silver_two_weeks(silver_dir: Path) -> Path:
+    silver_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "game_id": "2023_W01_DET@KC",
+                "season": 2023,
+                "week": 1,
+                "kickoff_et": pd.Timestamp("2023-09-08 00:20", tz="UTC"),
+                "game_type": "REG",
+            },
+            {
+                "game_id": "2023_W02_MIN@PHI",
+                "season": 2023,
+                "week": 2,
+                "kickoff_et": pd.Timestamp("2023-09-15 00:15", tz="UTC"),
+                "game_type": "REG",
+            },
+        ]
+    ).to_parquet(silver_dir / "games.parquet", index=False)
+    return silver_dir
+
+
+def test_population_stamps_the_in_season_slate_and_nothing_in_the_offseason(
+    tmp_path: Path,
+) -> None:
+    """The stamp comes from utils.current_slate over the population's own silver schedule."""
+    from api.cache import CURRENT_SLATE_KEY, parse_current_slate, stamp_current_slate
+
+    silver = _silver_two_weeks(tmp_path / "silver")
+    conn = duckdb.connect(":memory:")
+    try:
+        conn.execute(
+            "CREATE TABLE cache_meta (key VARCHAR PRIMARY KEY, value VARCHAR, updated_at TIMESTAMP)"
+        )
+        in_season = stamp_current_slate(
+            conn, silver, datetime(2023, 9, 10, 16, 0, tzinfo=UTC)
+        )
+        stored = conn.execute(
+            "SELECT value FROM cache_meta WHERE key = ?", [CURRENT_SLATE_KEY]
+        ).fetchone()
+        assert in_season == "2023:2"
+        assert stored is not None and parse_current_slate(stored[0]) == (2023, 2)
+
+        conn.execute("DELETE FROM cache_meta")
+        offseason = stamp_current_slate(
+            conn, silver, datetime(2023, 7, 1, 16, 0, tzinfo=UTC)
+        )
+        assert offseason is None
+        assert conn.execute("SELECT COUNT(*) FROM cache_meta").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+    assert parse_current_slate("garbage") is None
+    assert parse_current_slate(None) is None
