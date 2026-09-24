@@ -466,6 +466,48 @@ class TestEdgeCases:
         assert data["steps"][0]["status"] == "success"
 
     @pytest.mark.usefixtures("_patch_nfl_week")
+    @pytest.mark.parametrize("escape", [SystemExit(1), KeyboardInterrupt()])
+    def test_a_base_exception_from_a_step_finalizes_the_log_as_failed(
+        self, tmp_path, escape
+    ):
+        """33.2 review C1 CR-05: a SystemExit or an interrupt never leaves 'running' behind.
+
+        Both are BaseExceptions, so they pass through the step handler's ``except Exception``;
+        the log they left saying "running" blocked every later daily run.
+        """
+        import json
+
+        from pipeline.orchestrator import FridayPipeline
+
+        step = make_mock_step("step_exit", PipelinePhase.DATA)
+        step.callable.side_effect = escape
+        log_path = tmp_path / "pipeline.json"
+        with (
+            patch("pipeline.orchestrator.build_step_registry", return_value=[step]),
+            patch("pipeline.orchestrator.LOG_PATH", log_path),
+        ):
+            with pytest.raises(type(escape)):
+                FridayPipeline().run()
+
+        data = json.loads(log_path.read_text(encoding="utf-8"))
+        assert data["status"] == "failed"
+        assert type(escape).__name__ in data["error"]
+
+    @pytest.mark.usefixtures("_patch_nfl_week", "_patch_log_write")
+    def test_a_staleness_refusal_alerts_a_failure(self):
+        """33.2 review B WR-05: a refused run is reported as a failure, not only a warning."""
+        from pipeline.orchestrator import FridayPipeline
+        from pipeline.staleness import StalenessResult
+
+        pipeline = FridayPipeline(steps=[make_mock_step("s", PipelinePhase.DATA)])
+        pipeline.staleness_gate.run_all_checks.return_value = StalenessResult(
+            passed=False, errors=["Incomplete prior pipeline run detected"]
+        )
+        with pytest.raises(RuntimeError, match="staleness"):
+            pipeline.run()
+        pipeline.alert_manager.alert_pipeline_failure.assert_called_once()
+
+    @pytest.mark.usefixtures("_patch_nfl_week")
     def test_predictions_only_missing_artifacts_runs_with_warning(
         self, _patch_log_write
     ):

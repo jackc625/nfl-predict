@@ -271,12 +271,20 @@ def run_predictions(
         # Ensure all required features exist in the gold DataFrame
         missing_features = [f for f in feature_list if f not in gold_df.columns]
         if missing_features:
+            # RAISED, never ``sys.exit`` (33.2 review C1 CR-05). A ``SystemExit`` is a
+            # BaseException: it passed through the orchestrator's step handler and the daily
+            # entry point's handler alike, and left the execution log saying "running", which
+            # blocked every later run. A KeyError is an ordinary, recorded step failure.
             logger.error(
                 "Missing features in gold matrix",
                 target=target,
                 missing=missing_features[:10],
             )
-            sys.exit(1)
+            msg = (
+                f"the deployed {target} model needs {len(missing_features)} feature(s) the "
+                f"gold matrix lacks: {missing_features[:10]}"
+            )
+            raise KeyError(msg)
 
         X = gold_df[feature_list]
 

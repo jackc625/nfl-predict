@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -110,6 +111,91 @@ def test_selecting_after_the_lock_is_refused():
     late = slate_lock(RUN_DATE) + timedelta(seconds=1)
     with pytest.raises(live_skip.LockPassedError):
         daily.select_slate(_schedule(), RUN_DATE, decided_at=late)
+
+
+# ---------------------------------------------------------------------------
+# A run that cannot finish records the slate as unpredicted (C1 CR-05 = B WR-05)
+# ---------------------------------------------------------------------------
+
+
+def _records(path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_a_refused_run_records_the_slate_as_getting_no_predictions(
+    monkeypatch, tmp_path, capsys
+):
+    import pipeline.steps as steps_mod
+    from pipeline import orchestrator
+
+    records = tmp_path / "daily.jsonl"
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", records)
+    monkeypatch.setattr(daily, "_refresh_schedule", lambda *_a, **_k: 2026)
+    monkeypatch.setattr(
+        "data.storage.load_dataframe", lambda *_a, **_k: _schedule().copy()
+    )
+    monkeypatch.setattr(daily, "_require_slate_is_current_week", lambda *_a: None)
+    monkeypatch.setattr(daily, "build_daily_step_registry", lambda _slate: [])
+    monkeypatch.setattr(steps_mod, "_predictions_output_dir", lambda: tmp_path)
+
+    class _Refused:
+        def __init__(self, **_k):
+            pass
+
+        def run(self):
+            raise RuntimeError("Pre-flight staleness checks failed: a live prior run")
+
+    monkeypatch.setattr(orchestrator, "FridayPipeline", _Refused)
+
+    start = slate_lock(RUN_DATE).astimezone(UTC) - timedelta(hours=1)
+    with pytest.raises(RuntimeError, match="staleness"):
+        daily.run_daily(RUN_DATE, start=start, dry_run=False)
+
+    (record,) = _records(records)
+    assert record["outcome"] == "run_failed"
+    assert record["game_ids"] == ["2026_W03_LA@DEN", "2026_W03_LAC@BUF"]
+    assert "staleness" in record["error"]
+    assert "NOT_PREDICTED 2026_W03_LAC@BUF" in capsys.readouterr().out
+
+
+def test_a_refresh_that_fails_records_tomorrows_recorded_games(monkeypatch, tmp_path):
+    records = tmp_path / "daily.jsonl"
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", records)
+    monkeypatch.setattr(daily, "_recorded_tomorrow_ids", lambda _d: ["g1", "g2"])
+
+    def _broken(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(daily, "_refresh_schedule", _broken)
+
+    start = slate_lock(RUN_DATE).astimezone(UTC) - timedelta(hours=1)
+    with pytest.raises(KeyboardInterrupt):
+        daily.run_daily(RUN_DATE, start=start, dry_run=False)
+    (record,) = _records(records)
+    assert (record["outcome"], record["game_ids"]) == ("run_failed", ["g1", "g2"])
+
+
+def test_a_missing_model_feature_raises_a_recordable_error_not_system_exit(
+    monkeypatch,
+):
+    import scripts.generate_current_week_predictions as gen
+
+    monkeypatch.setattr(
+        gen,
+        "load_model_artifact",
+        lambda target, **_k: {
+            "model": object(),
+            "feature_list": ["feature_gone"],
+            "calibrator": None,
+        },
+    )
+    monkeypatch.setattr(
+        gen,
+        "load_gold_features",
+        lambda *_a: pd.DataFrame({"game_id": ["2026_W03_LAC@BUF"]}),
+    )
+    with pytest.raises(KeyError, match="feature_gone"):
+        gen.run_predictions(Path("artifacts"), 2026, 3)
 
 
 # ---------------------------------------------------------------------------

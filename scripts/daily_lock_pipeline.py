@@ -69,7 +69,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-#: One line per run that predicted nothing (no games tomorrow, or the lock had passed).
+#: One line per run that predicted nothing (no games tomorrow, the lock had passed, or the run
+#: failed -- ``run_failed`` names the slate games left unpredicted).
 DAILY_RUN_RECORDS = Path("logs/daily_lock_runs.jsonl")
 
 #: Collection steps a no-write run cannot execute, each with the reason. The live capture proves
@@ -92,18 +93,73 @@ def _recorded_tomorrow_ids(run_date_et: date) -> list[str]:
     return sorted(schedule.loc[schedule["et_day"] == tomorrow, "game_id"].astype(str))
 
 
-def _record_no_prediction(run_date_et: date, outcome: str, game_ids: list[str]) -> None:
+def _record_no_prediction(
+    run_date_et: date, outcome: str, game_ids: list[str], *, error: str | None = None
+) -> None:
     """Append the day's no-prediction record through the write sink."""
-    append_jsonl(
-        DAILY_RUN_RECORDS,
-        {
-            "run_date_et": run_date_et.isoformat(),
-            "outcome": outcome,
-            "game_ids": game_ids,
-            "recorded_at": datetime.now(UTC).isoformat(),
-        },
-        kind="daily_run_record",
+    record: dict[str, object] = {
+        "run_date_et": run_date_et.isoformat(),
+        "outcome": outcome,
+        "game_ids": game_ids,
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
+    if error is not None:
+        record["error"] = error
+    append_jsonl(DAILY_RUN_RECORDS, record, kind="daily_run_record")
+
+
+def _unpredicted_slate_games(slate: DailySlate) -> list[str]:
+    """The slate's games with no prediction row made for THIS slate's lock, sorted.
+
+    A row made for the slate carries the slate's lock as ``information_cutoff_utc``; a game
+    with none was not predicted today, whatever other day's row it may have.
+    """
+    import pandas as pd
+
+    from pipeline.steps import _predictions_output_dir
+
+    path = (
+        _predictions_output_dir() / f"predictions_{slate.season}_week{slate.week}.csv"
     )
+    predicted: set[str] = set()
+    if path.exists():
+        rows = pd.read_csv(path)
+        if {"game_id", "information_cutoff_utc"} <= set(rows.columns):
+            cutoff = pd.to_datetime(rows["information_cutoff_utc"], utc=True)
+            predicted = set(
+                rows.loc[cutoff == pd.Timestamp(slate.lock), "game_id"].astype(str)
+            )
+    return sorted(slate.game_ids - predicted)
+
+
+def _record_run_failure(
+    run_date_et: date, slate: DailySlate | None, exc: BaseException
+) -> None:
+    """Record tomorrow's games as getting NO predictions from a run that could not finish.
+
+    33.2 review C1 CR-05 = B WR-05: a run refused by the staleness gate, stopped by a critical
+    step, or interrupted used to leave no record naming the games it failed -- unlike the
+    lock-passed and no-games days, which each write one. The games are the slate's still
+    unpredicted ones when the slate is known, else tomorrow's games per the recorded schedule.
+    Never raises: the failure being recorded is the one the caller re-raises.
+    """
+    try:
+        game_ids = (
+            _unpredicted_slate_games(slate)
+            if slate is not None
+            else _recorded_tomorrow_ids(run_date_et)
+        )
+        detail = f": {exc}" if str(exc) else ""
+        _record_no_prediction(
+            run_date_et,
+            "run_failed",
+            game_ids,
+            error=f"{type(exc).__name__}{detail}",
+        )
+        for game_id in game_ids:
+            print(f"NOT_PREDICTED {game_id}: the run failed ({type(exc).__name__})")
+    except Exception as record_error:  # noqa: BLE001 - never mask the run's own failure
+        logger.error("Could not record the failed run", error=str(record_error))
 
 
 class ScheduleNotPublishedError(RuntimeError):
@@ -292,51 +348,73 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
             )
             return 0
 
-        # 1-2. Refresh the schedule, then select tomorrow's games.
-        season = _refresh_schedule(run_date_et, dry_run=dry_run)
-        from data.storage import load_dataframe
-
-        games = load_dataframe("games", layer="silver")
-        slate = select_slate(
-            games.loc[games["season"] == season], run_date_et, decided_at=start
-        )
-        if slate.schedule.empty:
-            logger.info("No games tomorrow; no-op", run_date_et=run_date_et.isoformat())
-            _record_no_prediction(run_date_et, "no_games", [])
-            _print_contract(sink, dry_run=dry_run, lock_passed=0, next_day_games=0)
-            return 0
-        _require_slate_is_current_week(slate, start)
-
-        if dry_run:
-            _run_collection_only(slate)
-            _print_contract(
-                sink,
-                dry_run=True,
-                lock_passed=0,
-                next_day_games=len(slate.game_ids),
+        # Everything after the lock check: a run that cannot finish records tomorrow's games
+        # as getting no predictions, then re-raises (33.2 review C1 CR-05 = B WR-05).
+        progress: dict[str, DailySlate] = {}
+        try:
+            return _run_the_day(
+                run_date_et, start=start, dry_run=dry_run, sink=sink, progress=progress
             )
-            return 0
+        except BaseException as exc:
+            _record_run_failure(run_date_et, progress.get("slate"), exc)
+            raise
 
-        # 3. The real run.
-        from pipeline.orchestrator import FridayPipeline
-        from pipeline.steps import RunStatus
 
-        pipeline = FridayPipeline(steps=build_daily_step_registry(slate))
-        log = pipeline.run()
+def _run_the_day(
+    run_date_et: date,
+    *,
+    start: datetime,
+    dry_run: bool,
+    sink: ProductionSink | RecordingSink,
+    progress: dict[str, DailySlate],
+) -> int:
+    """Steps 1-3 of one daily run. The selected slate is left in *progress* for the caller."""
+    # 1-2. Refresh the schedule, then select tomorrow's games.
+    season = _refresh_schedule(run_date_et, dry_run=dry_run)
+    from data.storage import load_dataframe
+
+    games = load_dataframe("games", layer="silver")
+    slate = select_slate(
+        games.loc[games["season"] == season], run_date_et, decided_at=start
+    )
+    if slate.schedule.empty:
+        logger.info("No games tomorrow; no-op", run_date_et=run_date_et.isoformat())
+        _record_no_prediction(run_date_et, "no_games", [])
+        _print_contract(sink, dry_run=dry_run, lock_passed=0, next_day_games=0)
+        return 0
+    progress["slate"] = slate
+    _require_slate_is_current_week(slate, start)
+
+    if dry_run:
+        _run_collection_only(slate)
         _print_contract(
-            sink, dry_run=False, lock_passed=0, next_day_games=len(slate.game_ids)
+            sink,
+            dry_run=True,
+            lock_passed=0,
+            next_day_games=len(slate.game_ids),
         )
-        _report_skips(log.start_time)
-        for game_id, reason in sorted(slate.weather_unknown.items()):
-            print(f"WEATHER_UNKNOWN {game_id}: {reason}")
-        print(f"RUN_STATUS= {log.status}")
-        if log.status in (
-            RunStatus.SUCCESS.value,
-            RunStatus.FINISHED_WITH_SKIPS.value,
-            "degraded",
-        ):
-            return 0
-        return 1
+        return 0
+
+    # 3. The real run.
+    from pipeline.orchestrator import FridayPipeline
+    from pipeline.steps import RunStatus
+
+    pipeline = FridayPipeline(steps=build_daily_step_registry(slate))
+    log = pipeline.run()
+    _print_contract(
+        sink, dry_run=False, lock_passed=0, next_day_games=len(slate.game_ids)
+    )
+    _report_skips(log.start_time)
+    for game_id, reason in sorted(slate.weather_unknown.items()):
+        print(f"WEATHER_UNKNOWN {game_id}: {reason}")
+    print(f"RUN_STATUS= {log.status}")
+    if log.status in (
+        RunStatus.SUCCESS.value,
+        RunStatus.FINISHED_WITH_SKIPS.value,
+        "degraded",
+    ):
+        return 0
+    return 1
 
 
 def build_parser() -> argparse.ArgumentParser:

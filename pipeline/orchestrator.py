@@ -301,6 +301,34 @@ class FridayPipeline:
     # -- Main run loop -------------------------------------------------------
 
     def run(self) -> ExecutionLog:
+        """Execute the pipeline; on ANY abnormal exit, finalize the log as ``failed``.
+
+        A run that ends by an escaping ``SystemExit``, a ``KeyboardInterrupt`` or any error
+        outside the paths :meth:`_run` finalizes itself used to leave
+        ``logs/friday_pipeline.json`` saying ``running`` -- which the next day's staleness gate
+        read as a live run and refused on (33.2 review C1 CR-05 = B WR-05). The exception is
+        re-raised unchanged after the log is finalized. A kill the process cannot intercept
+        (a reboot, a Task Scheduler stop) is caught by the gate's liveness check instead.
+
+        Returns:
+            Final ExecutionLog with run results.
+        """
+        try:
+            return self._run()
+        except BaseException as exc:
+            if self._log.status == "running":
+                self._log.status = RunStatus.FAILED.value
+                detail = f": {exc}" if str(exc) else ""
+                self._log.error = f"run ended abnormally: {type(exc).__name__}{detail}"
+                try:
+                    self._finalize_log()
+                except Exception as write_error:  # noqa: BLE001 - never mask the cause
+                    logger.error(
+                        "Could not finalize the execution log", error=str(write_error)
+                    )
+            raise
+
+    def _run(self) -> ExecutionLog:
         """Execute the pipeline with pre-flight gates, steps, and post-run checks.
 
         Flow:
@@ -332,6 +360,12 @@ class FridayPipeline:
                 f"{'; '.join(staleness_result.errors)}"
             )
             self._finalize_log()
+            # A refused run is a FAILED run, and it alerts as one (33.2 review B WR-05): only
+            # the staleness warning alert used to fire, so a day refused here was never
+            # reported as a failure.
+            self.alert_manager.alert_pipeline_failure(
+                self._log.error, 0, 0, self.season, self.week
+            )
             raise RuntimeError(self._log.error)
 
         # ---------------------------------------------------------------

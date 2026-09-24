@@ -33,7 +33,9 @@ class ExecutionLog(BaseModel):
     # "finished_with_skips" (pipeline.steps.RunStatus -- the run completed and dropped at
     # least one game for a post-lock input, D33.2-05), or "degraded" (a non-critical step
     # failed). The RunStatus members' VALUES are these strings, so the enum and the log
-    # share one vocabulary.
+    # share one vocabulary. One more terminal value is written by the NEXT run, never by this
+    # one: "abandoned" -- the staleness gate found this log still "running" with its process
+    # gone or past the task's time limit (pipeline.staleness, 33.2 review C1 CR-05).
     status: str
     start_time: str  # ISO format
     end_time: str | None = None

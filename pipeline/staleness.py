@@ -12,19 +12,32 @@ Addresses review concerns:
 - --force semantics too broad (MEDIUM-HIGH, consensus)
 """
 
+import contextlib
 import json
+import os
+import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from conf.settings import get_settings
 from models.artifacts import get_latest_artifact_path
+from pipeline.process_liveness import process_is_alive
 from utils.current_slate import resolve_current_slate
 from utils.date_utils import ET, get_current_nfl_week
 from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+#: How long the scheduled task may run before Task Scheduler stops it: the ``ExecutionTimeLimit``
+#: of the committed ``deployment/windows_scheduler.xml`` (PT2H), pinned against that file by
+#: ``tests/unit/test_staleness_gate.py``. A log still saying ``running`` longer than this after
+#: its start cannot belong to a live scheduled run (33.2 review C1 CR-05 = B WR-05).
+TASK_EXECUTION_TIME_LIMIT = timedelta(hours=2)
+
+#: The status a ``running`` log is rewritten to once the gate finds its run gone.
+ABANDONED_STATUS = "abandoned"
 
 
 @dataclass
@@ -153,7 +166,7 @@ class StalenessGate:
         if not partial_ok and partial_msg:
             errors.append(partial_msg)
         elif partial_ok and partial_msg:
-            # Corrupt log case -- warning, not error
+            # A corrupt log, or an abandoned prior run -- warning, not error
             warnings.append(partial_msg)
 
         # 4. Model artifact age (warnings only)
@@ -300,12 +313,25 @@ class StalenessGate:
 
         # Check for incomplete run (still marked as running)
         if status == "running":
+            # A LIVENESS CHECK, not the word alone (33.2 review C1 CR-05 = B WR-05). A run that
+            # died mid-flight leaves this log saying "running" forever; refusing on that word
+            # dropped every later day's slate until someone edited the file by hand.
+            reason = _abandoned_reason(log_data)
+            if reason is None:
+                msg = (
+                    f"Incomplete prior pipeline run detected (PID: {pid}). "
+                    f"Previous run still marked as 'running' and its process is alive."
+                )
+                logger.warning(msg)
+                return (False, msg)
+            _mark_abandoned(log_path, log_data, reason)
             msg = (
-                f"Incomplete prior pipeline run detected (PID: {pid}). "
-                f"Previous run still marked as 'running'."
+                f"Prior pipeline run (PID: {pid}, started {log_data.get('start_time')}) "
+                f"was ABANDONED: {reason}. Its log is marked '{ABANDONED_STATUS}' and it "
+                "does not block this run."
             )
             logger.warning(msg)
-            return (False, msg)
+            return (True, msg)
 
         # Completed runs from prior weeks are fine
         return (True, None)
@@ -347,3 +373,77 @@ class StalenessGate:
                 warnings.append(f"Model artifact missing: {target}")
 
         return warnings
+
+
+# ---------------------------------------------------------------------------
+# Abandoned runs (33.2 review C1 CR-05 = B WR-05)
+# ---------------------------------------------------------------------------
+
+
+def _logged_start(log_data: dict) -> datetime | None:
+    """The logged run's start as a tz-aware instant, or None when absent or unreadable."""
+    text = log_data.get("start_time")
+    if not isinstance(text, str):
+        return None
+    try:
+        start = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return start if start.tzinfo is not None else None
+
+
+def _abandoned_reason(log_data: dict) -> str | None:
+    """Why a log saying ``running`` belongs to a run that is gone; None when it may be live.
+
+    A run is gone when it started longer ago than the scheduled task may run
+    (:data:`TASK_EXECUTION_TIME_LIMIT`), when its recorded process no longer exists (or its PID
+    now belongs to a newer process), or when the recorded process is THIS one -- runs in one
+    process are sequential, so a ``running`` log from our own PID is an earlier run that ended
+    without finalizing.
+    """
+    start = _logged_start(log_data)
+    if start is not None:
+        age = datetime.now(UTC) - start
+        if age > TASK_EXECUTION_TIME_LIMIT:
+            return (
+                f"it started {age} ago, longer than the task's "
+                f"{TASK_EXECUTION_TIME_LIMIT} time limit"
+            )
+    pid = log_data.get("pid")
+    if not isinstance(pid, int):
+        return None
+    if pid == os.getpid():
+        return "its PID is this process's own, so it is an earlier run that never finalized"
+    if not process_is_alive(pid, started_at=start):
+        return f"its process (PID {pid}) is no longer running"
+    return None
+
+
+def _mark_abandoned(log_path: Path, log_data: dict, reason: str) -> None:
+    """Rewrite the stale log with status ``abandoned`` and the reason, atomically.
+
+    Best effort: the new run overwrites this file at its first snapshot anyway, and the
+    abandonment is also carried into the new run's warnings. A failure to rewrite it is
+    logged, never raised -- it must not turn an abandoned run back into a blocking one.
+    """
+    marked = {
+        **log_data,
+        "status": ABANDONED_STATUS,
+        "error": f"abandoned: {reason}",
+        "abandoned_at": datetime.now(UTC).isoformat(),
+    }
+    try:
+        resolved = Path(log_path).resolve()
+        fd, tmp_path = tempfile.mkstemp(dir=str(resolved.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as handle:
+                json.dump(marked, handle, indent=2)
+            os.replace(tmp_path, str(resolved))  # noqa: PTH105 - atomic replace, as the writer
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning(
+            "Could not mark the abandoned run's log", path=str(log_path), error=str(exc)
+        )

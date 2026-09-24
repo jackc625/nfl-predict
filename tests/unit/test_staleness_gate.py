@@ -274,8 +274,10 @@ class TestCheckStaleness:
     @patch("pipeline.staleness.time")
     @patch("builtins.open")
     @patch("pipeline.staleness.json")
+    @patch("pipeline.staleness.process_is_alive", return_value=True)
     def test_check_staleness_partial_run_detected(
         self,
+        _alive,
         mock_json,
         mock_open,
         mock_time,
@@ -284,7 +286,7 @@ class TestCheckStaleness:
         mock_get_week,
         mock_settings,
     ):
-        """Partial run detection: status='running' in log JSON triggers error."""
+        """Partial run detection: a 'running' log whose process is ALIVE triggers error."""
         mock_settings.return_value = _make_settings_mock()
         mock_get_week.return_value = (2025, 5)
         mock_time.time.return_value = 1000000.0
@@ -632,6 +634,133 @@ class TestFreshnessReadsTheRealSilverTables:
         assert any("Weather data is stale" in w for w in result.warnings), (
             result.warnings
         )
+
+
+# ---------------------------------------------------------------------------
+# A crashed prior run does not block (33.2 review C1 CR-05 = B WR-05)
+# ---------------------------------------------------------------------------
+
+
+def _exited_pid() -> int:
+    """The PID of a child process that has already exited."""
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+def _write_running_log(path, *, pid: int, started: datetime) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "start_time": started.isoformat(),
+                "season": 2026,
+                "week": 3,
+                "pid": pid,
+                "steps": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestAbandonedPriorRun:
+    """A ``running`` log blocks only while its run is really alive."""
+
+    def _gate(self, tmp_path, log_path):
+        with patch(
+            "pipeline.staleness.get_settings",
+            return_value=_real_root_settings(tmp_path, log_path),
+        ):
+            from pipeline.staleness import StalenessGate
+
+            return StalenessGate(season=2026, week=3)
+
+    def test_a_running_log_whose_process_is_gone_is_abandoned_and_does_not_block(
+        self, tmp_path
+    ):
+        log_path = tmp_path / "friday_pipeline.json"
+        pid = _exited_pid()
+        _write_running_log(log_path, pid=pid, started=datetime.now(ET))
+
+        passed, message = self._gate(tmp_path, log_path)._check_partial_run()
+
+        assert passed is True
+        assert "ABANDONED" in message and str(pid) in message
+        marked = json.loads(log_path.read_text(encoding="utf-8"))
+        assert marked["status"] == "abandoned"
+        assert "no longer running" in marked["error"]
+
+    def test_a_running_log_older_than_the_task_time_limit_is_abandoned(self, tmp_path):
+        from datetime import timedelta
+
+        log_path = tmp_path / "friday_pipeline.json"
+        # The parent process is alive; only the age abandons it.
+        _write_running_log(
+            log_path,
+            pid=os.getppid(),
+            started=datetime.now(ET) - timedelta(hours=3),
+        )
+
+        with patch("pipeline.staleness.process_is_alive", return_value=True):
+            passed, message = self._gate(tmp_path, log_path)._check_partial_run()
+
+        assert passed is True
+        assert "time limit" in message
+
+    def test_a_running_log_whose_process_is_alive_still_blocks(self, tmp_path):
+        import subprocess
+        import sys
+
+        log_path = tmp_path / "friday_pipeline.json"
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            _write_running_log(log_path, pid=child.pid, started=datetime.now(ET))
+            passed, message = self._gate(tmp_path, log_path)._check_partial_run()
+        finally:
+            child.kill()
+            child.wait()
+
+        assert passed is False
+        assert str(child.pid) in message
+        assert json.loads(log_path.read_text(encoding="utf-8"))["status"] == "running"
+
+    def test_the_time_limit_is_the_committed_tasks_execution_time_limit(self):
+        from pathlib import Path
+
+        from pipeline.staleness import TASK_EXECUTION_TIME_LIMIT
+
+        xml = Path("deployment/windows_scheduler.xml").read_bytes().decode("utf-16")
+        assert "<ExecutionTimeLimit>PT2H</ExecutionTimeLimit>" in xml
+        assert TASK_EXECUTION_TIME_LIMIT.total_seconds() == 2 * 3600
+
+
+class TestProcessIsAlive:
+    def test_this_process_is_alive(self):
+        from pipeline.process_liveness import process_is_alive
+
+        assert process_is_alive(os.getpid()) is True
+
+    def test_an_exited_process_is_not(self):
+        from pipeline.process_liveness import process_is_alive
+
+        assert process_is_alive(_exited_pid()) is False
+
+    def test_a_pid_created_after_the_logged_start_is_a_recycled_pid(self):
+        import sys
+
+        import pytest
+
+        from pipeline.process_liveness import process_is_alive
+
+        if sys.platform != "win32":
+            pytest.skip("creation times are read on Windows only")
+        long_ago = datetime(2000, 1, 1, tzinfo=ET)
+        assert process_is_alive(os.getpid(), started_at=long_ago) is False
+        assert process_is_alive(os.getpid(), started_at=datetime.now(ET)) is True
 
 
 # ---------------------------------------------------------------------------
