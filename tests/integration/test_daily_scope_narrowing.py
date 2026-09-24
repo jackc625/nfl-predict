@@ -158,3 +158,41 @@ def test_the_daily_build_step_is_full_history_and_saves(monkeypatch) -> None:
     saved, save_args, save_kwargs = calls["save"]
     assert saved is matrices
     assert save_args == () and save_kwargs == {}
+
+
+def test_an_unplayed_game_survives_target_creation_with_blank_labels() -> None:
+    """Tomorrow's games have no score; target creation used to DELETE them from gold.
+
+    Played games keep their labels and their dtypes; an unplayed game keeps its row, with every
+    label blank, so it can be served (and is refused by every trainer through its provisional Elo).
+    """
+    instance = object.__new__(bf_mod.FeatureMatrixBuilder)
+    frame = pd.DataFrame(
+        {
+            "game_id": ["played", "unplayed"],
+            "home_score": [24.0, None],
+            "away_score": [17.0, None],
+            "elo_diff": [1.0, 2.0],
+        }
+    )
+    targets = instance.create_target_variables(frame)
+
+    assert list(targets["game_id"]) == ["played", "unplayed"]
+    played = targets.set_index("game_id").loc["played"]
+    assert played["home_margin"] == 7 and played["total_points"] == 41
+    assert played["home_win"] == 1
+    unplayed = targets.set_index("game_id").loc["unplayed"]
+    for label in ("target_wp", "home_win", "home_margin", "total_points"):
+        assert pd.isna(unplayed[label]), label
+    assert unplayed["elo_diff"] == 2.0
+
+
+def test_a_history_build_keeps_its_label_dtypes() -> None:
+    """With every game played, target creation is exactly what it was."""
+    instance = object.__new__(bf_mod.FeatureMatrixBuilder)
+    frame = pd.DataFrame(
+        {"game_id": ["a", "b"], "home_score": [24.0, 10.0], "away_score": [17.0, 13.0]}
+    )
+    targets = instance.create_target_variables(frame)
+    assert pd.api.types.is_integer_dtype(targets["home_win"])
+    assert list(targets["home_win"]) == [1, 0]
