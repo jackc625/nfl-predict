@@ -174,17 +174,19 @@ def test_a_pick_em_line_carries_the_full_point_disagreement() -> None:
     assert float(merged.loc[0, "ats_edge"]) == pytest.approx(3.0)
 
 
-def test_an_absent_market_line_leaves_the_edge_absent_and_the_band_low() -> None:
-    """UNCHANGED pin, and the ONLY surviving special branch.
+def test_an_absent_market_line_leaves_the_edge_absent_and_no_band() -> None:
+    """The ONLY surviving special branch: no line, no edge, and NO band.
 
-    No line, no disagreement to measure -- and the band answers ``low``, not a made-up number.
-    It must stay distinguishable from the pick-em case above, which is a real line at zero.
+    No line, no disagreement to measure. The band used to answer ``low`` here, which published a
+    small measured edge for a game that has none (33.2 review C2 CR-04 = B WR-11); it is now
+    absent. It must stay distinguishable from the pick-em case above, which is a real line at
+    zero and does carry a band.
     """
     market = _market(8.5)
     market.loc[0, "spread"] = np.nan
     merged = compute_edges(_predictions(12.0), market)
     assert pd.isna(merged.loc[0, "ats_edge"])
-    assert merged.loc[0, "ats_confidence"] == "low"
+    assert merged.loc[0, "ats_confidence"] is None
 
 
 # ---------------------------------------------------------------------------
