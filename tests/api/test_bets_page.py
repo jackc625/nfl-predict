@@ -688,6 +688,40 @@ def test_total_but_no_moneyline_yields_one_live_and_one_suppressed_row(
     assert "Suppressed candidates (1)" in body
 
 
+def _ats_live_row(game_id: str, bet_side: str, line: float) -> dict[str, Any]:
+    """One LIVE spread row; ``line`` is the stored HOME MARGIN (positive = home favoured)."""
+    row = _live_row(game_id, "ats")
+    row.update({"bet_side": bet_side, "line": line})
+    return row
+
+
+def test_a_spread_pick_shows_the_picked_teams_own_line(tmp_path: Path) -> None:
+    """33.2 review C2 CR-03: a spread pick reads the line from the PICKED side.
+
+    The stored ``line`` is the home margin, positive when the home team is favoured. The real
+    2025 week 1 rows this pins: CIN@CLE home_cover at -5.5 (CIN favoured, CLE the 5.5-point dog)
+    rendered "Home_cover -5.5", which reads as CLE laying 5.5 -- the opposite line. It must read
+    CLE +5.5. A home favourite (MIA@IND at +1.5) is IND -1.5; the away sides keep the margin's
+    sign (DAL@PHI at +8.5 is DAL +8.5, TB@ATL at -1.5 is TB -1.5).
+    """
+    rows = [
+        _ats_live_row("2023_W01_CIN@CLE", "home_cover", -5.5),
+        _ats_live_row("2023_W01_MIA@IND", "home_cover", 1.5),
+        _ats_live_row("2023_W01_DAL@PHI", "away_cover", 8.5),
+        _ats_live_row("2023_W01_TB@ATL", "away_cover", -1.5),
+    ]
+    with _client_for(tmp_path, rows, "ats_side_line") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    for pick in ("CLE +5.5", "IND -1.5", "DAL +8.5", "TB -1.5"):
+        assert pick in body, f"the spread pick {pick!r} is not rendered"
+    for wrong in ("CLE -5.5", "IND +1.5", "Home_cover", "Away_cover", "home_cover"):
+        assert wrong not in body, f"the page renders {wrong!r}"
+    # The Line column carries the same side-perspective number as the pick.
+    assert 'whitespace-nowrap">+5.5</td>' in body
+    assert 'whitespace-nowrap">-1.5</td>' in body
+
+
 # ---------------------------------------------------------------------------
 # The four distinct non-happy renders and the cache stamp
 # (plan 31-15 Task 2, SPEC R5, UI-SPEC E2 empty / E7 / E12)

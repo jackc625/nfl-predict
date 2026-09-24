@@ -173,6 +173,15 @@
   {# Bet-type label vocabulary. The raw wp / ats / ou codes are NEVER rendered --
      this is the exact wording betting.html already uses. #}
   {% set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} %}
+  {# A spread bet's line FROM THE PICKED SIDE, the way a sportsbook quotes it (33.2 review C2
+     CR-03). The stored ``line`` is the HOME MARGIN, positive when the home team is favoured
+     (DEF-31-01), so the home side's own line is its negation and the away side's is the margin
+     as stored: 2025_W01_CIN@CLE home_cover at -5.5 is CLE +5.5, and 2025_W01_MIA@IND home_cover
+     at +1.5 is IND -1.5. Printing the margin raw put the opposite sign on every home pick. #}
+  {% macro side_line(bet, fmt) -%}
+    {%- set value = -bet.line if bet.bet_side == "home_cover" else bet.line -%}
+    {%- if value == 0 -%}PK{%- else -%}{{ fmt|format(value) }}{%- endif -%}
+  {%- endmacro %}
   <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
     {# overflow-x-auto + whitespace-nowrap numeric cells: the shipped betting.html
        ROI-table pattern. Horizontal scroll on narrow viewports, never a squeezed
@@ -185,7 +194,7 @@
             <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Matchup</th>
             <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Bet type</th>
             <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Pick</th>
-            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">Line</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap" title="A spread line is the picked team's own line, as a sportsbook quotes it">Line</th>
             <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">EV %</th>
             <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">EV band</th>
             <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap" title="1 unit = 1% of a notional bankroll">Stake (units)</th>
@@ -209,14 +218,26 @@
               <a href="/games/{{ bet.game_id }}" class="text-nfl-primary hover:underline">{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }}</a>
             </td>
             <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</td>
+            {# The pick names the TEAM, never the raw side code. The two teams come from the
+               game id's AWAY@HOME matchup; an id without one falls back to the words. #}
+            {%- set matchup = bet.game_id.split('_')[-1] -%}
+            {%- set away_team, home_team = matchup.split('@') if '@' in matchup else ("Away", "Home") -%}
+            {%- set picked_team = home_team if bet.bet_side in ("home", "home_cover") else away_team -%}
             <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">
-              {%- if bet.target == "wp" -%}
-                {{ bet.bet_side }}
-              {%- else -%}
+              {%- if bet.target == "ou" -%}
                 {{ bet.bet_side|capitalize }} {{ "%g"|format(bet.line) if bet.line is not none else "" }}
+              {%- elif bet.target == "ats" and bet.line is not none -%}
+                {{ picked_team }} {{ side_line(bet, "%+g") }}
+              {%- else -%}
+                {{ picked_team }}
               {%- endif -%}
             </td>
-            <td class="px-4 py-3 text-right stat-num whitespace-nowrap">{{ "%.1f"|format(bet.line) if bet.line is not none else "--" }}</td>
+            <td class="px-4 py-3 text-right stat-num whitespace-nowrap">
+              {%- if bet.line is none -%}--
+              {%- elif bet.target == "ats" -%}{{ side_line(bet, "%+.1f") }}
+              {%- else -%}{{ "%.1f"|format(bet.line) }}
+              {%- endif -%}
+            </td>
             {# per_bet_ev is stored as a FRACTION of stake; the x100 below is a unit
                render (fraction -> percent) under a "EV %" header, not a derivation.
                No metric is recomputed on the request path (UIAP-01). #}
