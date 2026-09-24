@@ -144,7 +144,19 @@ REJECTION_REASONS: tuple[str, ...] = (
     # pool, so the whole target places no bets and each of its games is recorded, not dropped
     # (Plan 33.2-29). Emitted by ``backtest.weekly_bet_list.select_weekly_bets``, not here.
     "no_honest_ev_floor",
+    # a 2026 WIN bet cleared its price test but its edge over the SPREAD-DERIVED market
+    # probability did not clear the target's corrected edge threshold (D33.2-11, Plan 33.2-26).
+    "edge_below_threshold",
+    # the target has NO honest edge threshold: too little honest pre-lock data to derive one,
+    # so it places no bets and each of its games is recorded (Plan 33.2-26, SPEC R14). Emitted
+    # by ``backtest.weekly_bet_list.select_weekly_bets``, not here.
+    "no_honest_edge_threshold",
 )
+
+#: The candidate column carrying the SPREAD-DERIVED market probability of a home win, converted
+#: with the live blend's bound serving slope (``models.market_probability``). Read only for a
+#: target registered in ``BetSelector(edge_threshold_by_target=...)``.
+SPREAD_MARKET_PROB_FIELD: str = "market_prob_spread"
 # ``no_bet_side`` is plan 31-10's addition, and it is a NINTH reason rather than a reuse of one of
 # the eight. D31-05 gives the WP and ATS targets NO eligibility gate (and D33.2-24 took O/U's away),
 # so ``not_subpop`` would assert a sub-population that does not exist; and nothing is priced for a
@@ -232,6 +244,18 @@ def _strategy_bet_odds(
     if resolved is None:
         return default
     return int(resolved)
+
+
+def _side_market_probability(market_home: float, bet_side: str) -> float:
+    """The spread-derived market probability of the SIDE bet.
+
+    Delegates to the WP chain's one side-correct helper -- the same function that turns the
+    model's P(home) into P(side) -- so the two sides of the edge are made side-correct by one
+    definition. Imported lazily for the cycle ``backtest.selector_strategies._wp_chain`` names.
+    """
+    from backtest.wp_ev_chain import calibrated_p_home_side
+
+    return float(calibrated_p_home_side(market_home, bet_side))
 
 
 def _freshness_context(
@@ -401,8 +425,21 @@ class BetSelector:
         slippage_points: float = SLIPPAGE_POINTS,
         odds: int = STANDARD_VIG_ODDS,
         strategies: list[TargetStrategy] | None = None,
+        edge_threshold_by_target: Mapping[str, float] | None = None,
     ) -> None:
         self.frozen_sd = float(frozen_sd)
+        # THE SECOND TEST OF A 2026 WIN BET (D33.2-11, Plan 33.2-26). A target named here is bet
+        # only when BOTH its EV at the price the market quoted clears the EV floor AND its edge
+        # over the SPREAD-DERIVED market probability, on the side bet, is strictly above this
+        # threshold. Both are required, and neither makes the other redundant: the spread
+        # conversion can manufacture an apparent edge at every spread, which is why the
+        # threshold test alone is not enough; and the threshold was derived against a
+        # spread-derived probability and never calibrated on moneyline prices, which is why the
+        # price test alone is not enough. Empty -- every pre-33.2-26 caller -- changes nothing.
+        self.edge_threshold_by_target: dict[str, float] = {
+            str(target): float(value)
+            for target, value in (edge_threshold_by_target or {}).items()
+        }
         self.season_bias_by_season = dict(season_bias_by_season)
         # The EV floor is a SCALAR or a PER-TARGET mapping (plan 31-12). The pre-registration
         # selects ``t`` per target by a tune-side sweep and carries ONE scalar per target to the
@@ -817,10 +854,19 @@ class BetSelector:
         # Market gaps and model gaps are DIFFERENT causes with different fixes (D31-19), so the
         # market check runs first and a present-market/absent-model row is reported as the model
         # gap it is rather than as an odds-coverage problem.
+        two_test = strategy.target in self.edge_threshold_by_target
+        if two_test:
+            record[SPREAD_MARKET_PROB_FIELD] = None
+            record["spread_market_edge"] = None
         if missing_market:
             return record, "missing_snapshot"
         if missing_prediction:
             return record, "missing_prediction"
+        # The spread-derived probability is MARKET data the threshold test needs; without it the
+        # second test cannot run, so the row is suppressed as a market gap rather than priced on
+        # one test alone.
+        if two_test and _is_absent(row.get(SPREAD_MARKET_PROB_FIELD)):
+            return record, "missing_snapshot"
 
         # A row that HAS market data and a kickoff date but no timestamp is a pipeline bug, and it
         # is the one shape that would make this fence unable to fire. Assuming it fresh would
@@ -876,8 +922,26 @@ class BetSelector:
             selected_odds = _strategy_bet_odds(strategy, row, bet_side, self.odds)
             record["selected_odds"] = selected_odds
             record["per_bet_ev"] = per_bet_ev(p_side, american_to_payout(selected_odds))
+            if two_test:
+                market_home = float(row[SPREAD_MARKET_PROB_FIELD])
+                record[SPREAD_MARKET_PROB_FIELD] = market_home
+                record["spread_market_edge"] = p_side - _side_market_probability(
+                    market_home, bet_side
+                )
 
         return record, rejection_reason
+
+    def _clears_edge_threshold(self, record: dict[str, Any]) -> bool:
+        """The second test of a win bet: the side edge is STRICTLY above the threshold.
+
+        STRICT, the same comparison the edge band uses, so an edge exactly at the threshold is
+        in the band below it and is not a bet. A target with no threshold registered passes.
+        """
+        threshold = self.edge_threshold_by_target.get(str(record.get("target")))
+        if threshold is None:
+            return True
+        edge = record.get("spread_market_edge")
+        return edge is not None and float(edge) > threshold
 
     @staticmethod
     def _read_required_fields(
@@ -962,6 +1026,10 @@ class BetSelector:
                 continue
             if per_bet is None or per_bet < ev_floor_t:
                 rejected.append({**record, "rejection_reason": "ev_below_floor"})
+                continue
+            # The second test (D33.2-11): a price that clears the floor is not enough on its own.
+            if not self._clears_edge_threshold(record):
+                rejected.append({**record, "rejection_reason": "edge_below_threshold"})
                 continue
             admitted.append(record)
 

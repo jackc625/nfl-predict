@@ -43,12 +43,14 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from backtest.weekly_bet_list import (
+    DEFAULT_CHAIN_FIT_PATH,
     FrozenChainFitError,
     _require_season_covered,
     build_weekly_candidates,
@@ -116,9 +118,16 @@ def test_the_production_run_record_now_covers_2026_for_every_target() -> None:
     assert sorted(fits) == ["ats", "ou", "wp"], (
         "the loader is TARGET-keyed; an int() over these outer keys would raise"
     )
+    # RE-EXPRESSED (Plan 33.2-26): the default is now the CORRECTED record, whose own seasons
+    # are 2020-2024 (WP 2021-2024), not the Phase-31 record's 2021-2025. The claim is unchanged:
+    # the record's OWN seasons survive the load, read from the record rather than restated, and
+    # 2026 is added by the overlay.
+    record = json.loads(DEFAULT_CHAIN_FIT_PATH.read_text(encoding="utf-8"))
     for target, fit in fits.items():
         assert SEASON in fit.season_bias_by_season, target
-        assert set(range(2021, 2026)) <= set(fit.season_bias_by_season), target
+        own = {int(s) for s in record["tune_fit"][target]["season_bias_by_season"]}
+        assert own, target
+        assert own <= set(fit.season_bias_by_season), target
 
 
 def test_the_season_gate_no_longer_refuses_2026() -> None:

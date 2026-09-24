@@ -41,20 +41,29 @@ into "high". Plan 31-17 DE-DUPLICATED and RENAMED the rule and deliberately did 
 because repairing it moves a published label on ``/`` and ``/betting`` (D31-04) and no measurement
 then existed showing new bands would be better.
 
-That measurement now exists and is FROZEN:
-``backtest.cold_start_constants.EDGE_TIER_THRESHOLDS_BY_TARGET`` carries one ``(high, medium)``
-pair per target, each on its target's OWN unit, derived under a rule pre-registered before Week 2
-and never recomputed in-season. ``target`` is a REQUIRED argument here with NO DEFAULT: a call
+That measurement now exists and is FROZEN, and since Plan 33.2-26 the pair this helper reads is
+the SUPERSEDING CORRECTION: ``backtest.corrected_cold_start_constants.EDGE_TIER_THRESHOLDS_BY_TARGET``
+carries one ``(high, medium)`` pair per target, each on its target's OWN unit, re-derived on the
+corrected models and the owned pre-lock lines. The 11761c7 original,
+``backtest.cold_start_constants``, stays byte-unchanged as the record of what was frozen and when;
+this helper does not read it.
+
+A TARGET WITH NO HONEST THRESHOLD IS UNBANDED. The correction records ``None`` for a target whose
+honest pool was too small to derive a pair (SPEC R14). :func:`edge_tier` then returns ``None`` --
+UNBANDED -- which is a different claim from ``"low"`` (banded, below medium): it is never unpacked
+into a ``TypeError`` and never lent another target's pair. ``target`` is a REQUIRED argument here with NO DEFAULT: a call
 site that forgot would silently band an ATS point edge against WP's probability pair, which is the
 exact defect being removed, reintroduced as a default. Omitting it is a ``TypeError`` from the
 interpreter -- the one refusal nobody can forget to write.
 
-WP's pair is UNCHANGED at 0.05 / 0.02 by design (D33-20), so zero WP games change band and the
-23-point pre-collapse snapshot keeps its evidentiary value instead of being rewritten.
+WP's pair is UNCHANGED at 0.05 / 0.02 by design (D33-20), in the original and in the correction
+alike, so zero WP games change band and the 23-point pre-collapse snapshot keeps its evidentiary
+value instead of being rewritten.
 
 WHY THE FROZEN MAPPING IS IMPORTED LAZILY
 ------------------------------------------
-``backtest.cold_start_constants`` is a pure-constants module with no imports of its own, but
+``backtest.corrected_cold_start_constants`` is a pure-constants module with no imports of its
+own, but
 reaching it executes ``backtest/__init__.py``, which pulls ``backtest.engine`` and
 ``backtest.simulation`` and through them ``models.*``, scikit-learn, XGBoost and Plotly. Two
 MEASURED reasons, in that order of weight:
@@ -67,8 +76,8 @@ MEASURED reasons, in that order of weight:
      band at all -- and this keeps it a design property rather than a coincidence.
 
   2. COST. Importing this leaf helper is 0.63 s and loads NO scikit-learn, XGBoost, Plotly or
-     ``models.*``; importing ``backtest.cold_start_constants`` standalone is 1.94 s and loads all
-     of them (measured 2026-09-15). Deferred, that cost lands once on the first band actually
+     ``models.*``; importing the frozen constants module standalone is 1.94 s and loads all of
+     them (measured 2026-09-15 on the 11761c7 original; the correction has the same shape). Deferred, that cost lands once on the first band actually
      taken (1.37 s) rather than on every importer of this module.
 
 The import is therefore deferred into :func:`_thresholds_by_target` and cached after the first
@@ -126,7 +135,7 @@ EDGE_TIER_TARGETS: tuple[str, str, str] = ("ats", "ou", "wp")
 
 # Resolved once, on the first band taken. See the module docstring for why this is not a
 # module-level import.
-_THRESHOLDS_BY_TARGET: dict[str, tuple[float, float]] | None = None
+_THRESHOLDS_BY_TARGET: dict[str, tuple[float, float] | None] | None = None
 
 
 class UnknownEdgeTargetError(ValueError):
@@ -138,23 +147,31 @@ class UnknownEdgeTargetError(ValueError):
     """
 
 
-def _thresholds_by_target() -> dict[str, tuple[float, float]]:
-    """The FROZEN ``{target -> (high, medium)}`` mapping, imported on first use and cached.
+def _thresholds_by_target() -> dict[str, tuple[float, float] | None]:
+    """The CORRECTED ``{target -> (high, medium) | None}`` mapping, imported on first use and cached.
 
     The deferred import is deliberate and the module docstring gives both measured reasons:
-    reaching ``backtest.cold_start_constants`` executes ``backtest/__init__.py``, which inverts
-    the ``utils`` -> ``backtest`` layering and loads the whole modelling stack.
+    reaching the constants module executes ``backtest/__init__.py``, which inverts the ``utils``
+    -> ``backtest`` layering and loads the whole modelling stack. It reads the superseding
+    correction (Plan 33.2-26), never the frozen 11761c7 original.
     """
     global _THRESHOLDS_BY_TARGET
     if _THRESHOLDS_BY_TARGET is None:
-        from backtest.cold_start_constants import EDGE_TIER_THRESHOLDS_BY_TARGET
+        from backtest.corrected_cold_start_constants import (
+            EDGE_TIER_THRESHOLDS_BY_TARGET,
+        )
 
         _THRESHOLDS_BY_TARGET = EDGE_TIER_THRESHOLDS_BY_TARGET
     return _THRESHOLDS_BY_TARGET
 
 
-def _require_thresholds(target: str) -> tuple[float, float]:
-    """This target's frozen ``(high, medium)`` pair, REFUSING an unknown target by name."""
+def _require_thresholds(target: str) -> tuple[float, float] | None:
+    """This target's ``(high, medium)`` pair, or None when it has NO honest threshold.
+
+    Refuses an UNKNOWN target by name. A KNOWN target whose pair is ``None`` is not an error: it
+    is the correction's recorded verdict that no honest threshold exists, and it is returned as
+    ``None`` for the caller to render as unbanded.
+    """
     try:
         return _thresholds_by_target()[target]
     except KeyError:
@@ -163,14 +180,14 @@ def _require_thresholds(target: str) -> tuple[float, float]:
             f"vocabulary is {sorted(EDGE_TIER_TARGETS)}. Each target's pair is on its OWN unit "
             "-- ats in POINTS, ou as a ratio of the market total, wp in probability -- so there "
             "is no neutral pair to fall back to and none is invented here. The pairs live in "
-            "backtest/cold_start_constants.EDGE_TIER_THRESHOLDS_BY_TARGET; inspect them with "
-            '`uv run python -c "import backtest.cold_start_constants as c; '
+            "backtest/corrected_cold_start_constants.EDGE_TIER_THRESHOLDS_BY_TARGET; inspect "
+            'them with `uv run python -c "import backtest.corrected_cold_start_constants as c; '
             'print(c.EDGE_TIER_THRESHOLDS_BY_TARGET, c.EDGE_TIER_THRESHOLD_UNITS)"`.'
         )
         raise UnknownEdgeTargetError(msg) from None
 
 
-def edge_tier(edge: float | None, target: str) -> str:
+def edge_tier(edge: float | None, target: str) -> str | None:
     """The edge band for ONE edge value, on *target*'s own unit.
 
     THE single implementation. :func:`edge_tier_series` dispatches to it and computes nothing of
@@ -193,13 +210,17 @@ def edge_tier(edge: float | None, target: str) -> str:
         ``"high"``, ``"medium"`` or ``"low"``. An absent edge is ``"low"`` -- the behaviour both
         retired helpers had, in one case through ``np.where``'s NaN-comparison result and in the
         other through a ``pd.notna`` guard at the call site. It is stated HERE, so the two
-        call sites cannot answer the absent case differently.
+        call sites cannot answer the absent case differently. ``None`` -- UNBANDED -- when the
+        target has NO honest threshold (SPEC R14): distinct from ``"low"``, which is a band.
 
     Raises:
         UnknownEdgeTargetError: when *target* is outside the frozen vocabulary. Raised BEFORE the
             absent-edge shortcut, so a bad target is reported even on a null edge.
     """
-    high, medium = _require_thresholds(target)
+    pair = _require_thresholds(target)
+    if pair is None:
+        return None
+    high, medium = pair
     if edge is None or pd.isna(edge):
         return EDGE_TIER_LABELS[0]
     magnitude = abs(float(edge))
@@ -241,15 +262,17 @@ def __getattr__(name: str) -> Any:
 
     They are served through the module ``__getattr__`` rather than assigned at import time for the
     same reason the mapping is imported lazily: assigning them would force
-    ``backtest.cold_start_constants`` -- and with it the whole modelling stack -- into every
+    ``backtest.corrected_cold_start_constants`` -- and with it the whole modelling stack -- into every
     importer of this module, including the cache path that is built to avoid it.
 
     New code should read :data:`EDGE_TIER_TARGETS` and call :func:`edge_tier` with an explicit
     target instead. A bare "high threshold" is exactly the unit-free quantity this plan retired.
     """
-    if name == "EDGE_TIER_HIGH_THRESHOLD":
-        return _require_thresholds("wp")[0]
-    if name == "EDGE_TIER_MEDIUM_THRESHOLD":
-        return _require_thresholds("wp")[1]
+    if name in ("EDGE_TIER_HIGH_THRESHOLD", "EDGE_TIER_MEDIUM_THRESHOLD"):
+        pair = _require_thresholds("wp")
+        if pair is None:
+            msg = f"{name} is unavailable: WP has NO honest threshold in the correction"
+            raise AttributeError(msg)
+        return pair[0] if name == "EDGE_TIER_HIGH_THRESHOLD" else pair[1]
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)

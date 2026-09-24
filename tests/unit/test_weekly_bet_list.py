@@ -34,6 +34,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+import backtest.cold_start_constants as superseded
 from api.cache import (
     BET_LIST_COLUMNS,
     BET_LIST_IMMUTABLE_COLUMNS,
@@ -45,7 +46,7 @@ from api.cache import (
     PROVENANCE_BACKTEST_REPLAY,
     PROVENANCE_FORWARD,
 )
-from backtest.cold_start_constants import CHAIN_FIT_BIAS_2026
+from backtest.corrected_cold_start_constants import CHAIN_FIT_BIAS_2026
 from backtest.weekly_bet_list import (
     BET_LIST_ARTIFACT_NAME,
     BET_TRACKER_ARTIFACT_NAME,
@@ -653,11 +654,17 @@ def test_the_fit_is_read_verbatim_including_a_null_residual_sd(tmp_path: Path) -
     # null SD survives as None rather than becoming 0.0 -- is unchanged, which is why the pin
     # moved rather than being deleted. The overlay entry is asserted against the frozen constant
     # rather than a literal, so it cannot drift away from the pre-registration.
+    # MOVED AGAIN (Plan 33.2-26): the overlay entry is now the SUPERSEDING CORRECTION's 2026 bias,
+    # read from backtest.corrected_cold_start_constants; the control below proves the superseded
+    # 11761c7 value is not what the weekly list applies for the overlay season.
     overlay_season = frozen_overlay_season()
     assert fits["ats"].season_bias_by_season == {
         2025: pytest.approx(0.16),
         overlay_season: pytest.approx(CHAIN_FIT_BIAS_2026["ats"]),
     }
+    assert fits["ats"].season_bias_by_season[overlay_season] != pytest.approx(
+        superseded.CHAIN_FIT_BIAS_2026["ats"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -917,10 +924,17 @@ def test_an_explicit_null_floor_loads_as_none_and_an_absent_key_still_refuses(
         load_frozen_chain_fit(path)
 
 
-def test_the_live_reader_is_staged_not_repointed() -> None:
-    """Plan 33.2-26 Task 3 repoints the default WITH the cold-start bias; this plan must not."""
+def test_the_live_reader_resolves_the_corrected_record() -> None:
+    """Plan 33.2-26 Task 3 repointed the default WITH the cold-start bias, in one commit.
+
+    Re-expressed from Plan 33.2-29's staged-not-repointed pin: the intent -- the live reader
+    resolves exactly the record the live rule is supposed to read -- is unchanged, and the
+    Phase-31 record is named as the control it must no longer be.
+    """
+    from backtest.corrected_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
     from backtest.weekly_bet_list import DEFAULT_CHAIN_FIT_PATH
 
-    assert DEFAULT_CHAIN_FIT_PATH.as_posix() == (
+    assert DEFAULT_CHAIN_FIT_PATH.as_posix() == CORRECTED_CHAIN_FIT_RECORD_PATH
+    assert DEFAULT_CHAIN_FIT_PATH.as_posix() != (
         "outputs/p31/profitability_2025_verdict.json"
     )

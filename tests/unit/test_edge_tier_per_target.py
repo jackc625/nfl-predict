@@ -27,6 +27,16 @@ per-target band at all -- so their grids are recorded fresh in ``tests.phase33_s
 from the frozen pairs by a throwaway reference band and never by calling the function they
 check.
 
+THE RULER IS NOW THE CORRECTION (Plan 33.2-26, SPEC R14)
+---------------------------------------------------------
+``utils.edge_tier`` reads ``backtest.corrected_cold_start_constants``, which supersedes the 11761c7
+pairs. WP's corrected pair is UNCHANGED at 0.05 / 0.02 (the anchor), so its 23-point pre-collapse
+snapshot is KEPT and asserted as before. ATS's and O/U's pairs moved, so their recorded grids --
+measured against the 11761c7 pairs -- keep their VALUES and are re-labelled here by a throwaway
+reference band on the CORRECTED pair, never by calling the function they check; a control proves
+the recorded 11761c7 labels are NOT what the live band produces. A target whose corrected pair is
+``None`` is UNBANDED: ``edge_tier`` returns ``None``, distinct from ``"low"``.
+
 Run this module:  uv run pytest tests/unit/test_edge_tier_per_target.py -q
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -42,7 +52,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.cold_start_constants import EDGE_TIER_THRESHOLDS_BY_TARGET
+import backtest.cold_start_constants as superseded
+import utils.edge_tier as edge_tier_module
+from backtest.corrected_cold_start_constants import EDGE_TIER_THRESHOLDS_BY_TARGET
 from tests.api.test_cache_betting import _EDGE_TIER_SNAPSHOT
 from tests.phase33_state import ATS_EDGE_TIER_GRID, OU_EDGE_TIER_GRID
 from utils.edge_tier import (
@@ -55,12 +67,39 @@ from utils.edge_tier import (
     edge_tier_series,
 )
 
+
+def _reference_band(value: float, pair: tuple[float, float]) -> str:
+    """A THROWAWAY reference band, never the function under test: STRICT ``>`` on |value|."""
+    high, medium = pair
+    magnitude = abs(value)
+    if magnitude > high:
+        return "high"
+    if magnitude > medium:
+        return "medium"
+    return "low"
+
+
+def _corrected_pair(target: str) -> tuple[float, float]:
+    pair = EDGE_TIER_THRESHOLDS_BY_TARGET[target]
+    assert pair is not None, f"{target} has no corrected threshold"
+    return pair
+
+
+def _relabelled(
+    grid: tuple[tuple[float, str], ...], target: str
+) -> tuple[tuple[float, str], ...]:
+    """The recorded grid's VALUES, labelled by the reference band on the CORRECTED pair."""
+    pair = _corrected_pair(target)
+    return tuple((value, _reference_band(value, pair)) for value, _label in grid)
+
+
 # The three grids in one place, so every per-target assertion below iterates the SAME
-# structure and a target added to the vocabulary without a grid fails loudly.
+# structure and a target added to the vocabulary without a grid fails loudly. WP's snapshot is
+# kept verbatim (its corrected pair is unchanged); ATS's and O/U's are re-labelled.
 _GRIDS: dict[str, tuple[tuple[float, str], ...]] = {
     "wp": _EDGE_TIER_SNAPSHOT,
-    "ats": ATS_EDGE_TIER_GRID,
-    "ou": OU_EDGE_TIER_GRID,
+    "ats": _relabelled(ATS_EDGE_TIER_GRID, "ats"),
+    "ou": _relabelled(OU_EDGE_TIER_GRID, "ou"),
 }
 
 
@@ -98,6 +137,40 @@ def test_the_series_form_also_requires_a_target() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1b. A target with NO honest threshold is UNBANDED (Plan 33.2-26, SPEC R14)
+# ---------------------------------------------------------------------------
+
+
+def _without_threshold(
+    monkeypatch: pytest.MonkeyPatch, target: str
+) -> dict[str, tuple[float, float] | None]:
+    planted = dict(EDGE_TIER_THRESHOLDS_BY_TARGET)
+    planted[target] = None
+    monkeypatch.setattr(edge_tier_module, "_THRESHOLDS_BY_TARGET", planted)
+    return planted
+
+
+def test_a_none_threshold_is_unbanded_never_a_type_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``None`` is not unpacked into a TypeError and is not another target's pair."""
+    _without_threshold(monkeypatch, "ats")
+    for value in (10.0, 0.5, 0.0, None, np.nan):
+        assert edge_tier(value, "ats") is None
+    assert list(edge_tier_series(pd.Series([10.0, None]), "ats")) == [None, None]
+    # The other targets keep their bands, and "low" stays a band.
+    assert edge_tier(None, "wp") == "low"
+    assert edge_tier(0.01, "wp") == "low"
+    assert edge_tier(1.0, "ou") == "high"
+
+
+def test_unbanded_is_distinct_from_low() -> None:
+    """The control: with a threshold, a small edge IS banded "low" rather than left unbanded."""
+    assert edge_tier(0.0, "ats") == "low"
+    assert edge_tier(0.0, "ats") is not None
+
+
+# ---------------------------------------------------------------------------
 # 2. The three recorded grids
 # ---------------------------------------------------------------------------
 
@@ -105,12 +178,13 @@ def test_the_series_form_also_requires_a_target() -> None:
 def test_wp_reproduces_all_twenty_three_pre_collapse_points_under_the_new_signature() -> (
     None
 ):
-    """The Phase-31 evidence survives the signature change (T-33-85).
+    """The Phase-31 evidence survives the signature change (T-33-85) AND the correction.
 
-    WP's frozen pair is 0.05 / 0.02 -- the values the collapsed helper already used -- so
-    every one of these 23 labels must be identical. A single mismatch means a published label
+    WP's corrected pair is still 0.05 / 0.02 -- the values the collapsed helper already used --
+    so every one of these 23 labels must be identical. A single mismatch means a published label
     on ``/`` and ``/betting`` has moved.
     """
+    assert _corrected_pair("wp") == (0.05, 0.02)
     assert len(_EDGE_TIER_SNAPSHOT) == 23
     mismatches = [
         (value, expected, edge_tier(value, "wp"))
@@ -141,6 +215,28 @@ def test_each_line_target_reproduces_its_own_recorded_grid(target: str) -> None:
     assert not mismatches, f"{target} grid mismatches: {mismatches}"
 
 
+@pytest.mark.parametrize(
+    ("target", "grid"),
+    [("ats", ATS_EDGE_TIER_GRID), ("ou", OU_EDGE_TIER_GRID)],
+)
+def test_the_live_band_is_not_the_superseded_11761c7_band(
+    target: str, grid: tuple[tuple[float, str], ...]
+) -> None:
+    """The control that the ORIGINAL pair is not what the live band applies.
+
+    The recorded grid IS the 11761c7 band (re-derived here from the original pair), and the live
+    band disagrees with it on at least one of its own boundary points.
+    """
+    original = superseded.EDGE_TIER_THRESHOLDS_BY_TARGET[target]
+    assert [label for _v, label in grid] == [
+        _reference_band(value, original) for value, _label in grid
+    ]
+    assert EDGE_TIER_THRESHOLDS_BY_TARGET[target] != original
+    assert [edge_tier(value, target) for value, _label in grid] != [
+        label for _v, label in grid
+    ]
+
+
 def test_the_three_grids_are_not_the_same_grid() -> None:
     """Anti-vacuity: a per-target ruler that answered identically everywhere would be one ruler.
 
@@ -150,7 +246,7 @@ def test_the_three_grids_are_not_the_same_grid() -> None:
     points is very nearly every margin there is. That collapse is the defect in miniature: it is
     the same shape as the measured 98.80% "high" share over the pinned population.
     """
-    under_ats = [edge_tier(value, "ats") for value, _label in ATS_EDGE_TIER_GRID]
+    under_ats = [edge_tier(value, "ats") for value, _label in _GRIDS["ats"]]
     under_wp = [edge_tier(value, "wp") for value, _label in ATS_EDGE_TIER_GRID]
     assert under_ats != under_wp
     assert "medium" not in under_wp, (

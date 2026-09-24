@@ -89,6 +89,7 @@ from backtest.weekly_bet_list import (
     BET_LIST_ARTIFACT_NAME,
     BET_TRACKER_ARTIFACT_NAME,
     CANONICAL_TARGETS,
+    DEFAULT_CHAIN_FIT_PATH,
     LockPassedError,
     select_games_for_decision_instant,
 )
@@ -220,7 +221,10 @@ def _write_stores(root: Path, games: tuple[str, ...], *, schedule_week: int) -> 
     """Silver schedule and odds, per-target gold, the frozen fit -- all under *root*."""
     silver = root / "data" / "silver"
     gold = root / "data" / "gold"
-    for directory in (silver, gold, root / "artifacts", root / "outputs" / "p31"):
+    # The frozen fit is written where the LIVE default reads it, resolved through the constant
+    # rather than restated (Plan 33.2-26 repointed it from the Phase-31 record to the corrected one).
+    chain_fit = root / DEFAULT_CHAIN_FIT_PATH
+    for directory in (silver, gold, root / "artifacts", chain_fit.parent):
         directory.mkdir(parents=True, exist_ok=True)
 
     matchups = [game_id.split("_")[2].split("@") for game_id in games]
@@ -264,9 +268,7 @@ def _write_stores(root: Path, games: tuple[str, ...], *, schedule_week: int) -> 
     for target in CANONICAL_TARGETS:
         gold_frame.to_parquet(gold / f"features_{target}.parquet", index=False)
 
-    (root / "outputs" / "p31" / "profitability_2025_verdict.json").write_text(
-        json.dumps(chain_fit_record(0.0)), encoding="utf-8"
-    )
+    chain_fit.write_text(json.dumps(chain_fit_record(0.0)), encoding="utf-8")
 
 
 class _ScoringModel:
@@ -441,6 +443,11 @@ def make_day(
         monkeypatch.setattr(
             weekly_bet_list, "build_strategies", lambda _fits: mini_strategies()
         )
+        # The tree carries no blend, so no serving slope binds the spread-derived market
+        # probability a win bet's second test reads (D33.2-11, Plan 33.2-26). A zero slope reads
+        # every fixture game as a coin flip, so the mini strategy's 0.60 clears WP's threshold
+        # and the WP rows stay the live bets this module's skip assertions count.
+        monkeypatch.setattr(weekly_bet_list, "_bound_spread_slope", lambda _dir: 0.0)
         monkeypatch.setattr(
             build_features_module,
             "FeatureMatrixBuilder",

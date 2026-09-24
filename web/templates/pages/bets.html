@@ -282,7 +282,9 @@
     "zero_kelly_stake":   "Sizing returned no stake",
     "ev_not_finite":      "Expected value could not be computed",
     "no_bet_side":        "Model agrees with the market",
-    "no_honest_ev_floor": "No honest threshold for this bet type"
+    "no_honest_ev_floor": "No honest threshold for this bet type",
+    "edge_below_threshold": "Win edge over the spread line below the threshold",
+    "no_honest_edge_threshold": "No honest edge threshold for this bet type"
   } %}
   {% set SUPPRESSION_HELP = {
     "ev_below_floor":     "Evaluated and priced; the edge was not large enough to bet.",
@@ -294,7 +296,9 @@
     "zero_kelly_stake":   "Admitted on expected value but sized to zero after the caps.",
     "ev_not_finite":      "A non-finite value reached the expected-value calculation; the row is suppressed rather than tiered.",
     "no_bet_side":        "The model's number sits inside the no-bet band around the market's, so there is no side to bet and nothing was priced.",
-    "no_honest_ev_floor": "No betting threshold could be set honestly for this bet type, so it places no bets; its predictions are still published."
+    "no_honest_ev_floor": "No betting threshold could be set honestly for this bet type, so it places no bets; its predictions are still published.",
+    "edge_below_threshold": "The price cleared the floor, but the model's edge over the market's spread-based win chance did not clear the threshold; a win bet needs both.",
+    "no_honest_edge_threshold": "There was too little honest pre-lock data to set this bet type's edge threshold, so it places no bets; its predictions are still published."
   } %}
   {% set SUPPRESSION_CAPTION = "Every scheduled game is evaluated for all three bet types. This section is the complete record of what was not bet, and why." %}
   {% set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} %}

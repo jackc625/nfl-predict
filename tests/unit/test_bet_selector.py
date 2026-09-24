@@ -1480,6 +1480,9 @@ class TestFacadePublicSurface:
             "ev_not_finite",
             "no_bet_side",
             "no_honest_ev_floor",
+            # Plan 33.2-26: a win bet's second test (D33.2-11) and no honest edge threshold.
+            "edge_below_threshold",
+            "no_honest_edge_threshold",
         )
 
 

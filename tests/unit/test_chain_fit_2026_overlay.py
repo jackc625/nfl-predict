@@ -38,6 +38,15 @@ MIND THE SHAPE THE LOADER RETURNS. ``load_frozen_chain_fit`` returns ``dict[str,
 keyed by TARGET, not by season. The per-season mapping is the INNER ``season_bias_by_season``, so
 every check below iterates ``fits.items()`` -- an ``int(k)`` over the OUTER keys raises on ``'wp'``.
 
+THE OVERLAY NOW APPLIES THE CORRECTION (Plan 33.2-26, SPEC R14)
+----------------------------------------------------------------
+The bias the live loader overlays is ``backtest.corrected_cold_start_constants.CHAIN_FIT_BIAS_2026``,
+which supersedes the 11761c7 value. It continues the corrected chain fit's own walk-forward series
+over the strictly-prior seasons 2017-2024; no 2025 row is read, so the season it is FOR is named
+beside it (``CHAIN_FIT_BIAS_TARGET_SEASON``) rather than derived as the pool's last season plus
+one. Every assertion that used to read the 11761c7 value reads the correction now, and each
+carries a control that the ORIGINAL value is not what the live overlay applies.
+
 Run this module:  uv run pytest tests/unit/test_chain_fit_2026_overlay.py -q
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -52,10 +61,12 @@ from typing import Any
 import numpy as np
 import pytest
 
+import backtest.cold_start_constants as superseded
 import backtest.weekly_bet_list as wbl
-from backtest.cold_start_constants import (
+from backtest.corrected_cold_start_constants import (
     CHAIN_FIT_BIAS_2026,
     CHAIN_FIT_BIAS_SEASONS,
+    CHAIN_FIT_BIAS_TARGET_SEASON,
 )
 from backtest.ou_ev_chain import estimate_prior_season_bias
 from backtest.weekly_bet_list import (
@@ -68,13 +79,16 @@ from backtest.weekly_bet_list import (
 
 _OVERLAY_SEASON = 2026
 
+# The seasons the corrected run record prices itself (Plan 33.2-29's window).
+_RECORD_SEASONS: tuple[int, ...] = (2020, 2021, 2022, 2023, 2024)
+
 
 def _record(season_bias: dict[str, float] | None = None) -> dict[str, Any]:
-    """A run record in the on-disk shape the loader reads, covering 2021-2025 by default."""
+    """A run record in the on-disk shape the loader reads, covering 2020-2024 by default."""
     bias = (
         season_bias
         if season_bias is not None
-        else {str(year): 0.1 for year in CHAIN_FIT_BIAS_SEASONS}
+        else {str(year): 0.1 for year in _RECORD_SEASONS}
     )
     return {
         "tune_fit": {
@@ -108,19 +122,27 @@ def _write(tmp_path: Path, record: dict[str, Any]) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_the_overlay_season_is_the_one_after_the_strictly_prior_pool() -> None:
-    """2026 is not a literal in the loader: it is ``max(strictly-prior pool) + 1``.
+def test_the_overlay_season_is_the_correction_s_named_target_season() -> None:
+    """2026 is not a literal in the loader: it is READ from the correction's committed target.
 
-    Deriving it is what keeps the season the bias is FOR and the seasons it was pooled FROM from
-    becoming two independently-editable facts. The frozen constant is named ``CHAIN_FIT_BIAS_2026``
-    and this must agree with that name, which is asserted rather than assumed.
+    The corrected pool ends at 2024 (no 2025 row is read), so "the pool's last season plus one"
+    would now say 2025. The season the bias is FOR is therefore named beside the pool, and it
+    must agree with the constant's own name and lie strictly after every pooled season.
     """
-    assert frozen_overlay_season() == _OVERLAY_SEASON
-    assert max(CHAIN_FIT_BIAS_SEASONS) == _OVERLAY_SEASON - 1
+    assert frozen_overlay_season() == _OVERLAY_SEASON == CHAIN_FIT_BIAS_TARGET_SEASON
     assert all(season < _OVERLAY_SEASON for season in CHAIN_FIT_BIAS_SEASONS), (
-        "the frozen pool contains a season at or after the season it debiases; the bias would "
-        "then be estimated partly from the target season's own data"
+        "the pool contains a season at or after the season it debiases; the bias would then be "
+        "estimated partly from the target season's own data"
     )
+
+
+def test_a_pool_reaching_the_target_season_refuses_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pool that is not strictly prior is no pool at all for the season it debiases."""
+    monkeypatch.setattr(wbl, "CHAIN_FIT_BIAS_SEASONS", (2024, _OVERLAY_SEASON))
+    with pytest.raises(EmptyPriorResidualPoolError):
+        frozen_overlay_season()
 
 
 # ---------------------------------------------------------------------------
@@ -134,14 +156,14 @@ def test_the_run_record_remains_the_source_for_its_own_seasons(tmp_path: Path) -
     fits = load_frozen_chain_fit(path)
 
     for target, fit in fits.items():
-        for season in CHAIN_FIT_BIAS_SEASONS:
+        for season in _RECORD_SEASONS:
             assert fit.season_bias_by_season[season] == pytest.approx(0.1), (
                 f"{target} season {season} no longer reads the run record's value"
             )
 
 
 def test_every_target_gains_the_frozen_2026_entry(tmp_path: Path) -> None:
-    """The whole point: after the overlay a 2026 selection has a bias to use."""
+    """The whole point: after the overlay a 2026 selection has a bias to use -- the corrected one."""
     fits = load_frozen_chain_fit(_write(tmp_path, _record()))
 
     assert sorted(fits) == sorted(CANONICAL_TARGETS)
@@ -150,6 +172,10 @@ def test_every_target_gains_the_frozen_2026_entry(tmp_path: Path) -> None:
         assert fit.season_bias_by_season[_OVERLAY_SEASON] == pytest.approx(
             CHAIN_FIT_BIAS_2026[target]
         )
+        # The control: the superseded 11761c7 value is NOT what the live overlay applies.
+        assert fit.season_bias_by_season[_OVERLAY_SEASON] != pytest.approx(
+            superseded.CHAIN_FIT_BIAS_2026[target]
+        ), target
 
 
 def test_the_inner_mapping_stays_int_keyed_through_the_overlay(tmp_path: Path) -> None:
@@ -310,13 +336,19 @@ def test_the_pooled_bias_is_identical_whether_or_not_2026_rows_are_present() -> 
     )
 
 
-def test_the_frozen_pool_is_exactly_the_five_strictly_prior_seasons() -> None:
+def test_the_corrected_pool_is_exactly_the_strictly_prior_walk_forward_seasons() -> (
+    None
+):
     """The recorded claim, checked against the recorded seasons.
 
     Pairs with the withhold test above: that one proves the ESTIMATOR ignores the target season,
-    this one proves the FROZEN value was taken over the seasons the constant says it was.
+    this one proves the committed value was taken over the seasons the constant says it was --
+    the corrected chain fit's bias seed plus its 2020-2024 window, with no row of the spent 2025
+    hold. The superseded 11761c7 pool (2021-2025) is named as the control.
     """
-    assert CHAIN_FIT_BIAS_SEASONS == (2021, 2022, 2023, 2024, 2025)
+    assert CHAIN_FIT_BIAS_SEASONS == (2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024)
+    assert 2025 not in CHAIN_FIT_BIAS_SEASONS
+    assert superseded.CHAIN_FIT_BIAS_SEASONS == (2021, 2022, 2023, 2024, 2025)
     assert sorted(CHAIN_FIT_BIAS_2026) == sorted(CANONICAL_TARGETS)
 
 

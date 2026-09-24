@@ -87,7 +87,11 @@ from api.cache import (
     assert_grading_transition,
     stamp_bet_list_provenance,
 )
-from backtest.bet_selector import BetSelector, SelectionResult
+from backtest.bet_selector import (
+    SPREAD_MARKET_PROB_FIELD,
+    BetSelector,
+    SelectionResult,
+)
 
 # MODULE-LEVEL, not lazy, and the distinction is a claim rather than a style choice. There is no
 # cycle to break here: ``backtest.bet_tracker`` imports ``api.cache`` and ``utils`` and imports
@@ -97,9 +101,18 @@ from backtest.bet_selector import BetSelector, SelectionResult
 # ``build_bet_week_schedule``'s import of ``scripts.ingest_historical_odds``, which IS deferred
 # and whose docstring names the real cycle it breaks.
 from backtest.bet_tracker import aggregate_all_blocks, to_tracker_frame
-from backtest.cold_start_constants import (
+
+# THE LIVE 2026 COLD-START RULE IS THE CORRECTION (Plan 33.2-26, SPEC R14). This import and
+# ``DEFAULT_CHAIN_FIT_PATH`` below are the two halves of the live 2026 bet rule and moved in ONE
+# commit: ``_overlay_frozen_chain_fit`` applies this bias INSIDE ``load_frozen_chain_fit``, which
+# also resolves the floors from that path, so moving one without the other would judge corrected
+# floors against a superseded bias. The frozen ``backtest.cold_start_constants`` (11761c7) stays
+# importable as the record of what was frozen and when; the live path does not read it.
+from backtest.corrected_cold_start_constants import (
     CHAIN_FIT_BIAS_2026,
     CHAIN_FIT_BIAS_SEASONS,
+    CHAIN_FIT_BIAS_TARGET_SEASON,
+    EDGE_TIER_THRESHOLDS_BY_TARGET,
 )
 from backtest.corrected_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
 from backtest.ev_chain_constants import assign_ev_tier
@@ -132,6 +145,7 @@ __all__ = [
     "build_freeze_instant_candidates",
     "build_weekly_candidates",
     "build_weekly_decision_frame",
+    "edge_admission_thresholds",
     "frozen_overlay_season",
     "generate_weekly_bet_list",
     "grade_pending_rows",
@@ -146,6 +160,7 @@ __all__ = [
     "require_ev_floor",
     "select_games_for_decision_instant",
     "select_weekly_bets",
+    "threshold_refused_targets",
     "upsert_bet_list_rows",
     "write_bet_list_artifact",
     "write_bet_tracker_artifact",
@@ -189,18 +204,25 @@ BET_LIST_READ_COLUMNS: tuple[str, ...] = tuple(
     )
 )
 
-# The pre-registered run record carrying the tune-only fit. Gitignored (it is generator output),
-# which is why its absence RAISES a named error instead of defaulting.
+# The run record carrying the tune-only fit. Gitignored (it is generator output), which is why
+# its absence RAISES a named error instead of defaulting.
 #
-# DELIBERATELY STILL THE PHASE-31 RECORD. The corrected record (Plan 33.2-29,
-# ``backtest.corrected_ev_chain_constants.CORRECTED_CHAIN_FIT_RECORD_PATH``) is STAGED, not
-# live: Plan 33.2-26 Task 3 repoints this path in the SAME commit as the cold-start bias import
-# above, because ``_overlay_frozen_chain_fit`` applies that bias inside ``load_frozen_chain_fit``
-# and repointing one without the other would judge corrected floors against an uncorrected bias.
-# Do not "finish the job" here.
-DEFAULT_CHAIN_FIT_PATH: Path = (
-    Path("outputs") / "p31" / "profitability_2025_verdict.json"
-)
+# THE CORRECTED RECORD (Plan 33.2-29, superseding ee20773), repointed by Plan 33.2-26 Task 3 in
+# the SAME commit as the cold-start bias import above -- the two halves of one rule. The
+# Phase-31 record (``outputs/p31/profitability_2025_verdict.json``) is no longer read live.
+DEFAULT_CHAIN_FIT_PATH: Path = Path(CORRECTED_CHAIN_FIT_RECORD_PATH)
+
+# The candidate column carrying the spread-derived market probability of a home win; the core
+# selector's own name for it, re-exported so the weekly path and its tests spell it once.
+SPREAD_MARKET_PROB_COLUMN: str = SPREAD_MARKET_PROB_FIELD
+
+# The targets whose 2026 bet must ALSO clear the edge threshold over the spread-derived market
+# probability (D33.2-11: "a 2026 WIN bet must pass BOTH tests"). The line targets bet on the EV
+# floor alone, as before; their threshold matters to them only when it is ``None``.
+TWO_TEST_TARGETS: tuple[str, ...] = ("wp",)
+
+#: The suppression reason a target with NO honest edge threshold carries on each of its games.
+NO_HONEST_EDGE_THRESHOLD_REASON: str = "no_honest_edge_threshold"
 
 # 1 unit = 1% of the notional bankroll (D27-09). The selector sizes in dollars; the bet list
 # publishes units, so this is the ONE conversion in the mapping and it is not a metric.
@@ -488,44 +510,47 @@ def load_frozen_chain_fit(
 
 
 def frozen_overlay_season() -> int:
-    """The season the committed Phase-33 bias debiases -- DERIVED, never re-typed.
+    """The season the committed corrected bias debiases -- READ from the correction, never re-typed.
 
-    The frozen bias is the pooled mean residual over the STRICTLY PRIOR seasons in
-    ``backtest.cold_start_constants.CHAIN_FIT_BIAS_SEASONS``, so the season it corrects is the one
-    immediately after that pool. Deriving it keeps "the season the bias is FOR" and "the seasons it
-    was pooled FROM" one fact instead of two that can be edited apart; a hard-coded 2026 here would
-    be the second copy, and this repository has been bitten by a second copy three times.
-    ``tests/unit/test_chain_fit_2026_overlay.py`` asserts the result agrees with the frozen
-    constant's own name.
+    The corrected bias (``backtest.corrected_cold_start_constants``, superseding 11761c7) is the
+    pooled mean residual over the STRICTLY PRIOR seasons in ``CHAIN_FIT_BIAS_SEASONS``, and the
+    season it is FOR is named beside it as ``CHAIN_FIT_BIAS_TARGET_SEASON``. It can no longer be
+    derived as "the pool's last season plus one": the corrected pool ends at 2024 because no row of
+    the spent 2025 hold is read. One committed fact, read here, rather than a second copy typed
+    here -- ``tests/unit/test_chain_fit_2026_overlay.py`` asserts it agrees with the constant's
+    own name and lies strictly after every pooled season.
 
     Raises:
-        EmptyPriorResidualPoolError: when the pool is empty. ``max(())`` would otherwise raise a
-            bare ``ValueError`` saying nothing about biases, and the honest refusal is the named
-            one -- see the class docstring for why no value is invented in its place.
+        EmptyPriorResidualPoolError: when the pool is empty, or names a season at or after the
+            season it debiases -- in both cases there is no strictly-prior pool the bias could
+            honestly have been estimated from, and no value is invented in its place.
     """
-    if not CHAIN_FIT_BIAS_SEASONS:
+    if not CHAIN_FIT_BIAS_SEASONS or max(CHAIN_FIT_BIAS_SEASONS) >= (
+        CHAIN_FIT_BIAS_TARGET_SEASON
+    ):
         msg = (
-            "the frozen chain-fit bias records an EMPTY strictly-prior residual pool "
-            "(backtest.cold_start_constants.CHAIN_FIT_BIAS_SEASONS is empty), so there is no "
-            "season it could be the bias FOR and no pool it could have been estimated from. No "
-            "bias is invented here and there is NO fallback to the target season's own "
+            "the committed chain-fit bias records no STRICTLY-PRIOR residual pool for the season "
+            f"it debiases (pool {tuple(CHAIN_FIT_BIAS_SEASONS)}, target season "
+            f"{CHAIN_FIT_BIAS_TARGET_SEASON}), so there is no pool it could have been estimated "
+            "from. No bias is invented here and there is NO fallback to the target season's own "
             "residuals: debiasing a season with its own data is the leak the walk-forward "
-            "construction exists to prevent (D27-08). Check what the pre-registration actually "
-            'records with `uv run python -c "import backtest.cold_start_constants as c; '
-            'print(c.CHAIN_FIT_BIAS_SEASONS, c.CHAIN_FIT_BIAS_2026)"`.'
+            "construction exists to prevent (D27-08). Check what the correction actually "
+            'records with `uv run python -c "import backtest.corrected_cold_start_constants as c; '
+            'print(c.CHAIN_FIT_BIAS_SEASONS, c.CHAIN_FIT_BIAS_TARGET_SEASON, c.CHAIN_FIT_BIAS_2026)"`.'
         )
         raise EmptyPriorResidualPoolError(msg)
-    return max(CHAIN_FIT_BIAS_SEASONS) + 1
+    return int(CHAIN_FIT_BIAS_TARGET_SEASON)
 
 
 def _overlay_frozen_chain_fit(
     fits: dict[str, WeeklyChainFit],
 ) -> dict[str, WeeklyChainFit]:
-    """Overlay the committed Phase-33 bias for ONE season onto the run record's own (D33-21).
+    """Overlay the committed corrected bias for ONE season onto the run record's own (D33-21).
 
-    The run record REMAINS the source for the seasons it covers (2021-2025). This adds the single
-    season the record cannot cover, because the measurement that would have extended it was a
-    single-use hold split the ledger marks as spent.
+    The run record REMAINS the source for the seasons it covers (the corrected record: 2020-2024,
+    WP 2021-2024). This adds the single season the record does not price -- 2026 -- from
+    ``backtest.corrected_cold_start_constants``, which continues that record's own walk-forward
+    bias series (Plan 33.2-26).
 
     REJECTED, recorded so neither is re-proposed: copying 2021-2025 into the frozen module (two
     copies that can drift), and writing the new season into the run record (editing a spent
@@ -569,8 +594,8 @@ def _overlay_frozen_chain_fit(
                 "deliberately no precedence rule: whichever side a rule picked would win "
                 "silently, the other value would stay on disk looking authoritative, and no one "
                 "could later say which one a published bet was struck under. Decide which is "
-                "correct and remove the other. What the pre-registration holds: "
-                '`uv run python -c "import backtest.cold_start_constants as c; '
+                "correct and remove the other. What the correction holds: "
+                '`uv run python -c "import backtest.corrected_cold_start_constants as c; '
                 'print(c.CHAIN_FIT_BIAS_2026, c.CHAIN_FIT_BIAS_SEASONS)"`.'
             )
             raise ChainFitOverlayDisagreementError(msg)
@@ -604,18 +629,17 @@ def _require_season_covered(fits: dict[str, WeeklyChainFit], season: int) -> Non
         )
         msg = (
             f"the pre-registered walk-forward bias does not cover season {season} for target(s) "
-            f"{sorted(uncovered)}; the fitted seasons are {covered}. The measurement that "
-            "produced those seasons was a SINGLE-USE hold split and cannot be run again, so this "
-            "is NOT fixed by regenerating anything -- which is why this message does not tell "
-            "you to. For the FIRST season after that pool the bias is already committed: "
-            "backtest/cold_start_constants.py carries CHAIN_FIT_BIAS_2026 per target and "
-            "CHAIN_FIT_BIAS_SEASONS names the strictly-prior seasons it was pooled over, and "
-            "load_frozen_chain_fit OVERLAYS it automatically -- so seeing THAT season here means "
-            "the overlay did not reach this fit. Check what is committed with "
-            '`uv run python -c "import backtest.cold_start_constants as c; '
-            'print(c.CHAIN_FIT_BIAS_2026); print(c.CHAIN_FIT_BIAS_SEASONS)"`. A season BEYOND '
-            "that one has no pre-registered bias at all, and none is invented here: a raw biased "
-            "total is exactly what the walk-forward correction exists to remove (D27-07)."
+            f"{sorted(uncovered)}; the fitted seasons are {covered}. The run record prices its "
+            "own seasons, and the live season's bias is already committed: "
+            "backtest/corrected_cold_start_constants.py carries CHAIN_FIT_BIAS_2026 per target "
+            "for CHAIN_FIT_BIAS_TARGET_SEASON, pooled over the strictly-prior "
+            "CHAIN_FIT_BIAS_SEASONS, and load_frozen_chain_fit OVERLAYS it automatically -- so "
+            "seeing THAT season here means the overlay did not reach this fit. Check what is "
+            'committed with `uv run python -c "import backtest.corrected_cold_start_constants '
+            "as c; print(c.CHAIN_FIT_BIAS_2026); print(c.CHAIN_FIT_BIAS_TARGET_SEASON, "
+            'c.CHAIN_FIT_BIAS_SEASONS)"`. Any other season has no committed bias at all, and '
+            "none is invented here: a raw biased total is exactly what the walk-forward "
+            "correction exists to remove (D27-07)."
         )
         raise FrozenChainFitError(msg)
 
@@ -769,6 +793,7 @@ def build_weekly_candidates(
     # published bet was struck at, with nothing on the record to attribute the change to.
     odds = dedupe_odds_by_book_preference(odds[odds["game_id"].isin(game_ids)])
 
+    slope = _bound_spread_slope(artifacts_dir)
     frames: list[pd.DataFrame] = []
     for target in CANONICAL_TARGETS:
         gold_path = gold_dir / f"features_{target}.parquet"
@@ -807,6 +832,8 @@ def build_weekly_candidates(
         merged = scored.merge(odds[keep], on="game_id", how="left")
         merged = merged.rename(columns=dict(_ODDS_SOURCE_COLUMN[target]))
         merged["target"] = target
+        if target in TWO_TEST_TARGETS:
+            merged = _attach_spread_market_probability(merged, slope)
         frames.append(merged)
 
     candidates = pd.concat(frames, ignore_index=True)
@@ -821,6 +848,48 @@ def build_weekly_candidates(
         n_candidates=len(candidates),
     )
     return candidates, schedule
+
+
+def _bound_spread_slope(artifacts_dir: Path) -> float | None:
+    """The serving slope the LIVE blend binds, or None when no blend binds a converter.
+
+    SERVING, not history: a live 2026 game is converted with the bound ``slope_beta``, which was
+    never fitted on it. Read through the one blend loader, the same way the current-week
+    predictions read it. With no blend deployed there is no yardstick for a win bet's second
+    test, so :func:`_attach_spread_market_probability` leaves the column absent and the selector
+    suppresses those rows as a market gap rather than betting on one test.
+    """
+    from models.blending import MarketBlender
+
+    try:
+        blender = MarketBlender.from_artifacts(artifacts_dir)
+    except (KeyError, FileNotFoundError) as exc:
+        logger.warning(
+            "No blend binds a spread converter; win bets cannot take their second test",
+            artifacts_dir=str(artifacts_dir),
+            reason=str(exc),
+        )
+        return None
+    return blender.market_probability_slope_beta
+
+
+def _attach_spread_market_probability(
+    frame: pd.DataFrame, slope: float | None
+) -> pd.DataFrame:
+    """Add the spread-derived home-win probability a win bet's second test reads (D33.2-11)."""
+    from models.blending import home_fav_margin_from_prelock_spread
+    from models.market_probability import market_home_win_probability
+
+    if slope is None or "spread" not in frame.columns:
+        return frame
+    out = frame.copy()
+    has_spread = out["spread"].notna()
+    out[SPREAD_MARKET_PROB_COLUMN] = float("nan")
+    if bool(has_spread.any()):
+        out.loc[has_spread, SPREAD_MARKET_PROB_COLUMN] = market_home_win_probability(
+            home_fav_margin_from_prelock_spread(out.loc[has_spread, "spread"]), slope
+        )
+    return out
 
 
 def _game_locks(schedule: pd.DataFrame) -> list[datetime]:
@@ -1079,10 +1148,9 @@ def require_frozen_sd(fit: WeeklyChainFit) -> float:
             f"target {fit.target!r} has no usable frozen residual SD ({value!r}); a zero, "
             "absent or non-finite SD divides by zero in the calibrated-probability converter "
             "and clips every candidate to the probability bound, which Kelly then stakes at the "
-            "per-bet cap. The SD is READ from the run record and cannot be re-fitted here: it "
-            "came from a single-use hold split the committed one-shot ledger under config/ "
-            "records as spent, so there is no command that would produce a new one and this "
-            "message names none. Inspect what the record actually carries for each target with "
+            "per-bet cap. The SD is READ from the run record named by DEFAULT_CHAIN_FIT_PATH and "
+            "is never re-fitted here, so this message names no fitting command. Inspect what the "
+            "record actually carries for each target with "
             '`uv run python -c "import json; from backtest.weekly_bet_list import '
             "DEFAULT_CHAIN_FIT_PATH as p; "
             "print({t: b.get('frozen_sd') for t, b in "
@@ -1119,6 +1187,38 @@ def refused_targets(fits: Mapping[str, WeeklyChainFit]) -> frozenset[str]:
 
 #: The suppression reason a refused target's games carry (``backtest.bet_selector``'s taxonomy).
 NO_HONEST_EV_FLOOR_REASON: str = "no_honest_ev_floor"
+
+
+def threshold_refused_targets(
+    thresholds: Mapping[
+        str, tuple[float, float] | None
+    ] = EDGE_TIER_THRESHOLDS_BY_TARGET,
+) -> frozenset[str]:
+    """The targets with NO honest edge threshold: they place no bets (Plan 33.2-26, R14).
+
+    The SAME representation Plan 33.2-29 staged for the EV floor: an ``Optional`` entry, a
+    guarded read here, and omission from the live floor mapping and strategy registry. Never a
+    borrowed value, never ``0.0`` and never ``inf``.
+    """
+    return frozenset(target for target, pair in thresholds.items() if pair is None)
+
+
+def edge_admission_thresholds(
+    thresholds: Mapping[
+        str, tuple[float, float] | None
+    ] = EDGE_TIER_THRESHOLDS_BY_TARGET,
+) -> dict[str, float]:
+    """The second-test threshold per two-test target: its corrected MEDIUM value (D33.2-11).
+
+    A win bet's side edge over the spread-derived market probability must be strictly above it
+    -- the edge band is at least "medium", never "low". A target whose pair is ``None`` is
+    absent: it is refused outright by :func:`threshold_refused_targets`.
+    """
+    return {
+        target: float(pair[1])
+        for target in TWO_TEST_TARGETS
+        if (pair := thresholds.get(target)) is not None
+    }
 
 
 def wp_fallback_is_active(fits: Mapping[str, WeeklyChainFit]) -> bool:
@@ -1194,6 +1294,9 @@ def select_weekly_bets(
     *,
     strategies: list[Any] | None = None,
     bankroll: float = DEFAULT_BANKROLL,
+    edge_thresholds: Mapping[
+        str, tuple[float, float] | None
+    ] = EDGE_TIER_THRESHOLDS_BY_TARGET,
 ) -> SelectionResult:
     """Route the week through the SINGLE bet-decision source (BET-01, LOCKED-2).
 
@@ -1201,12 +1304,20 @@ def select_weekly_bets(
     This function supplies the frozen inputs and the schedule that makes the universe complete;
     it prices nothing of its own, which is what keeps exactly one bet-decision path in the tree.
 
-    A target with NO honest EV floor (Plan 33.2-29) is left out of the floor mapping, the
-    strategy registry and the candidates, so nothing of it is priced; each of its scheduled games
-    is recorded as a SUPPRESSED ``no_honest_ev_floor`` row instead of vanishing. If one leaked,
-    ``BetSelector.ev_floor_for``'s ``UnregisteredTargetError`` is the backstop.
+    A target with NO honest EV floor (Plan 33.2-29) or NO honest edge threshold (Plan 33.2-26)
+    is left out of the floor mapping, the strategy registry and the candidates, so nothing of it
+    is priced; each of its scheduled games is recorded as a SUPPRESSED row naming which one it
+    lacks instead of vanishing. If one leaked, ``BetSelector.ev_floor_for``'s
+    ``UnregisteredTargetError`` is the backstop.
+
+    A 2026 WIN bet must pass BOTH tests (D33.2-11): the EV floor at the moneyline the market
+    quoted, and its edge over the spread-derived market probability above the corrected WP
+    threshold (:func:`edge_admission_thresholds`), handed to the selector as its second test.
     """
-    refused = refused_targets(fits)
+    reasons = dict.fromkeys(refused_targets(fits), NO_HONEST_EV_FLOOR_REASON)
+    for target in threshold_refused_targets(edge_thresholds):
+        reasons.setdefault(target, NO_HONEST_EDGE_THRESHOLD_REASON)
+    refused = frozenset(reasons)
     if strategies is None:
         strategies = build_strategies(fits, skip_targets=refused)
     strategies = [s for s in strategies if s.target not in refused]
@@ -1220,7 +1331,7 @@ def select_weekly_bets(
             "season": int(game["season"]),
             "week": int(game["week"]),
             "target": target,
-            "rejection_reason": NO_HONEST_EV_FLOOR_REASON,
+            "rejection_reason": reasons[target],
             "freeze_ts": _freshness_context({"gameday": game.get("gameday")})[1],
         }
         for target in sorted(refused)
@@ -1244,6 +1355,11 @@ def select_weekly_bets(
         },
         bankroll=bankroll,
         strategies=strategies,
+        edge_threshold_by_target={
+            target: value
+            for target, value in edge_admission_thresholds(edge_thresholds).items()
+            if target not in refused
+        },
     )
     result = selector.select(live_candidates, scheduled_games=schedule)
     return replace(result, rejected=[*result.rejected, *refusal_rows])

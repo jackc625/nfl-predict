@@ -55,8 +55,16 @@ TARGET_MARKET_FIELDS: dict[str, tuple[str, ...]] = {
     "ou": ("model_total", "closing_total"),
 }
 
+# WP also carries the SPREAD-DERIVED market probability a 2026 win bet's second test reads
+# (D33.2-11, Plan 33.2-26). At 0.50 the mini strategy's 0.60 home probability clears WP's
+# threshold, so a fixture row's fate is still decided by the EV floor these tests turn.
 TARGET_MARKET_VALUES: dict[str, dict[str, Any]] = {
-    "wp": {"model_prob": 0.61, "ml_home": -130.0, "ml_away": 110.0},
+    "wp": {
+        "model_prob": 0.61,
+        "ml_home": -130.0,
+        "ml_away": 110.0,
+        "market_prob_spread": 0.50,
+    },
     "ats": {"model_spread": -3.5, "closing_spread": -2.5},
     "ou": {"model_total": 41.0, "closing_total": 45.0},
 }

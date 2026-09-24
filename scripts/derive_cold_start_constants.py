@@ -75,7 +75,7 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -1673,8 +1673,10 @@ def measure_corrected(
             target: predict(target, recipes[target], seasons) for target in TARGETS
         }
 
-    in_window = {
-        target: frame[frame["season"].isin(CORRECTED_THRESHOLD_SEASONS)]
+    in_window: dict[str, pd.DataFrame] = {
+        target: cast(
+            "pd.DataFrame", frame[frame["season"].isin(CORRECTED_THRESHOLD_SEASONS)]
+        )
         for target, frame in predictions.items()
     }
     edges = build_prelock_edge_frame(corpus.frame, in_window, slopes)

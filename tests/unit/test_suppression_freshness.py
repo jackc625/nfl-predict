@@ -88,6 +88,9 @@ _EXPECTED_REASONS = (
     "ev_not_finite",
     "no_bet_side",
     "no_honest_ev_floor",
+    # Plan 33.2-26: a win bet's second test (D33.2-11) and a target with no honest threshold.
+    "edge_below_threshold",
+    "no_honest_edge_threshold",
 )
 
 # The commit this plan started from (wave-3 HEAD). ``assert_real_odds`` is the LOCKED Phase-27
