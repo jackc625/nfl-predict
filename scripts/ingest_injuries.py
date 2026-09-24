@@ -1,7 +1,7 @@
 """Injury-report ingestion using nflreadpy.load_injuries.
 
-Produces timestamped Bronze snapshots and upserts a Silver injuries table
-keyed at game grain (latest-wins by game_id).
+Produces timestamped Bronze snapshots and a Silver injuries table that ACCUMULATES
+captures, keyed on :data:`INJURY_CAPTURE_KEY` (33.2 review C1 CR-04 = B CR-01).
 
 Follows the scripts/ingest_weather.py pattern and scripts/ingest_snaps.py:
 the standardized ingestion CLI (backfill + --current), a .to_pandas()
@@ -29,7 +29,14 @@ WHAT PLAN 33.2-15 CHANGED (D33.2-16: the dead feed is fixed, not worked around)
   asset's ``updated_at`` for the file it came from -- CAPTURE PROVENANCE, read on
   both sides of the download (``data.upstream_asset_stamp.fetch_with_stamp``).
 * Bronze is written with ``exclusive=True`` (a same-second collision raises rather
-  than overwrites); silver stays latest-wins by ``game_id``.
+  than overwrites).
+* SILVER ACCUMULATES CAPTURES (33.2 review C1 CR-04 = B CR-01). It used to be latest-wins
+  by ``game_id``, so the nightly whole-season re-capture REPLACED every played game's rows
+  -- captured before its lock -- with the same reports carrying tonight's stamp, after the
+  lock. For 2025+ (no ``date_modified``) that stamp is a row's only information time, so
+  every played game lost the only admissible record it had. Each capture is now its own
+  rows (:data:`INJURY_CAPTURE_KEY`); an identical re-capture is idempotent, and
+  ``features.injury`` reads the latest capture at or before each game's lock.
 * POSTSEASON REPORTS ARE KEPT (Plan 33.2-15 extra step 6b). The ingest used to keep
   ``game_type == "REG"`` only, so every postseason game read as "no report admitted"
   although upstream publishes its reports: measured 2026-09-22, 3,544 postseason rows
@@ -39,8 +46,7 @@ WHAT PLAN 33.2-15 CHANGED (D33.2-16: the dead feed is fixed, not worked around)
   time is at or before that game's lock -- so nothing is admitted that was not known.
 
 Injuries carry no game_id; it is derived by joining the season's silver games
-on (season, week, team) so upsert_silver(..., key_column="game_id") is
-idempotent at game grain.
+on (season, week, team).
 
 Coverage floor: 2009.
 """
@@ -56,7 +62,7 @@ import pandas as pd
 
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import InjurySchema
-from data.storage import load_dataframe, save_bronze_snapshot, upsert_silver
+from data.storage import load_dataframe, save_bronze_snapshot, upsert_silver_composite
 from data.upstream_asset_stamp import fetch_with_stamp, season_asset_name
 from utils import get_logger, log_data_operation
 from utils.exceptions import DataValidationError
@@ -78,6 +84,16 @@ INJURY_DATASET = "injuries"
 #: declares (the builder reads it) and ``data.schemas.InjurySchema`` declares (the gate keeps
 #: it); tests/unit/test_injury_capture_time_basis.py asserts the spellings are one.
 CAPTURE_COLUMN = "upstream_captured_at"
+
+#: One stored row per player report PER CAPTURE. ``date_modified`` is in the key because
+#: upstream publishes more than one dated report for a player in one game week (measured
+#: 2026-09-24: two 2024 week-15 pairs), and the capture stamp because each capture is kept.
+INJURY_CAPTURE_KEY: tuple[str, ...] = (
+    "game_id",
+    "gsis_id",
+    "date_modified",
+    CAPTURE_COLUMN,
+)
 
 #: Every game type upstream files injury reports under: the regular season and the four
 #: postseason rounds. A code outside this set is REFUSED by name rather than silently dropped.
@@ -291,8 +307,15 @@ def ingest_injuries_season(
     for column in ("date_modified", CAPTURE_COLUMN):
         validated[column] = pd.to_datetime(validated[column], utc=True)
 
-    # Silver upsert: game-grain latest-wins -- idempotent under re-run (review #5).
-    upsert_silver(validated, "injuries", key_column="game_id", base_path=base_path)
+    # Silver: ACCUMULATE this capture beside every earlier one (33.2 review C1 CR-04). A
+    # latest-wins write by game_id replaced each played game's pre-lock capture with this
+    # post-lock one; an identical re-capture (same stamp) is still idempotent.
+    upsert_silver_composite(
+        validated,
+        "injuries",
+        key_columns=list(INJURY_CAPTURE_KEY),
+        base_path=base_path,
+    )
 
     log_data_operation(
         operation="ingest",

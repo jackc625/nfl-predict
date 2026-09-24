@@ -395,3 +395,93 @@ class TestTheNameTie:
         assert UPSTREAM_CAPTURE_COLUMN in SnapCountSchema.model_fields
         assert injuries.CAPTURE_COLUMN == UPSTREAM_CAPTURE_COLUMN
         assert snaps.CAPTURE_COLUMN == UPSTREAM_CAPTURE_COLUMN
+
+
+# ---------------------------------------------------------------------------
+# 7. 33.2 review C1 CR-04 = B CR-01: a later capture never erases an earlier one
+# ---------------------------------------------------------------------------
+
+
+def _capture_into(root: Path, stamp: pd.Timestamp, payload: pd.DataFrame) -> None:
+    from scripts.ingest_injuries import ingest_injuries_season
+
+    ingest_injuries_season(
+        2025,
+        loader=lambda _season: payload,
+        stamp_reader=lambda _asset, *, fresh=False: stamp.to_pydatetime(),
+        games=_games(),
+        base_path=root,
+    )
+
+
+class TestCapturesAccumulateAndTheLatestPreLockOneIsRead:
+    """The nightly whole-season re-capture used to REPLACE every game's rows latest-wins.
+
+    The night after a game, its pre-lock capture was overwritten by the same reports carrying
+    a post-lock stamp, so for 2025+ the game lost the only admissible record it had.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _distinct_bronze_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Two captures inside one second would (correctly) collide on the bronze name."""
+        from itertools import count
+
+        from data import storage
+
+        seconds = count()
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                return datetime(2026, 9, 22, 6, 0, tzinfo=UTC) + timedelta(
+                    seconds=next(seconds)
+                )
+
+        monkeypatch.setattr(storage, "datetime", _Clock)
+
+    def test_a_post_lock_recapture_keeps_the_pre_lock_capture_admitted(
+        self, tmp_path: Path
+    ) -> None:
+        before = _LOCK - pd.Timedelta(hours=5)
+        _capture_into(tmp_path, before, _raw_2025_payload())
+        _capture_into(tmp_path, _LOCK + pd.Timedelta(days=1), _raw_2025_payload())
+
+        silver = pd.read_parquet(tmp_path / "silver" / "injuries.parquet")
+        stamps = set(pd.to_datetime(silver[UPSTREAM_CAPTURE_COLUMN], utc=True))
+        assert stamps == {before, _LOCK + pd.Timedelta(days=1)}, "a capture was erased"
+
+        outcome = _outcome(silver)
+        assert outcome["selection"].rule is SelectionRule.CAPTURE_STAMP
+        assert outcome["selection"].information_time == before
+        assert outcome["features"].loc[_GAME_ID, "home_qb_out_flag"] == 1.0
+
+    def test_an_identical_recapture_is_idempotent(self, tmp_path: Path) -> None:
+        stamp = _LOCK - pd.Timedelta(hours=5)
+        _capture_into(tmp_path, stamp, _raw_2025_payload())
+        first = pd.read_parquet(tmp_path / "silver" / "injuries.parquet")
+        _capture_into(tmp_path, stamp, _raw_2025_payload())
+        again = pd.read_parquet(tmp_path / "silver" / "injuries.parquet")
+        assert len(again) == len(first)
+
+    def test_the_game_reads_one_capture_never_a_mix_of_captures(
+        self, tmp_path: Path
+    ) -> None:
+        """Mahomes is Out in the earlier capture and cleared from the later one."""
+        early, late = _LOCK - pd.Timedelta(days=2), _LOCK - pd.Timedelta(hours=2)
+        _capture_into(tmp_path, early, _raw_2025_payload())
+        cleared = _raw_2025_payload()
+        kc = cleared["gsis_id"] == _QB1_ID
+        cleared.loc[kc, ["gsis_id", "position", "full_name"]] = [
+            "00-0077777",
+            "WR",
+            "KC Receiver",
+        ]
+        cleared.loc[kc, "report_status"] = "Questionable"
+        _capture_into(tmp_path, late, cleared)
+
+        outcome = _outcome(pd.read_parquet(tmp_path / "silver" / "injuries.parquet"))
+        assert outcome["selection"].information_time == late
+        assert _QB1_ID not in set(outcome["selection"].rows["gsis_id"]), (
+            "a player the latest pre-lock capture no longer lists was carried forward"
+        )
+        assert outcome["features"].loc[_GAME_ID, "home_qb_out_flag"] == 0.0

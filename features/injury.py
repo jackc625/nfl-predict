@@ -29,7 +29,9 @@ A row's information time, and the SELECTION RULE that admitted it:
 * ``capture_stamp`` -- the frame column named by :data:`UPSTREAM_CAPTURE_COLUMN`: the
   upstream publication time of the file a row was captured from (D33.2-16). It admits a
   row only when AT or BEFORE the game's lock, which is the forward daily-capture case.
-  A season fetched after its games carries a stamp after every lock and admits nothing.
+  Silver keeps every capture, so a game reads the LATEST capture at or before its lock
+  (33.2 review C1 CR-04). A season fetched after its games carries a stamp after every
+  lock and admits nothing.
 * otherwise the row is UNDATABLE and is NOT ADMITTED -- exactly as a post-lock row is not.
 
 A game that admitted nothing is ``none_admitted``: its values are NaN -- the honest
@@ -264,6 +266,8 @@ class InjuryBuilder:
         self._games_cache: pd.DataFrame | None = None
         # The injury frame, loaded once and grouped by (season, week).
         self._injuries_by_week: dict[tuple[int, int], pd.DataFrame] | None = None
+        # Every capture stamp per season file (33.2 review C1 CR-04), from the same load.
+        self._captures_by_season: dict[int, pd.Series] | None = None
         # Rolling QB quality per (season, week, lock): the admitted play-by-play differs by
         # lock, so a per-season cache would reuse one week's window for every week.
         self._rolling_cache: dict[tuple[int, int, pd.Timestamp], pd.DataFrame] = {}
@@ -342,6 +346,11 @@ class InjuryBuilder:
 
         admitted["_information_time"] = times.loc[admitted.index]
         admitted["_selection_rule"] = rules.loc[admitted.index]
+        admitted = self._latest_capture_only(admitted, season, lock_utc)
+        if len(admitted) == 0:
+            return InjurySelection(
+                admitted, SelectionRule.NONE_ADMITTED, None, undatable_teams
+            )
         latest = (
             admitted.sort_values("_information_time", kind="stable")
             .groupby(["_team", "gsis_id"], dropna=False, sort=False)
@@ -354,6 +363,54 @@ class InjuryBuilder:
             information_time=cast(pd.Timestamp, pd.Timestamp(top["_information_time"])),
             undatable_teams=undatable_teams,
         )
+
+    def _season_captures(self, season: int) -> pd.Series:
+        """Every capture stamp stored for *season*'s file, tz-aware UTC, from the one load."""
+        if self._captures_by_season is None:
+            injuries = self._load_injuries()
+            self._captures_by_season = {}
+            if (
+                injuries is not None
+                and len(injuries) > 0
+                and UPSTREAM_CAPTURE_COLUMN in injuries.columns
+            ):
+                stamps = to_aware_utc(
+                    pd.Series(injuries[UPSTREAM_CAPTURE_COLUMN]),
+                    column=UPSTREAM_CAPTURE_COLUMN,
+                )
+                for key, group in stamps.groupby(injuries["season"]):
+                    self._captures_by_season[int(key)] = (
+                        group.dropna().drop_duplicates()
+                    )
+        return self._captures_by_season.get(
+            int(season), pd.Series(dtype="datetime64[ns, UTC]")
+        )
+
+    def _latest_capture_only(
+        self, admitted: pd.DataFrame, season: int, lock_utc: pd.Timestamp
+    ) -> pd.DataFrame:
+        """Among the rows admitted on the CAPTURE STAMP, keep only the LATEST capture's.
+
+        Silver ``injuries`` ACCUMULATES captures (33.2 review C1 CR-04), each a whole season
+        file as it stood at its stamp. The report a game may use is therefore ONE capture --
+        the latest of the season's captures at or before its lock -- never a per-player mix: a
+        player an earlier capture listed and the latest pre-lock one no longer lists is not
+        carried forward from the older file, and when the latest capture lists nobody for this
+        game, nothing is admitted on the capture rule. Rows dated by ``date_modified`` are
+        per-row facts and are left alone.
+        """
+        by_capture = admitted["_selection_rule"] == SelectionRule.CAPTURE_STAMP.value
+        if not bool(by_capture.any()):
+            return admitted
+        captures = self._season_captures(season)
+        admissible = captures[captures <= lock_utc]
+        latest_capture = (
+            admissible.max()
+            if len(admissible)
+            else admitted.loc[by_capture, "_information_time"].max()
+        )
+        superseded = by_capture & (admitted["_information_time"] != latest_capture)
+        return admitted.loc[~superseded]
 
     @staticmethod
     def _row_information_times(rows: pd.DataFrame) -> tuple[pd.Series, pd.Series]:

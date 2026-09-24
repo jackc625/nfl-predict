@@ -708,7 +708,12 @@ class TestTheIngestersPassThePromotionGate:
         import scripts.ingest_injuries as injuries
         import scripts.ingest_snaps as snaps
 
-        for module in (snaps, injuries):
+        # The injury store ACCUMULATES captures (33.2 review C1 CR-04), so its silver writer is
+        # the composite-key upsert; the gate must precede it all the same.
+        for module, writer in (
+            (snaps, "upsert_silver"),
+            (injuries, "upsert_silver_composite"),
+        ):
             names = [
                 node.func.id if isinstance(node.func, ast.Name) else node.func.attr
                 for node in ast.walk(ast.parse(inspect.getsource(module)))
@@ -718,12 +723,13 @@ class TestTheIngestersPassThePromotionGate:
                     "save_bronze_snapshot",
                     "validate_bronze_to_silver",
                     "upsert_silver",
+                    "upsert_silver_composite",
                 )
             ]
             assert names == [
                 "save_bronze_snapshot",
                 "validate_bronze_to_silver",
-                "upsert_silver",
+                writer,
             ], module.__name__
 
     def test_a_batch_missing_the_stamp_is_refused(self) -> None:
