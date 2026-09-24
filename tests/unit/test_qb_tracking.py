@@ -580,6 +580,31 @@ class TestEdgeCases:
         if len(result) > 0:
             assert all(result["qb_adjustment"] == 0.0)
 
+    @pytest.mark.parametrize(
+        ("loader", "call"),
+        [
+            ("load_depth_charts", lambda t: t._load_depth_charts(2024)),
+            ("load_pbp", lambda t: t._load_pbp_data(2024)),
+        ],
+    )
+    def test_a_load_failure_surfaces_instead_of_becoming_league_average(
+        self, monkeypatch: pytest.MonkeyPatch, loader: str, call
+    ) -> None:
+        """33.2 review B WR-07: a broken input must not produce a gate-passing 0.0.
+
+        The loaders caught ``(ImportError, ValueError, RuntimeError)`` and returned an empty
+        frame, which flattened every QB to the league-average 0.0 -- the value the declared
+        ``no_information_signature`` accepts.
+        """
+        from data import upstream_pin
+
+        def broken(*args, **kwargs):
+            raise ValueError("pinned parquet unreadable")
+
+        monkeypatch.setattr(upstream_pin, loader, broken)
+        with pytest.raises(ValueError, match="pinned parquet unreadable"):
+            call(QBTracker())
+
 
 class TestGameIdFormatMismatch:
     """Regression tests for game_id format mismatch between silver layer and PBP.

@@ -1059,6 +1059,14 @@ class QBTracker:
     def _load_depth_charts(self, season: int) -> pd.DataFrame:
         """Load depth chart data, with caching.
 
+        A LOAD FAILURE RAISES (33.2 review B WR-07). This used to catch
+        ``(ImportError, ValueError, RuntimeError)`` and return an EMPTY frame: every team's
+        QB1 then went unresolved, the provenance fell to ``no_information`` and the
+        adjustment to the league-average 0.0 -- exactly the declared
+        ``no_information_signature`` -- so a broken input produced a gate-passing gold. A
+        season the pin genuinely has nothing for is an EMPTY FRAME from the loader (an
+        empty capture), not an error, so nothing legitimate reaches the caller as one.
+
         Args:
             season: Season year.
 
@@ -1068,65 +1076,48 @@ class QBTracker:
         if season in self._depth_chart_cache:
             return self._depth_chart_cache[season]
 
-        try:
-            from data import upstream_pin
+        from data import upstream_pin
 
-            # PINNED read, not a live fetch. ``upstream_pin`` raises UpstreamPinError,
-            # which is deliberately NOT a RuntimeError/ValueError/ImportError, so the
-            # except clause below cannot swallow a pin refusal into an empty frame.
-            dc = upstream_pin.load_depth_charts(season)
+        # PINNED read, not a live fetch.
+        dc = upstream_pin.load_depth_charts(season)
 
-            # nflreadpy changed depth chart schema in 2025+:
-            #   Old (<=2024): club_code, position, depth_team, full_name, week, gsis_id
-            #   New (>=2025): team, pos_abb, pos_rank, player_name, dt, gsis_id
-            # Normalize to old schema for consistency.
-            if "pos_abb" in dc.columns and "position" not in dc.columns:
-                rename_map = {
-                    "team": "club_code",
-                    "pos_abb": "position",
-                    "pos_rank": "depth_team",
-                    "player_name": "full_name",
-                }
-                dc = dc.rename(columns=rename_map)
-                # depth_team needs to be string "1" for QB1
-                dc["depth_team"] = dc["depth_team"].astype(str)
-                # Add season column if missing
-                if "season" not in dc.columns:
-                    dc["season"] = season
-                # NO WEEK IS MANUFACTURED (Plan 33.2-13). This block used to stamp every
-                # 2025+ row with a constant week, so no chart matched any target week and
-                # the starter fell through to the season's final primary passer. The 2025+
-                # schema has no week by design: each update carries its ISO-8601 upstream
-                # publication time `dt`, parsed here ONCE (aware, never relabelled) so
-                # `resolve_depth_chart_qbs` can take the latest snapshot at or before a
-                # game's lock.
-                if "dt" in dc.columns:
-                    dc["dt"] = to_aware_utc(pd.Series(dc["dt"]), column="dt")
+        # nflreadpy changed depth chart schema in 2025+:
+        #   Old (<=2024): club_code, position, depth_team, full_name, week, gsis_id
+        #   New (>=2025): team, pos_abb, pos_rank, player_name, dt, gsis_id
+        # Normalize to old schema for consistency.
+        if "pos_abb" in dc.columns and "position" not in dc.columns:
+            rename_map = {
+                "team": "club_code",
+                "pos_abb": "position",
+                "pos_rank": "depth_team",
+                "player_name": "full_name",
+            }
+            dc = dc.rename(columns=rename_map)
+            # depth_team needs to be string "1" for QB1
+            dc["depth_team"] = dc["depth_team"].astype(str)
+            # Add season column if missing
+            if "season" not in dc.columns:
+                dc["season"] = season
+            # NO WEEK IS MANUFACTURED (Plan 33.2-13). This block used to stamp every
+            # 2025+ row with a constant week, so no chart matched any target week and
+            # the starter fell through to the season's final primary passer. The 2025+
+            # schema has no week by design: each update carries its ISO-8601 upstream
+            # publication time `dt`, parsed here ONCE (aware, never relabelled) so
+            # `resolve_depth_chart_qbs` can take the latest snapshot at or before a
+            # game's lock.
+            if "dt" in dc.columns:
+                dc["dt"] = to_aware_utc(pd.Series(dc["dt"]), column="dt")
 
-            self._depth_chart_cache[season] = dc
-            return dc
-        except (ImportError, ValueError, RuntimeError) as e:
-            logger.error(
-                "Failed to load depth charts",
-                season=season,
-                error=str(e),
-            )
-            return pd.DataFrame(
-                columns=[
-                    "season",
-                    "week",
-                    "club_code",
-                    "position",
-                    "depth_team",
-                    "full_name",
-                    "gsis_id",
-                ]
-            )
+        self._depth_chart_cache[season] = dc
+        return dc
 
     def _load_pbp_data(self, season: int) -> pd.DataFrame:
         """Load play-by-play data, with caching.
 
-        Loads the target season and prior season for dynamic window.
+        Loads the target season and prior season for dynamic window. A LOAD FAILURE RAISES
+        (33.2 review B WR-07): swallowing one season's failure silently dropped the
+        prior-season bootstrap from every window, and swallowing both flattened every QB to
+        the league-average 0.0 the gate accepts as ``no_information``.
 
         Args:
             season: Target season year.
@@ -1134,45 +1125,17 @@ class QBTracker:
         Returns:
             PBP DataFrame filtered to pass plays.
         """
-        seasons_needed = [season - 1, season]
+        from data import upstream_pin
+
         all_pbp = []
-
-        for s in seasons_needed:
-            if s in self._pbp_cache:
-                all_pbp.append(self._pbp_cache[s])
-                continue
-
-            try:
-                from data import upstream_pin
-
-                # PINNED read; see the note in _load_depth_charts about why a pin
-                # refusal cannot be caught by the handler below.
+        for s in (season - 1, season):
+            if s not in self._pbp_cache:
+                # PINNED read.
                 pbp = upstream_pin.load_pbp([s])
                 # Filter to pass plays with passer info
-                pbp = pbp[pbp["passer_player_id"].notna()].copy()
-                self._pbp_cache[s] = pbp
-                all_pbp.append(pbp)
-            except (ImportError, ValueError, RuntimeError) as e:
-                logger.warning(
-                    "Failed to load PBP data",
-                    season=s,
-                    error=str(e),
-                )
-
-        if all_pbp:
-            return pd.concat(all_pbp, ignore_index=True)
-        return pd.DataFrame(
-            columns=[
-                "game_id",
-                "season",
-                "week",
-                "posteam",
-                "passer_player_id",
-                "qb_epa",
-                "cpoe",
-                "play_id",
-            ]
-        )
+                self._pbp_cache[s] = pbp[pbp["passer_player_id"].notna()].copy()
+            all_pbp.append(self._pbp_cache[s])
+        return pd.concat(all_pbp, ignore_index=True)
 
     @staticmethod
     def _safe_normalize_team(team: str) -> str:
