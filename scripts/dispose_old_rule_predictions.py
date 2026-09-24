@@ -194,20 +194,12 @@ def plan_disposition(
 
 def _rewrite_bet_list(bet_list_dir: Path, season: int) -> pd.DataFrame:
     """Rewrite the durable pair WITHOUT *season*'s rows; return the rows taken out."""
-    from backtest.bet_tracker import aggregate_all_blocks, to_tracker_frame
-    from backtest.weekly_bet_list import (
-        read_bet_list_artifact,
-        write_bet_list_artifact,
-        write_bet_tracker_artifact,
-    )
+    from backtest.weekly_bet_list import read_bet_list_artifact, write_bet_list_pair
 
     stored = read_bet_list_artifact(bet_list_dir)
     in_season = stored["season"].astype(int) == season
     kept = stored.loc[~in_season].reset_index(drop=True)
-    write_bet_list_artifact(kept, bet_list_dir)
-    write_bet_tracker_artifact(
-        to_tracker_frame(aggregate_all_blocks(kept)), output_dir=bet_list_dir
-    )
+    write_bet_list_pair(kept, bet_list_dir)
     return stored.loc[in_season].reset_index(drop=True)
 
 

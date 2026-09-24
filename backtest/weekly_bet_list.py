@@ -100,7 +100,11 @@ from backtest.bet_selector import (
 # import exists to close was justified in the first place. Contrast
 # ``build_bet_week_schedule``'s import of ``scripts.ingest_historical_odds``, which IS deferred
 # and whose docstring names the real cycle it breaks.
-from backtest.bet_tracker import aggregate_all_blocks, to_tracker_frame
+from backtest.bet_tracker import (
+    TrackerBlockResult,
+    aggregate_all_blocks,
+    to_tracker_frame,
+)
 
 # THE LIVE 2026 COLD-START RULE IS THE CORRECTION (Plan 33.2-26, SPEC R14). This import and
 # ``DEFAULT_CHAIN_FIT_PATH`` below are the two halves of the live 2026 bet rule and moved in ONE
@@ -163,6 +167,7 @@ __all__ = [
     "threshold_refused_targets",
     "upsert_bet_list_rows",
     "write_bet_list_artifact",
+    "write_bet_list_pair",
     "write_bet_tracker_artifact",
 ]
 
@@ -1960,6 +1965,24 @@ def write_bet_tracker_artifact(
     return path
 
 
+def write_bet_list_pair(
+    frame: pd.DataFrame, output_dir: Path
+) -> list[TrackerBlockResult]:
+    """Write the durable pair from ONE frame: the bet list, then the tracker aggregated from it.
+
+    The ONE place the tracker is written. The tracker is aggregated from the SAME frame that was
+    just written, not from a re-read of the artifact: a re-read would let the two halves describe
+    different rows if a write partially failed.
+
+    Returns:
+        The tracker blocks, for the caller's log line.
+    """
+    write_bet_list_artifact(frame, output_dir)
+    blocks = aggregate_all_blocks(frame)
+    write_bet_tracker_artifact(to_tracker_frame(blocks), output_dir=output_dir)
+    return blocks
+
+
 def _key_frame(frame: pd.DataFrame) -> pd.Series:
     """The row key as a single joined string, so a merge/index cannot mis-pair the parts."""
     if frame.empty:
@@ -2482,12 +2505,7 @@ def generate_weekly_bet_list(
         {strategy.target: strategy for strategy in strategies},
         gold_dir=gold_dir,
     )
-    write_bet_list_artifact(graded, output_dir)
-    # The tracker is aggregated from the SAME graded frame that was just written, not from a
-    # re-read of the artifact: a re-read would let the two halves describe different rows if a
-    # write partially failed.
-    blocks = aggregate_all_blocks(graded)
-    write_bet_tracker_artifact(to_tracker_frame(blocks), output_dir=output_dir)
+    blocks = write_bet_list_pair(graded, output_dir)
 
     logger.info(
         "Weekly bet list generated",
