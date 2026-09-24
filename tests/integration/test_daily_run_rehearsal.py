@@ -390,14 +390,25 @@ def test_a_passed_lock_is_refused_and_a_missed_day_is_never_back_filled(
     with pytest.raises(live_skip.LockPassedError, match=THURSDAY_GAME):
         daily.select_slate(schedule, wednesday, decided_at=one_second_late)
 
-    # The Wednesday run never happened. Thursday morning, the catch-up run for Wednesday refuses
-    # BEFORE collection: no schedule refresh, no HTTP request, no registry, no prediction row.
+    # The Wednesday run never happened. Thursday morning, the catch-up run for Wednesday is
+    # REFUSED before anything: no schedule refresh, no HTTP request, no registry, no prediction
+    # row -- and, since 33.2 review C1 WR-09, no record either (exit 2). Was: a lock_passed
+    # record appended through the production sink for a day that is over.
     code, contract = rehearsal.run(wednesday, clock=_et(thursday, 9, 0))
+    assert code == 2
+    assert "before today" in contract["RUN_REFUSED"]
+    assert rehearsal.refreshes == []
+    assert rehearsal.requests == []
+    assert rehearsal.registries_built == []
+    assert rehearsal.run_records() == []
+
+    # The same missed day seen from Wednesday itself, after its lock: THAT is the day's own
+    # lock_passed record, written before any request.
+    code, contract = rehearsal.run(wednesday, clock=_et(wednesday, 18, 30))
     assert code == 0
     assert contract["LOCK_PASSED_BEFORE_COLLECTION"] == "1"
     assert rehearsal.refreshes == []
     assert rehearsal.requests == []
-    assert rehearsal.registries_built == []
     (record,) = rehearsal.run_records()
     assert record["outcome"] == "lock_passed"
     assert record["game_ids"] == [THURSDAY_GAME]

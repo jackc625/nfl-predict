@@ -34,7 +34,8 @@ saved -- the build and predictions are proved by a real run.
 
 Usage:
     uv run python -m scripts.daily_lock_pipeline                    # today's run
-    uv run python -m scripts.daily_lock_pipeline --date 2026-09-26  # run as of that ET day
+    uv run python -m scripts.daily_lock_pipeline --date 2026-09-26  # today, or a day this week
+    uv run python -m scripts.daily_lock_pipeline --date 2026-10-03 --dry-run  # rehearse any future day
     uv run python -m scripts.daily_lock_pipeline --dry-run          # collection only, no writes
 """
 
@@ -300,23 +301,79 @@ def select_slate(
     )
 
 
-def _require_slate_is_current_week(slate: DailySlate, start: datetime) -> None:
-    """The steps resolve the week from the schedule at the run's clock; it must be the slate's.
+def _require_slate_is_current_week(slate: DailySlate) -> None:
+    """The schedule must name the slate's week as the current slate AT THE SLATE'S LOCK.
 
-    MEASURED 2026-09-24 over every 2018-2026 game day: resolving at noon ET on the day before
-    always names that day's week, so this never fires on a real schedule. If it ever did, the
-    capture and build steps would work on another week than the one predicted -- refused.
+    Resolved at the run date's own lock (33.2 review C1 WR-09), never at the wall clock: every
+    game's lock resolves to that game's own week (``utils.current_slate``, asserted over every
+    2018-2026 game), so this holds for any ``--date`` whose slate the store records correctly.
+    Resolving at the clock made a ``--date`` in any other week refuse for no reason. If it ever
+    fired, the resolver and the lock-instant selector would disagree about tomorrow -- refused.
     """
     from utils.current_slate import resolve_current_slate
 
-    current = resolve_current_slate(start.astimezone(ET))
+    current = resolve_current_slate(slate.lock)
     if (current.season, current.week) != (slate.season, slate.week):
         msg = (
             f"tomorrow's games are {slate.season} week {slate.week}, but the schedule names "
-            f"{current.season} week {current.week} as the current slate at {start.isoformat()}; "
-            "the run would capture and build a different week from the one it predicts."
+            f"{current.season} week {current.week} as the current slate at the lock "
+            f"{slate.lock.isoformat()}; the resolver and the slate selector disagree."
         )
         raise RuntimeError(msg)
+
+
+class RunDateRefusedError(ValueError):
+    """A ``--date`` the run refuses BEFORE anything is requested or written."""
+
+
+def _refuse_an_unrunnable_date(
+    run_date_et: date, start: datetime, *, dry_run: bool
+) -> None:
+    """Refuse a ``--date`` whose run could only write false records (33.2 review C1 WR-09).
+
+    * A PAST date: its lock has passed and its games have been played or have locked. Running
+      it could only append a ``lock_passed`` record for a day that already has its own real
+      history, through the PRODUCTION sink -- polluting the run record. Refused for dry runs
+      too: there is nothing to rehearse about a day that is over.
+    * A FUTURE date in ANOTHER week, on a real run: the capture and build steps resolve the
+      week they work on from the clock, so they would capture and build a different week from
+      the one predicted. Checked against the RECORDED schedule before any refresh. A dry run
+      (collection only, nothing written) may rehearse any future day.
+
+    Raises:
+        RunDateRefusedError: naming the date and the reason; nothing has been written.
+    """
+    from utils.current_slate import SlateResolutionError, resolve_current_slate
+
+    today_et = start.astimezone(ET).date()
+    if run_date_et < today_et:
+        msg = (
+            f"--date {run_date_et.isoformat()} is before today ({today_et.isoformat()} ET). "
+            "Its games' lock has passed, so the run could only write a record for a day that "
+            "is over; nothing was requested or written."
+        )
+        raise RunDateRefusedError(msg)
+    if dry_run or run_date_et == today_et:
+        return
+    try:
+        now_week = resolve_current_slate(start).as_tuple()
+        date_week = resolve_current_slate(slate_lock(run_date_et)).as_tuple()
+    except SlateResolutionError as exc:
+        msg = (
+            f"--date {run_date_et.isoformat()} is a future day and the recorded schedule "
+            f"cannot confirm it is in the current week ({exc}); run it on the day, or rehearse "
+            "it with --dry-run. Nothing was requested or written."
+        )
+        raise RunDateRefusedError(msg) from exc
+    if now_week != date_week:
+        msg = (
+            f"--date {run_date_et.isoformat()} is in {date_week[0]} week {date_week[1]}, but "
+            f"the steps resolve the current week, {now_week[0]} week {now_week[1]}, from the "
+            "clock; a real run would capture and build a different week from the one it "
+            "predicts. Run it on the day, or rehearse it with --dry-run. Nothing was "
+            "requested or written."
+        )
+        raise RunDateRefusedError(msg)
 
 
 def _print_contract(
@@ -370,7 +427,12 @@ def _report_skips(run_id: str) -> None:
 
 
 def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
-    """One daily run as of *run_date_et*, started at *start*. Returns the exit code."""
+    """One daily run as of *run_date_et*, started at *start*. Returns the exit code.
+
+    Raises:
+        RunDateRefusedError: *run_date_et* cannot be run at *start*; nothing was written.
+    """
+    _refuse_an_unrunnable_date(run_date_et, start, dry_run=dry_run)
     lock = slate_lock(run_date_et)
     sink: ProductionSink | RecordingSink = (
         RecordingSink() if dry_run else ProductionSink()
@@ -435,7 +497,7 @@ def _run_the_day(
         _print_contract(sink, dry_run=dry_run, lock_passed=0, next_day_games=0)
         return 0
     progress["slate"] = slate
-    _require_slate_is_current_week(slate, start)
+    _require_slate_is_current_week(slate)
 
     if dry_run:
         _run_collection_only(slate)
@@ -494,6 +556,10 @@ def main(argv: list[str] | None = None) -> int:
     run_date_et = args.date or start.astimezone(ET).date()
     try:
         return run_daily(run_date_et, start=start, dry_run=args.dry_run)
+    except RunDateRefusedError as refusal:
+        logger.error("Run date refused", error=str(refusal))
+        print(f"RUN_REFUSED= {refusal}")
+        return 2
     except KeyboardInterrupt:
         logger.warning("Daily run interrupted")
         return 130

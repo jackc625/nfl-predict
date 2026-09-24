@@ -114,6 +114,91 @@ def test_selecting_after_the_lock_is_refused():
 
 
 # ---------------------------------------------------------------------------
+# --date is judged at its own lock; a past date writes nothing (C1 WR-09)
+# ---------------------------------------------------------------------------
+
+
+def _record_week_three(monkeypatch) -> None:
+    """Make the fixture week (plus the next week's opener) the recorded schedule."""
+    from utils import current_slate
+
+    rows = _schedule()
+    rows = pd.concat(
+        [
+            rows,
+            pd.DataFrame(
+                {
+                    "game_id": ["2026_W04_SEA@ARI"],
+                    "season": [2026],
+                    "week": [4],
+                    "kickoff_et": [pd.Timestamp("2026-10-02 00:15", tz="UTC")],
+                    "home_team": ["ARI"],
+                    "away_team": ["SEA"],
+                }
+            ),
+        ],
+        ignore_index=True,
+    ).assign(game_type="REG")
+    prepared = current_slate.prepare_schedule(rows)
+    monkeypatch.setattr(current_slate, "load_recorded_schedule", lambda *_a: prepared)
+
+
+def test_a_past_date_is_refused_before_anything_is_written(monkeypatch, tmp_path):
+    records = tmp_path / "daily.jsonl"
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", records)
+
+    def _no_request(*_a, **_k):
+        raise AssertionError("a past --date reached the schedule refresh")
+
+    monkeypatch.setattr(daily, "_refresh_schedule", _no_request)
+
+    next_day = slate_lock(RUN_DATE).astimezone(UTC) + timedelta(hours=10)
+    with pytest.raises(daily.RunDateRefusedError, match="before today"):
+        daily.run_daily(RUN_DATE, start=next_day, dry_run=False)
+    assert not records.exists(), "a past --date wrote a production record"
+
+
+def test_the_cli_reports_a_refused_date_with_exit_code_two(monkeypatch, capsys):
+    monkeypatch.setattr(
+        daily,
+        "run_daily",
+        lambda *_a, **_k: (_ for _ in ()).throw(daily.RunDateRefusedError("past")),
+    )
+    assert daily.main(["--date", "2026-09-01"]) == 2
+    assert "RUN_REFUSED= past" in capsys.readouterr().out
+
+
+def test_a_future_date_in_another_week_is_refused_for_a_real_run_only(monkeypatch):
+    _record_week_three(monkeypatch)
+    monday = slate_lock(date(2026, 9, 28)).astimezone(UTC) - timedelta(hours=8)
+    week_four_eve = date(2026, 9, 30)  # its slate is the week-4 Thursday game
+
+    with pytest.raises(daily.RunDateRefusedError, match="week 4"):
+        daily._refuse_an_unrunnable_date(week_four_eve, monday, dry_run=False)
+    daily._refuse_an_unrunnable_date(week_four_eve, monday, dry_run=True)
+    daily._refuse_an_unrunnable_date(date(2026, 9, 28), monday, dry_run=False)
+
+
+def test_the_slate_week_is_judged_at_the_slate_lock_not_the_clock(monkeypatch):
+    """Was: resolved at the wall clock, so a --date in any other week always refused."""
+    _record_week_three(monkeypatch)
+    week_four = pd.DataFrame(
+        {
+            "game_id": ["2026_W04_SEA@ARI"],
+            "season": [2026],
+            "week": [4],
+            "kickoff_et": [pd.Timestamp("2026-10-02 00:15", tz="UTC")],
+        }
+    )
+    slate = DailySlate(
+        run_date_et=date(2026, 9, 30),
+        lock=slate_lock(date(2026, 9, 30)),
+        schedule=week_four,
+    )
+    daily._require_slate_is_current_week(slate)  # no refusal, whatever the clock says
+
+
+# ---------------------------------------------------------------------------
 # A run that cannot finish records the slate as unpredicted (C1 CR-05 = B WR-05)
 # ---------------------------------------------------------------------------
 
