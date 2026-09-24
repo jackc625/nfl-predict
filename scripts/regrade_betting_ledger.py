@@ -14,24 +14,36 @@ Games that run did not bet never reach the ledger (inside the no-bet band, or no
 spread no-bet band is symmetric under the sign fix, so feeding back only the bet games reproduces
 the exact input the simulator needs. The WP and O/U rows coming out byte-identical is the check.
 
+Step 33.2-26e also rewrites ``metrics_summary.json`` through ``backtest.run.export_summary_json``.
+Its only simulator-derived block is ``simulation`` (the flat-stake and Kelly totals across all
+three targets); every other field is read back from the frozen copy of the same run's file. The
+pre-fix simulator fed these inputs reproduces that frozen flat-stake block exactly. The Kelly
+block moves too: the frozen ledger staked Kelly on 348 spread bets, which the current simulator
+stakes at 0 (D31-04), exactly as in the regraded ledger; the 144 WP Kelly bets are unchanged.
+``season_metrics.csv`` holds only model-fit metrics (no cover grading) and is not touched.
+``backtest_report.html`` needs the full engine results (per-game CLV, calibration, weekly charts)
+that only a re-run produces, so it is left as the 2026-08-24 run wrote it.
+
 Usage:
     uv run python scripts/regrade_betting_ledger.py
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 
-from backtest.run import export_csv
+from backtest.run import export_csv, export_summary_json
 from backtest.simulation import BettingSimulator
 
 OUTPUT_DIR = Path("outputs/backtest")
 FROZEN_LEDGER = OUTPUT_DIR / "betting_simulation.pre_ats_sign_fix.csv"
 PREDICTIONS = OUTPUT_DIR / "predictions_all.csv"
+FROZEN_SUMMARY = OUTPUT_DIR / "metrics_summary.pre_ats_sign_fix.json"
 
 # The column the simulator reads the model's number from, per target.
 MODEL_COLUMN = {"wp": "model_prob", "ats": "model_spread", "ou": "model_total"}
@@ -68,9 +80,48 @@ def rebuild_inputs(
     return inputs
 
 
+def summary_inputs(summary: dict) -> tuple[SimpleNamespace, SimpleNamespace | None]:
+    """Rebuild what ``export_summary_json`` reads from the engine, from the frozen summary itself.
+
+    Returns the backtest results and the unblended baseline (None when the run was not blended).
+    """
+    season_results = [
+        SimpleNamespace(
+            season=season["season"],
+            target_results={
+                target: SimpleNamespace(
+                    # The writer reads only len() of the prediction frame.
+                    predictions_df=range(result["n_predictions"]),
+                    metrics=result["metrics"],
+                )
+                for target, result in season["targets"].items()
+            },
+        )
+        for season in summary["per_season"]
+    ]
+    blending = summary.get("blending", {})
+    results = SimpleNamespace(
+        headline_clv=summary["headline_clv"],
+        season_results=season_results,
+        odds_coverage=summary["odds_coverage"],
+        config=SimpleNamespace(**summary["config"]),
+        is_blended=blending.get("is_blended", False),
+    )
+    blend_delta = blending.get("blend_delta")
+    baseline = None
+    if blend_delta:
+        baseline = SimpleNamespace(
+            headline_clv={
+                target: row["baseline_clv"] for target, row in blend_delta.items()
+            }
+        )
+    return results, baseline
+
+
 def main() -> None:
-    if not FROZEN_LEDGER.exists():
-        raise FileNotFoundError(f"frozen ledger missing: {FROZEN_LEDGER}")
+    for frozen in (FROZEN_LEDGER, FROZEN_SUMMARY):
+        if not frozen.exists():
+            raise FileNotFoundError(f"frozen copy missing: {frozen}")
     # round_trip: the default CSV float parser can be one ulp off, which would move rows
     # that the fix does not touch. (pandas accepts it; the pandas-stubs Literal omits it.)
     ledger = pd.read_csv(FROZEN_LEDGER, float_precision="round_trip")  # pyright: ignore[reportCallIssue, reportArgumentType]
@@ -86,6 +137,17 @@ def main() -> None:
     simulation = BettingSimulator().simulate(backtest_results, pd.DataFrame())  # type: ignore[arg-type]
     for path in export_csv(backtest_results, simulation, OUTPUT_DIR):  # type: ignore[arg-type]
         print(f"wrote {path}")
+
+    summary_results, baseline = summary_inputs(
+        json.loads(FROZEN_SUMMARY.read_text(encoding="utf-8"))
+    )
+    summary_path = export_summary_json(
+        summary_results,  # type: ignore[arg-type]
+        simulation,
+        OUTPUT_DIR,
+        baseline_results=baseline,  # type: ignore[arg-type]
+    )
+    print(f"wrote {summary_path}")
 
 
 if __name__ == "__main__":
