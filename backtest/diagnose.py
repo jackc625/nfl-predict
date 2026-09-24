@@ -377,6 +377,13 @@ def apply_blended_cut(
     predictions, then DROPS any existing CLV/odds columns and recomputes CLV on the clean blended
     frame so the blended cut is symmetric with the engine's blended path.
 
+    THE WP CUT COVERS ONLY GAMES WITH A MARKET LINE. Since Plan 33.2-21 the WP blend's market
+    half is the game's spread, and ``MarketBlender`` refuses the WHOLE blend if any game it is
+    handed has none (``MarketProbabilityUnavailable``), because a column mixing blended and
+    unblended values would hold two models' outputs. A game with no line has no blended value
+    to measure -- its CLV is excluded as ``has_closing_odds`` False either way -- so it is left
+    out of the blended cut here, counted in the log, and never handed to the blender.
+
     Args:
         preds: Raw predictions frame in the backtest contract (from ``score_deployed_artifacts``
             or the engine). Must carry the target's model column.
@@ -391,6 +398,17 @@ def apply_blended_cut(
     # suffixed duplicates (the engine's all_predictions frames already carry merged odds).
     pre_drop = [c for c in _CLV_ODDS_COLS if c in preds.columns]
     base = preds.drop(columns=pre_drop) if pre_drop else preds
+
+    if target == "wp":
+        with_line = closing_odds_df.loc[closing_odds_df["spread"].notna(), "game_id"]
+        has_line = base["game_id"].isin(with_line)
+        if not bool(has_line.all()):
+            logger.info(
+                "WP blended cut excludes games with no market line",
+                n_excluded=int((~has_line).sum()),
+                n_total=len(base),
+            )
+            base = base.loc[has_line]
 
     blender = MarketBlender.from_artifacts(Path(artifacts_dir))
     blended = blender.blend_predictions(base, closing_odds_df, target)
