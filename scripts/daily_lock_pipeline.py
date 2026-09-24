@@ -28,7 +28,8 @@ games a refusal names, so a bad historical row skips that one game, never tomorr
 
 ``--dry-run`` runs step 1 (without the nflverse capture, which reads back its own write) and the
 COLLECTION stage under ``data.write_sink.RecordingSink``: the real collection code runs and nothing
-is written. It stops before the build, because a build cannot read captures that were never
+is written. Its odds step runs on a fixture board and makes NO paid Odds API request, and its
+output says so (``DRY_RUN_ODDS=``). It stops before the build, because a build cannot read captures that were never
 saved -- the build and predictions are proved by a real run.
 
 Usage:
@@ -52,6 +53,7 @@ from data.write_sink import (
     active_sink,
     append_jsonl,
 )
+from pipeline import daily_steps
 from pipeline.daily_steps import (
     COLLECTION_STEP_NAMES,
     DECISION_TIME_BRANCH,
@@ -235,11 +237,20 @@ def _print_contract(
 
 
 def _run_collection_only(slate: DailySlate) -> None:
-    """The dry run: the collection stage's real code, in order, under the caller's sink."""
+    """The dry run: the collection stage's real code, in order, under the caller's sink.
+
+    The odds step runs the real ingest on a FIXTURE board, never the paid Odds API (33.2 review
+    C1 WR-02): a no-write rehearsal that spends credits is not a no-cost one. The run's output
+    says so on its ``DRY_RUN_ODDS=`` line.
+    """
     for step in build_daily_step_registry(slate):
         if step.name not in COLLECTION_STEP_NAMES:
             break
         logger.info("Dry-run collection step", step=step.name)
+        if step.name == "ingest_odds":
+            print(f"DRY_RUN_ODDS= {daily_steps.DRY_RUN_ODDS_SOURCE}")
+            daily_steps.ingest_slate_odds(slate, fixture=True)
+            continue
         step.callable()
 
 

@@ -173,17 +173,34 @@ def ingest_slate_weather(slate: DailySlate) -> None:
     )
 
 
-def ingest_slate_odds(slate: DailySlate) -> None:
-    """Capture odds for the SLATE's games only, so the request window names nothing else."""
+#: What a no-write dry run captures odds from instead of the PAID Odds API (33.2 review C1
+#: WR-02): the ingest's own mock board, built from the slate week's silver games. The dry run
+#: prints this so its record says the odds step ran on a fixture, not on the market.
+DRY_RUN_ODDS_SOURCE = (
+    "fixture: the odds client's mock board for the slate's week "
+    "(no paid Odds API request)"
+)
+
+
+def ingest_slate_odds(slate: DailySlate, *, fixture: bool = False) -> None:
+    """Capture odds for the SLATE's games only, so the request window names nothing else.
+
+    Args:
+        slate: Tomorrow's games.
+        fixture: Run the real ingest code on :data:`DRY_RUN_ODDS_SOURCE` instead of a paid
+            request -- the no-write dry run's mode. A dry run must never spend Odds API credits.
+    """
     import scripts.ingest_odds as ingest_odds_module
 
     week_schedule = ingest_odds_module.load_schedule_slice(slate.season, slate.week)
     schedule = week_schedule.loc[
         week_schedule["game_id"].astype(str).isin(sorted(slate.game_ids))
     ].reset_index(drop=True)
-    ingest_odds_module.OddsDataIngester().ingest_odds(
-        season=slate.season, week=slate.week, schedule=schedule
-    )
+    ingester = ingest_odds_module.OddsDataIngester()
+    if fixture:
+        ingester.api_client.mock_mode = True
+        ingester.api_client.mock_season_week = (slate.season, slate.week)
+    ingester.ingest_odds(season=slate.season, week=slate.week, schedule=schedule)
 
 
 def close_collection(slate: DailySlate) -> None:

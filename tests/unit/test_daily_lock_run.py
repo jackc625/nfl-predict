@@ -323,3 +323,64 @@ def test_the_slate_weather_capture_collects_failures_on_the_slate(monkeypatch):
 
     assert handed["games"] == ["2026_W03_LA@DEN", "2026_W03_LAC@BUF"]
     assert slate.weather_failures == {"2026_W03_LA@DEN": "WeatherDataError: timeout"}
+
+
+# ---------------------------------------------------------------------------
+# 33.2 review C1 WR-02: the no-write dry run makes no paid Odds API request
+# ---------------------------------------------------------------------------
+
+
+def test_the_dry_run_captures_odds_from_a_fixture_and_says_so(monkeypatch, capsys):
+    slate = DailySlate(
+        run_date_et=RUN_DATE,
+        lock=slate_lock(RUN_DATE),
+        schedule=_schedule().iloc[1:3].reset_index(drop=True),
+    )
+    for name in ("ingest_slate_weather", "close_collection"):
+        monkeypatch.setattr(daily_steps, name, lambda _slate: None)
+    for name in ("step_ingest_snaps", "step_ingest_injuries"):
+        monkeypatch.setattr(daily_steps, name, lambda: None)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        daily_steps,
+        "ingest_slate_odds",
+        lambda _slate, **kwargs: calls.append(kwargs),
+    )
+
+    daily._run_collection_only(slate)
+
+    assert calls == [{"fixture": True}], "the dry run's odds step was not the fixture"
+    assert "DRY_RUN_ODDS= fixture" in capsys.readouterr().out
+
+
+def test_the_fixture_odds_capture_never_opens_the_network(monkeypatch):
+    import httpx
+
+    import scripts.ingest_odds as ingest_odds_module
+    from utils import DataIngestionError
+
+    slate = DailySlate(
+        run_date_et=RUN_DATE,
+        lock=slate_lock(RUN_DATE),
+        schedule=_schedule().iloc[1:3].reset_index(drop=True),
+    )
+    monkeypatch.setattr(
+        ingest_odds_module, "load_schedule_slice", lambda *_a: _schedule()
+    )
+
+    def _no_network(*_a, **_k):
+        raise AssertionError("a paid Odds API request was made")
+
+    monkeypatch.setattr(httpx.Client, "get", _no_network)
+    boards: list[tuple] = []
+
+    def _board(self, season=None, week=None):
+        boards.append((season, week))
+        return []
+
+    monkeypatch.setattr(ingest_odds_module.OddsAPIClient, "_generate_mock_odds", _board)
+
+    # An empty fixture board fails loudly (WR-08); the point here is WHICH board was asked.
+    with pytest.raises(DataIngestionError):
+        daily_steps.ingest_slate_odds(slate, fixture=True)
+    assert boards == [(2026, 3)]

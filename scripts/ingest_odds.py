@@ -222,6 +222,8 @@ class OddsAPIClient:
             self.mock_mode = True
         else:
             self.mock_mode = False
+        # The (season, week) a mock board is built for; None means the current week.
+        self.mock_season_week: tuple[int, int] | None = None
 
         # API configuration
         self.timeout = self.settings.config.external_apis.odds_api["timeout"]
@@ -281,7 +283,8 @@ class OddsAPIClient:
                 malformed response body.
         """
         if self.mock_mode:
-            mock = self._generate_mock_odds()
+            season, week = self.mock_season_week or (None, None)
+            mock = self._generate_mock_odds(season, week)
             return (mock, httpx.Headers({})) if with_headers else mock
 
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
