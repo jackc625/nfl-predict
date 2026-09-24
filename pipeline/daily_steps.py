@@ -18,7 +18,7 @@ at the computation instant), never back-dated.
 1. COLLECTION -- the slate's weather forecasts, snaps, injuries and the slate's odds. :data:`COLLECTION_STEP_NAMES`; ``close_collection`` stamps ``captured_at_utc``
    and refuses the slate if collection itself ended after the lock.
 2. BUILD -- Elo (with a flagged PROVISIONAL pre-game row for each slate game), team form,
-   contextual, weather features, then the FULL-HISTORY gold build, saved.
+   weather features, then the FULL-HISTORY gold build, saved.
 3. PREDICT AND EMIT -- the slate's predictions, merged into the week's file with three stamps
    (``captured_at_utc``, ``information_cutoff_utc`` = the lock, ``computed_at_utc``), then the
    bet list, the exports and the web cache.
@@ -49,7 +49,6 @@ from pipeline.steps import (
     PipelinePhase,
     StepDefinition,
     persist_current_season_elo,
-    step_build_contextual,
     step_build_features,
     step_build_team_form,
     step_data_qa,
@@ -444,9 +443,11 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
             description="Update Elo, with provisional rows for the slate",
         ),
         step("build_team_form", step_build_team_form, build, description="Team form"),
-        step(
-            "build_contextual", step_build_contextual, build, description="Contextual"
-        ),
+        # NO build_contextual step (33.2 review B WR-14). The Friday registry's step runs the
+        # DEPRECATED, lock-unfenced ``build_contextual_features`` to write silver
+        # ``contextual_features``, which no production code reads: the gold build computes
+        # contextual features itself, fenced per game (``ContextualFeaturesCalculator
+        # .build_features``). As a critical step it could only abort the night's predictions.
         step(
             "build_weather_features",
             lambda: build_slate_weather_features(slate),

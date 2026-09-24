@@ -461,3 +461,12 @@ def test_daily_predictions_follow_the_saved_build_and_the_cache_is_last() -> Non
     assert not order_violations(registry)
     assert registry[-1].name == CACHE_STEP
     assert registry[-1].critical is False
+
+
+def test_the_daily_run_builds_no_unread_legacy_contextual_table() -> None:
+    """33.2 review B WR-14: silver contextual_features has no production reader.
+
+    The gold build computes contextual features itself, fenced per game; the legacy step wrote
+    an unfenced table nothing reads, and as a CRITICAL step it could only abort the night.
+    """
+    assert "build_contextual" not in _index_by_name(_daily_registry())
