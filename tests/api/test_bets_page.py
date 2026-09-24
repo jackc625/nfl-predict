@@ -3489,3 +3489,32 @@ def test_no_rendered_page_states_the_retired_friday_rule(
             f"{page} still states the retired Friday rule"
         )
     assert _PER_GAME_FREEZE_SENTENCE in bodies["/bets"]
+
+
+def test_every_tracker_section_closes_every_div_it_opens(tmp_path: Path) -> None:
+    """33.2 review C2 IN-02: the tracker section's heading row closed only one of its two divs.
+
+    The caption landed inside the flex row and the figures inside the header block until the
+    closing ``</section>`` auto-closed it. Checked on every rendered section, populated and empty.
+    """
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=4,
+            wins=2,
+            losses=2,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=-0.1,
+        )
+    ]
+    with _client_with_tracker(tmp_path, blocks, "balanced_divs") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    sections = _tracker_sections(body)
+    assert sections, "no tracker section rendered"
+    for key, markup in sections.items():
+        section = markup[: markup.index("</section>")]
+        assert section.count("<div") == section.count("</div>"), (
+            f"the {key} tracker section leaves a <div> unclosed"
+        )
