@@ -27,6 +27,22 @@ from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+#: The silver tables a run refreshes, read from their PARQUET files -- where the pipeline
+#: writes them. ``odds_snapshot`` and ``weather`` are not DuckDB tables at all (step 27b).
+FRESHNESS_TABLES: tuple[str, ...] = ("games", "odds_snapshot", "weather")
+
+#: How recently a run must have written each table to count as fresh.
+FRESHNESS_MAX_AGE_HOURS = 6
+
+#: The pages the web app serves after a run: the health route, the current week's
+#: dashboard and its game-grid fragment. The old ``/current-week`` and ``/games`` JSON
+#: routes no longer exist and answered 404 on every run (step 27b).
+API_ENDPOINTS_CHECKED: tuple[tuple[str, str], ...] = (
+    ("GET", "/health"),
+    ("GET", "/"),
+    ("GET", "/fragments/games"),
+)
+
 
 class PipelineHealthChecker:
     """Health checker for the Friday pipeline with preflight and post-run modes.
@@ -163,7 +179,11 @@ class PipelineHealthChecker:
         return result
 
     def check_data_freshness(self) -> dict[str, Any]:
-        """Check if critical data is fresh enough."""
+        """Check that the run refreshed each silver table it writes.
+
+        Reads ``created_at`` from each table's silver PARQUET file under the configured data
+        root, and compares it with an aware UTC clock (``created_at`` is stored UTC-aware).
+        """
         result: dict[str, Any] = {
             "name": "data_freshness",
             "status": "unknown",
@@ -173,39 +193,31 @@ class PipelineHealthChecker:
         start = time.time()
 
         try:
-            db = get_db_connection()
-            critical_tables = ["games", "odds_snapshot", "weather"]
+            silver = Path(self.settings.config.data.root_path) / "silver"
+            now = pd.Timestamp.now(tz="UTC")
             freshness_results = {}
 
-            for table in critical_tables:
+            for table in FRESHNESS_TABLES:
                 try:
-                    query = f"""
-                    SELECT COUNT(*) as count,
-                           MAX(created_at) as latest
-                    FROM {table}
-                    """
-                    table_result = db.execute(query).fetchone()
-
-                    if table_result:
-                        count, latest = table_result
-                        if latest:
-                            latest_dt = pd.to_datetime(latest)
-                            age_hours = (
-                                datetime.now() - latest_dt
-                            ).total_seconds() / 3600
-                            freshness_results[table] = {
-                                "count": count,
-                                "latest": latest,
-                                "age_hours": round(age_hours, 2),
-                                "is_fresh": age_hours <= 6,
-                            }
-                        else:
-                            freshness_results[table] = {
-                                "count": count,
-                                "latest": None,
-                                "age_hours": float("inf"),
-                                "is_fresh": False,
-                            }
+                    created = pd.read_parquet(
+                        silver / f"{table}.parquet", columns=["created_at"]
+                    )["created_at"]
+                    latest = pd.to_datetime(created, utc=True).max()
+                    if pd.isna(latest):
+                        freshness_results[table] = {
+                            "count": len(created),
+                            "latest": None,
+                            "age_hours": float("inf"),
+                            "is_fresh": False,
+                        }
+                        continue
+                    age_hours = (now - latest).total_seconds() / 3600
+                    freshness_results[table] = {
+                        "count": len(created),
+                        "latest": latest.isoformat(),
+                        "age_hours": round(age_hours, 2),
+                        "is_fresh": age_hours <= FRESHNESS_MAX_AGE_HOURS,
+                    }
                 except Exception as e:
                     freshness_results[table] = {"error": str(e), "is_fresh": False}
 
@@ -296,33 +308,38 @@ class PipelineHealthChecker:
 
             from api.main import app
 
-            client = TestClient(app)
-            endpoints_to_check = [
-                ("GET", "/health"),
-                ("GET", "/current-week"),
-                ("GET", "/games"),
-            ]
             endpoint_results = {}
 
-            for method, path in endpoints_to_check:
-                try:
-                    endpoint_start = time.time()
-                    if method == "GET":
-                        response = client.get(path)
-                    else:
-                        continue
+            # As a context manager, so the app's lifespan runs: it opens the read-only web
+            # cache connection the pages read. Without it every page raised on a missing
+            # ``app.state.db_lock`` (step 27b).
+            with TestClient(app) as client:
+                for method, path in API_ENDPOINTS_CHECKED:
+                    try:
+                        endpoint_start = time.time()
+                        if method == "GET":
+                            response = client.get(path)
+                        else:
+                            continue
 
-                    response_time = round((time.time() - endpoint_start) * 1000, 2)
-                    endpoint_results[f"{method} {path}"] = {
-                        "status_code": response.status_code,
-                        "response_time_ms": response_time,
-                        "is_healthy": 200 <= response.status_code < 300,
-                    }
-                except Exception as e:
-                    endpoint_results[f"{method} {path}"] = {
-                        "error": str(e),
-                        "is_healthy": False,
-                    }
+                        response_time = round((time.time() - endpoint_start) * 1000, 2)
+                        is_healthy = 200 <= response.status_code < 300
+                        if path == "/health":
+                            # The pages render an empty state (200) with no web cache, so
+                            # the run's cache step is judged by the flag /health reports.
+                            is_healthy = is_healthy and bool(
+                                response.json().get("cache_ready")
+                            )
+                        endpoint_results[f"{method} {path}"] = {
+                            "status_code": response.status_code,
+                            "response_time_ms": response_time,
+                            "is_healthy": is_healthy,
+                        }
+                    except Exception as e:
+                        endpoint_results[f"{method} {path}"] = {
+                            "error": str(e),
+                            "is_healthy": False,
+                        }
 
             all_healthy = all(
                 ep.get("is_healthy", False) for ep in endpoint_results.values()

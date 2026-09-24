@@ -119,6 +119,84 @@ class TestRunPostrun:
         assert "disk_space" in check_names
 
 
+def _checker_rooted_at(root):
+    """A health checker whose data root is *root* (the storage settings' ``root_path``)."""
+    from pipeline.health import PipelineHealthChecker
+
+    checker = PipelineHealthChecker()
+    checker.settings = MagicMock()
+    checker.settings.config.data.root_path = str(root)
+    return checker
+
+
+def _write_silver(root, table, created_at):
+    silver = root / "silver"
+    silver.mkdir(parents=True, exist_ok=True)
+    stamps = pd.to_datetime(created_at, utc=True)
+    pd.DataFrame(
+        {"game_id": [f"G{i}" for i in range(len(stamps))], "created_at": stamps}
+    ).to_parquet(silver / f"{table}.parquet")
+
+
+class TestCheckDataFreshness:
+    """The freshness check reads the silver PARQUET tables the daily run writes.
+
+    Step 27b: it queried DuckDB tables ``odds_snapshot`` and ``weather``, which exist only as
+    parquet, and subtracted an aware ``created_at`` from a naive clock, so it reported
+    ``unhealthy`` after every run, good or bad.
+    """
+
+    TABLES = ("games", "odds_snapshot", "weather")
+
+    def test_a_run_that_just_wrote_every_table_is_fresh(self, tmp_path):
+        now = pd.Timestamp.now(tz="UTC")
+        for table in self.TABLES:
+            _write_silver(tmp_path, table, [now - pd.Timedelta(hours=2), now])
+
+        result = _checker_rooted_at(tmp_path).check_data_freshness()
+
+        assert result["status"] == "healthy", result
+        assert set(result["details"]["tables"]) == set(self.TABLES)
+
+    def test_a_table_the_run_did_not_refresh_is_stale(self, tmp_path):
+        now = pd.Timestamp.now(tz="UTC")
+        for table in self.TABLES:
+            _write_silver(tmp_path, table, [now])
+        _write_silver(tmp_path, "weather", [now - pd.Timedelta(days=2)])
+
+        result = _checker_rooted_at(tmp_path).check_data_freshness()
+
+        assert result["status"] == "unhealthy"
+        assert result["details"]["tables"]["weather"]["is_fresh"] is False
+        assert result["details"]["tables"]["games"]["is_fresh"] is True
+
+    def test_a_missing_table_is_unhealthy_by_name(self, tmp_path):
+        now = pd.Timestamp.now(tz="UTC")
+        for table in ("games", "weather"):
+            _write_silver(tmp_path, table, [now])
+
+        result = _checker_rooted_at(tmp_path).check_data_freshness()
+
+        assert result["status"] == "unhealthy"
+        assert "error" in result["details"]["tables"]["odds_snapshot"]
+
+
+class TestCheckApiEndpoints:
+    """The endpoint check asks for pages the app actually serves.
+
+    Step 27b: ``/current-week`` and ``/games`` were removed with the JSON API, so they
+    answered 404 on every run.
+    """
+
+    def test_every_checked_path_is_a_route_of_the_app(self):
+        from api.main import app
+        from pipeline.health import API_ENDPOINTS_CHECKED
+
+        served = {getattr(route, "path", None) for route in app.routes}
+        for _method, path in API_ENDPOINTS_CHECKED:
+            assert path in served, f"{path} is not served by api.main.app"
+
+
 class TestCheckPredictionPipeline:
     """Tests for check_prediction_pipeline -- AUTO-02-F1 glob/format fix.
 
