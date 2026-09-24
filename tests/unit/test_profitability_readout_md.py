@@ -1130,19 +1130,35 @@ class TestRequiredDisclosures:
             )
 
     def test_the_published_betting_artifact_staleness_is_recorded(self) -> None:
-        """The measured truth, not the inherited claim: the ledger was never regenerated."""
+        """The measured truth, not the inherited claim: first never regenerated, then regenerated.
+
+        Re-pinned 2026-09-23 on the owner's ruling (step 33.2-26d, "Yes, rebuild it"): the ledger
+        was regenerated with the corrected spread cover rule. The old sha256 (61f73c17...24b1, now
+        the frozen copy betting_simulation.pre_ats_sign_fix.csv) and the "never regenerated"
+        statement stay required as history; the new sha256 and the ruling date are required too.
+        """
         content = _flat(_read_readout())
         assert (
             "61f73c17ed1a118fd619a513fbf389d9378e9cbcc53a0b52e39cb331309624b1"
             in content
         ), (
-            "the readout does not carry the sha256 of outputs/backtest/betting_simulation.csv. "
-            "The page still serves the pre-fix spread Kelly figure because that ledger has not "
-            "been regenerated, and a readout describing the fix without that fact overstates what "
-            "changed on the served page."
+            "the readout no longer carries the pre-regeneration sha256 of "
+            "outputs/backtest/betting_simulation.csv (history: the frozen pre-sign-fix copy)."
         )
         assert "never regenerated" in content.lower(), (
-            "the readout does not state that the published betting ledger was never regenerated"
+            "the readout no longer states, as history, that the ledger was never regenerated "
+            "during Phase 31"
+        )
+        assert (
+            "60cb0574d1313378512f9c26392673167ab4092b422b08d71d7ef899e16622c6"
+            in content
+        ), (
+            "the readout does not carry the sha256 of the ledger regenerated on 2026-09-23 with "
+            "the corrected spread cover rule"
+        )
+        assert "2026-09-23" in content and "pre_ats_sign_fix" in content, (
+            "the readout does not record the owner's 2026-09-23 regeneration ruling and the "
+            "frozen copy's name"
         )
 
     def test_the_winner_zero_staked_ratio_is_stated_as_a_legitimate_no_edge_zero(

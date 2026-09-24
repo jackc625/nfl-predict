@@ -542,6 +542,19 @@ sounded: the repeated "the artifact is unmoved, sha256 `61f73c17...`" verificati
 phase were comparing a file that nothing in the phase regenerates. They are true, and they prove
 less than they appear to.
 
+**Update, 2026-09-23 (owner ruling, step 33.2-26d: "Yes, rebuild it").** The paragraphs above are
+kept as history; the ledger has now been regenerated. Step 33.2-26c found the legacy spread branch
+graded the OTHER side of every spread bet (DEF-31-02), so the owner ruled to rebuild the page's past
+results with the corrected cover rule and keep the frozen copy for the record.
+`scripts/regrade_betting_ledger.py` fed the 2026-08-24 run's own inputs back through the current
+simulator. The frozen copy is `outputs/backtest/betting_simulation.pre_ats_sign_fix.csv`, sha256
+`61f73c17ed1a118fd619a513fbf389d9378e9cbcc53a0b52e39cb331309624b1` (byte-identical to the file
+named above). The regenerated ledger's sha256 is
+`60cb0574d1313378512f9c26392673167ab4092b422b08d71d7ef899e16622c6`. Measured: the winner (1032) and
+totals (1082) rows are byte-identical. All 1073 spread rows moved, with the same games, model
+values and lines. The spread record went from 547-497-29 (52.4%) to 497-547-29 (47.6%), and the
+spread Kelly stake is now zero, as this section predicted.
+
 ### 7c. The winner target's zero-staked ratio is a LEGITIMATE no-edge Kelly zero, not the same defect
 
 888 of 1032 winner bets are zero-staked -- an 86.1% share, HIGHER than the spread target's 67.6%
