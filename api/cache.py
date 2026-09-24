@@ -23,7 +23,6 @@ from scipy.special import expit, logit
 
 from utils import get_logger
 from utils.edge_tier import edge_tier_series
-from utils.probability_utils import moneyline_to_probability
 from utils.team_data import get_team_conference, get_team_division
 
 logger = get_logger(__name__)
@@ -1432,7 +1431,8 @@ def materialize_bet_week_freeze(
     )
     normalized = schedule_df[["game_id", "season", "week", "game_freeze_ts"]].copy()
     normalized["game_freeze_ts"] = _to_utc_series(normalized["game_freeze_ts"])
-    game_locks = normalized.rename(columns={"game_freeze_ts": "lock_ts"}).sort_values(
+    # Same pandas-stubs gap as the .rename calls elsewhere in this module.
+    game_locks = normalized.rename(columns={"game_freeze_ts": "lock_ts"}).sort_values(  # pyright: ignore[reportCallIssue]
         ["season", "week", "lock_ts", "game_id"]
     )
     _explicit_column_insert(conn, "bet_game_lock", BET_GAME_LOCK_COLUMNS, game_locks)
@@ -1676,6 +1676,21 @@ PREDICTIONS_TABLE_COLUMNS: list[str] = [
 ]
 
 
+def _set_display_wp_edge(frame: pd.DataFrame) -> None:
+    """Set ``wp_edge`` in place to the model's WP MINUS the market WP shown beside it.
+
+    THE SAME YARDSTICK THE PAGE PRINTS (33.2 review C2 WR-05). The card and the detail page show
+    ``market_wp`` -- the pre-lock spread through the deployed blend's converter (D33.2-09) -- and
+    the "Edge" printed next to it used to be measured against something else: the de-vigged
+    moneyline for current-week rows and the closing-line CLV for backtest rows. So "Model KC 61.0%
+    / Market KC 58.0% / Edge -1.2%" was a normal display. The edge is now exactly the difference
+    between the two numbers on the page, and NULL where the market WP is (no spread, or no blend
+    deployed). DISPLAY ONLY: no bet rule reads it (the selector prices in ``backtest/``).
+    """
+    market_wp = pd.to_numeric(frame["market_wp"], errors="coerce")
+    frame["wp_edge"] = pd.to_numeric(frame["wp_prob"], errors="coerce") - market_wp
+
+
 def _band_edges(frame: pd.DataFrame) -> None:
     """Set the three edge bands in place from the three stored edges -- the ONE band site.
 
@@ -1791,19 +1806,8 @@ def _load_predictions(
     merged["market_ml_home"] = merged["ml_home"].astype("Int64")
     merged["market_ml_away"] = merged["ml_away"].astype("Int64")
 
-    # Compute edges
-    # WP edge: use probability_clv if available, else compute from moneyline
-    if "probability_clv" in merged.columns:
-        merged["wp_edge"] = merged["probability_clv"]
-    # Fill NaN wp_edge from moneyline-derived fair probability
-    wp_edge_mask = merged["wp_edge"].isna() & merged["ml_home"].notna()
-    if wp_edge_mask.any():
-        fair_prob = merged.loc[wp_edge_mask, "ml_home"].apply(
-            lambda ml: moneyline_to_probability(int(ml)) if pd.notna(ml) else np.nan
-        )
-        merged.loc[wp_edge_mask, "wp_edge"] = (
-            merged.loc[wp_edge_mask, "wp_prob"] - fair_prob
-        )
+    # Compute edges. The WP edge is taken AFTER the blend below, against the market WP the blend
+    # derives from the spread -- see _set_display_wp_edge (33.2 review C2 WR-05).
 
     # ATS edge: model home margin MINUS market home margin, in POINTS.
     #
@@ -1854,8 +1858,6 @@ def _load_predictions(
         merged["ou_prediction"] - merged["market_total"]
     ) / market_total_safe
 
-    _band_edges(merged)
-
     # Compute blended predictions from blend artifact JSON (UIAP-01: no model imports).
     #
     # ONE scalar weight per target (D33.2-10) and the WP market side from the SPREAD through
@@ -1880,6 +1882,9 @@ def _load_predictions(
         )
     else:
         _apply_blend(merged, blend_data)
+
+    _set_display_wp_edge(merged)
+    _band_edges(merged)
 
     final_df = merged[PREDICTIONS_TABLE_COLUMNS].copy()
 
@@ -1950,6 +1955,9 @@ def _load_current_week_predictions(
     merged = merged.reindex(columns=PREDICTIONS_TABLE_COLUMNS)
     for column in ("home_score", "away_score", "market_ml_home", "market_ml_away"):
         merged[column] = merged[column].astype("Int64")
+    # The WP edge is re-taken against the market WP the row shows (33.2 review C2 WR-05): a CSV
+    # written before that fix measured it against the de-vigged moneyline instead.
+    _set_display_wp_edge(merged)
     # The bands are RE-DERIVED from the stored edges through the same one site as the backtest
     # rows, never read back from the CSV: a CSV written before 33.2 review C2 CR-04 carries the
     # band "low" for a game with no edge, and a stored band that disagrees with its own edge is

@@ -34,7 +34,6 @@ from models.blending import (
 from models.market_probability import market_home_win_probability
 from utils import get_logger
 from utils.edge_tier import edge_tier
-from utils.probability_utils import moneyline_to_probability
 
 logger = get_logger(__name__)
 
@@ -330,26 +329,11 @@ def compute_edges(
 ) -> pd.DataFrame:
     """Compute edges between model predictions and market lines.
 
-    Mutates and returns the predictions DataFrame with edge columns added.
+    Mutates and returns the predictions DataFrame with the ATS and O/U edge columns added. The
+    WP edge is NOT taken here: it is measured against the market WP the blend derives from the
+    spread, which exists only after :func:`apply_blending` -- see :func:`compute_wp_edge`.
     """
     merged = predictions.merge(market, on="game_id", how="left")
-
-    # WP edge: model prob - implied market prob
-    if "ml_home" in merged.columns and "ml_away" in merged.columns:
-        valid_ml = merged["ml_home"].notna() & merged["ml_away"].notna()
-        merged.loc[valid_ml, "wp_edge"] = merged.loc[valid_ml].apply(
-            lambda row: (
-                row["wp_prob"]
-                - moneyline_to_probability(int(row["ml_home"]))
-                / (
-                    moneyline_to_probability(int(row["ml_home"]))
-                    + moneyline_to_probability(int(row["ml_away"]))
-                )
-            ),
-            axis=1,
-        )
-    if "wp_edge" not in merged.columns:
-        merged["wp_edge"] = np.nan
 
     # ATS edge: model home margin MINUS market home margin, in POINTS.
     #
@@ -415,11 +399,28 @@ def compute_edges(
     # ``(high, medium)`` pair differs accordingly. ``target`` rides pandas' forwarded keyword, so
     # the unit is named at the call site; omitting it is a TypeError rather than a silent WP band
     # applied to a point margin. The CSV header is unchanged: the band moved, the column did not.
-    merged["wp_confidence"] = merged["wp_edge"].apply(edge_tier, target="wp")
     merged["ats_confidence"] = merged["ats_edge"].apply(edge_tier, target="ats")
     merged["ou_confidence"] = merged["ou_edge"].apply(edge_tier, target="ou")
 
     return merged
+
+
+def compute_wp_edge(predictions: pd.DataFrame) -> pd.DataFrame:
+    """Set ``wp_edge`` and its band: the model's WP MINUS the market WP published beside it.
+
+    THE SAME YARDSTICK AS ``market_wp`` (33.2 review C2 WR-05). This used to be the model minus
+    the de-vigged MONEYLINE probability, while the ``market_wp`` column next to it is the pre-lock
+    SPREAD through the blend's converter (D33.2-09) -- so the published edge was not the
+    difference between the two numbers shown. It is now, and NaN where ``market_wp`` is (no
+    spread, or no blend deployed). DISPLAY AND REPORT ONLY: no bet rule reads it.
+
+    Mutates and returns *predictions*.
+    """
+    predictions["wp_edge"] = pd.to_numeric(
+        predictions["wp_prob"], errors="coerce"
+    ) - pd.to_numeric(predictions["market_wp"], errors="coerce")
+    predictions["wp_confidence"] = predictions["wp_edge"].apply(edge_tier, target="wp")
+    return predictions
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +777,10 @@ def build_predictions(
         combined.rename(columns={"ml_away": "market_ml_away"}, inplace=True)
 
     # 6. Apply market blending (the deployed fixed-weight blend artifact)
-    return apply_blending(combined, market_df, artifacts_dir, no_blend)
+    blended = apply_blending(combined, market_df, artifacts_dir, no_blend)
+
+    # 7. The WP edge against the market WP the blend just derived (33.2 review C2 WR-05)
+    return compute_wp_edge(blended)
 
 
 def _count_excluded_in_week(

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from api.cache import CACHE_SCHEMA, _load_current_week_predictions
@@ -152,3 +153,80 @@ def test_a_game_with_no_edge_carries_no_band_even_when_an_older_csv_wrote_low(
         .render(game=exported[0])
     )
     assert "Low" not in card
+
+
+def test_the_wp_edge_is_measured_against_the_market_wp_shown_beside_it(
+    tmp_path: Path,
+) -> None:
+    """33.2 review C2 WR-05: the WP "Edge" is the model's WP minus the market WP on the page.
+
+    The market WP shown is the pre-lock spread through the blend's converter; the edge beside it
+    used to be taken against the de-vigged moneyline, so "Model 61.0% / Market 58.0% / Edge
+    -1.2%" was a normal display. A CSV written before the fix carries that old edge; the cache
+    re-takes it against the row's own ``market_wp``.
+    """
+    row = dict.fromkeys(PREDICTION_OUTPUT_COLUMNS)
+    row.update(
+        game_id=GAME_ID,
+        season=2026,
+        week=1,
+        home_team="KC",
+        away_team="DEN",
+        wp_prob=0.61,
+        ats_prediction=4.2,
+        ou_prediction=45.1,
+        market_spread=2.5,
+        market_wp=0.58,
+        wp_edge=-0.012,  # the old moneyline-based edge
+    )
+    predictions_dir = tmp_path / "predictions"
+    predictions_dir.mkdir()
+    pd.DataFrame([row], columns=PREDICTION_OUTPUT_COLUMNS).to_csv(
+        predictions_dir / "predictions_2026_week1.csv", index=False
+    )
+    silver_dir = tmp_path / "silver"
+    silver_dir.mkdir()
+    pd.DataFrame(
+        {
+            "game_id": [GAME_ID],
+            "home_score": [None],
+            "away_score": [None],
+            "kickoff_et": [pd.Timestamp("2026-09-13 16:25", tz="America/New_York")],
+        }
+    ).to_parquet(silver_dir / "games.parquet")
+
+    conn = duckdb.connect(":memory:")
+    for statement in CACHE_SCHEMA.strip().split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    assert _load_current_week_predictions(conn, predictions_dir, silver_dir) == 1
+
+    game = DataService(conn).get_game_detail(GAME_ID)
+    assert game is not None
+    assert game["wp_edge"] == pytest.approx(0.61 - 0.58)
+    assert game["wp_confidence"] == "medium"  # 0.03 on WP's 0.05 / 0.02 pair
+
+    card = (
+        Environment(loader=FileSystemLoader(TEMPLATES))
+        .get_template("components/_game_card.html")
+        .render(game=game)
+    )
+    assert "KC 61.0%" in card and "KC 58.0%" in card
+    assert "Edge: +3.0%" in card
+
+
+def test_the_prediction_script_takes_the_wp_edge_against_market_wp() -> None:
+    """The CSV writer uses the same yardstick; no market WP means no edge and no band."""
+    from scripts.generate_current_week_predictions import compute_wp_edge
+
+    frame = pd.DataFrame(
+        {
+            "wp_prob": [0.61, 0.70],
+            "market_wp": [0.58, float("nan")],
+        }
+    )
+    result = compute_wp_edge(frame)
+    assert result.loc[0, "wp_edge"] == pytest.approx(0.03)
+    assert result.loc[0, "wp_confidence"] == "medium"
+    assert pd.isna(result.loc[1, "wp_edge"])
+    assert result.loc[1, "wp_confidence"] is None

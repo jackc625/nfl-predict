@@ -31,7 +31,8 @@ THE SURVIVING DEFECT IS NOW REPAIRED (DEF-31-17 -> CLEAN-01, D33-22)
 ----------------------------------------------------------------------
 This helper used to apply ONE threshold pair to THREE INCOMPATIBLE UNITS:
 
-    wp_edge   a probability delta          model minus the devigged fair closing probability
+    wp_edge   a probability delta          model minus the market WP (spread through the
+                                           blend's converter, since 33.2 review C2 WR-05)
     ats_edge  POINTS                       signed model-minus-market home margin (R13, D33-05)
     ou_edge   a fraction of the total      (model total - market total) / max(market total, 30)
 
