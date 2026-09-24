@@ -51,6 +51,7 @@ from api.cache import (
     parse_current_slate,
     parse_season_range,
 )
+from api.season_metrics import _wp_outcome
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -413,22 +414,13 @@ class DataService:
         game = dict(zip(columns, row))
 
         # --- Derived fields for completed games (D-15) ---
-        game["wp_correct"] = None
+        # Graded by THE classifier the card, the week banner and /season use (33.2 review C2
+        # WR-04): a tie or a game with no WP pick is None -- neither correct nor incorrect. This
+        # used to score a tie as an away win, so one game read differently on / and here.
+        game["wp_correct"] = (
+            _wp_outcome(game) if game.get("status") == "completed" else None
+        )
         game["wp_clv"] = None
-
-        home_score = game.get("home_score")
-        away_score = game.get("away_score")
-        wp_prob = game.get("wp_prob")
-
-        if (
-            game.get("status") == "completed"
-            and home_score is not None
-            and away_score is not None
-            and wp_prob is not None
-        ):
-            home_won = home_score > away_score
-            predicted_home = wp_prob > 0.5
-            game["wp_correct"] = home_won == predicted_home
 
         # CLV from backtest predictions (if available)
         clv_result = self._conn.execute(

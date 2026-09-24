@@ -766,3 +766,68 @@ def test_a_season_with_nothing_graded_renders_the_empty_state_not_zeroes() -> No
     assert "No completed games yet" in html
     assert "0.0%" not in html
     assert "0-0" not in html
+
+
+def _detail_for(home_score: int, away_score: int, wp_prob: float | None) -> str:
+    """Render /games/{id}'s page for one completed game stored in an in-memory cache."""
+    import duckdb
+
+    from api.cache import CACHE_SCHEMA, PREDICTIONS_TABLE_COLUMNS
+    from api.services import DataService, clear_cache
+
+    clear_cache()
+    conn = duckdb.connect(":memory:")
+    for statement in CACHE_SCHEMA.strip().split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    row = dict.fromkeys(PREDICTIONS_TABLE_COLUMNS)
+    row.update(
+        game_id="2024_W05_BUF@KC",
+        season=2024,
+        week=5,
+        home_team="KC",
+        away_team="BUF",
+        status="completed",
+        home_score=home_score,
+        away_score=away_score,
+        wp_prob=wp_prob,
+    )
+    columns = ", ".join(PREDICTIONS_TABLE_COLUMNS)
+    placeholders = ", ".join("?" for _ in PREDICTIONS_TABLE_COLUMNS)
+    conn.execute(
+        f"INSERT INTO predictions ({columns}) VALUES ({placeholders})",
+        [row[c] for c in PREDICTIONS_TABLE_COLUMNS],
+    )
+    game = DataService(conn).get_game_detail("2024_W05_BUF@KC")
+    conn.close()
+
+    class _Request:
+        def url_for(self, name: str, **path_params: object) -> str:
+            return f"/{name}/{path_params.get('path', '')}"
+
+    return templates.env.get_template("pages/game_detail.html").render(
+        request=_Request(),
+        game=game,
+        current_path="",
+        cache_meta={},
+        old_rule_scope={"contains_old_rule_results": False},
+    )
+
+
+def test_the_detail_badge_grades_a_tie_and_a_missing_pick_as_neither() -> None:
+    """33.2 review C2 WR-04: the detail badge matches the card -- no score for a tie or no pick.
+
+    It used to compute ``home_won == (wp_prob > 0.5)``, so a tie counted as an away win (an away
+    pick read "Correct"), and a game with no WP rendered a red "Incorrect".
+    """
+    tie_away_pick = _detail_for(20, 20, 0.40)
+    assert "Tie" in tie_away_pick
+    assert "Correct" not in tie_away_pick and "Incorrect" not in tie_away_pick
+
+    no_pick = _detail_for(27, 20, None)
+    assert "No pick" in no_pick
+    assert "Incorrect" not in no_pick
+
+    # The controls: a decided game still grades.
+    assert "Correct" in _detail_for(27, 20, 0.70)
+    assert "Incorrect" in _detail_for(27, 20, 0.30)
