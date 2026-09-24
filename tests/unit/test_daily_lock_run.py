@@ -721,3 +721,29 @@ def test_the_dry_run_counts_a_write_that_bypassed_the_sink(monkeypatch, tmp_path
     (data_root / "silver" / "games.parquet").write_bytes(b"a side-door write")
     (tmp_path / "config" / "skip_records.jsonl").write_text("{}\n", encoding="utf-8")
     assert sink.measured_writes() == 2
+
+
+def test_a_repeat_skip_on_the_same_day_is_still_reported(monkeypatch, tmp_path, capsys):
+    """33.2 review B IN-02: the re-run appends no record (idempotent), yet skipped the game."""
+    from pipeline import skip_log
+
+    path = tmp_path / "skips.jsonl"
+    monkeypatch.setattr(skip_log, "SKIP_RECORD_PATH", path)
+    skip_log.append_skip_record(
+        {
+            "run_id": "2026-09-26T17:00:01-04:00",  # the FIRST run of the day
+            "run_date_et": "2026-09-26",
+            "game_id": "2026_W03_LAC@BUF",
+            "source": "decision_instant",
+            "information_time": None,
+            "lock": None,
+            "reason": "post_lock",
+            "recorded_at": "2026-09-26T21:00:02+00:00",
+        }
+    )
+
+    daily._report_skips(["2026_W03_LAC@BUF"], "2026-09-26T17:40:00-04:00")
+
+    assert "SKIPPED 2026_W03_LAC@BUF: post_lock (source decision_instant)" in (
+        capsys.readouterr().out
+    )

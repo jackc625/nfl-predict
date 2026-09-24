@@ -455,16 +455,24 @@ def _run_collection_only(slate: DailySlate) -> None:
         step.callable()
 
 
-def _report_skips(run_id: str) -> None:
-    """Name every game this run skipped, with its recorded reason."""
-    from pipeline.skip_log import read_skip_records
+def _report_skips(skipped_games: list[str], start_time: str) -> None:
+    """Name every game this run skipped, with its recorded reason.
 
-    for record in read_skip_records():
-        if record.get("run_id") == run_id:
-            print(
-                f"SKIPPED {record['game_id']}: {record['reason']} "
-                f"(source {record['source']})"
-            )
+    Driven by the run's OWN skip list, joined to the durable records by (run date, game): the
+    record's append is idempotent on its natural key, so a re-run that skips the same game for
+    the same reason appends nothing and a filter on this run's id printed nothing for it
+    (33.2 review B IN-02).
+    """
+    from pipeline.skip_log import skip_records_for_run_date
+
+    run_date_et = datetime.fromisoformat(start_time).date().isoformat()
+    records = skip_records_for_run_date(run_date_et)
+    for game_id in skipped_games:
+        reasons = [r for r in records if str(r["game_id"]) == game_id]
+        if not reasons:
+            print(f"SKIPPED {game_id}: no durable skip record found")
+        for record in reasons:
+            print(f"SKIPPED {game_id}: {record['reason']} (source {record['source']})")
 
 
 def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
@@ -562,7 +570,7 @@ def _run_the_day(
     _print_contract(
         sink, dry_run=False, lock_passed=0, next_day_games=len(slate.game_ids)
     )
-    _report_skips(log.start_time)
+    _report_skips(log.skipped_games, log.start_time)
     for game_id, reason in sorted(slate.weather_unknown.items()):
         print(f"WEATHER_UNKNOWN {game_id}: {reason}")
     for game_id, reason in sorted(slate.odds_missing.items()):
