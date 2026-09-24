@@ -18830,3 +18830,23 @@ P332_26_THRESHOLD_DERIVATION_SEASONS: tuple[int, ...] = (2020, 2021, 2022, 2023,
 P332_26_WP_THRESHOLD_DERIVATION_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024)
 P332_26_WP_EXCLUDED_NO_PRIOR_FOLD_CONVERTER: int = 255
 P332_26_DERIVATION_THREAD_LIMIT: int = 1
+
+# ---------------------------------------------------------------------------
+# THE TWO WIDTH TRIPLES PLAN 33.2-20'S CLEAN-BUILD BOOLEANS WERE CONCLUDED FROM.
+#
+# APPENDED by step 26b (orchestrator-assigned, after Plan 33.2-26) on 2026-09-23. Nothing
+# above this line was edited. P332_20_CLEAN_BUILD_PIN_EQUALS_MEASURED and
+# P332_20_CLEAN_BUILD_MEASURED_EQUALS_LADDER each compare the measured widths
+# (P332_20_CLEAN_BUILD_WIDTHS) with a second triple that was never recorded beside them;
+# tests/unit/test_phase33_no_exit_code_evidence.py refuses a boolean with no measurement.
+# Both triples below were READ at commit e644451 (the clean build) and again at 9a064c7:
+# unchanged at both.
+# ---------------------------------------------------------------------------
+
+#: The width tripwire pin, scripts/data_qa.GOLD_FEATURE_MATRICES, in the order
+#: (features_wp, features_ats, features_ou).
+P332_20_CLEAN_BUILD_PIN_WIDTHS: tuple[int, int, int] = (188, 188, 187)
+
+#: The width ladder's resolved value, tests/unit/test_data_qa_gold_width.current_ladder_widths():
+#: the widths_after of the last Phase-33.2 width-delta slot (P332_19_RUNG9_GOLD_WIDTH_DELTA).
+P332_20_CLEAN_BUILD_LADDER_WIDTHS: tuple[int, int, int] = (188, 188, 187)
