@@ -1,7 +1,7 @@
 """Data storage utilities using DuckDB and Parquet."""
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1445,6 +1445,7 @@ def upsert_silver(
     base_path: Path | None = None,
     *,
     order_rows: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+    remove_keys: Collection[str] = (),
 ) -> Path:
     """Upsert new data into Silver layer (latest wins by key_column).
 
@@ -1470,6 +1471,10 @@ def upsert_silver(
             after the provisional week-2 row it preceded. The order is applied before
             the one atomic parquet write, so the DuckDB copy (replaced from that parquet)
             carries the same order and the two stores cannot disagree about it.
+        remove_keys: Stored keys to DELETE in the same atomic write, with no successor row.
+            For a writer that knows a stored key no longer exists upstream -- the games ingest
+            drops the old id of a game the schedule moved to another week, which would
+            otherwise sit in silver forever as an unplayed ghost (33.2 review C1 CR-01).
 
     Returns:
         Path to the Silver file
@@ -1488,8 +1493,11 @@ def upsert_silver(
 
     if silver_path.exists():
         existing = pd.read_parquet(silver_path, engine="pyarrow")
-        # Remove rows that match any key in new data (latest wins)
-        existing = existing[~existing[key_column].isin(new_df[key_column])]
+        # Remove rows that match any key in new data (latest wins), and any key the caller
+        # named as gone.
+        replaced = existing[key_column].isin(new_df[key_column])
+        removed = existing[key_column].isin(list(remove_keys))
+        existing = existing[~(replaced | removed)]
         if len(existing) == 0:
             # Every stored row was replaced: the new frame IS the table. An empty frame still
             # carries dtypes, and pandas would let them decide the combined column types.

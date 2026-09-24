@@ -721,3 +721,101 @@ def _venues_by_stadium_id() -> set[str]:
         for venue in payload.get("venues", [])
         if venue.get("stadium_id")
     }
+
+
+# ---------------------------------------------------------------------------
+# 33.2 review C1 CR-01: a game the schedule moved to another week leaves no ghost row
+# ---------------------------------------------------------------------------
+
+
+class TestAMovedGameLeavesNoGhostRow:
+    """The id is built from the WEEK, so a week move gives the game a new id.
+
+    ``upsert_silver`` replaced only the ids the new frame carries, so the OLD id stayed in
+    silver forever: an unplayed game on its old date, which the daily run would select,
+    predict and bet. The ingest is now authoritative for the seasons it ingests.
+    """
+
+    GHOST = "2026_W18_KC@BUF"
+
+    @staticmethod
+    def _stored(ghost_score: float | None = None) -> pd.DataFrame:
+        rows = [
+            {"game_id": "2026_W19_KC@BUF", "season": 2026, "home_score": None},
+            {"game_id": "2026_W19_SF@DAL", "season": 2026, "home_score": None},
+            {"game_id": TestAMovedGameLeavesNoGhostRow.GHOST, "season": 2026},
+            {"game_id": "2025_W18_KC@BUF", "season": 2025, "home_score": 20.0},
+        ]
+        frame = pd.DataFrame(rows)
+        frame["home_score"] = frame["home_score"].astype(float)
+        frame.loc[
+            frame["game_id"] == TestAMovedGameLeavesNoGhostRow.GHOST, "home_score"
+        ] = ghost_score
+        frame["away_score"] = frame["home_score"]
+        return frame
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch, stored: pd.DataFrame) -> dict:
+        ingester = ingest_games.GameDataIngester()
+        handed: dict = {}
+        monkeypatch.setattr(
+            ingester,
+            "fetch_schedule_data",
+            lambda *_a, **_k: season_2026.WEEK_19_POSTSEASON_FIXTURE.copy(),
+        )
+        monkeypatch.setattr(ingester, "_stored_games", lambda: stored)
+        monkeypatch.setattr(ingest_games, "save_bronze_snapshot", lambda *a, **k: None)
+
+        def _upsert(frame, table, **kwargs):
+            handed.update(frame=frame, table=table, **kwargs)
+
+        monkeypatch.setattr(ingest_games, "upsert_silver", _upsert)
+        ingester.ingest_games(seasons=[2026], include_results=False)
+        return handed
+
+    def test_the_old_id_of_a_moved_game_is_removed_in_the_same_write(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handed = self._run(monkeypatch, self._stored())
+        assert handed["table"] == "games"
+        assert list(handed["remove_keys"]) == [self.GHOST], (
+            "only the id the schedule no longer lists is removed; other seasons and the "
+            "games the schedule still lists are untouched"
+        )
+
+    def test_a_scored_game_missing_from_the_schedule_is_refused_by_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from utils import DataIngestionError
+
+        with pytest.raises(DataIngestionError, match=self.GHOST):
+            self._run(monkeypatch, self._stored(ghost_score=17.0))
+
+    def test_a_game_with_recorded_move_provenance_is_never_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from utils import DataIngestionError
+
+        monkeypatch.setattr(
+            ingest_games, "load_schedule_moves", lambda: {self.GHOST: ()}
+        )
+        with pytest.raises(DataIngestionError, match="schedule_moves"):
+            self._run(monkeypatch, self._stored())
+
+    def test_upsert_silver_deletes_the_named_keys_atomically(
+        self, tmp_path: Path
+    ) -> None:
+        from data.storage import upsert_silver
+
+        upsert_silver(
+            pd.DataFrame({"game_id": ["a", self.GHOST], "v": [1, 1]}),
+            "games",
+            base_path=tmp_path,
+        )
+        upsert_silver(
+            pd.DataFrame({"game_id": ["a"], "v": [2]}),
+            "games",
+            base_path=tmp_path,
+            remove_keys=[self.GHOST],
+        )
+        stored = pd.read_parquet(tmp_path / "silver" / "games.parquet")
+        assert stored.to_dict("records") == [{"game_id": "a", "v": 2}]

@@ -20,12 +20,14 @@ from data.quality_gates import validate_bronze_to_silver
 from data.schemas import GameSchema
 from data.storage import save_bronze_snapshot, upsert_silver
 from data.upstream_pin import UpstreamPinError
+from features.schedule_moves import load_schedule_moves
 from utils import (
     DataIngestionError,
     get_current_nfl_week,
     get_logger,
     log_data_operation,
 )
+from utils.exceptions import DataValidationError
 from utils.game_id_utils import is_valid_game_id
 from utils.team_data import normalize_team_abbreviation
 
@@ -933,8 +935,14 @@ class GameDataIngester:
         )
 
         try:
-            # Fetch schedule data
-            schedule_df = self.fetch_schedule_data(seasons, weeks)
+            # Fetch the WHOLE season's schedule: it is what says which stored ids still exist
+            # (``_games_dropped_from_schedule``), even when only some weeks are ingested.
+            full_schedule = self.fetch_schedule_data(seasons)
+            schedule_df = (
+                full_schedule[full_schedule["week"].isin(weeks)]
+                if weeks
+                else full_schedule
+            )
 
             # Transform to our schema
             games_df = self.transform_schedule_data(schedule_df)
@@ -982,8 +990,11 @@ class GameDataIngester:
                 week=weeks[0] if weeks else 0,
             )
 
-            # Save to silver layer (latest-wins upsert by game_id)
-            upsert_silver(validated_df, "games")
+            # Save to silver layer (latest-wins upsert by game_id). The ids of games the
+            # schedule no longer lists -- the old id of a game moved to another week -- are
+            # deleted in the same atomic write (33.2 review C1 CR-01).
+            dropped = self._games_dropped_from_schedule(full_schedule, seasons)
+            upsert_silver(validated_df, "games", remove_keys=dropped)
 
             log_data_operation(
                 operation="ingest",
@@ -1014,6 +1025,88 @@ class GameDataIngester:
         except Exception as e:
             logger.error("Game data ingestion failed", error=str(e))
             raise DataIngestionError(f"Game ingestion failed: {e}")
+
+    def _stored_games(self) -> pd.DataFrame:
+        """The silver ``games`` rows already stored, read from the root the upsert writes."""
+        path = Path(self.settings.config.data.root_path) / "silver" / "games.parquet"
+        if not path.exists():
+            return pd.DataFrame(
+                columns=["game_id", "season", "home_score", "away_score"]
+            )
+        return pd.read_parquet(
+            path, columns=["game_id", "season", "home_score", "away_score"]
+        )
+
+    def _games_dropped_from_schedule(
+        self, full_schedule: pd.DataFrame, seasons: list[int]
+    ) -> list[str]:
+        """Stored ids of *seasons* that the season's schedule no longer lists.
+
+        THE GHOST ROW (33.2 review C1 CR-01). A game's id is built from its WEEK, so when
+        nflverse moves a game to another week (2008 Ike, 2017 Irma, the 2020 COVID moves) the
+        refreshed schedule carries a NEW id and the latest-wins upsert, which replaces only the
+        ids the new frame carries, left the OLD one in silver forever: an unplayed game on its
+        old date that the daily run would select, predict and bet. An ingest is therefore
+        authoritative for the seasons it ingests, and the ids it no longer lists are removed.
+
+        Two refusals, each by name, because a removal must never destroy evidence:
+
+        * a dropped game that HAS a result is not a ghost -- the schedule changed underneath a
+          played game (a renamed franchise, a changed id rule) -- and deleting it would delete
+          history;
+        * a dropped game with recorded move provenance (``config/schedule_moves.toml``) would
+          orphan that evidence; the table is keyed on the POST-move id, so this never fires for
+          a correctly recorded move.
+
+        A schedule row whose id cannot be built is ignored here, exactly as
+        ``transform_schedule_data`` skips it: it names no stored game.
+        """
+        stored = self._stored_games()
+        if stored.empty:
+            return []
+
+        schedule_ids: set[str] = set()
+        for _, row in full_schedule.iterrows():
+            try:
+                schedule_ids.add(self._create_game_id(row))
+            except (KeyError, TypeError, ValueError, DataValidationError):
+                continue
+
+        stored_ids = stored["game_id"].astype(str)
+        dropped = stored.loc[
+            stored["season"].isin(seasons) & ~stored_ids.isin(sorted(schedule_ids))
+        ]
+        if dropped.empty:
+            return []
+        dropped_ids = sorted(dropped["game_id"].astype(str))
+
+        scored = dropped.loc[
+            dropped["home_score"].notna() | dropped["away_score"].notna()
+        ]
+        if not scored.empty:
+            msg = (
+                f"the {seasons} schedule no longer lists {len(scored)} stored game(s) that "
+                f"HAVE results: {sorted(scored['game_id'].astype(str))}. A played game is not "
+                "a ghost of a week move; refusing rather than deleting its history."
+            )
+            raise DataIngestionError(msg)
+
+        recorded = sorted(set(dropped_ids) & set(load_schedule_moves()))
+        if recorded:
+            msg = (
+                f"the {seasons} schedule no longer lists {recorded}, which carry recorded "
+                "move provenance in config/schedule_moves.toml. Refusing to remove them and "
+                "orphan that evidence; re-key the recorded move to the game's current id."
+            )
+            raise DataIngestionError(msg)
+
+        logger.warning(
+            "The schedule no longer lists these games (moved to another week); removing "
+            "their old ids from silver games",
+            seasons=seasons,
+            game_ids=dropped_ids,
+        )
+        return dropped_ids
 
     def _merge_game_results(
         self, games_df: pd.DataFrame, results_df: pd.DataFrame
