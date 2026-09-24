@@ -116,6 +116,11 @@ class DailySlate:
             fetch; set by ``ingest_slate_weather``.
         weather_unknown: ``game_id -> reason`` for each slate game built with its weather
             unknown (no forecast on record); set by ``build_slate_weather_features``.
+        odds_failure: Why the slate's odds capture failed, or None; set by
+            ``capture_slate_odds``.
+        odds_missing: ``game_id -> reason`` for each slate game with no admissible pre-lock
+            line on record; set by ``close_collection``. Such a game is still predicted -- the
+            models use no market input -- with its market side blank and no bet.
     """
 
     run_date_et: date
@@ -124,6 +129,8 @@ class DailySlate:
     captured_at_utc: datetime | None = None
     weather_failures: dict[str, str] = field(default_factory=dict)
     weather_unknown: dict[str, str] = field(default_factory=dict)
+    odds_failure: str | None = None
+    odds_missing: dict[str, str] = field(default_factory=dict)
 
     @property
     def game_ids(self) -> frozenset[str]:
@@ -198,11 +205,61 @@ def ingest_slate_odds(slate: DailySlate, *, fixture: bool = False) -> None:
     ingester.ingest_odds(season=slate.season, week=slate.week, schedule=schedule)
 
 
+def capture_slate_odds(slate: DailySlate) -> None:
+    """The daily odds step: capture the slate's odds, remembering why a capture failed.
+
+    NON-CRITICAL in the daily registry (33.2 review, batch 1a follow-up; OWNER REQUIREMENT:
+    every slate game is predicted with the model's own numbers, whatever the market does). The
+    models use no market input, so a failed or empty odds capture must not stop predictions.
+    The failure is re-raised -- the orchestrator still retries a transient one and records the
+    step as failed -- and ``close_collection`` names every game left without a line.
+    """
+    slate.odds_failure = None
+    try:
+        ingest_slate_odds(slate)
+    except Exception as exc:
+        slate.odds_failure = f"{type(exc).__name__}: {exc}"
+        raise
+
+
+def record_missing_odds(slate: DailySlate) -> None:
+    """Name every slate game with no admissible pre-lock line, with the reason.
+
+    Read through the SAME reader the predictions price with (``load_market_data``: the latest
+    capture at or before each game's lock), so "missing" here means exactly "published with a
+    blank market side and no bet". Never raises: a failure to read the odds names every game.
+    """
+    from scripts.generate_current_week_predictions import load_market_data
+
+    reason = (
+        f"the odds capture failed ({slate.odds_failure})"
+        if slate.odds_failure
+        else "no pre-lock line was captured for it"
+    )
+    try:
+        market = load_market_data(sorted(slate.game_ids))
+        priced = market.dropna(
+            how="all", subset=[c for c in market.columns if c != "game_id"]
+        )
+        missing = slate.game_ids - set(priced["game_id"].astype(str))
+    except Exception as exc:  # noqa: BLE001 - naming the games is the point; never fatal
+        missing = slate.game_ids
+        reason = f"the stored odds could not be read ({type(exc).__name__}: {exc})"
+    for game_id in sorted(missing):
+        slate.odds_missing[game_id] = reason
+        logger.warning(
+            "Slate game has no market line: predicted with its market side blank, no bet",
+            game_id=game_id,
+            reason=reason,
+        )
+
+
 def close_collection(slate: DailySlate) -> None:
-    """Stamp ``captured_at_utc`` and refuse the slate if collection ended after its lock."""
+    """Stamp ``captured_at_utc``, name the games with no line, and refuse a late collection."""
     from pipeline import live_skip
 
     slate.captured_at_utc = datetime.now(UTC)
+    record_missing_odds(slate)
     live_skip.refuse_passed_locks(
         slate.schedule,
         decided_at=slate.captured_at_utc,
@@ -579,10 +636,12 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
         ),
         step(
             "ingest_odds",
-            lambda: ingest_slate_odds(slate),
+            lambda: capture_slate_odds(slate),
             collect,
+            # NOT critical: an odds failure never stops predictions (see capture_slate_odds).
+            critical=False,
             retryable=True,
-            description="Capture the slate's odds",
+            description="Capture the slate's odds (a failure leaves the market side blank)",
         ),
         step(
             "close_collection",

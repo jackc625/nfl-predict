@@ -389,3 +389,38 @@ class TestTheWeeklyListPricesTheLatestPreLockCapture:
         ].iloc[0]
         assert row["closing_spread"] == -4.0
         assert pd.Timestamp(row["snapshot_ts"]) == pd.Timestamp("2026-09-19T21:00:00Z")
+
+
+class TestAGameWithNoOddsRowGetsNoBet:
+    """Batch 1a follow-up: one slate game with NO odds row must not sink the week's list."""
+
+    def test_the_unpriced_game_is_suppressed_and_every_other_game_is_decided(
+        self, sandbox
+    ) -> None:
+        silver, gold, artifacts, _recorder = sandbox
+        unpriced = _GAME_IDS[0]
+        stored = pd.read_parquet(silver / "odds_snapshot.parquet")
+        stored[stored["game_id"] != unpriced].to_parquet(
+            silver / "odds_snapshot.parquet", index=False
+        )
+
+        frame = _decide(silver, gold, artifacts)
+
+        unpriced_rows = frame[frame["game_id"] == unpriced]
+        assert set(unpriced_rows["status"]) == {"suppressed"}
+        assert set(unpriced_rows["rejection_reason"]) == {"missing_snapshot"}
+        assert set(frame["game_id"]) == set(_GAME_IDS)
+        assert (frame.loc[frame["game_id"] != unpriced, "status"] == "live").any()
+
+    def test_a_week_with_no_odds_at_all_places_no_bet_and_does_not_raise(
+        self, sandbox
+    ) -> None:
+        silver, gold, artifacts, _recorder = sandbox
+        stored = pd.read_parquet(silver / "odds_snapshot.parquet")
+        stored.iloc[0:0].to_parquet(silver / "odds_snapshot.parquet", index=False)
+
+        frame = _decide(silver, gold, artifacts)
+
+        assert set(frame["game_id"]) == set(_GAME_IDS)
+        assert set(frame["status"]) == {"suppressed"}
+        assert set(frame["rejection_reason"]) == {"missing_snapshot"}

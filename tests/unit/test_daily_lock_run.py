@@ -627,3 +627,71 @@ def test_an_all_skipped_slate_finishes_with_skips(monkeypatch, tmp_path):
     assert set(log.skipped_games) == set(slate.game_ids)
     written = pd.read_csv(tmp_path / "predictions_2026_week3.csv")
     assert written.empty
+
+
+# ---------------------------------------------------------------------------
+# An odds failure never stops predictions (batch 1a follow-up, owner requirement)
+# ---------------------------------------------------------------------------
+
+
+def test_an_odds_failure_still_predicts_every_slate_game_and_names_them(
+    monkeypatch, predict_env, capsys
+):
+    """Zero matched odds (a DataIngestionError) used to FAIL the run: the step was critical.
+
+    The models use no market input, so every slate game is predicted with its market side
+    blank, each game without a line is named, and the run completes.
+    """
+    from pipeline import orchestrator, skip_log
+    from pipeline.alert import PipelineAlertManager
+    from pipeline.health import PipelineHealthChecker
+    from pipeline.staleness import StalenessGate, StalenessResult
+    from utils import DataIngestionError
+
+    out_dir, _ = predict_env
+    monkeypatch.setattr(orchestrator, "LOG_PATH", out_dir / "pipeline.json")
+    monkeypatch.setattr(skip_log, "SKIP_RECORD_PATH", out_dir / "skips.jsonl")
+    monkeypatch.setattr(
+        StalenessGate, "run_all_checks", lambda _s: StalenessResult(passed=True)
+    )
+    monkeypatch.setattr(
+        PipelineHealthChecker, "run_preflight", lambda _s: {"status": "healthy"}
+    )
+    monkeypatch.setattr(
+        PipelineHealthChecker, "run_postrun", lambda _s: {"status": "healthy"}
+    )
+    for name in (
+        "alert_pipeline_success",
+        "alert_finished_with_skips",
+        "alert_degraded_completion",
+        "alert_pipeline_failure",
+        "alert_staleness_warning",
+    ):
+        monkeypatch.setattr(PipelineAlertManager, name, lambda *_a, **_k: None)
+
+    def _no_odds(_slate, **_k):
+        raise DataIngestionError("no odds row was captured for any scheduled game")
+
+    monkeypatch.setattr(daily_steps, "ingest_slate_odds", _no_odds)
+    import scripts.generate_current_week_predictions as gen
+
+    monkeypatch.setattr(
+        gen,
+        "load_market_data",
+        lambda ids: pd.DataFrame(columns=["game_id", "spread", "total"]),
+    )
+
+    slate = _slate(30)
+    registry = [
+        step
+        for step in daily_steps.build_daily_step_registry(slate)
+        if step.name in ("ingest_odds", "close_collection", "generate_predictions")
+    ]
+    assert next(s for s in registry if s.name == "ingest_odds").critical is False
+    log = orchestrator.FridayPipeline(steps=registry).run()
+
+    assert log.status == "degraded"
+    written = pd.read_csv(out_dir / "predictions_2026_week3.csv")
+    assert set(written["game_id"]) == set(slate.game_ids)
+    assert set(slate.odds_missing) == set(slate.game_ids)
+    assert all("DataIngestionError" in r for r in slate.odds_missing.values())

@@ -521,6 +521,8 @@ def _run_the_day(
     _report_skips(log.start_time)
     for game_id, reason in sorted(slate.weather_unknown.items()):
         print(f"WEATHER_UNKNOWN {game_id}: {reason}")
+    for game_id, reason in sorted(slate.odds_missing.items()):
+        print(f"ODDS_MISSING {game_id}: {reason}; predicted, market side blank, no bet")
     print(f"RUN_STATUS= {log.status}")
     if log.status in (
         RunStatus.SUCCESS.value,
