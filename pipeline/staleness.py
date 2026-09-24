@@ -63,6 +63,9 @@ class StalenessGate:
         """
         settings = get_settings()
         self.config = settings.config.pipeline.staleness
+        # The configured data root (``DATA_ROOT_PATH`` redirects it), the root every silver
+        # writer uses; the freshness checks read their files under it (33.2 review B WR-04).
+        self.silver_root = f"{settings.config.data.root_path}/silver"
         self.season = season
         self.week = week
         self.force = force
@@ -228,7 +231,7 @@ class StalenessGate:
         now = time.time()
 
         # games.parquet -- blocking if stale
-        games_path = Path("data/silver/games.parquet")
+        games_path = Path(self.silver_root, "games.parquet")
         if games_path.exists():
             age_hours = (now - games_path.stat().st_mtime) / 3600
             if age_hours > self.config.data_age_hours:
@@ -237,10 +240,10 @@ class StalenessGate:
                     f"(threshold: {self.config.data_age_hours}h)"
                 )
         else:
-            errors.append("Games data file not found: data/silver/games.parquet")
+            errors.append(f"Games data file not found: {games_path}")
 
         # odds_snapshot.parquet -- warning only (may not exist yet for new week)
-        odds_path = Path("data/silver/odds_snapshot.parquet")
+        odds_path = Path(self.silver_root, "odds_snapshot.parquet")
         if odds_path.exists():
             age_hours = (now - odds_path.stat().st_mtime) / 3600
             if age_hours > self.config.odds_age_hours:
@@ -251,8 +254,10 @@ class StalenessGate:
         else:
             warnings.append("Odds snapshot not found (may not exist yet for new week)")
 
-        # weather directory -- warning only
-        weather_path = Path("data/silver/weather")
+        # silver weather -- warning only. The TABLE FILE, weather.parquet (33.2 review B WR-04):
+        # this used to test a "data/silver/weather" DIRECTORY that no writer creates, so every
+        # run warned "not found" and a genuinely stale weather table was never detected.
+        weather_path = Path(self.silver_root, "weather.parquet")
         if weather_path.exists():
             age_hours = (now - weather_path.stat().st_mtime) / 3600
             if age_hours > self.config.weather_age_hours:
@@ -261,7 +266,7 @@ class StalenessGate:
                     f"(threshold: {self.config.weather_age_hours}h)"
                 )
         else:
-            warnings.append("Weather data directory not found")
+            warnings.append(f"Weather data file not found: {weather_path}")
 
         return errors, warnings
 

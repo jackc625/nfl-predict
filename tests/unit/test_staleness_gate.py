@@ -1,6 +1,8 @@
 """Tests for pipeline.staleness -- StalenessGate with season gate and staleness checks."""
 
 import json
+import os
+import time
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -565,6 +567,71 @@ class TestRunAllChecks:
 
         assert result.passed is False
         assert len(result.errors) > 0
+
+
+# ---------------------------------------------------------------------------
+# The freshness files are the real silver tables, under the configured root (B WR-04)
+# ---------------------------------------------------------------------------
+
+
+def _real_root_settings(root, log_path):
+    """Settings whose data root and partial-run log point into *root* (real files)."""
+    settings = _make_settings_mock({"partial_run_log": str(log_path)})
+    settings.config.data.root_path = str(root)
+    return settings
+
+
+class TestFreshnessReadsTheRealSilverTables:
+    """33.2 review B WR-04: the weather check tests ``weather.parquet``, not a directory."""
+
+    @patch("pipeline.staleness.get_current_nfl_week", return_value=(2025, 5))
+    @patch(
+        "pipeline.staleness.get_latest_artifact_path",
+        side_effect=_make_model_resolver(time.time()),
+    )
+    def test_a_fresh_weather_table_raises_no_warning(self, _resolver, _week, tmp_path):
+        silver = tmp_path / "silver"
+        silver.mkdir()
+        for name in ("games.parquet", "odds_snapshot.parquet", "weather.parquet"):
+            (silver / name).write_bytes(b"x")
+
+        with patch(
+            "pipeline.staleness.get_settings",
+            return_value=_real_root_settings(tmp_path, tmp_path / "no_log.json"),
+        ):
+            from pipeline.staleness import StalenessGate
+
+            result = StalenessGate(season=2025, week=5).check_staleness()
+
+        assert result.passed is True
+        assert not [w for w in result.warnings if "eather" in w], result.warnings
+
+    @patch("pipeline.staleness.get_current_nfl_week", return_value=(2025, 5))
+    @patch(
+        "pipeline.staleness.get_latest_artifact_path",
+        side_effect=_make_model_resolver(time.time()),
+    )
+    def test_a_stale_weather_table_is_detected_under_the_configured_root(
+        self, _resolver, _week, tmp_path
+    ):
+        silver = tmp_path / "silver"
+        silver.mkdir()
+        for name in ("games.parquet", "odds_snapshot.parquet", "weather.parquet"):
+            (silver / name).write_bytes(b"x")
+        month_ago = time.time() - 30 * 24 * 3600
+        os.utime(silver / "weather.parquet", (month_ago, month_ago))
+
+        with patch(
+            "pipeline.staleness.get_settings",
+            return_value=_real_root_settings(tmp_path, tmp_path / "no_log.json"),
+        ):
+            from pipeline.staleness import StalenessGate
+
+            result = StalenessGate(season=2025, week=5).check_staleness()
+
+        assert any("Weather data is stale" in w for w in result.warnings), (
+            result.warnings
+        )
 
 
 # ---------------------------------------------------------------------------
