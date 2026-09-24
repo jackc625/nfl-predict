@@ -216,6 +216,30 @@ class TestTheConstructedPostseasonFixture:
         assert list(transformed["stadium_id"]) == ["BUF00", "DAL00"]
 
 
+class TestARowThatFailsToTransformIsNeverSilentlyDropped:
+    """33.2 review C1 WR-06: a broken row is refused by name, never logged and skipped."""
+
+    def test_a_null_gametime_row_refuses_the_ingest_naming_the_game(self) -> None:
+        from utils import DataIngestionError
+
+        feed = season_2026.WEEK_19_POSTSEASON_FIXTURE.copy()
+        feed["gametime"] = feed["gametime"].astype(object)
+        feed.loc[feed.index[0], "gametime"] = None
+        broken = feed.iloc[0]
+
+        with pytest.raises(DataIngestionError) as refusal:
+            ingest_games.GameDataIngester().transform_schedule_data(feed)
+
+        message = str(refusal.value)
+        assert "1 schedule row(s)" in message
+        assert f"{broken['away_team']}@{broken['home_team']}" in message
+
+    def test_a_clean_feed_still_transforms_every_row(self) -> None:
+        feed = season_2026.WEEK_19_POSTSEASON_FIXTURE
+        transformed = ingest_games.GameDataIngester().transform_schedule_data(feed)
+        assert len(transformed) == len(feed)
+
+
 class TestTheColumnsSurviveSchemaValidation:
     """A column that the schema drops never reaches silver (the 28-06 trap)."""
 

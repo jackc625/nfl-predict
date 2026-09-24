@@ -806,6 +806,11 @@ class GameDataIngester:
 
         # Create transformed DataFrame
         transformed_data = []
+        # Every row that fails to transform, named. It is RAISED once the loop ends (33.2 review
+        # C1 WR-06): the broad handler below used to log a warning and CONTINUE, so the game never
+        # reached silver, never reached a slate, and nothing named it. Collected rather than
+        # raised on the first one, so one refusal names every broken row of the ingest.
+        failures: list[str] = []
 
         for _, row in schedule_df.iterrows():
             try:
@@ -890,12 +895,27 @@ class GameDataIngester:
                 # kickoff correction is surfaced, never turned into a skipped game.
                 raise
             except Exception as e:
-                logger.warning(
+                name = (
+                    f"{row.get('season')} week {row.get('week')} "
+                    f"{row.get('away_team')}@{row.get('home_team')} "
+                    f"(feed id {row.get('game_id')})"
+                )
+                logger.error(
                     "Failed to transform game record",
+                    game=name,
                     game_data=row.to_dict(),
                     error=str(e),
                 )
-                continue
+                failures.append(f"{name}: {type(e).__name__}: {e}")
+
+        if failures:
+            msg = (
+                f"{len(failures)} schedule row(s) could not be transformed, and a game that "
+                "fails here would silently vanish from silver games -- never in a slate, "
+                "never predicted, never named. Refusing the ingest instead: "
+                + "; ".join(failures)
+            )
+            raise DataIngestionError(msg)
 
         transformed_df = pd.DataFrame(transformed_data)
         logger.info(
