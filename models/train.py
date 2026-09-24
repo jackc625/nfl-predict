@@ -18,12 +18,15 @@ import argparse
 import hashlib
 import sys
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
+from threadpoolctl import threadpool_limits
 
 # D30-01/D30-02: the feature-group vocabulary and the selection primitive are IMPORTED from
 # backtest.signal_lift, never re-declared here. This models -> backtest direction mirrors the
@@ -37,6 +40,7 @@ from backtest.signal_lift import ALL_REGISTERED_GROUPS, select_group_columns
 from conf.season_partition import default_season_partition
 from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
+from models.trainers.base import threads_in_force
 from models.trainers.final_fit import apply_final_fit_to_trainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WPTrainer
@@ -142,6 +146,44 @@ def verdict_exclusion() -> tuple[tuple[str, ...], str]:
         verdict = tomllib.load(handle)
     groups = tuple(str(group) for group in verdict.get("excluded_groups", []))
     return groups, _normalized_sha256(GROUP_GATE_VERDICT_PATH)
+
+
+@contextmanager
+def pinned_thread_pool(thread_limit: int | None) -> Iterator[None]:
+    """Apply the thread pin THIS module records, and prove it is in force.
+
+    A33.2-review WR-02: ``--thread-limit`` (and ``--tune``, which defaults it) used to be
+    written into every artifact's metadata while the pin itself was applied only by
+    ``scripts/train_models.py``. A run started as ``python -m models.train --tune`` -- the
+    invocation this module's docstring names as canonical -- therefore recorded
+    ``thread_limit: 1`` while XGBoost ran on every core.
+
+    The pin is now applied here, at RUNTIME, through ``threadpoolctl``: every numerical
+    library this module needs is already loaded by its own imports, so the runtime pin
+    reaches every pool (the environment-variable half, which must precede the numpy
+    import, stays in ``scripts/train_models.py``). After applying it the pools are MEASURED,
+    and a pool that did not take the pin is a refusal rather than a false record.
+
+    Args:
+        thread_limit: The count to pin, or None to leave the pools exactly as they are.
+
+    Raises:
+        RuntimeError: If, after pinning, the loaded pools do not all report
+            ``thread_limit``.
+    """
+    if thread_limit is None:
+        yield
+        return
+    with threadpool_limits(limits=thread_limit):
+        in_force = threads_in_force()
+        if in_force != thread_limit:
+            msg = (
+                f"thread pin requested at {thread_limit} but the loaded pools report "
+                f"{in_force} (None = no pool loaded, or the pools disagree). Refusing to "
+                "record a pin that is not in force."
+            )
+            raise RuntimeError(msg)
+        yield
 
 
 def parse_exclude_groups(raw: str) -> tuple[str, ...]:
@@ -713,9 +755,10 @@ def build_parser() -> argparse.ArgumentParser:
             "XGBoost legs returning different answers at different thread counts, by "
             "enough to move a verdict, so an unpinned run is one nobody else can "
             "reproduce. Omitting it leaves the pool unpinned, which is the previous "
-            "behaviour exactly. The pin itself is applied by scripts/train_models.py, "
-            "which must set it BEFORE numpy is imported; this flag records it. Under "
-            "--tune it defaults to config.tuning_preregistration.PINNED_THREAD_COUNT."
+            "behaviour exactly. The pin is applied here at runtime (threadpoolctl) and "
+            "measured before it is recorded; scripts/train_models.py additionally sets "
+            "the environment variables BEFORE numpy is imported. Under --tune it "
+            "defaults to config.tuning_preregistration.PINNED_THREAD_COUNT."
         ),
     )
     # SITE 5 of the season partition (RESEARCH 11.1), and the one that matters most for what
@@ -885,7 +928,44 @@ def main() -> None:
                 path=str(odds_path),
             )
 
-    # Train each target
+    # Train each target, under the pin that gets recorded (WR-02).
+    with pinned_thread_pool(thread_limit):
+        all_results = _train_targets(
+            args=args,
+            targets=targets,
+            config=config,
+            closing_odds_df=closing_odds_df,
+            exclude_groups=exclude_groups,
+            exclude_groups_provenance=exclude_groups_provenance,
+            group_verdict_digest=group_verdict_digest,
+            thread_limit=thread_limit,
+        )
+
+    # Print summary
+    if all_results:
+        print_summary(all_results)
+    else:
+        print("No models were trained. Check feature matrix availability.")
+
+    print_run_record(all_results, thread_limit)
+
+
+def _train_targets(
+    *,
+    args: argparse.Namespace,
+    targets: list[str],
+    config: TemporalSplitConfig,
+    closing_odds_df: pd.DataFrame | None,
+    exclude_groups: tuple[str, ...],
+    exclude_groups_provenance: str,
+    group_verdict_digest: str | None,
+    thread_limit: int | None,
+) -> dict[str, dict]:
+    """Load each target's gold, apply the exclusion, and train it.
+
+    Returns:
+        Per-target training results from :func:`train_target`.
+    """
     all_results: dict[str, dict] = {}
 
     for target in targets:
@@ -971,13 +1051,7 @@ def main() -> None:
         )
         all_results[target] = result
 
-    # Print summary
-    if all_results:
-        print_summary(all_results)
-    else:
-        print("No models were trained. Check feature matrix availability.")
-
-    print_run_record(all_results, thread_limit)
+    return all_results
 
 
 def print_run_record(results: dict[str, dict], thread_limit: int | None) -> None:

@@ -21,13 +21,13 @@ import optuna
 import pandas as pd
 from sklearn.feature_selection import SelectFromModel
 from sklearn.pipeline import Pipeline
+from threadpoolctl import threadpool_info
 
 from config.tuning_preregistration import (
     BEAT_RANDOM_MARGIN_BY_TARGET,
     NOT_CLEARED_ARM,
     NOT_CLEARED_RULE,
     OUTER_COMPARISON_RULE,
-    PINNED_THREAD_COUNT,
     PRUNER_CONFIG,
     RANDOM_SAMPLER_SEED,
     SEARCH_SPACE_BY_TARGET,
@@ -72,6 +72,24 @@ HOLDOUT_PREDICTION_COLUMNS: tuple[str, ...] = (
     "prediction",
     "actual",
 )
+
+
+def threads_in_force() -> int | None:
+    """Return the thread count every loaded BLAS/OpenMP pool is running at, MEASURED.
+
+    A33.2-review WR-02: the pre-registered search used to write the constant
+    ``PINNED_THREAD_COUNT`` into its adoption record whether or not any pin was applied,
+    so ``python -m models.train --tune`` (which applied none) recorded ``1`` while XGBoost
+    ran on every core. What is recorded now is what the pools actually report at the
+    moment of the call.
+
+    Returns:
+        The one thread count all loaded pools agree on, or None when no pool is loaded or
+        the pools disagree -- a pool set that is not uniformly pinned has no single count
+        to record, and inventing one would be the same false record this replaces.
+    """
+    counts = {int(pool["num_threads"]) for pool in threadpool_info()}
+    return counts.pop() if len(counts) == 1 else None
 
 
 def concat_holdout_predictions(frames: list[pd.DataFrame]) -> pd.DataFrame:
@@ -1272,13 +1290,16 @@ class BaseTrainer(ABC):
         )
         self.last_tuning_completed_added = arms[STUDY_ARM_TPE]["trials_completed_added"]
 
+        # MEASURED, not the pre-registered constant (WR-02): the record states the thread
+        # count the two arms and the outer refits actually ran under.
+        thread_limit = threads_in_force()
         self.adoption_record = {
             "arms": arms,
             "outer_season": outer_season,
             "outer_season_n_games": len(outer_rows),
             "search_space_digest": search_space_digest(self.target),
             "trial_budget": budget,
-            "thread_limit": PINNED_THREAD_COUNT,
+            "thread_limit": thread_limit,
             "study_tag": self.tuning_study_tag,
             "adopted_params": best_params,
             **decision,
@@ -1295,7 +1316,7 @@ class BaseTrainer(ABC):
             tpe_outer=arms[STUDY_ARM_TPE]["outer_score"],
             random_outer=arms[STUDY_ARM_RANDOM]["outer_score"],
             trials_started=budget,
-            thread_limit=PINNED_THREAD_COUNT,
+            thread_limit=thread_limit,
         )
 
         return best_params

@@ -29,6 +29,7 @@ import numpy as np
 import optuna
 import pandas as pd
 import pytest
+from threadpoolctl import threadpool_limits
 
 from config import tuning_preregistration as prereg
 from models import tuning as tuning_module
@@ -492,10 +493,42 @@ class TestTheAdoptionDecision:
         trainer = _DummyTrainer()
         trainer.use_phase332_tuning()
         X_train, y_train = _training_frame()
-        trainer.tune_hyperparameters(X_train, y_train, full_features_df=_full_frame())
+        with threadpool_limits(limits=prereg.PINNED_THREAD_COUNT):
+            trainer.tune_hyperparameters(
+                X_train, y_train, full_features_df=_full_frame()
+            )
         record = trainer.adoption_record
         assert record["search_space_digest"] == prereg.search_space_digest("ats")
         assert record["thread_limit"] == prereg.PINNED_THREAD_COUNT
+
+    def test_the_recorded_thread_limit_is_the_one_in_force_not_the_constant(
+        self, pinned_budget: dict[str, int]
+    ) -> None:
+        """WR-02: a search run under a different pin records THAT pin, never the constant."""
+        other = prereg.PINNED_THREAD_COUNT + 2
+        trainer = _DummyTrainer()
+        trainer.use_phase332_tuning()
+        X_train, y_train = _training_frame()
+        with threadpool_limits(limits=other):
+            trainer.tune_hyperparameters(
+                X_train, y_train, full_features_df=_full_frame()
+            )
+        assert trainer.adoption_record["thread_limit"] == other
+
+    def test_models_train_applies_the_pin_it_records(self) -> None:
+        """WR-02: ``models.train`` pins the pools itself, so its record is true.
+
+        ``python -m models.train --tune`` used to write ``thread_limit`` into metadata
+        while applying no pin at all.
+        """
+        from models.train import pinned_thread_pool
+
+        requested = prereg.PINNED_THREAD_COUNT + 1
+        with pinned_thread_pool(requested):
+            assert base_trainer.threads_in_force() == requested
+        before = base_trainer.threads_in_force()
+        with pinned_thread_pool(None):
+            assert base_trainer.threads_in_force() == before
 
 
 # ---------------------------------------------------------------------------
