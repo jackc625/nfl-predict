@@ -166,6 +166,27 @@ class TestWeatherSchemaValidation:
         with pytest.raises(ValidationError):
             WeatherSchema(**self._make_weather(weather_source="made_up"))
 
+    @pytest.mark.parametrize("field", ["forecast_time", "game_time", "created_at"])
+    @pytest.mark.parametrize(
+        "naive", [datetime(2024, 10, 11, 12, 0), "2024-10-11T12:00:00"]
+    )
+    def test_a_naive_timestamp_is_refused_not_relabelled_utc(self, field, naive):
+        """33.2 review B WR-10: forecast_time is the weather fence's information time.
+
+        A naive Eastern wall clock relabelled as UTC moves the instant four or five hours
+        earlier and can admit a post-lock forecast.
+        """
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="no time zone"):
+            WeatherSchema(**self._make_weather(**{field: naive}))
+
+    def test_an_offset_bearing_value_keeps_its_instant(self):
+        weather = WeatherSchema(
+            **self._make_weather(forecast_time="2024-10-11T08:00:00-04:00")
+        )
+        assert weather.forecast_time == datetime(2024, 10, 11, 12, 0, tzinfo=UTC)
+
 
 # --- Bronze-to-Silver quality gate tests ---
 

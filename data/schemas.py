@@ -620,10 +620,9 @@ class WeatherSchema(BaseModel):
     def refuse_naive_forecast_issue_time(cls, v):
         """A naive cycle instant is REFUSED, never relabelled as UTC.
 
-        Unlike ``validate_timestamps`` below (whose relabel is a known, deferred defect), the
-        new column starts strict: the MOS decoder localizes the archive's naive ``runtime``
-        explicitly at its parse boundary, so a naive value arriving here means that step was
-        skipped.
+        Like ``validate_timestamps`` below (strict since 33.2 review B WR-10), the column is
+        strict: the MOS decoder localizes the archive's naive ``runtime`` explicitly at its
+        parse boundary, so a naive value arriving here means that step was skipped.
         """
         if v is None:
             return None
@@ -667,20 +666,20 @@ class WeatherSchema(BaseModel):
 
     @field_validator("forecast_time", "game_time", "created_at", mode="before")
     @classmethod
-    def validate_timestamps(cls, v):
-        """Ensure timestamps are timezone-aware."""
-        if v is None:
+    def validate_timestamps(cls, v, info):
+        """A naive timestamp is REFUSED, never relabelled UTC (33.2 review B WR-10).
+
+        ``forecast_time`` is the information time of every live forecast row -- the weather
+        fence compares it to the game's lock -- and this used to ``replace(tzinfo=UTC)`` a
+        naive ``datetime`` (and pass a naive string through naive). A producer that ever
+        handed over an Eastern wall clock would have moved the instant four or five hours
+        EARLIER and could have admitted a post-lock forecast. The same refusal
+        ``OddsSchema.validate_timestamps`` already applies. ``None`` / NaN / NaT stay None; an
+        aware value or an offset-bearing string passes, converted to UTC, same instant.
+        """
+        if _is_missing(v):
             return None
-        try:
-            if pd.isna(v):
-                return None
-        except (ValueError, TypeError):
-            pass
-        if isinstance(v, str):
-            return pd.to_datetime(v)
-        if isinstance(v, datetime) and v.tzinfo is None:
-            return v.replace(tzinfo=UTC)
-        return v
+        return _aware_utc(v, info.field_name)
 
 
 class TeamFormSchema(BaseModel):
