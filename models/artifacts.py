@@ -27,7 +27,7 @@ import os
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -186,10 +186,20 @@ def save_model_artifact(
 
     Returns:
         Path to the created artifact directory.
+
+    Raises:
+        FileExistsError: when ``{target}_{timestamp}`` already exists. An artifact id
+            names exactly ONE payload forever (the blend and converter writers already
+            refuse the same way), so a second save of one target in the same UTC second is
+            refused rather than written over an artifact ``latest.json`` may point at.
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # A33.2-review WR-07: UTC, not the naive LOCAL clock -- local 01:xx repeats at the
+    # autumn DST fall-back, so two saves an hour apart could name one directory -- and
+    # exist_ok=False, so a collision is a refusal instead of a silent overwrite.
+    timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
     artifact_dir = artifacts_dir / f"{target}_{timestamp}"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir.mkdir(exist_ok=False)
 
     # Save model
     model_path = artifact_dir / "model.pkl"

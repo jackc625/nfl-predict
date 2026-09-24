@@ -346,6 +346,48 @@ class TestParamsSidecar:
 # ---------------------------------------------------------------------------
 
 
+class TestAnArtifactIdNamesOnePayload:
+    """A33.2-review WR-07: a UTC-named directory that is never silently overwritten."""
+
+    def test_a_second_save_in_the_same_second_is_refused_not_overwritten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import UTC, datetime
+
+        import models.artifacts as artifacts_module
+
+        frozen = datetime(2026, 11, 1, 5, 30, 0, tzinfo=UTC)
+        seen_tz: list[object] = []
+
+        class _FrozenClock(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                seen_tz.append(tz)
+                return frozen if tz is not None else frozen.replace(tzinfo=None)
+
+        monkeypatch.setattr(artifacts_module, "datetime", _FrozenClock)
+        first = save_model_artifact(
+            model=_make_tiny_model(),
+            target="wp",
+            metadata={"version": "first"},
+            feature_list=["feat1", "feat2"],
+            artifacts_dir=tmp_path,
+        )
+        assert first.name == "wp_20261101_053000"
+        assert seen_tz == [UTC], "the directory name must come from the UTC clock"
+
+        with pytest.raises(FileExistsError):
+            save_model_artifact(
+                model=_make_tiny_model(),
+                target="wp",
+                metadata={"version": "second"},
+                feature_list=["feat1", "feat2"],
+                artifacts_dir=tmp_path,
+            )
+        payload = json.loads((first / "metadata.json").read_text())
+        assert payload["version"] == "first"
+
+
 class TestCompletedTrialsAreCountedSeparately:
     """``len(study.trials)`` is trials STARTED, including PRUNED and FAIL.
 
