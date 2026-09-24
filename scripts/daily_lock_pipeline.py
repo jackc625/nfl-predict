@@ -272,6 +272,8 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
             sink, dry_run=False, lock_passed=0, next_day_games=len(slate.game_ids)
         )
         _report_skips(log.start_time)
+        for game_id, reason in sorted(slate.weather_unknown.items()):
+            print(f"WEATHER_UNKNOWN {game_id}: {reason}")
         print(f"RUN_STATUS= {log.status}")
         if log.status in (
             RunStatus.SUCCESS.value,

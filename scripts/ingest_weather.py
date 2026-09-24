@@ -1247,6 +1247,42 @@ class WeatherDataIngester:
 
         return pd.DataFrame(weather_records)
 
+    def _fetch_forecast_per_game(
+        self,
+        games_df: pd.DataFrame,
+        venues_df: pd.DataFrame,
+        *,
+        forecast_time: datetime | None,
+        as_of_utc: datetime,
+        failed_games: dict[str, str],
+    ) -> pd.DataFrame:
+        """:meth:`fetch_forecast_for_games` one game at a time, recording each failure.
+
+        A game whose fetch raises :class:`WeatherDataError` is added to *failed_games* as
+        ``game_id -> "<ErrorType>: <message>"``; every other game's record is returned.
+        """
+        frames: list[pd.DataFrame] = []
+        for index in range(len(games_df)):
+            game = games_df.iloc[[index]]
+            game_id = str(game["game_id"].iloc[0])
+            try:
+                frames.append(
+                    self.fetch_forecast_for_games(
+                        game,
+                        venues_df,
+                        forecast_time=forecast_time,
+                        as_of_utc=as_of_utc,
+                    )
+                )
+            except WeatherDataError as exc:
+                failed_games[game_id] = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "Forecast failed for one game; it is built with weather unknown",
+                    game_id=game_id,
+                    reason=failed_games[game_id],
+                )
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
     def ingest_week_forecast(
         self,
         games_df: pd.DataFrame,
@@ -1256,6 +1292,7 @@ class WeatherDataIngester:
         forecast_time: datetime | None = None,
         base_path=None,
         table: str = "weather",
+        failed_games: dict[str, str] | None = None,
     ) -> pd.DataFrame:
         """Fetch and write ONE week's forecast, all-or-nothing.
 
@@ -1264,6 +1301,12 @@ class WeatherDataIngester:
         table byte-identical, which is asserted by content digest in
         ``tests/unit/test_weather_atomic_week_write.py`` rather than assumed.
 
+        WITH ``failed_games`` (the daily slate, step 27b) each game is fetched on its own:
+        a game whose fetch raises a :class:`WeatherDataError` is recorded in the dict as
+        ``game_id -> reason`` and left out, and the rest are written once, complete. That
+        game is then built with its weather unknown rather than costing every other game
+        its forecast. Nothing is imputed for it.
+
         Args:
             games_df: The week's games. Must be a single (season, week).
             venues_df: The venue table.
@@ -1271,9 +1314,10 @@ class WeatherDataIngester:
             forecast_time: When this forecast was taken. Defaults to now, in UTC.
             base_path: Data root. Threaded so a test can redirect the write.
             table: Silver table name.
+            failed_games: When given, collects the games whose forecast failed.
 
         Returns:
-            The validated frame that was written.
+            The validated frame that was written (empty when nothing was).
         """
         if forecast_time is None:
             forecast_time = datetime.now(UTC)
@@ -1292,11 +1336,22 @@ class WeatherDataIngester:
             games_df = games_df[~games_df["game_id"].astype(str).isin(played)]
             if games_df.empty:
                 return pd.DataFrame()
+        if failed_games is None:
+            weather_df = self.fetch_forecast_for_games(
+                games_df, venues_df, forecast_time=forecast_time, as_of_utc=as_of_utc
+            )
+        else:
+            weather_df = self._fetch_forecast_per_game(
+                games_df,
+                venues_df,
+                forecast_time=forecast_time,
+                as_of_utc=as_of_utc,
+                failed_games=failed_games,
+            )
+            games_df = games_df[~games_df["game_id"].astype(str).isin(failed_games)]
+            if games_df.empty:
+                return pd.DataFrame()
         requested_game_ids = [str(value) for value in games_df["game_id"]]
-
-        weather_df = self.fetch_forecast_for_games(
-            games_df, venues_df, forecast_time=forecast_time, as_of_utc=as_of_utc
-        )
 
         # BEFORE the bronze snapshot as well as before the silver write: an
         # incomplete week should leave no trace at all, not an orphan bronze file

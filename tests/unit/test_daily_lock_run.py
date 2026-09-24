@@ -248,3 +248,78 @@ def test_elo_gains_provisional_rows_for_exactly_the_slate(monkeypatch):
     provisional = set(frame.loc[frame["is_provisional"], "game_id"])
     assert provisional == {"2026_W03_LAC@BUF", "2026_W03_LA@DEN"}
     assert "2026_W02_DET@BUF" in set(frame["game_id"])
+
+
+# ---------------------------------------------------------------------------
+# A slate game whose forecast failed (step 27b)
+# ---------------------------------------------------------------------------
+
+
+def test_a_slate_game_with_no_forecast_is_built_with_weather_unknown(monkeypatch):
+    """It is carried as an explicit no-observation row and named with its reason."""
+    import features.weather as weather_mod
+    from data import storage
+
+    schedule = _schedule()
+    slate = DailySlate(
+        run_date_et=RUN_DATE,
+        lock=slate_lock(RUN_DATE),
+        schedule=schedule.loc[
+            schedule["game_id"].isin(["2026_W03_LAC@BUF", "2026_W03_LA@DEN"])
+        ].reset_index(drop=True),
+        weather_failures={"2026_W03_LA@DEN": "WeatherDataError: Open-Meteo timeout"},
+    )
+    weather = pd.DataFrame({"game_id": ["2026_W03_LAC@BUF"]})
+    monkeypatch.setattr(
+        storage,
+        "load_dataframe",
+        lambda name, *_a, **_k: schedule if name == "games" else weather,
+    )
+    monkeypatch.setattr(storage, "save_dataframe", lambda *_a, **_k: None)
+    seen: dict[str, frozenset[str]] = {}
+
+    class _Calculator:
+        def build_weather_features(self, *, games_df, weather_df, unobserved_game_ids):
+            seen["unobserved"] = unobserved_game_ids
+            return pd.DataFrame()
+
+    monkeypatch.setattr(weather_mod, "WeatherFeaturesCalculator", _Calculator)
+
+    daily_steps.build_slate_weather_features(slate)
+
+    assert "2026_W03_LA@DEN" in seen["unobserved"]
+    assert "2026_W03_LAC@BUF" not in seen["unobserved"]
+    assert slate.weather_unknown == {
+        "2026_W03_LA@DEN": "WeatherDataError: Open-Meteo timeout"
+    }
+
+
+def test_the_slate_weather_capture_collects_failures_on_the_slate(monkeypatch):
+    from scripts import ingest_weather
+
+    schedule = _schedule()
+    slate = DailySlate(
+        run_date_et=RUN_DATE,
+        lock=slate_lock(RUN_DATE),
+        schedule=schedule.iloc[1:3].reset_index(drop=True),
+    )
+    handed: dict[str, object] = {}
+
+    class _Ingester:
+        def _load_games_data(self, season, week):
+            return schedule
+
+        def _load_venue_data(self):
+            return pd.DataFrame()
+
+        def ingest_week_forecast(self, games, venues, *, as_of_utc, failed_games):
+            handed["games"] = sorted(games["game_id"])
+            failed_games["2026_W03_LA@DEN"] = "WeatherDataError: timeout"
+            return pd.DataFrame()
+
+    monkeypatch.setattr(ingest_weather, "WeatherDataIngester", _Ingester)
+
+    daily_steps.ingest_slate_weather(slate)
+
+    assert handed["games"] == ["2026_W03_LA@DEN", "2026_W03_LAC@BUF"]
+    assert slate.weather_failures == {"2026_W03_LA@DEN": "WeatherDataError: timeout"}

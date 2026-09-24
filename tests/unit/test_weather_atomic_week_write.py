@@ -285,3 +285,69 @@ class TestASuccessfulWeekIsWrittenOnce:
         production = Path("data").resolve()
         assert root.resolve() != production
         assert production not in root.resolve().parents
+
+
+class TestTheDailySlateKeepsEveryOtherGame:
+    """Step 27b: with ``failed_games``, one game's failed forecast is named, not fatal.
+
+    The daily run asks for this mode: a game whose forecast cannot be fetched is predicted
+    with its weather unknown, so its failure must not cost every OTHER game its forecast.
+    Without ``failed_games`` the week stays all-or-nothing (the tests above).
+    """
+
+    @staticmethod
+    def _fetch_failing_at(latitude_that_fails: float):
+        async def _fetch(latitude, longitude, game_date, game_hour, venue_timezone):
+            if latitude == latitude_that_fails:
+                raise WeatherDataError("Open-Meteo API timeout for this game")
+            return dict(FORECAST_RECORD)
+
+        return _fetch
+
+    def test_the_failed_game_is_named_and_the_other_is_written(
+        self, ingester, silver_sandbox
+    ) -> None:
+        root, target = silver_sandbox
+        failed: dict[str, str] = {}
+        green_bay = float(VENUES.loc[1, "latitude"])
+
+        with patch.object(
+            ingester, "_fetch_openmeteo_forecast", self._fetch_failing_at(green_bay)
+        ):
+            written = ingester.ingest_week_forecast(
+                _week_frame(),
+                VENUES,
+                as_of_utc=AS_OF,
+                base_path=root,
+                failed_games=failed,
+            )
+
+        assert list(written["game_id"]) == ["2026_W02_KC@BUF"]
+        assert list(failed) == ["2026_W02_MIN@GB"]
+        assert "timeout" in failed["2026_W02_MIN@GB"]
+        stored = set(pd.read_parquet(target)["game_id"])
+        assert "2026_W02_KC@BUF" in stored
+        assert "2026_W02_MIN@GB" not in stored
+
+    def test_every_game_failing_writes_nothing_and_names_them_all(
+        self, ingester, silver_sandbox
+    ) -> None:
+        root, target = silver_sandbox
+        before = digest_file(target)
+        failed: dict[str, str] = {}
+
+        async def _fetch(latitude, longitude, game_date, game_hour, venue_timezone):
+            raise WeatherDataError("Open-Meteo API timeout")
+
+        with patch.object(ingester, "_fetch_openmeteo_forecast", _fetch):
+            written = ingester.ingest_week_forecast(
+                _week_frame(),
+                VENUES,
+                as_of_utc=AS_OF,
+                base_path=root,
+                failed_games=failed,
+            )
+
+        assert written.empty
+        assert set(failed) == {"2026_W02_KC@BUF", "2026_W02_MIN@GB"}
+        assert digest_file(target) == before

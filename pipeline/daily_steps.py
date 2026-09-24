@@ -40,7 +40,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -65,9 +65,12 @@ from pipeline.steps import (
     step_verify_output_files,
     step_verify_prediction_currency,
 )
+from utils.logging_config import get_logger
 
 if TYPE_CHECKING:
     import pandas as pd
+
+logger = get_logger(__name__)
 
 #: Task 2c's ruling, echoed by the daily entry point's output contract.
 DECISION_TIME_BRANCH = "finish-before-lock"
@@ -114,12 +117,18 @@ class DailySlate:
         lock: The slate's lock (tz-aware), 18:00 ET on ``run_date_et``.
         schedule: The slate's silver ``games`` rows.
         captured_at_utc: When collection finished; set by ``close_collection``.
+        weather_failures: ``game_id -> reason`` for each slate game whose forecast failed to
+            fetch; set by ``ingest_slate_weather``.
+        weather_unknown: ``game_id -> reason`` for each slate game built with its weather
+            unknown (no forecast on record); set by ``build_slate_weather_features``.
     """
 
     run_date_et: date
     lock: datetime
     schedule: pd.DataFrame
     captured_at_utc: datetime | None = None
+    weather_failures: dict[str, str] = field(default_factory=dict)
+    weather_unknown: dict[str, str] = field(default_factory=dict)
 
     @property
     def game_ids(self) -> frozenset[str]:
@@ -147,6 +156,9 @@ def ingest_slate_weather(slate: DailySlate) -> None:
 
     Never the whole week: a game later in the week whose lock has already passed (Sunday night's
     game on a Sunday-afternoon run) must not have its pre-lock forecast replaced by a post-lock one.
+
+    One game's failed forecast never costs the others theirs (step 27b): each failure is recorded
+    in ``slate.weather_failures`` and that game is built with its weather unknown.
     """
     from scripts.ingest_weather import WeatherDataIngester
 
@@ -154,7 +166,10 @@ def ingest_slate_weather(slate: DailySlate) -> None:
     games = ingester._load_games_data(slate.season, slate.week)
     games = games.loc[games["game_id"].astype(str).isin(sorted(slate.game_ids))]
     ingester.ingest_week_forecast(
-        games, ingester._load_venue_data(), as_of_utc=datetime.now(UTC)
+        games,
+        ingester._load_venue_data(),
+        as_of_utc=datetime.now(UTC),
+        failed_games=slate.weather_failures,
     )
 
 
@@ -193,9 +208,13 @@ def build_slate_weather_features(slate: DailySlate) -> None:
 
     In scope: every earlier season; and, this season, every game that has kicked off, has a
     captured forecast, or is in the slate. A kicked-off game with no record becomes an explicit
-    no-observation row (as ``step_build_weather_features`` does for past weeks); a SLATE game with
-    no forecast is refused by the builder, because it is the game being priced. An unplayed game
-    with no capture is out of scope: it is not in tonight's gold either (it has no Elo row).
+    no-observation row (as ``step_build_weather_features`` does for past weeks). So does a SLATE
+    game with no forecast (step 27b, owner requirement: every slate game is predicted unless its
+    information genuinely cannot be scored): its weather is unknown -- blank, as gold represents
+    any unscorable cell -- and it is recorded by name with its reason in ``slate.weather_unknown``
+    and the run log (the daily entry point prints a ``WEATHER_UNKNOWN`` line for each). An
+    unplayed game with no capture outside the slate is out of scope: it is not in tonight's gold
+    either (it has no Elo row).
     """
     import pandas as pd
 
@@ -215,6 +234,13 @@ def build_slate_weather_features(slate: DailySlate) -> None:
         this_season & (kicked_off | recorded | in_slate)
     )
     unobserved = frozenset(ids[in_scope_mask & this_season & kicked_off & ~recorded])
+    for game_id in sorted(set(ids[in_slate & ~recorded])):
+        reason = slate.weather_failures.get(game_id, "no forecast was captured")
+        slate.weather_unknown[game_id] = reason
+        logger.warning(
+            "Slate game built with weather unknown", game_id=game_id, reason=reason
+        )
+    unobserved |= frozenset(slate.weather_unknown)
 
     features_df = WeatherFeaturesCalculator().build_weather_features(
         games_df=games_df.loc[in_scope_mask],
