@@ -18912,3 +18912,23 @@ P332_28_DRY_RUN_SOURCES: tuple[tuple[str, str], ...] = (
     ),
     ("the odds api", "NOT called: key blanked, mock mode (126 mock rows, 14 games)"),
 )
+
+# ---------------------------------------------------------------------------
+# THE TRAINER GOLD-LOAD PROVENANCE LINES, RE-MEASURED AFTER THE 33.2 REVIEW, BATCH 3.
+#
+# APPENDED on 2026-09-24 under the same APPEND-ONCE protocol; every earlier slot stays
+# BYTE-UNCHANGED as the record of where the four loads stood when it was measured.
+#
+# WHY ``models/train.py`` MOVED. A WR-02 applied the thread pin in ``models.train`` itself
+# (``pinned_thread_pool``, above ``main``) and wrapped ``main``'s training loop in it, and
+# IN-03 added ``_pooled_brier``; the gold load moved from line 907 to 972 and one indent
+# level deeper. The guard did not move out of ``main``. The three per-target trainers did
+# not move.
+# ---------------------------------------------------------------------------
+
+P332_REVIEW3_TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
+    ("models.train_wp", "main", 1146),
+    ("models.train_ats", "main", 1161),
+    ("models.train_ou", "main", 1421),
+    ("models.train", "main", 972),
+)

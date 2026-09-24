@@ -950,17 +950,91 @@ def main() -> None:
             )
 
     # Train each target, under the pin that gets recorded (WR-02).
+    all_results: dict[str, dict] = {}
+
     with pinned_thread_pool(thread_limit):
-        all_results = _train_targets(
-            args=args,
-            targets=targets,
-            config=config,
-            closing_odds_df=closing_odds_df,
-            exclude_groups=exclude_groups,
-            exclude_groups_provenance=exclude_groups_provenance,
-            group_verdict_digest=group_verdict_digest,
-            thread_limit=thread_limit,
-        )
+        for target in targets:
+            # Load feature matrix
+            features_path = Path(f"data/gold/features_{target}.parquet")
+            if not features_path.exists():
+                logger.error(
+                    "Feature matrix not found",
+                    target=target,
+                    path=str(features_path),
+                )
+                print(
+                    f"ERROR: Feature matrix not found at {features_path}. "
+                    f"Run the feature build pipeline first.",
+                    file=sys.stderr,
+                )
+                continue
+
+            features_df = pd.read_parquet(features_path)
+
+            # COLD-02 / T-33-18: the FOURTH gold-loading boundary, and the one that bypasses
+            # `load_dataframe` entirely. Refuse a PROVISIONAL Elo row as a TRAINING input
+            # here, immediately after the read and BEFORE the feature-group exclusion below --
+            # a provisional row excluded from the column set is still in the rows being fitted.
+            from features.elo_features import assert_no_provisional_training_rows
+
+            assert_no_provisional_training_rows(features_df, f"train:{target}")
+            logger.info(
+                "Loaded features",
+                target=target,
+                n_rows=len(features_df),
+                n_cols=len(features_df.columns),
+            )
+
+            # D30-01: apply the Stage-2 feature-group exclusion in memory, BEFORE train_target.
+            #
+            # The call is SKIPPED entirely on the empty default -- calling select_group_columns
+            # with no explicit exclude_groups is NOT equivalent, because its default is the
+            # Phase-28 GROUPS deny-list and would silently strip three whole families.
+            #
+            # group=None is the baseline-leg semantic: every column minus the excluded groups'
+            # columns, nothing re-admitted. select_group_columns returns a fresh copy, so
+            # data/gold is never touched (HARD BOUNDARY) and no second gold-shaped artifact is
+            # needed. train_target's signature is unchanged -- it already accepts any DataFrame.
+            #
+            # The before/after counts are logged around the call so the exclusion's real effect on
+            # the feature set is visible in the run log rather than inferred from a downstream
+            # artifact.
+            if exclude_groups:
+                n_cols_before = len(features_df.columns)
+                logger.info(
+                    "Applying feature-group exclusion",
+                    target=target,
+                    exclude_groups=list(exclude_groups),
+                    n_cols_before=n_cols_before,
+                )
+                features_df = select_group_columns(
+                    features_df, None, exclude_groups=exclude_groups
+                )
+                n_cols_after = len(features_df.columns)
+                logger.info(
+                    "Feature-group exclusion applied",
+                    target=target,
+                    exclude_groups=list(exclude_groups),
+                    n_cols_before=n_cols_before,
+                    n_cols_after=n_cols_after,
+                    n_cols_dropped=n_cols_before - n_cols_after,
+                )
+
+            result = train_target(
+                target=target,
+                features_df=features_df,
+                closing_odds_df=closing_odds_df,
+                config=config,
+                artifacts_dir=args.artifacts_dir,
+                tune=not args.no_tune,
+                exclude_groups=exclude_groups,
+                exclude_groups_provenance=exclude_groups_provenance,
+                gold_generation=args.gold_generation,
+                preregistered_search=args.tune,
+                group_verdict_digest=group_verdict_digest,
+                thread_limit=thread_limit,
+            )
+            all_results[target] = result
 
     # Print summary
     if all_results:
@@ -969,110 +1043,6 @@ def main() -> None:
         print("No models were trained. Check feature matrix availability.")
 
     print_run_record(all_results, thread_limit)
-
-
-def _train_targets(
-    *,
-    args: argparse.Namespace,
-    targets: list[str],
-    config: TemporalSplitConfig,
-    closing_odds_df: pd.DataFrame | None,
-    exclude_groups: tuple[str, ...],
-    exclude_groups_provenance: str,
-    group_verdict_digest: str | None,
-    thread_limit: int | None,
-) -> dict[str, dict]:
-    """Load each target's gold, apply the exclusion, and train it.
-
-    Returns:
-        Per-target training results from :func:`train_target`.
-    """
-    all_results: dict[str, dict] = {}
-
-    for target in targets:
-        # Load feature matrix
-        features_path = Path(f"data/gold/features_{target}.parquet")
-        if not features_path.exists():
-            logger.error(
-                "Feature matrix not found",
-                target=target,
-                path=str(features_path),
-            )
-            print(
-                f"ERROR: Feature matrix not found at {features_path}. "
-                f"Run the feature build pipeline first.",
-                file=sys.stderr,
-            )
-            continue
-
-        features_df = pd.read_parquet(features_path)
-
-        # COLD-02 / T-33-18: the FOURTH gold-loading boundary, and the one that bypasses
-        # `load_dataframe` entirely. Refuse a PROVISIONAL Elo row as a TRAINING input
-        # here, immediately after the read and BEFORE the feature-group exclusion below --
-        # a provisional row excluded from the column set is still in the rows being fitted.
-        from features.elo_features import assert_no_provisional_training_rows
-
-        assert_no_provisional_training_rows(features_df, f"train:{target}")
-        logger.info(
-            "Loaded features",
-            target=target,
-            n_rows=len(features_df),
-            n_cols=len(features_df.columns),
-        )
-
-        # D30-01: apply the Stage-2 feature-group exclusion in memory, BEFORE train_target.
-        #
-        # The call is SKIPPED entirely on the empty default -- calling select_group_columns
-        # with no explicit exclude_groups is NOT equivalent, because its default is the
-        # Phase-28 GROUPS deny-list and would silently strip three whole families.
-        #
-        # group=None is the baseline-leg semantic: every column minus the excluded groups'
-        # columns, nothing re-admitted. select_group_columns returns a fresh copy, so
-        # data/gold is never touched (HARD BOUNDARY) and no second gold-shaped artifact is
-        # needed. train_target's signature is unchanged -- it already accepts any DataFrame.
-        #
-        # The before/after counts are logged around the call so the exclusion's real effect on
-        # the feature set is visible in the run log rather than inferred from a downstream
-        # artifact.
-        if exclude_groups:
-            n_cols_before = len(features_df.columns)
-            logger.info(
-                "Applying feature-group exclusion",
-                target=target,
-                exclude_groups=list(exclude_groups),
-                n_cols_before=n_cols_before,
-            )
-            features_df = select_group_columns(
-                features_df, None, exclude_groups=exclude_groups
-            )
-            n_cols_after = len(features_df.columns)
-            logger.info(
-                "Feature-group exclusion applied",
-                target=target,
-                exclude_groups=list(exclude_groups),
-                n_cols_before=n_cols_before,
-                n_cols_after=n_cols_after,
-                n_cols_dropped=n_cols_before - n_cols_after,
-            )
-
-        result = train_target(
-            target=target,
-            features_df=features_df,
-            closing_odds_df=closing_odds_df,
-            config=config,
-            artifacts_dir=args.artifacts_dir,
-            tune=not args.no_tune,
-            exclude_groups=exclude_groups,
-            exclude_groups_provenance=exclude_groups_provenance,
-            gold_generation=args.gold_generation,
-            preregistered_search=args.tune,
-            group_verdict_digest=group_verdict_digest,
-            thread_limit=thread_limit,
-        )
-        all_results[target] = result
-
-    return all_results
 
 
 def print_run_record(results: dict[str, dict], thread_limit: int | None) -> None:

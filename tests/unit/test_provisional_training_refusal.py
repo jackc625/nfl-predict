@@ -60,6 +60,7 @@ from tests.fixtures.elo_sandbox import (
 from tests.phase33_state import (
     P332_23_TRAINER_GOLD_LOAD_SITES,
     P332_24C_TRAINER_GOLD_LOAD_SITES,
+    P332_REVIEW3_TRAINER_GOLD_LOAD_SITES,
     TRAINER_GOLD_LOAD_SITES,
 )
 
@@ -300,7 +301,12 @@ class TestTheGuardIsWiredAtEveryPinnedSite:
         # RE-POINTED AGAIN by Plan 33.2-24 step 24c at ``P332_24C_TRAINER_GOLD_LOAD_SITES``:
         # the three trainers' CLI default above each load became one shared call two lines
         # shorter, so each load moved up by two. Both earlier tuples stay unedited.
-        for module_name, _function_name, line in P332_24C_TRAINER_GOLD_LOAD_SITES:
+        #
+        # RE-POINTED AGAIN by the 33.2 review, batch 3, at
+        # ``P332_REVIEW3_TRAINER_GOLD_LOAD_SITES``: ``models.train`` gained the thread pin it
+        # records (WR-02), which wraps its training loop, so its load moved from 907 to 972.
+        assert len(P332_24C_TRAINER_GOLD_LOAD_SITES) == 4
+        for module_name, _function_name, line in P332_REVIEW3_TRAINER_GOLD_LOAD_SITES:
             path = Path(module_name.replace(".", "/") + ".py")
             assert path.is_file(), f"{path} does not exist"
             lines = path.read_text(encoding="utf-8").splitlines()
