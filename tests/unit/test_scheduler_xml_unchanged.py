@@ -34,11 +34,14 @@ from datetime import datetime, time
 
 SCHEDULER_PATH = pathlib.Path("deployment") / "windows_scheduler.xml"
 
-# Resolved from the committed file at test-authoring time (plan 31-17, 2026-09-06), which is the
-# same content Phase 21 documented and Phase 29 left BYTE-UNCHANGED when it registered its own
-# separate timeline-capture definition.
-EXPECTED_SHA256 = "ac93a32a07574eb2f3998439f600c5c4fa773998e39a347e381bdf0ca2a767ff"
-EXPECTED_BYTES = 6186
+# RE-PINNED DELIBERATELY by Plan 33.2-28 (2026-09-24): the weekly Friday trigger was REPLACED by a
+# daily trigger at 17:00 ahead of the 18:00 ET lock, the Arguments moved to the daily entry point,
+# and StartWhenAvailable became false. The edit route, not a sibling definition, because the
+# Friday run is replaced rather than supplemented (RESEARCH 11.1). Was: sha256
+# ac93a32a07574eb2f3998439f600c5c4fa773998e39a347e381bdf0ca2a767ff, 6186 bytes (plan 31-17).
+# What the file SAYS is asserted separately below, over the parsed tree.
+EXPECTED_SHA256 = "b098acc2b239f6af265b230481815e2f4a6cea75840294bfd8f0daac8499163e"
+EXPECTED_BYTES = 7946
 
 #: THE LOCK every scheduled run must beat: 18:00 ET on the day before each game (D33.2-01).
 LOCK_TIME_OF_DAY = time(18, 0)

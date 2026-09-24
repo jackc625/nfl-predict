@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """NFL Prediction System - Scheduling Setup Script.
 
-Sets up automated scheduling for the unified Friday pipeline on Windows via
-Task Scheduler. This is the single canonical installer: it registers the
-committed deployment/windows_scheduler.xml via `schtasks /create /xml ... /f`
-so the installer and the XML cannot drift (one automation story).
+Sets up the DAILY lock-time run on Windows via Task Scheduler (Plan 33.2-28). This is the single
+canonical installer: it registers the committed deployment/windows_scheduler.xml via
+`schtasks /create /xml ... /f` so the installer and the XML cannot drift (one automation story).
 
-Consolidates the old two-task approach (DataUpdate + Predictions) into a
-single NFL_Predict_Pipeline task at 6:00 PM ET on Fridays.
+The task keeps its name, NFL_Predict_Pipeline, so installing overwrites the weekly Friday
+definition in place: the weekly trigger cannot survive beside the daily one. It fires daily at
+5:00 PM local, which is 5:00 PM ET only on an Eastern machine -- so an install refuses any other
+Windows time zone.
 
 Usage:
     python deployment/setup_scheduling.py --platform windows --install
     python deployment/setup_scheduling.py --platform windows --dry-run
+    python deployment/setup_scheduling.py --platform windows --test [--rehearsal-date YYYY-MM-DD]
 """
 
 import argparse
+import os
 import platform
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 from utils.logging_config import get_logger
@@ -27,9 +31,48 @@ logger = get_logger(__name__)
 # Old task names to clean up during migration
 OLD_TASK_NAMES = ["NFL_Predict_DataUpdate", "NFL_Predict_Predictions"]
 
+#: The one scheduled task. Kept from the weekly era so /f overwrites that definition in place.
+TASK_NAME = "NFL_Predict_Pipeline"
+
+#: The entry point the committed XML schedules, relative to the project home.
+DAILY_ENTRY_POINT = "scripts/daily_lock_pipeline.py"
+
+#: The Windows time-zone id `tzutil /g` reports for Eastern time (it covers daylight time too).
+EASTERN_WINDOWS_ZONE = "Eastern Standard Time"
+
+#: A rehearsal is a real dry run of the collection stage; it needs more than a minute.
+REHEARSAL_TIMEOUT_SECONDS = 900
+
+
+class NonEasternTimeZoneError(RuntimeError):
+    """The machine is not on Eastern time, so the local-time trigger would fire at the wrong hour."""
+
+
+def read_windows_time_zone() -> str:
+    """The machine's Windows time-zone id, as `tzutil /g` reports it."""
+    result = subprocess.run(
+        ["tzutil", "/g"], capture_output=True, text=True, check=True
+    )
+    return result.stdout.strip()
+
+
+def require_eastern_time_zone(zone: str) -> None:
+    """Refuse any zone but Eastern: the trigger's StartBoundary carries no zone suffix.
+
+    Raises:
+        NonEasternTimeZoneError: *zone* is not :data:`EASTERN_WINDOWS_ZONE`.
+    """
+    if zone != EASTERN_WINDOWS_ZONE:
+        msg = (
+            f"this machine's time zone is {zone!r}, not {EASTERN_WINDOWS_ZONE!r}. The daily "
+            "trigger fires at 17:00 LOCAL time, which is one hour before the 18:00 ET lock only "
+            "on an Eastern machine; refusing to install."
+        )
+        raise NonEasternTimeZoneError(msg)
+
 
 class SchedulingSetup:
-    """Set up Friday-pipeline scheduling via the Windows Task Scheduler."""
+    """Set up the daily lock-time run via the Windows Task Scheduler."""
 
     def __init__(self, nfl_predict_home: str) -> None:
         """Initialize scheduling setup."""
@@ -55,12 +98,10 @@ class SchedulingSetup:
         """Validate that all prerequisites are met."""
         logger.info("Validating prerequisites...")
 
-        # Check for the unified pipeline script
-        if not (self.nfl_predict_home / "scripts" / "friday_pipeline.py").exists():
-            logger.error(
-                f"Friday pipeline script not found at "
-                f"{self.nfl_predict_home / 'scripts' / 'friday_pipeline.py'}"
-            )
+        # Check for the script the XML schedules
+        entry_point = self.nfl_predict_home / DAILY_ENTRY_POINT
+        if not entry_point.exists():
+            logger.error(f"Daily lock-time script not found at {entry_point}")
             return False
 
         # Check Python path
@@ -130,7 +171,7 @@ class SchedulingSetup:
         # fields here -- they would be silently ignored and could mislead a maintainer
         # into thinking editing them changes the schedule.
         tasks = [
-            {"name": "NFL_Predict_Pipeline"},
+            {"name": TASK_NAME},
         ]
 
         # Path to the canonical task definition (single source of truth, D-07)
@@ -178,43 +219,40 @@ class SchedulingSetup:
 
         return True
 
-    def test_scripts(self, dry_run: bool = True) -> bool:
-        """Test the unified pipeline script with dry-run."""
-        logger.info("Testing automation scripts...")
+    def test_scripts(self, rehearsal_date: date | None = None) -> bool:
+        """Rehearse the scheduled entry point with its own --dry-run: collection, no writes.
 
-        scripts = [
-            ("Unified Pipeline", "scripts/friday_pipeline.py"),
-        ]
+        Off-season there is nothing to collect for today, so pass *rehearsal_date* -- an
+        in-season ET day -- which becomes the entry point's --date. The Odds API key is blanked
+        for the rehearsal, which puts the odds client in mock mode: a rehearsal never spends the
+        paid request quota.
+        """
+        logger.info("Rehearsing the daily lock-time run (dry run, no writes)...")
 
-        for name, script in scripts:
-            logger.info(f"Testing {name} script...")
+        cmd = [self.python_path, DAILY_ENTRY_POINT, "--dry-run"]
+        if rehearsal_date is not None:
+            cmd += ["--date", rehearsal_date.isoformat()]
 
-            # Use --force for offseason testing (Pitfall 6)
-            cmd = [self.python_path, script, "--dry-run", "--force"]
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(self.nfl_predict_home),
+                capture_output=True,
+                text=True,
+                timeout=REHEARSAL_TIMEOUT_SECONDS,
+                env={**os.environ, "ODDS_API_KEY": ""},
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("Daily lock-time rehearsal timed out")
+            return False
+        except Exception as e:
+            logger.error(f"Error rehearsing the daily lock-time run: {e}")
+            return False
 
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=str(self.nfl_predict_home),
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-
-                if result.returncode == 0:
-                    logger.info(f"{name} script test passed")
-                else:
-                    logger.error(f"{name} script test failed: {result.stderr}")
-                    return False
-
-            except subprocess.TimeoutExpired:
-                logger.error(f"{name} script test timed out")
-                return False
-            except Exception as e:
-                logger.error(f"Error testing {name} script: {e}")
-                return False
-
-        logger.info("All script tests passed")
+        if result.returncode != 0:
+            logger.error(f"Daily lock-time rehearsal failed: {result.stderr}")
+            return False
+        logger.info("Daily lock-time rehearsal passed")
         return True
 
     def show_status(self) -> None:
@@ -258,7 +296,16 @@ def main():
         action="store_true",
         help="Show what would be done without making changes",
     )
-    parser.add_argument("--test", action="store_true", help="Test automation scripts")
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Rehearse the daily entry point with --dry-run (no writes)",
+    )
+    parser.add_argument(
+        "--rehearsal-date",
+        type=date.fromisoformat,
+        help="The ET day the --test rehearsal runs as (YYYY-MM-DD); use one in season",
+    )
     parser.add_argument(
         "--status", action="store_true", help="Show current scheduling status"
     )
@@ -296,7 +343,14 @@ def main():
         setup.show_status()
 
     if args.test:
-        success = setup.test_scripts(dry_run=True)
+        success = setup.test_scripts(rehearsal_date=args.rehearsal_date)
+
+    if args.install:
+        try:
+            require_eastern_time_zone(read_windows_time_zone())
+        except NonEasternTimeZoneError as exc:
+            logger.error(str(exc))
+            return 1
 
     if args.install or args.dry_run:
         success = setup.setup_windows_scheduler(dry_run=args.dry_run)
