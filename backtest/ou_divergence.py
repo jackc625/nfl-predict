@@ -36,6 +36,7 @@ ASCII only, no emoji (CLAUDE.md).
 from __future__ import annotations
 
 import itertools
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,7 @@ __all__ = [
     "DEBIAS_RESIDUAL_THRESHOLD",
     "DEPLOYED_OU_ARTIFACT",
     "EDGE_MAGNITUDE_GRID",
+    "HISTORICAL_LINE_SPORTSBOOKS",
     "N_FLOOR",
     "OU_BREAKEVEN_HIT_RATE",
     "SD_SENSITIVITY_BAND",
@@ -85,6 +87,7 @@ __all__ = [
     "extended_bucket_sweep",
     "integrity_preamble",
     "name_survivable_subpopulation",
+    "odds_information_time",
     "run_ou_divergence_diagnosis",
     "throwaway_ev_preview",
 ]
@@ -134,39 +137,124 @@ assert set(SPORTSBOOK_PREFERENCE) == set(_ALLOWED_SPORTSBOOKS), (
 )
 
 
-def dedupe_odds_by_book_preference(odds: pd.DataFrame) -> pd.DataFrame:
-    """One row per ``game_id``, choosing the book BY NAME rather than by file order (WR-08).
+#: The book labels of rows written by the HISTORICAL closing-line ingests. Such a row's only time is
+#: its ``snapshot_ts`` label (the frozen closing-line population, disclosed as such). Every other row
+#: is a LIVE capture, whose ``snapshot_ts`` is its game's lock and whose real information time is
+#: the instant it was captured, ``created_at`` (33.2 review C1 CR-02 / WR-01).
+HISTORICAL_LINE_SPORTSBOOKS: frozenset[str] = frozenset(
+    {"consensus", "consensus_median"}
+)
 
-    Rows are ranked by :data:`SPORTSBOOK_PREFERENCE` and the best-ranked row per game wins. A book
-    not in the preference ranks last (rather than being dropped), so an unrecognised label still
-    prices a game that has no preferred row -- the provenance allowlist is what refuses an
-    unrecognised book, and it does so by NAME, in its own place. A frame with no ``sportsbook``
-    column falls back to the previous first-row behaviour, because there is no preference to apply.
+_AWARE_UTC = "datetime64[ns, UTC]"
 
-    The sort is ``kind="mergesort"`` (stable), so ties within one book keep their stored order and
-    the result is reproducible.
+
+def _aware_instants(odds: pd.DataFrame, column: str) -> pd.Series:
+    """*column* parsed strictly to tz-aware UTC (NaT where null); a naive value raises."""
+    if column not in odds.columns:
+        return pd.Series(pd.NaT, index=odds.index, dtype=_AWARE_UTC)
+    # Deferred: scripts.ingest_historical_odds cycles back through backtest.bet_selector.
+    from scripts.ingest_historical_odds import require_aware_snapshot_ts
+
+    return pd.Series(
+        [None if pd.isna(v) else require_aware_snapshot_ts(v) for v in odds[column]],
+        index=odds.index,
+        dtype=_AWARE_UTC,
+    )
+
+
+def odds_information_time(odds: pd.DataFrame) -> pd.Series:
+    """When each stored line was KNOWN, as tz-aware UTC (NaT when nothing says).
+
+    A live capture's ``snapshot_ts`` is its game's lock, a LABEL shared by every capture of that
+    game, so it cannot tell an opening line from the lock-day one. Its ``created_at`` is the
+    instant the response was observed -- the real information time. A historical row carries only
+    its ``snapshot_ts`` label (see :data:`HISTORICAL_LINE_SPORTSBOOKS`). A frame with no
+    ``sportsbook`` column is read by its labels, as it always was.
+    """
+    label = _aware_instants(odds, "snapshot_ts")
+    if "sportsbook" not in odds.columns:
+        return label
+    captured = _aware_instants(odds, "created_at")
+    historical = odds["sportsbook"].astype(str).isin(HISTORICAL_LINE_SPORTSBOOKS)
+    return label.where(historical, captured)
+
+
+def dedupe_odds_by_book_preference(
+    odds: pd.DataFrame,
+    locks: Mapping[str, Any] | pd.Series | None = None,
+    *,
+    keep_inadmissible: bool = False,
+) -> pd.DataFrame:
+    """One row per ``game_id``: the LATEST line known at or before the game's lock.
+
+    THE SELECTION IS ON INFORMATION TIME FIRST (33.2 review A WR-01 = C1 WR-01). The live store
+    ACCUMULATES captures (Plan 33.2-27), and ranking only by book with a stable sort picked the
+    OLDEST capture of the preferred book -- an opening line beat the lock-day one -- and never
+    looked at when a line was known. Rows are now ordered by :func:`odds_information_time`, latest
+    first; the book is only a TIE-BREAK, by :data:`SPORTSBOOK_PREFERENCE` (WR-08: by NAME, never
+    by file order), then by name, then by the later ``created_at``. A book outside the preference
+    ranks after it rather than being dropped -- the provenance allowlist refuses an unrecognised
+    book by name, in its own place.
+
+    With *locks*, a row is ADMISSIBLE only when its information time is known and AT or BEFORE its
+    game's lock (``<=``, as ``utils.game_lock.is_admissible``); a game with no admissible row gets
+    no row at all -- never a later one. Without *locks* (historical callers whose own fence runs
+    elsewhere) nothing is filtered.
 
     Args:
         odds: The stored odds rows, possibly several per game.
+        locks: ``game_id -> lock`` (``utils.game_lock.lock_frame`` or a dict), or None.
+        keep_inadmissible: With *locks*, rank admissible rows first instead of dropping the rest,
+            so a game whose every line post-dates its lock keeps one row for a downstream
+            freshness fence to NAME as stale (the weekly bet list's selector) rather than
+            vanish. That row is never priced: the fence suppresses it.
 
     Returns:
         One row per ``game_id``, with the frame's original columns and a reset index.
     """
-    if odds.empty or "sportsbook" not in odds.columns:
-        return odds.drop_duplicates(subset=["game_id"], keep="first").reset_index(
-            drop=True
+    if odds.empty:
+        return odds.reset_index(drop=True)
+
+    ranked = odds.copy()
+    ranked["_information_time"] = odds_information_time(ranked)
+    ranked["_admissible"] = True
+    if locks is not None:
+        lock = pd.to_datetime(ranked["game_id"].astype(str).map(locks), utc=True)
+        admissible = ranked["_information_time"].notna() & (
+            ranked["_information_time"] <= lock
         )
+        ranked["_admissible"] = admissible.fillna(False).astype(bool)
+        if not keep_inadmissible:
+            ranked = ranked.loc[ranked["_admissible"]]
 
     ranks = {book: index for index, book in enumerate(SPORTSBOOK_PREFERENCE)}
-    unknown_rank = len(SPORTSBOOK_PREFERENCE)
-    ranked = odds.copy()
-    ranked["_book_rank"] = (
-        ranked["sportsbook"].astype(str).map(ranks).fillna(unknown_rank).astype(int)
+    has_book = "sportsbook" in ranked.columns
+    books = (
+        ranked["sportsbook"].astype(str)
+        if has_book
+        else pd.Series("", index=ranked.index)
     )
+    ranked["_book_rank"] = (
+        books.map(ranks).fillna(len(SPORTSBOOK_PREFERENCE)).astype(int)
+    )
+    ranked["_book_name"] = books
+    ranked["_captured"] = _aware_instants(ranked, "created_at")
+    helper_columns = [
+        "_admissible",
+        "_information_time",
+        "_book_rank",
+        "_book_name",
+        "_captured",
+    ]
     return (
-        ranked.sort_values(["game_id", "_book_rank"], kind="mergesort")
+        ranked.sort_values(
+            ["game_id", *helper_columns],
+            ascending=[True, False, False, True, True, False],
+            na_position="last",
+            kind="mergesort",
+        )
         .drop_duplicates(subset=["game_id"], keep="first")
-        .drop(columns="_book_rank")
+        .drop(columns=helper_columns)
         .reset_index(drop=True)
     )
 

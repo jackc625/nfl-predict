@@ -339,3 +339,53 @@ class TestAllExcludedIsNotUnscheduled:
                 silver_dir=silver,
                 excluded_game_ids=frozenset(_GAME_IDS),
             )
+
+
+class TestTheWeeklyListPricesTheLatestPreLockCapture:
+    """33.2 review A WR-01 / C1 CR-02, on the REAL candidate builder.
+
+    Live captures accumulate and all carry ``snapshot_ts = lock``. The bet must be priced at the
+    latest capture known at the lock, and the selector's freshness fence must see that capture's
+    REAL time -- never the lock label, which always passes.
+    """
+
+    def test_the_lock_day_capture_prices_the_game_and_its_capture_time_is_carried(
+        self, sandbox
+    ) -> None:
+        silver, gold, artifacts, _recorder = sandbox
+        lock = pd.Timestamp("2026-09-19T22:00:00Z")  # Saturday 18:00 ET, Sunday games
+        live = _GAME_IDS[0]
+        stored = pd.read_parquet(silver / "odds_snapshot.parquet")
+        captures = pd.DataFrame(
+            {
+                "game_id": [live] * 3,
+                "snapshot_ts": [lock.isoformat()] * 3,
+                "created_at": pd.to_datetime(
+                    [
+                        "2026-09-16T15:00:00Z",  # opening line
+                        "2026-09-19T21:00:00Z",  # lock day, before the lock
+                        "2026-09-19T23:00:00Z",  # after the lock
+                    ],
+                    utc=True,
+                ),
+                "ml_home": [-130.0] * 3,
+                "ml_away": [110.0] * 3,
+                "spread": [-2.5, -4.0, -9.0],
+                "total": [45.0] * 3,
+                "sportsbook": ["draftkings"] * 3,
+                "is_live": [False] * 3,
+            }
+        )
+        others = stored[stored["game_id"] != live]
+        pd.concat([captures, others], ignore_index=True).to_parquet(
+            silver / "odds_snapshot.parquet", index=False
+        )
+
+        candidates, _schedule = build_weekly_candidates(
+            SEASON, WEEK, artifacts_dir=artifacts, gold_dir=gold, silver_dir=silver
+        )
+        row = candidates[
+            (candidates["game_id"] == live) & (candidates["target"] == "ats")
+        ].iloc[0]
+        assert row["closing_spread"] == -4.0
+        assert pd.Timestamp(row["snapshot_ts"]) == pd.Timestamp("2026-09-19T21:00:00Z")

@@ -23,6 +23,7 @@ import pandas as pd
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+import utils.game_lock as lock_rule
 from backtest.ou_divergence import dedupe_odds_by_book_preference
 from models.artifacts import load_model_artifact
 from models.blending import (
@@ -89,6 +90,21 @@ def load_gold_features(
 # ---------------------------------------------------------------------------
 
 
+def _game_locks(game_ids: list[str]) -> pd.Series:
+    """Each requested game's lock, from silver ``games`` through THE one rule. READ ONLY.
+
+    Raises:
+        FileNotFoundError: when the silver schedule is absent -- a market line cannot be judged
+            admissible for a game whose lock cannot be established.
+    """
+    games_path = Path("data/silver/games.parquet")
+    if not games_path.exists():
+        msg = f"cannot fence market lines at each game's lock -- schedule missing: {games_path}"
+        raise FileNotFoundError(msg)
+    games = pd.read_parquet(games_path, columns=["game_id", "kickoff_et"])
+    return lock_rule.lock_frame(games.loc[games["game_id"].isin(game_ids)])
+
+
 def load_market_data(game_ids: list[str]) -> pd.DataFrame:
     """Load market data from silver odds snapshot, filtered to given game_ids.
 
@@ -130,11 +146,12 @@ def load_market_data(game_ids: list[str]) -> pd.DataFrame:
     odds_df["game_id"] = odds_df["game_id"].apply(_normalize_game_id)
     filtered = odds_df[odds_df["game_id"].isin(game_ids)].copy()
 
-    # One row per game, choosing the BOOK by name rather than by parquet row order (WR-08).
-    # ``keep="first"`` picked whichever row appeared first in the file, so appending a second
-    # book's row for a game silently changed which book's price the published prediction was
-    # struck at. The dedupe runs BEFORE the column projection because it reads ``sportsbook``.
-    filtered = dedupe_odds_by_book_preference(filtered)
+    # One row per game: the LATEST line known at or before the game's own lock, the book only a
+    # tie-break (33.2 review C1 WR-01). This used to rank by book and file order with NO lock
+    # fence, so the published market line, blend and edges were struck at the OLDEST capture
+    # -- or at a post-lock one. A game with no admissible line is published with no market side.
+    # The dedupe runs BEFORE the column projection because it reads the provenance columns.
+    filtered = dedupe_odds_by_book_preference(filtered, locks=_game_locks(game_ids))
     cols_needed = ["game_id", "spread", "total", "ml_home", "ml_away"]
     available_cols = [c for c in cols_needed if c in filtered.columns]
     filtered = filtered[available_cols]

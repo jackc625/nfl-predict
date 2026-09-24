@@ -167,3 +167,103 @@ def test_the_verdict_runner_refuses_a_fan_out_rather_than_double_counting() -> N
         "the post-join length assertion is gone, so a fan-out introduced another way would pass "
         "silently"
     )
+
+
+# ---------------------------------------------------------------------------
+# 33.2 review A WR-01 / C1 WR-01: the latest line known at the lock wins; the book breaks ties
+# ---------------------------------------------------------------------------
+
+_LIVE_GAME = "2026_W04_DAL@PHI"
+_LOCK = pd.Timestamp("2026-09-26T22:00:00Z")  # Saturday 18:00 ET before a Sunday game
+
+
+def _capture(book: str, created_at: str, spread: float) -> dict[str, object]:
+    """One accumulated live capture: snapshot_ts is the lock LABEL, created_at the capture."""
+    return {
+        "game_id": _LIVE_GAME,
+        "sportsbook": book,
+        "snapshot_ts": _LOCK,
+        "created_at": pd.Timestamp(created_at),
+        "spread": spread,
+    }
+
+
+def test_the_latest_pre_lock_capture_wins_over_an_older_one_of_the_same_book() -> None:
+    """The store appends, so the OLDEST capture sat first in the file and used to win."""
+    frame = pd.DataFrame(
+        [
+            _capture("draftkings", "2026-09-23T15:00:00Z", -2.5),  # opening line
+            _capture("draftkings", "2026-09-26T21:00:00Z", -4.0),  # lock day, pre-lock
+            _capture("draftkings", "2026-09-26T23:00:00Z", -9.0),  # after the lock
+        ]
+    )
+    chosen = dedupe_odds_by_book_preference(frame, locks={_LIVE_GAME: _LOCK})
+    assert len(chosen) == 1
+    assert chosen.iloc[0]["spread"] == pytest.approx(-4.0)
+
+
+def test_a_capture_exactly_at_the_lock_is_admissible_and_one_second_later_is_not() -> (
+    None
+):
+    at_lock = pd.DataFrame([_capture("fanduel", "2026-09-26T22:00:00Z", -3.0)])
+    late = pd.DataFrame([_capture("fanduel", "2026-09-26T22:00:01Z", -3.0)])
+    assert len(dedupe_odds_by_book_preference(at_lock, locks={_LIVE_GAME: _LOCK})) == 1
+    assert dedupe_odds_by_book_preference(late, locks={_LIVE_GAME: _LOCK}).empty
+
+
+def test_the_book_only_breaks_a_tie_in_capture_time() -> None:
+    same_instant = "2026-09-26T21:00:00Z"
+    frame = pd.DataFrame(
+        [
+            _capture("fanduel", "2026-09-25T21:00:00Z", -1.0),  # older, any book
+            _capture("mybookieag", same_instant, -5.0),
+            _capture("betmgm", same_instant, -6.0),
+            _capture("draftkings", same_instant, -7.0),
+        ]
+    )
+    chosen = dedupe_odds_by_book_preference(frame, locks={_LIVE_GAME: _LOCK})
+    assert chosen.iloc[0]["sportsbook"] == "draftkings"
+
+    no_preferred = frame[frame["sportsbook"] != "draftkings"].iloc[::-1]
+    chosen = dedupe_odds_by_book_preference(no_preferred, locks={_LIVE_GAME: _LOCK})
+    assert chosen.iloc[0]["sportsbook"] == "betmgm", "by name, never by file order"
+
+
+def test_a_historical_row_is_judged_by_its_snapshot_label() -> None:
+    """A consensus row's created_at is its ingest date; its only time is the label."""
+    frame = pd.DataFrame(
+        [
+            {
+                "game_id": _LIVE_GAME,
+                "sportsbook": "consensus",
+                "snapshot_ts": "2026-09-25T22:00:00+00:00",
+                "created_at": pd.Timestamp("2027-02-20T00:00:00Z"),
+                "spread": -3.5,
+            }
+        ]
+    )
+    chosen = dedupe_odds_by_book_preference(frame, locks={_LIVE_GAME: _LOCK})
+    assert chosen.iloc[0]["spread"] == pytest.approx(-3.5)
+
+
+def test_the_serving_market_line_reads_the_latest_pre_lock_capture(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.generate_current_week_predictions import load_market_data
+
+    silver = tmp_path / "data" / "silver"
+    silver.mkdir(parents=True)
+    pd.DataFrame(
+        {"game_id": [_LIVE_GAME], "kickoff_et": [pd.Timestamp("2026-09-27T17:00:00Z")]}
+    ).to_parquet(silver / "games.parquet", index=False)
+    pd.DataFrame(
+        [
+            _capture("draftkings", "2026-09-23T15:00:00Z", -2.5),
+            _capture("draftkings", "2026-09-26T21:00:00Z", -4.0),
+            _capture("draftkings", "2026-09-26T23:00:00Z", -9.0),
+        ]
+    ).to_parquet(silver / "odds_snapshot.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+
+    market = load_market_data([_LIVE_GAME])
+    assert market.set_index("game_id").loc[_LIVE_GAME, "spread"] == pytest.approx(-4.0)

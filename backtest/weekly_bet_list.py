@@ -120,7 +120,10 @@ from backtest.corrected_cold_start_constants import (
 )
 from backtest.corrected_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
 from backtest.ev_chain_constants import assign_ev_tier
-from backtest.ou_divergence import dedupe_odds_by_book_preference
+from backtest.ou_divergence import (
+    dedupe_odds_by_book_preference,
+    odds_information_time,
+)
 from backtest.ou_ev_chain import american_to_payout
 from backtest.selector_strategies import default_strategies
 from utils import get_logger
@@ -792,11 +795,20 @@ def build_weekly_candidates(
         msg = f"cannot price the weekly bet list -- odds snapshot missing: {odds_path.as_posix()}"
         raise FileNotFoundError(msg)
     odds = pd.read_parquet(odds_path)
-    # The book is chosen BY NAME, not by parquet row order (WR-08). ``keep="first"`` picked
-    # whichever row happened to appear first in the file, so appending a second book's row for a
-    # game -- or any rewrite that changed row order -- silently changed which book's price the
-    # published bet was struck at, with nothing on the record to attribute the change to.
-    odds = dedupe_odds_by_book_preference(odds[odds["game_id"].isin(game_ids)])
+    # ONE ROW PER GAME: the LATEST line known at or before the game's own lock, the book only a
+    # tie-break (33.2 review A WR-01). The live store accumulates captures, and choosing by book
+    # and file order priced the bet at the OLDEST capture. A game whose every line post-dates its
+    # lock keeps one, so the selector's fence below names it ``stale_line`` -- never prices it.
+    locks = dict(
+        zip(schedule["game_id"].astype(str), _game_locks(schedule), strict=True)
+    )
+    odds = dedupe_odds_by_book_preference(
+        odds[odds["game_id"].isin(game_ids)], locks=locks, keep_inadmissible=True
+    )
+    # The selector's freshness fence reads ``snapshot_ts``. For a live capture that column is the
+    # lock LABEL, which always passes; hand the fence the line's REAL information time -- the
+    # capture instant -- instead (33.2 review C1 CR-02). A historical row keeps its label.
+    odds["snapshot_ts"] = odds_information_time(odds)
 
     slope = _bound_spread_slope(artifacts_dir)
     frames: list[pd.DataFrame] = []
@@ -906,8 +918,10 @@ def _game_locks(schedule: pd.DataFrame) -> list[datetime]:
     """
     from scripts.ingest_historical_odds import gameday_lock, require_aware_snapshot_ts
 
+    # The gameday is passed UNCHANGED (33.2 review A IN-04): ``str(None)`` is ``"None"``, which
+    # turned a missing kickoff into a parse error instead of the named MissingKickoffError.
     return [
-        require_aware_snapshot_ts(gameday_lock(str(gameday)))
+        require_aware_snapshot_ts(gameday_lock(gameday))
         for gameday in schedule["gameday"]
     ]
 
