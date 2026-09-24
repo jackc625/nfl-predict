@@ -18862,3 +18862,53 @@ P332_20_CLEAN_BUILD_LADDER_WIDTHS: tuple[int, int, int] = (188, 188, 187)
 
 P332_27_WEATHER_SCHEMA_NEW_FIELDS: tuple[str, ...] = ("model_run_available_at",)
 P332_27_WEATHER_SCHEMA_FIELDS_AFTER_MODEL_STAMP: int = 31
+
+# ---------------------------------------------------------------------------
+# THE DAILY SCHEDULER DEFINITION AND ITS NO-WRITE DRY RUN (Plan 33.2-28 Task 3).
+#
+# APPENDED 2026-09-24. Nothing above this line was edited. deployment/windows_scheduler.xml was
+# re-pinned deliberately (commit 6ebd282): the weekly Friday 18:00 trigger became a daily 17:00
+# trigger at scripts/daily_lock_pipeline.py with StartWhenAvailable false. The task name is
+# unchanged, so an install overwrites the weekly definition in place.
+#
+# The dry run: `uv run python -m scripts.daily_lock_pipeline --dry-run --date 2026-09-26` with
+# ODDS_API_KEY blanked (the odds client in mock mode: no paid-quota request), run 2026-09-24
+# 04:34Z. data/, artifacts/ and config/ (and logs/, outputs/) were content-digested before and
+# after: unchanged.
+# ---------------------------------------------------------------------------
+
+P332_28_SCHEDULER_SHA256: str = (
+    "b098acc2b239f6af265b230481815e2f4a6cea75840294bfd8f0daac8499163e"
+)
+P332_28_SCHEDULER_BYTES: int = 7946
+P332_28_SCHEDULED_TASK_NAME: str = "NFL_Predict_Pipeline"
+P332_28_DAILY_TRIGGER_LOCAL_TIME: str = "17:00"
+
+#: The dry run's output contract, verbatim.
+P332_28_DRY_RUN_CONTRACT: tuple[tuple[str, str], ...] = (
+    ("DRY_RUN", "True"),
+    ("WRITES", "0"),
+    ("INTENDED_WRITES", "10"),
+    ("LOCK_PASSED_BEFORE_COLLECTION", "0"),
+    ("DECISION_TIME_BRANCH", "finish-before-lock"),
+    ("NEXT_DAY_GAMES", "14"),
+)
+
+#: What each source did in the dry run (run date 2026-09-26, slate = Sunday 2026-09-27, week 3).
+P332_28_DRY_RUN_SOURCES: tuple[tuple[str, str], ...] = (
+    (
+        "nflverse schedule",
+        "capture skipped by name (no-write run); ingested 272 rows from the latest live "
+        "capture, captured_at_utc 2026-09-05T04:44:22Z",
+    ),
+    ("open-meteo forecast", "answered for all 14 slate games (14 rows)"),
+    (
+        "nflverse snap counts",
+        "answered: 2994 rows, 32 games, upstream_captured_at 2026-09-22T11:01:50Z",
+    ),
+    (
+        "nflverse injuries",
+        "answered: 455 rows, 33 games, upstream_captured_at 2026-09-23T12:43:57Z",
+    ),
+    ("the odds api", "NOT called: key blanked, mock mode (126 mock rows, 14 games)"),
+)
