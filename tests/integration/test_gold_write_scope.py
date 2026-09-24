@@ -84,6 +84,19 @@ def gold_lake(tmp_path, monkeypatch):
     (it takes the SAME ``combined_df``), and disabling it keeps the test hermetic.
     """
     monkeypatch.setattr(storage_mod, "_parquet_manager", ParquetManager(str(tmp_path)))
+    # THE LEAK THE 33.2 REVIEW (batch 3) FOUND. ``load_dataframe``'s "auto" source asks the
+    # MODULE-GLOBAL DuckDB connection first, and only this fixture's patched bindings forced
+    # parquet. ``features.team_form`` (and ``features.contextual``) read through their OWN
+    # binding, so a sandbox build read the developer's PRODUCTION team_form_features (26,290
+    # rows) when this module ran alone -- and the sandbox parquet when an earlier test in the
+    # session had left the global connection unable to see that table. Same test, two answers,
+    # decided by test order. The global connection now points at an empty sandbox database,
+    # so every "auto" read in the build falls through to THIS lake, whatever ran first.
+    monkeypatch.setattr(
+        storage_mod,
+        "_db_connection",
+        storage_mod.DuckDBConnection(str(tmp_path / "sandbox.duckdb")),
+    )
 
     real_save = storage_mod.save_dataframe
 
@@ -584,7 +597,17 @@ def _sandbox_team_form(games: pd.DataFrame) -> pd.DataFrame:
     frame that was unrealistically thin. Production silver team form carries about twenty
     rolling metrics and only the three raw EPA ones are replaced, so the sandbox now
     carries a metric that SURVIVES, exactly as production does.
+
+    EVERY ROLLING COLUMN PRODUCTION CARRIES (33.2 review, batch 3). The team-form supplier's
+    ``no_information_signature`` names the full ``{home,away}_{off,def}_rolling_*`` layout,
+    and the gate refuses a signature naming a column the source frame does not carry. With
+    only two metrics here, the build passed ONLY while this module read the developer's
+    production ``team_form_features`` through the global DuckDB connection -- the leak the
+    ``gold_lake`` fixture now closes. The sandbox therefore carries the whole
+    ``features.team_form.ROLLING_COLUMNS`` vocabulary, as production silver does.
     """
+    from features.team_form import ROLLING_COLUMNS
+
     later = games[games["season"] == games["season"].max()]
     return pd.DataFrame(
         [
@@ -593,8 +616,10 @@ def _sandbox_team_form(games: pd.DataFrame) -> pd.DataFrame:
                 "target_season": int(row.season),
                 "target_week": int(row.week),
                 "side": side,
-                "rolling_epa_per_play": 0.05 + (idx % 7) / 100,
-                "rolling_success_rate": 0.44 + (idx % 5) / 100,
+                **{
+                    column: 0.05 + ((idx + offset) % 7) / 100
+                    for offset, column in enumerate(ROLLING_COLUMNS)
+                },
             }
             for idx, row in enumerate(later.itertuples())
             for team in (row.home_team, row.away_team)

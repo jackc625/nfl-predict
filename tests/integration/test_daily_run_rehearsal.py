@@ -305,6 +305,25 @@ def make_rehearsal(
         root = tmp_path / name
         _write_schedule(root, schedule)
         os.chdir(root)
+        # THE STORAGE SINGLETONS FOLLOW THE SANDBOX TOO (33.2 review, batch 3). Moving the
+        # working directory re-roots every RELATIVE read, but ``data.storage`` keeps a
+        # module-global ParquetManager and DuckDB connection, created once per process at
+        # whatever root was current then. After an earlier test in the session created them
+        # against the repository, this run's ``load_dataframe`` reads went to PRODUCTION
+        # silver while the schedule resolver read the sandbox, and the run refused with "the
+        # resolver and the slate selector disagree" -- a failure decided by test order.
+        from data import storage as storage_mod
+
+        monkeypatch.setattr(
+            storage_mod,
+            "_parquet_manager",
+            storage_mod.ParquetManager(str(root / "data")),
+        )
+        monkeypatch.setattr(
+            storage_mod,
+            "_db_connection",
+            storage_mod.DuckDBConnection(str(root / "data" / "sandbox.duckdb")),
+        )
         rehearsal = Rehearsal(root=root, monkeypatch=monkeypatch, capsys=capsys)
         _install_stand_ins(rehearsal)
         return rehearsal
