@@ -831,3 +831,46 @@ def test_the_detail_badge_grades_a_tie_and_a_missing_pick_as_neither() -> None:
     # The controls: a decided game still grades.
     assert "Correct" in _detail_for(27, 20, 0.70)
     assert "Incorrect" in _detail_for(27, 20, 0.30)
+
+
+def test_the_wp_brier_card_shows_the_brier_score_and_never_the_mae() -> None:
+    """33.2 review C2 WR-06: the "WP Brier Score" card showed the WP MAE.
+
+    The backtest outputs carry no WP Brier score, and the summary averaged in ``mae`` "as a
+    proxy" -- 0.4316 for 2021 under the Brier label. Population now derives the real Brier score
+    from the stored predictions, and the summary reads ``brier_score`` only.
+    """
+    import duckdb
+    import pytest as _pytest
+
+    from api.cache import CACHE_SCHEMA, _load_wp_brier_scores
+    from api.routes.pages import _compute_summary
+    from api.services import DataService, clear_cache
+
+    clear_cache()
+    conn = duckdb.connect(":memory:")
+    for statement in CACHE_SCHEMA.strip().split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    conn.executemany(
+        "INSERT INTO backtest_predictions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("2021_W01_A@B", 2021, 1, "wp", 0.8, 1.0, None, None),
+            ("2021_W01_C@D", 2021, 1, "wp", 0.3, 1.0, None, None),
+            ("2021_W01_A@B", 2021, 1, "ats", 3.0, 7.0, None, None),
+        ],
+    )
+    conn.execute("INSERT INTO backtest_metrics VALUES (2021, 'wp', 'mae', 0.45)")
+
+    # MAE only: the card has no Brier score to show, so it shows none.
+    assert _compute_summary(DataService(conn))["brier_score"] is None
+
+    assert _load_wp_brier_scores(conn) == 1
+    clear_cache()
+    brier = _compute_summary(DataService(conn))["brier_score"]
+    assert brier == _pytest.approx(((0.8 - 1.0) ** 2 + (0.3 - 1.0) ** 2) / 2)
+    assert brier != _pytest.approx(0.45)
+
+    # A Brier score the outputs already carry is left as written.
+    assert _load_wp_brier_scores(conn) == 0
+    conn.close()

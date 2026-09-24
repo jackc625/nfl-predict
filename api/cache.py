@@ -482,6 +482,41 @@ def _load_season_metrics(
     return len(rows)
 
 
+def _load_wp_brier_scores(conn: duckdb.DuckDBPyConnection) -> int:
+    """Derive each season's WP Brier score from the stored backtest predictions.
+
+    THE REAL BRIER SCORE, NOT THE MAE (33.2 review C2 WR-06). Neither ``season_metrics.csv`` nor
+    ``metrics_summary.json`` carries a WP Brier score, so ``/performance`` filled its "WP Brier
+    Score" card with the WP mean ABSOLUTE error (0.4316 for 2021) under the Brier label. The
+    Brier score is ``mean((p - y)^2)`` over the season's WP predictions, taken HERE, at population
+    time, from ``backtest_predictions`` -- the request path computes nothing (UIAP-01) -- and
+    stored as ``(season, "wp", "brier_score")`` beside the season's other metrics. A metric row
+    the backtest outputs already carry is left as written.
+
+    Must run after :func:`_load_backtest_predictions` and :func:`_load_season_metrics`.
+
+    Returns:
+        The number of season rows inserted.
+    """
+    before = conn.execute("SELECT COUNT(*) FROM backtest_metrics").fetchone()
+    conn.execute(
+        """
+        INSERT INTO backtest_metrics
+        SELECT season, 'wp', 'brier_score', AVG((model_prob - actual) * (model_prob - actual))
+        FROM backtest_predictions
+        WHERE target = 'wp' AND model_prob IS NOT NULL AND actual IS NOT NULL
+          AND season > 0
+          AND season NOT IN (
+              SELECT season FROM backtest_metrics
+              WHERE target = 'wp' AND metric_name = 'brier_score'
+          )
+        GROUP BY season
+        """
+    )
+    after = conn.execute("SELECT COUNT(*) FROM backtest_metrics").fetchone()
+    return int(after[0] if after else 0) - int(before[0] if before else 0)
+
+
 def _load_simulation_results(
     conn: duckdb.DuckDBPyConnection,
     outputs_dir: Path,
@@ -2702,6 +2737,9 @@ def populate_cache(
 
         sm_count = _load_season_metrics(conn, outputs_dir)
         logger.info("Season metrics loaded", count=sm_count)
+
+        brier_count = _load_wp_brier_scores(conn)
+        logger.info("WP Brier scores derived", seasons=brier_count)
 
         sr_count = _load_simulation_results(conn, outputs_dir)
         logger.info("Simulation results loaded", count=sr_count)

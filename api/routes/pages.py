@@ -658,11 +658,13 @@ def _compute_summary(service: Any) -> dict[str, Any]:
     """
     all_metrics = service.get_backtest_metrics()
 
+    # ``brier_score`` is None until a Brier score is measured: the card renders "--", never a
+    # zero and never another metric under the Brier label (33.2 review C2 WR-06).
     summary: dict[str, Any] = {
         "total_games": 0,
         "overall_clv": 0.0,
         "wp_accuracy": 0.0,
-        "brier_score": 0.0,
+        "brier_score": None,
     }
 
     if not all_metrics:
@@ -688,8 +690,10 @@ def _compute_summary(service: Any) -> dict[str, Any]:
         if target == "wp":
             if metric_name == "accuracy":
                 wp_accuracy_values.append(float(metric_value))
-            elif metric_name in ("brier_score", "mae"):
-                # Use MAE as proxy if brier_score not available
+            elif metric_name == "brier_score":
+                # The Brier score ONLY. The MAE used to be averaged in "as a proxy", so the card
+                # labelled "WP Brier Score" printed the mean absolute error (33.2 review C2
+                # WR-06); population now derives the real one (api.cache._load_wp_brier_scores).
                 wp_brier_values.append(float(metric_value))
 
     # Compute CLV from predictions. Require has_closing_odds is explicitly
