@@ -9,7 +9,7 @@ Provides:
     - WP: Log-odds space blending via logit/expit (D-01)
     - ATS: Linear interpolation in spread-point space
     - O/U: Linear interpolation in total-point space
-  Plus weight tuning, edge calibration, and artifact management.
+  Plus weight tuning, the weekly edge-rate diagnostic, and artifact management.
 
 The log-odds approach for WP ensures that blending respects the
 non-linear nature of probabilities -- a 50/50 blend of 0.9 and 0.1
@@ -59,9 +59,9 @@ from models.market_probability import (
     MarketProbabilityArtifactError,
     load_market_probability_artifact,
     market_home_win_probability,
+    oof_market_probability,
 )
 from utils import get_logger
-from utils.probability_utils import moneyline_to_probability
 
 logger = get_logger(__name__)
 
@@ -88,6 +88,20 @@ class MarketProbabilityUnavailable(Exception):
     A caller that genuinely wants the model's own unblended probability asks for it by name
     through :meth:`MarketBlender.unblended_wp_predictions`, so the intent is in the call
     rather than in an absence.
+
+    The ATS and O/U frame blends raise it too, for the same reason: a game with no market
+    line has no market opinion, and a column holding blended values for some games and raw
+    model values for others holds two models' outputs (A33.2-review IN-09).
+    """
+
+
+class DuplicateMarketRowError(ValueError):
+    """A market frame handed to a blend carries more than one row for a game.
+
+    A repeated ``game_id`` makes the left merge in :meth:`MarketBlender.blend_predictions`
+    return more rows than the predictions it blends, so the blended values no longer line up
+    with the games they were computed for (A33.2-review IN-09). A ``ValueError`` so the
+    serving paths' ``(KeyError, FileNotFoundError)`` fallback cannot swallow it.
     """
 
 
@@ -139,6 +153,35 @@ class IncompleteBlendProvenanceError(Exception):
 #: D33.2-03 no betting line of any timing is a MODEL input, and this is a BLEND input --
 #: the market's own opinion, applied after the model has predicted.
 _PRELOCK_SPREAD_COLUMN: str = "spread"
+
+#: The column a HISTORICAL WP row carries its market side in: each game's own season's
+#: PRIOR-ONLY converter slope applied to its owned pre-lock spread. The tuner, the historical
+#: blend (:meth:`MarketBlender.blend_historical_wp_predictions`) and the edge diagnostic all
+#: read it under this one name.
+MARKET_PROB_OOF_COLUMN: str = "market_prob_oof"
+
+#: The (model column, market column) each target's frame blend reads.
+_FRAME_BLEND_COLUMNS: dict[str, tuple[str, str]] = {
+    "ats": ("model_spread", "spread"),
+    "ou": ("model_total", "total"),
+}
+
+
+def _require_one_market_row_per_game(market_df: pd.DataFrame) -> None:
+    """Refuse a frame that repeats a ``game_id`` (A33.2-review IN-09)."""
+    if "game_id" not in market_df.columns:
+        return
+    repeated = sorted(
+        {str(g) for g in market_df.loc[market_df["game_id"].duplicated(), "game_id"]}
+    )
+    if repeated:
+        msg = (
+            f"the frame carries more than one row for {len(repeated)} game(s), "
+            f"e.g. {repeated[:10]}. A blend merges one market row per game; a repeat "
+            "would return more rows than predictions and misalign the blended values. "
+            "Select one row per game before blending."
+        )
+        raise DuplicateMarketRowError(msg)
 
 
 def home_fav_margin_from_prelock_spread(spread: np.ndarray | pd.Series) -> np.ndarray:
@@ -630,27 +673,107 @@ class MarketBlender:
         Returns:
             Copy of predictions_df with blended values replacing originals.
             All other columns preserved unchanged.
+
+        Raises:
+            DuplicateMarketRowError: when *market_df* repeats a ``game_id``.
+            MarketProbabilityUnavailable: when ANY game lacks its market line, for every
+                target. The whole frame is refused rather than half-blended in place
+                (A33.2-review IN-09); a caller blending history selects the games that
+                have a line first (``models.blending_data.blend_historical_predictions``).
+
+        A HISTORICAL WP frame must not come through here -- this converts with the bound
+        SERVING slope; see :meth:`blend_historical_wp_predictions`.
         """
         result = predictions_df.copy()
 
         if result.empty:
             return result
 
-        # Merge on game_id to get market data alongside predictions
+        _require_one_market_row_per_game(market_df)
+
+        # Merge on game_id to get market data alongside predictions. With one market row
+        # per game the left merge returns exactly one row per prediction, in order.
         merged = result.merge(
             market_df, on="game_id", how="left", suffixes=("", "_market")
         )
 
         if target == "wp":
             self._blend_wp_predictions(result, merged)
-        elif target == "ats":
-            self._blend_ats_predictions(result, merged)
-        elif target == "ou":
-            self._blend_ou_predictions(result, merged)
+        elif target in _FRAME_BLEND_COLUMNS:
+            self._blend_line_predictions(target, result, merged)
         else:
             msg = f"Unknown target: {target}. Must be 'wp', 'ats', or 'ou'."
             raise ValueError(msg)
 
+        return result
+
+    def blend_historical_wp_predictions(
+        self,
+        predictions_df: pd.DataFrame,
+        prelock_lines: pd.DataFrame,
+        walk_forward_slopes: Mapping[int, float] | Mapping[str, float],
+    ) -> pd.DataFrame:
+        """Blend HISTORICAL WP predictions against the OUT-OF-FOLD pre-lock market.
+
+        A33.2-review WR-04/WR-05. :meth:`blend_predictions` converts a spread with the bound
+        SERVING slope, which was fitted on 2020-2024 outcomes -- so a 2021-2024 game blended
+        through it is priced by a slope fitted partly on its own result, and a diagnostic fed
+        CLOSING spreads adds a line that did not exist at the lock. Every historical WP
+        consumer (the diagnosis blended cut, the gate's blend re-score, the backtest's
+        ``--blend``) comes through here instead: the market side of each game is its OWNED
+        pre-lock spread converted with its own season's PRIOR-ONLY slope
+        (``models.market_probability.oof_market_probability``), the same column the tuner
+        fitted the weight on.
+
+        Args:
+            predictions_df: One row per game, carrying ``game_id`` and ``model_prob``.
+            prelock_lines: One row per game with ``game_id``, ``season`` and
+                ``market_spread`` on the home-margin scale --
+                ``models.blending_data.PrelockTuningCorpus.frame``.
+            walk_forward_slopes: The BOUND converter artifact's ``walk_forward_slopes``.
+
+        Returns:
+            The rows of *predictions_df* whose game has an owned pre-lock line in a season
+            with a prior-fold slope, with ``model_prob`` blended and
+            :data:`MARKET_PROB_OOF_COLUMN` carrying the market side. Every other row is
+            LEFT OUT and counted in the log: never converted with the serving slope, never
+            kept unblended in a blended column.
+
+        Raises:
+            DuplicateMarketRowError: when either frame repeats a ``game_id``.
+        """
+        _require_one_market_row_per_game(prelock_lines)
+        _require_one_market_row_per_game(predictions_df)
+
+        covered_seasons = {int(season) for season in walk_forward_slopes}
+        lines = prelock_lines.loc[:, ["game_id", "season", "market_spread"]].copy()
+        lines = lines[lines["season"].astype(int).isin(covered_seasons)]
+        lines[MARKET_PROB_OOF_COLUMN] = oof_market_probability(
+            lines.assign(home_fav_margin=lines["market_spread"]), walk_forward_slopes
+        )
+
+        base = predictions_df.drop(
+            columns=[
+                c for c in (MARKET_PROB_OOF_COLUMN,) if c in predictions_df.columns
+            ]
+        )
+        merged = base.merge(
+            lines[["game_id", MARKET_PROB_OOF_COLUMN]], on="game_id", how="left"
+        )
+        covered = merged[MARKET_PROB_OOF_COLUMN].notna().to_numpy()
+        result = merged.loc[covered].reset_index(drop=True)
+        if not result.empty:
+            result["model_prob"] = self.blend_wp(
+                result["model_prob"].to_numpy(dtype=np.float64),
+                result[MARKET_PROB_OOF_COLUMN].to_numpy(dtype=np.float64),
+            )
+
+        self.logger.info(
+            "Blended historical WP predictions out of fold",
+            n_blended=len(result),
+            n_total=len(merged),
+            n_excluded_no_prelock_line_or_prior_fold=int((~covered).sum()),
+        )
         return result
 
     def unblended_wp_predictions(self, predictions_df: pd.DataFrame) -> pd.DataFrame:
@@ -759,57 +882,62 @@ class MarketBlender:
             market_probability_slope_beta=self.market_probability_slope_beta,
         )
 
-    def _blend_ats_predictions(
+    def _blend_line_predictions(
         self,
+        target: str,
         result: pd.DataFrame,
         merged: pd.DataFrame,
     ) -> None:
-        """Blend ATS predictions in-place using market spreads."""
-        if "spread" not in merged.columns:
-            self.logger.warning("Missing spread column for ATS blending")
-            return
+        """Blend ATS or O/U predictions in place against the market line -- ALL OR NOTHING.
 
-        valid_mask = merged["spread"].notna()
+        A33.2-review IN-09: rows without a line used to keep their raw model value in the
+        same column as the blended rows, and a missing column returned with a warning -- the
+        silent no-blend the WP path already refuses. Both now refuse, and the assignment is
+        POSITIONAL on the one-row-per-game merge, so it cannot misalign on a non-default
+        index.
 
-        if not valid_mask.any():
-            self.logger.warning("No valid spread data for ATS blending")
-            return
+        Raises:
+            MarketProbabilityUnavailable: when the line column is absent or any game has
+                no line.
+        """
+        model_col, line_col = _FRAME_BLEND_COLUMNS[target]
+        games = (
+            [str(game_id) for game_id in merged["game_id"]]
+            if "game_id" in merged.columns
+            else []
+        )
+        if line_col not in merged.columns:
+            msg = (
+                f"no market opinion: the market frame has no {line_col!r} column, so no "
+                f"{target} game can be blended. Games affected: {games[:10]}."
+            )
+            raise MarketProbabilityUnavailable(msg)
 
-        result.loc[valid_mask, "model_spread"] = self.blend_ats(
-            np.asarray(result.loc[valid_mask, "model_spread"].values, dtype=np.float64),
-            np.asarray(merged.loc[valid_mask, "spread"].values, dtype=np.float64),
+        missing = merged[line_col].isna().to_numpy()
+        if bool(missing.any()):
+            offenders = sorted(
+                {games[i] for i in np.flatnonzero(missing)} if games else []
+            )
+            msg = (
+                f"no market opinion for {int(missing.sum())} {target} game(s): they carry "
+                f"no {line_col!r}, e.g. {offenders[:10]}. Refusing the whole blend rather "
+                "than leaving those games' raw model values in a column of blended ones."
+            )
+            raise MarketProbabilityUnavailable(msg)
+
+        result[model_col] = _blend_values(
+            target,
+            result[model_col].to_numpy(dtype=np.float64),
+            merged[line_col].to_numpy(dtype=np.float64),
+            getattr(self.config.weights, _WEIGHT_ATTR_BY_TARGET[target]),
+            self.config.clip_min,
+            self.config.clip_max,
         )
 
         self.logger.info(
-            "Blended ATS predictions",
-            n_blended=int(valid_mask.sum()),
-            n_total=len(result),
-        )
-
-    def _blend_ou_predictions(
-        self,
-        result: pd.DataFrame,
-        merged: pd.DataFrame,
-    ) -> None:
-        """Blend O/U predictions in-place using market totals."""
-        if "total" not in merged.columns:
-            self.logger.warning("Missing total column for O/U blending")
-            return
-
-        valid_mask = merged["total"].notna()
-
-        if not valid_mask.any():
-            self.logger.warning("No valid total data for O/U blending")
-            return
-
-        result.loc[valid_mask, "model_total"] = self.blend_ou(
-            np.asarray(result.loc[valid_mask, "model_total"].values, dtype=np.float64),
-            np.asarray(merged.loc[valid_mask, "total"].values, dtype=np.float64),
-        )
-
-        self.logger.info(
-            "Blended O/U predictions",
-            n_blended=int(valid_mask.sum()),
+            "Blended line predictions",
+            target=target,
+            n_blended=len(result),
             n_total=len(result),
         )
 
@@ -1039,83 +1167,12 @@ class MarketBlender:
         return float(candidates[_first_minimum(losses)])
 
     # -----------------------------------------------------------------------
-    # Edge threshold calibration
+    # Weekly edge-rate diagnostic
+    #
+    # ``calibrate_edge_thresholds`` is DELETED (A33.2-review WR-05): it had no production
+    # caller left, and its WP edges were measured against a devigged CLOSING moneyline.
+    # The 2026 thresholds are derived by Plan 33.2-26 on the pre-lock converter.
     # -----------------------------------------------------------------------
-
-    def calibrate_edge_thresholds(
-        self,
-        tuning_predictions: dict[str, pd.DataFrame],
-        tuning_odds: pd.DataFrame,
-        max_flag_rate: float = 0.30,
-    ) -> EdgeThresholds:
-        """Calibrate per-target edge thresholds on tuning data.
-
-        For each target, computes edges on blended tuning predictions,
-        then sweeps candidate thresholds to find the first where the
-        mean per-week flagging rate is <= max_flag_rate.
-
-        Args:
-            tuning_predictions: Dict mapping target to predictions DataFrame.
-            tuning_odds: DataFrame with game_id, spread, total, ml_home, ml_away.
-            max_flag_rate: Maximum mean per-week flagging rate (default 0.30).
-
-        Returns:
-            EdgeThresholds with calibrated per-target thresholds.
-        """
-        thresholds: dict[str, float] = {}
-
-        # Sweep ranges per target
-        sweep_ranges = {
-            "wp": np.arange(0.01, 0.15, 0.005),
-            "ats": np.arange(0.5, 5.0, 0.25),
-            "ou": np.arange(0.5, 5.0, 0.25),
-        }
-
-        for target, preds_df in tuning_predictions.items():
-            merged = preds_df.merge(tuning_odds, on="game_id", how="inner")
-            if merged.empty:
-                thresholds[target] = sweep_ranges.get(target, np.array([0.03]))[0]
-                continue
-
-            edges = self._compute_edges(target, merged)
-            merged["_edge"] = edges
-
-            # Need season and week for per-week grouping
-            if "season" not in merged.columns or "week" not in merged.columns:
-                thresholds[target] = sweep_ranges.get(target, np.array([0.03]))[0]
-                continue
-
-            sweep = sweep_ranges.get(target, np.arange(0.01, 0.15, 0.005))
-            best_threshold = float(sweep[-1])  # Default to largest if none works
-
-            for candidate in sweep:
-                # Compute per-week flagging rate
-                threshold_val = float(candidate)
-                weekly_rates = merged.groupby(["season", "week"]).apply(
-                    lambda g, t=threshold_val: (g["_edge"] > t).mean(),
-                    include_groups=False,
-                )
-                mean_rate = weekly_rates.mean()
-
-                if mean_rate <= max_flag_rate:
-                    best_threshold = float(candidate)
-                    break
-
-            thresholds[target] = best_threshold
-            self.logger.info(
-                "Edge threshold calibrated",
-                target=target,
-                threshold=best_threshold,
-                max_flag_rate=max_flag_rate,
-            )
-
-        calibrated = EdgeThresholds(
-            wp_threshold=thresholds.get("wp", EdgeThresholds().wp_threshold),
-            ats_threshold=thresholds.get("ats", EdgeThresholds().ats_threshold),
-            ou_threshold=thresholds.get("ou", EdgeThresholds().ou_threshold),
-        )
-        self.config.edge_thresholds = calibrated
-        return calibrated
 
     def check_weekly_edge_rate(
         self,
@@ -1204,41 +1261,56 @@ class MarketBlender:
     ) -> np.ndarray:
         """Compute edge magnitudes for a target on merged predictions+odds.
 
-        The WP branch still devigs a closing moneyline. It feeds the edge-threshold
-        calibration and the weekly flag-rate diagnostic, and moving it onto the pre-lock
-        converter is Plan 33.2-26's (``CLOSING-LINE-AUDIT.md``, the blend edge-threshold
-        calibration row).
+        THE WP MARKET SIDE IS NEVER A CLOSING MONEYLINE (A33.2-review WR-05). It is the
+        historical row's :data:`MARKET_PROB_OOF_COLUMN` when the frame carries one (every
+        historical blend attaches it), and otherwise the pre-lock ``spread`` converted
+        through the BOUND converter -- the same conversion the serving blend applies. A
+        blender with neither refuses rather than inventing a market opinion.
 
         Args:
             target: "wp", "ats", or "ou".
             merged: Predictions merged with odds DataFrame.
 
         Returns:
-            Array of absolute edge values.
+            Array of absolute edge values, one per row of *merged* for WP (0.0 where a row
+            has no market opinion).
+
+        Raises:
+            MarketProbabilityUnavailable: for WP, when the frame carries no out-of-fold
+                market column and the blender has no bound converter or no spread column.
         """
         if target == "wp":
-            # WP edge: |blended_prob - fair_market_prob|
-            valid = merged.dropna(subset=["ml_home", "ml_away", "model_prob"])
-            if valid.empty:
-                return np.array([])
-
-            home_raw = valid["ml_home"].apply(
-                lambda ml: moneyline_to_probability(int(ml))
-            )
-            away_raw = valid["ml_away"].apply(
-                lambda ml: moneyline_to_probability(int(ml))
-            )
-            fair_home = (home_raw / (home_raw + away_raw)).values
-            model_prob = valid["model_prob"].values
-
-            blended = self.blend_wp(
-                np.asarray(model_prob, dtype=np.float64),
-                np.asarray(fair_home, dtype=np.float64),
-            )
-            edges = np.abs(blended - fair_home)
-            # Reindex to match merged
+            if MARKET_PROB_OOF_COLUMN in merged.columns:
+                market = merged[MARKET_PROB_OOF_COLUMN].to_numpy(dtype=np.float64)
+            else:
+                if self.market_probability_slope_beta is None:
+                    msg = (
+                        "no WP market opinion for the edge diagnostic: the frame carries no "
+                        f"{MARKET_PROB_OOF_COLUMN!r} column and this blender has no bound "
+                        "converter to convert a pre-lock spread with."
+                    )
+                    raise MarketProbabilityUnavailable(msg)
+                if _PRELOCK_SPREAD_COLUMN not in merged.columns:
+                    msg = (
+                        "no WP market opinion for the edge diagnostic: the frame carries "
+                        f"neither {MARKET_PROB_OOF_COLUMN!r} nor {_PRELOCK_SPREAD_COLUMN!r}."
+                    )
+                    raise MarketProbabilityUnavailable(msg)
+                market = np.asarray(
+                    market_home_win_probability(
+                        home_fav_margin_from_prelock_spread(
+                            merged[_PRELOCK_SPREAD_COLUMN].to_numpy(dtype=np.float64)
+                        ),
+                        self.market_probability_slope_beta,
+                    ),
+                    dtype=np.float64,
+                )
+            model = merged["model_prob"].to_numpy(dtype=np.float64)
+            valid = ~(np.isnan(model) | np.isnan(market))
             result = np.zeros(len(merged))
-            result[valid.index.to_numpy() - merged.index[0]] = edges
+            if bool(valid.any()):
+                blended = self.blend_wp(model[valid], market[valid])
+                result[valid] = np.abs(blended - market[valid])
             return result
 
         if target == "ats":

@@ -73,6 +73,11 @@ class BacktestConfig:
         max_backtest_season: Maximum season to include (filters incomplete seasons).
         blend_config: Market blending configuration. None means no blending
             (Phase 6 baseline behavior).
+        blender: The LOADED blend (``MarketBlender.from_artifacts``), carrying its
+            converter binding. The WP blend of history needs the bound converter's
+            prior-only slopes; a blender built from ``blend_config`` alone has none, and
+            the WP blend then REFUSES by name rather than inventing a market opinion.
+        blend_artifacts_dir: The root holding the blend's bound converter artifact.
     """
 
     # SITES 6, 7 and 8 of the season partition (RESEARCH 11.1). All three are DERIVED from
@@ -99,6 +104,8 @@ class BacktestConfig:
         default_factory=lambda: default_season_partition().latest_completed_season
     )
     blend_config: Any | None = None  # BlendConfig from models.blending
+    blender: Any | None = None  # MarketBlender from models.blending, converter bound
+    blend_artifacts_dir: Path = field(default_factory=lambda: Path("artifacts"))
 
 
 @dataclass
@@ -616,12 +623,23 @@ class BacktestEngine:
         is_blended = False
         if self.config.blend_config is not None:
             from models.blending import MarketBlender
+            from models.blending_data import blend_historical_predictions
 
-            blender = MarketBlender(config=self.config.blend_config)
+            # A33.2-review WR-05: the LOADED blender, so WP has its bound converter. These
+            # are historical folds, so every target goes through the historical blend: WP
+            # against each game's owned pre-lock spread at its season's PRIOR-ONLY slope,
+            # ATS/O/U against the line, over the games that have one.
+            blender = self.config.blender or MarketBlender(
+                config=self.config.blend_config
+            )
             for target in self.config.targets:
                 if not concat_predictions[target].empty:
-                    concat_predictions[target] = blender.blend_predictions(
-                        concat_predictions[target], closing_odds_df, target
+                    concat_predictions[target] = blend_historical_predictions(
+                        blender,
+                        concat_predictions[target],
+                        closing_odds_df,
+                        target,
+                        artifacts_dir=self.config.blend_artifacts_dir,
                     )
                     # Run edge rate diagnostic
                     edge_report = blender.check_weekly_edge_rate(

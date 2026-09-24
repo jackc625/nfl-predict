@@ -91,7 +91,8 @@ def export_csv(
             if "model_value" in df.columns and "actual_value" in df.columns:
                 if target == "wp":
                     df["prediction_correct"] = (
-                        (df["model_value"] > 0.5).astype(int) == df["actual_value"].astype(int)
+                        (df["model_value"] > 0.5).astype(int)
+                        == df["actual_value"].astype(int)
                     ).astype(int)
                 else:
                     df["prediction_correct"] = pd.NA
@@ -109,7 +110,11 @@ def export_csv(
         predictions_path = output_dir / "predictions_all.csv"
         predictions_df.to_csv(predictions_path, index=False)
         written.append(predictions_path)
-        logger.info("Exported predictions CSV", path=str(predictions_path), rows=len(predictions_df))
+        logger.info(
+            "Exported predictions CSV",
+            path=str(predictions_path),
+            rows=len(predictions_df),
+        )
 
     # 2. season_metrics.csv
     metrics_rows: list[dict[str, Any]] = []
@@ -129,34 +134,40 @@ def export_csv(
         metrics_path = output_dir / "season_metrics.csv"
         metrics_df.to_csv(metrics_path, index=False)
         written.append(metrics_path)
-        logger.info("Exported season metrics CSV", path=str(metrics_path), rows=len(metrics_df))
+        logger.info(
+            "Exported season metrics CSV", path=str(metrics_path), rows=len(metrics_df)
+        )
 
     # 3. betting_simulation.csv
     if simulation_results.bet_records:
         bet_rows: list[dict[str, Any]] = []
         for br in simulation_results.bet_records:
-            bet_rows.append({
-                "game_id": br.game_id,
-                "season": br.season,
-                "week": br.week,
-                "target": br.target,
-                "bet_side": br.bet_side,
-                "model_value": br.model_value,
-                "market_value": br.market_value,
-                "edge": br.edge,
-                "slipped_line": br.slipped_line,
-                "odds": br.odds,
-                "flat_stake": br.flat_stake,
-                "kelly_stake": br.kelly_stake,
-                "outcome": br.outcome,
-                "payout_flat": br.payout_flat,
-                "payout_kelly": br.payout_kelly,
-            })
+            bet_rows.append(
+                {
+                    "game_id": br.game_id,
+                    "season": br.season,
+                    "week": br.week,
+                    "target": br.target,
+                    "bet_side": br.bet_side,
+                    "model_value": br.model_value,
+                    "market_value": br.market_value,
+                    "edge": br.edge,
+                    "slipped_line": br.slipped_line,
+                    "odds": br.odds,
+                    "flat_stake": br.flat_stake,
+                    "kelly_stake": br.kelly_stake,
+                    "outcome": br.outcome,
+                    "payout_flat": br.payout_flat,
+                    "payout_kelly": br.payout_kelly,
+                }
+            )
         bets_df = pd.DataFrame(bet_rows)
         bets_path = output_dir / "betting_simulation.csv"
         bets_df.to_csv(bets_path, index=False)
         written.append(bets_path)
-        logger.info("Exported betting simulation CSV", path=str(bets_path), rows=len(bets_df))
+        logger.info(
+            "Exported betting simulation CSV", path=str(bets_path), rows=len(bets_df)
+        )
 
     return written
 
@@ -196,7 +207,10 @@ def export_summary_json(
         for target, tr in sr.target_results.items():
             season_data["targets"][target] = {
                 "n_predictions": len(tr.predictions_df),
-                "metrics": {k: float(v) if isinstance(v, (int, float)) else v for k, v in tr.metrics.items()},
+                "metrics": {
+                    k: float(v) if isinstance(v, (int, float)) else v
+                    for k, v in tr.metrics.items()
+                },
             }
         per_season.append(season_data)
 
@@ -210,7 +224,9 @@ def export_summary_json(
                 "roi": float(simulation_results.flat_stake.roi),
                 "net_profit": float(simulation_results.flat_stake.net_profit),
                 "final_bankroll": float(simulation_results.flat_stake.final_bankroll),
-                "max_drawdown_pct": float(simulation_results.flat_stake.max_drawdown_pct),
+                "max_drawdown_pct": float(
+                    simulation_results.flat_stake.max_drawdown_pct
+                ),
             },
             "kelly": {
                 "total_bets": simulation_results.kelly.total_bets,
@@ -289,6 +305,7 @@ def run_backtest(
 
     # Load blend config if requested
     blend_config = None
+    blender = None
     if blend:
         from models.blending import MarketBlender
 
@@ -325,6 +342,10 @@ def run_backtest(
         holdout_seasons=seasons,
         targets=targets,
         blend_config=blend_config,
+        # A33.2-review WR-05: the loaded blender travels with its converter binding;
+        # passing only its config left WP with no converter and the run raised.
+        blender=blender,
+        blend_artifacts_dir=Path(blend_artifacts_dir),
     )
     engine = BacktestEngine(config=config)
     results = engine.run()
@@ -375,7 +396,8 @@ def run_backtest(
     print("Generating HTML report...")
     reporter = BacktestReporter(output_dir=output_path)
     report_path = reporter.generate(
-        results, sim_results,
+        results,
+        sim_results,
         baseline_results=unblended_results if blend else None,
     )
     print(f"  HTML report: {report_path}")
@@ -389,7 +411,9 @@ def run_backtest(
     # Step 5: Export JSON summary
     print("Exporting JSON summary...")
     json_path = export_summary_json(
-        results, sim_results, output_path,
+        results,
+        sim_results,
+        output_path,
         baseline_results=unblended_results if blend else None,
     )
     print(f"  JSON: {json_path}")
@@ -416,7 +440,9 @@ def run_backtest(
             blended_clv = results.headline_clv.get(target, 0.0)
             baseline_clv = unblended_results.headline_clv.get(target, 0.0)
             delta = blended_clv - baseline_clv
-            status = "IMPROVED" if delta > 0 else "DEGRADED" if delta < 0 else "UNCHANGED"
+            status = (
+                "IMPROVED" if delta > 0 else "DEGRADED" if delta < 0 else "UNCHANGED"
+            )
             print(f"    {target.upper()}: delta {delta:+.4f} ({status})")
 
     print()

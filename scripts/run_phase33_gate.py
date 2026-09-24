@@ -1455,6 +1455,7 @@ def score_blend_against_virtual_manifest(
     from backtest.diagnose import CLV_COLUMN_FOR, score_deployed_artifacts
     from backtest.engine import BacktestEngine
     from models.blending import MarketBlender
+    from models.blending_data import blend_historical_predictions
     from models.clv import compute_clv_for_predictions
 
     if engine is None:
@@ -1474,7 +1475,12 @@ def score_blend_against_virtual_manifest(
         sources[target] = str(root)
         gold = promote_models._load_gold_holdout(target, engine)
         scored = score_deployed_artifacts(target, gold_df=gold, artifacts_dir=root)
-        blended = blender.blend_predictions(scored, odds_df, target)
+        # A33.2-review WR-04: these are HISTORICAL games, so WP is blended against each
+        # game's owned pre-lock spread at its own season's PRIOR-ONLY converter slope, not
+        # a closing spread at the in-sample serving slope. A game with no line is left out.
+        blended = blend_historical_predictions(
+            blender, scored, odds_df, target, artifacts_dir=Path(artifacts_dir)
+        )
         clv_df = compute_clv_for_predictions(blended, odds_df, target)
         valid = clv_df.loc[clv_df["has_closing_odds"]]
         column = CLV_COLUMN_FOR[target]

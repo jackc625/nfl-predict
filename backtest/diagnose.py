@@ -369,49 +369,55 @@ def apply_blended_cut(
     closing_odds_df: pd.DataFrame,
     target: str,
     artifacts_dir: str | Path = "artifacts",
+    silver_dir: str | Path = "data/silver",
 ) -> pd.DataFrame:
-    """Produce the market-blended cut for a target (D-02/D-08), mirroring engine.py:422-474.
+    """Produce the market-blended cut for a target (D-02/D-08), mirroring the engine's blend.
 
-    Loads the deployed blend via ``MarketBlender.from_artifacts`` (auto-detects the dynamic
-    schedule; honors ``mode_by_target`` -- O/U dynamic, WP/ATS static per D-19), blends the
-    predictions, then DROPS any existing CLV/odds columns and recomputes CLV on the clean blended
-    frame so the blended cut is symmetric with the engine's blended path.
+    Loads the deployed blend via ``MarketBlender.from_artifacts`` (one fixed weight per target
+    since D33.2-10; the retired dynamic schedule is refused at load), blends the predictions
+    through ``models.blending_data.blend_historical_predictions``, then DROPS any existing
+    CLV/odds columns and recomputes CLV on the clean blended frame so the blended cut is
+    symmetric with the engine's blended path.
 
-    THE WP CUT COVERS ONLY GAMES WITH A MARKET LINE. Since Plan 33.2-21 the WP blend's market
-    half is the game's spread, and ``MarketBlender`` refuses the WHOLE blend if any game it is
-    handed has none (``MarketProbabilityUnavailable``), because a column mixing blended and
-    unblended values would hold two models' outputs. A game with no line has no blended value
-    to measure -- its CLV is excluded as ``has_closing_odds`` False either way -- so it is left
-    out of the blended cut here, counted in the log, and never handed to the blender.
+    THE WP MARKET SIDE IS OUT OF FOLD (A33.2-review WR-04). These are HISTORICAL games, and
+    the serving blend converts a spread with the bound serving slope -- fitted partly on these
+    same games' outcomes -- over whatever line the caller passed, which here is the CLOSING
+    line. Each WP game is instead blended against its OWNED pre-lock spread converted with its
+    own season's prior-only slope, the column the blend weight was tuned on. A game with no
+    owned pre-lock line (or in a season with no prior-fold slope) has no honest market opinion
+    and is left out of the WP cut, counted in the log. The closing line is still what CLV is
+    GRADED against -- grading is its legitimate use.
+
+    ATS and O/U blend the market line in *closing_odds_df*; a game with no line is left out
+    of the cut rather than kept unblended in a blended column.
 
     Args:
         preds: Raw predictions frame in the backtest contract (from ``score_deployed_artifacts``
             or the engine). Must carry the target's model column.
-        closing_odds_df: Normalized closing odds.
+        closing_odds_df: Normalized closing odds (the ATS/O/U line source and the CLV grade).
         target: One of "wp", "ats", "ou".
-        artifacts_dir: Root directory for the blend artifact.
+        artifacts_dir: Root directory for the blend artifact and its bound converter.
+        silver_dir: Silver root holding the owned ``odds_timeline`` (WP market side).
 
     Returns:
         The blended predictions frame with recomputed CLV columns.
     """
+    from models.blending_data import blend_historical_predictions
+
     # Strip any pre-existing CLV/odds columns so blend_predictions does not produce *_market
     # suffixed duplicates (the engine's all_predictions frames already carry merged odds).
     pre_drop = [c for c in _CLV_ODDS_COLS if c in preds.columns]
     base = preds.drop(columns=pre_drop) if pre_drop else preds
 
-    if target == "wp":
-        with_line = closing_odds_df.loc[closing_odds_df["spread"].notna(), "game_id"]
-        has_line = base["game_id"].isin(with_line)
-        if not bool(has_line.all()):
-            logger.info(
-                "WP blended cut excludes games with no market line",
-                n_excluded=int((~has_line).sum()),
-                n_total=len(base),
-            )
-            base = base.loc[has_line]
-
     blender = MarketBlender.from_artifacts(Path(artifacts_dir))
-    blended = blender.blend_predictions(base, closing_odds_df, target)
+    blended = blend_historical_predictions(
+        blender,
+        base,
+        closing_odds_df,
+        target,
+        artifacts_dir=Path(artifacts_dir),
+        silver_dir=Path(silver_dir),
+    )
 
     drop_cols = [c for c in _CLV_ODDS_COLS if c in blended.columns]
     clean = blended.drop(columns=drop_cols)

@@ -2,14 +2,16 @@
 
 Tests cover:
 - EdgeThresholds stores per-target thresholds
-- calibrate_edge_thresholds returns thresholds where <= 30% flagged per week on average
-- calibrate_edge_thresholds with tight model returns low thresholds
-- calibrate_edge_thresholds with noisy model returns higher thresholds
 - When >30% of games in a week pass threshold, a structlog WARNING is emitted
+- the WP edge is measured against the pre-lock market, never a closing moneyline
 - check_weekly_edge_rate returns dict with per-week flagging rates and warnings
 - EdgeThresholds defaults are reasonable
 - save_blend_artifacts includes edge_thresholds in JSON alongside weights
 - from_artifacts loads EdgeThresholds alongside BlendWeights
+
+DELETED (A33.2-review WR-05): ``TestCalibrateEdgeThresholds``. ``calibrate_edge_thresholds``
+had no production caller left and measured WP edges against a devigged CLOSING moneyline, so
+the method is deleted with its tests. The 2026 thresholds are Plan 33.2-26's derivation.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from models.blending import (
     BlendWeights,
     EdgeThresholds,
     MarketBlender,
+    MarketProbabilityUnavailable,
     TuningResult,
 )
 
@@ -227,89 +230,6 @@ class TestEdgeThresholds:
 
 
 # ---------------------------------------------------------------------------
-# Test class: Calibration
-# ---------------------------------------------------------------------------
-
-
-class TestCalibrateEdgeThresholds:
-    """Tests for calibrate_edge_thresholds threshold sweep."""
-
-    def test_calibrate_returns_edge_thresholds(self) -> None:
-        """calibrate_edge_thresholds returns EdgeThresholds."""
-        preds, odds = _make_wp_predictions_with_edges(edge_magnitude="small")
-        blender = MarketBlender()
-        result = blender.calibrate_edge_thresholds(
-            tuning_predictions={"wp": preds},
-            tuning_odds=odds,
-        )
-        assert isinstance(result, EdgeThresholds)
-
-    def test_tight_model_returns_low_thresholds(self) -> None:
-        """calibrate_edge_thresholds with tight model (all edges < 0.02) returns low thresholds."""
-        preds, odds = _make_wp_predictions_with_edges(edge_magnitude="small")
-        blender = MarketBlender()
-        result = blender.calibrate_edge_thresholds(
-            tuning_predictions={"wp": preds},
-            tuning_odds=odds,
-        )
-        # Tight model should have a low threshold
-        assert result.wp_threshold <= 0.10
-
-    def test_noisy_model_returns_higher_thresholds(self) -> None:
-        """calibrate_edge_thresholds with noisy model returns higher thresholds."""
-        preds_tight, odds_tight = _make_wp_predictions_with_edges(
-            edge_magnitude="small", rng_seed=1
-        )
-        preds_noisy, odds_noisy = _make_wp_predictions_with_edges(
-            edge_magnitude="large", rng_seed=1
-        )
-
-        blender_tight = MarketBlender()
-        result_tight = blender_tight.calibrate_edge_thresholds(
-            tuning_predictions={"wp": preds_tight},
-            tuning_odds=odds_tight,
-        )
-
-        blender_noisy = MarketBlender()
-        result_noisy = blender_noisy.calibrate_edge_thresholds(
-            tuning_predictions={"wp": preds_noisy},
-            tuning_odds=odds_noisy,
-        )
-
-        # Noisy model should need a higher threshold to keep flagging <= 30%
-        assert result_noisy.wp_threshold >= result_tight.wp_threshold
-
-    def test_calibrate_flag_rate_within_target(self) -> None:
-        """calibrate_edge_thresholds produces mean per-week flagging rate <= 30%.
-
-        The verification recomputes edges identically to how calibration
-        does: using blended probabilities (not raw model probabilities).
-        """
-        preds, odds = _make_wp_predictions_with_edges(
-            edge_magnitude="large", n_weeks=16, games_per_week=8
-        )
-        blender = MarketBlender()
-        thresholds = blender.calibrate_edge_thresholds(
-            tuning_predictions={"wp": preds},
-            tuning_odds=odds,
-            max_flag_rate=0.30,
-        )
-
-        # Recompute using the blender's internal edge computation (same as calibration)
-        merged = preds.merge(odds, on="game_id", how="inner")
-        edges = blender._compute_edges("wp", merged)
-        merged["edge"] = edges
-
-        # Compute per-week flag rate
-        weekly = merged.groupby(["season", "week"]).apply(
-            lambda g: (g["edge"] > thresholds.wp_threshold).mean(),
-            include_groups=False,
-        )
-        mean_rate = weekly.mean()
-        assert mean_rate <= 0.35  # Allow small margin for discretization
-
-
-# ---------------------------------------------------------------------------
 # Test class: 30% diagnostic warning
 # ---------------------------------------------------------------------------
 
@@ -320,7 +240,7 @@ class TestCheckWeeklyEdgeRate:
     def test_check_weekly_edge_rate_returns_dict(self) -> None:
         """check_weekly_edge_rate returns dict with per_week_rates, mean_rate, warnings."""
         preds, odds = _make_wp_predictions_with_edges(edge_magnitude="large")
-        blender = MarketBlender()
+        blender = MarketBlender(market_probability_slope_beta=_CONVERTER_SLOPE)
         result = blender.check_weekly_edge_rate(preds, odds, target="wp")
 
         assert "per_week_rates" in result
@@ -364,7 +284,9 @@ class TestCheckWeeklyEdgeRate:
         config = BlendConfig(
             edge_thresholds=EdgeThresholds(wp_threshold=0.01),
         )
-        blender = MarketBlender(config=config)
+        blender = MarketBlender(
+            config=config, market_probability_slope_beta=_CONVERTER_SLOPE
+        )
         result = blender.check_weekly_edge_rate(preds, odds, target="wp")
 
         # All games flagged in week 1: 100% > 30%, should produce warning
@@ -382,10 +304,50 @@ class TestCheckWeeklyEdgeRate:
         config = BlendConfig(
             edge_thresholds=EdgeThresholds(wp_threshold=0.50),
         )
-        blender = MarketBlender(config=config)
+        blender = MarketBlender(
+            config=config, market_probability_slope_beta=_CONVERTER_SLOPE
+        )
         result = blender.check_weekly_edge_rate(preds, odds, target="wp")
 
         assert len(result["warnings"]) == 0
+
+    def test_the_wp_edge_never_reads_a_closing_moneyline(self) -> None:
+        """WR-05: a moneyline-only market frame supplies no WP market opinion; it refuses."""
+        preds, odds = _make_wp_predictions_with_edges(n_weeks=1, games_per_week=3)
+        moneyline_only = odds[["game_id", "ml_home", "ml_away"]]
+        blender = MarketBlender(market_probability_slope_beta=_CONVERTER_SLOPE)
+        with pytest.raises(MarketProbabilityUnavailable):
+            blender.check_weekly_edge_rate(preds, moneyline_only, target="wp")
+
+    def test_the_wp_edge_is_measured_against_the_converted_prelock_spread(self) -> None:
+        """WR-05: the edge is |blend - market| with market = sigmoid(slope * spread)."""
+        from scipy.special import expit, logit
+
+        merged = pd.DataFrame(
+            {"game_id": ["a", "b"], "model_prob": [0.7, 0.4], "spread": [3.0, -6.0]}
+        )
+        blender = MarketBlender(
+            config=BlendConfig(weights=BlendWeights(wp_model_weight=0.5)),
+            market_probability_slope_beta=_CONVERTER_SLOPE,
+        )
+        market = expit(_CONVERTER_SLOPE * np.array([3.0, -6.0]))
+        blended = expit(0.5 * logit(np.array([0.7, 0.4])) + 0.5 * logit(market))
+        np.testing.assert_allclose(
+            blender._compute_edges("wp", merged), np.abs(blended - market)
+        )
+
+    def test_a_historical_row_is_measured_against_its_out_of_fold_market(self) -> None:
+        """A frame carrying market_prob_oof is read as-is; the serving slope is not used."""
+        merged = pd.DataFrame(
+            {
+                "game_id": ["a"],
+                "model_prob": [0.6],
+                "spread": [10.0],
+                "market_prob_oof": [0.6],
+            }
+        )
+        blender = MarketBlender(market_probability_slope_beta=_CONVERTER_SLOPE)
+        np.testing.assert_allclose(blender._compute_edges("wp", merged), [0.0])
 
 
 # ---------------------------------------------------------------------------

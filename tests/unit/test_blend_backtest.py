@@ -235,6 +235,41 @@ class TestBacktestConfigBlendField:
         config = BacktestConfig(blend_config=bc)
         assert config.blend_config is bc
 
+    def test_run_backtest_hands_the_engine_the_loaded_blender(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A33.2-review WR-05: the engine gets the blender WITH its converter binding.
+
+        ``run_backtest(blend=True)`` used to pass only ``blender.config``, so the engine
+        built a converter-less blender and the WP blend raised.
+        """
+        import backtest.run as run_module
+
+        loaded = MarketBlender(
+            market_probability_artifact_id="market_probability_x",
+            market_probability_slope_beta=0.15,
+        )
+        monkeypatch.setattr(
+            MarketBlender, "from_artifacts", classmethod(lambda cls, *a, **k: loaded)
+        )
+        seen: list[BacktestConfig] = []
+
+        class _StopEngine:
+            def __init__(self, config: BacktestConfig) -> None:
+                seen.append(config)
+                raise RuntimeError("stop after construction")
+
+        monkeypatch.setattr(run_module, "BacktestEngine", _StopEngine)
+        with pytest.raises(RuntimeError, match="stop after construction"):
+            run_module.run_backtest(
+                seasons=[2024],
+                output_dir=str(tmp_path),
+                blend=True,
+                blend_artifacts_dir=str(tmp_path),
+            )
+        assert seen[0].blender is loaded
+        assert seen[0].blend_artifacts_dir == tmp_path
+
 
 class TestBacktestResultsIsBlended:
     """Verify is_blended field on BacktestResults."""

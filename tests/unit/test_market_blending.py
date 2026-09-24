@@ -493,3 +493,98 @@ class TestBlendPredictions:
         )
         result = blender.blend_predictions(empty_preds, empty_market, target="wp")
         assert len(result) == 0
+
+
+# -- A33.2-review IN-09 / WR-04: no partial in-place blend, no repeated market row, and
+# -- history blended against the OUT-OF-FOLD pre-lock market --
+
+
+class TestBlendFramesAreWholeAndHistoryIsOutOfFold:
+    """The frame blend is all-or-nothing, and history never meets the serving slope."""
+
+    @staticmethod
+    def _predictions() -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "game_id": ["g1", "g2", "g3"],
+                "season": [2021, 2022, 2020],
+                "model_prob": [0.60, 0.40, 0.55],
+                "model_spread": [3.0, -2.0, 1.0],
+            }
+        )
+
+    def test_a_repeated_market_row_is_refused(self) -> None:
+        from models.blending import DuplicateMarketRowError
+
+        market = pd.DataFrame(
+            {"game_id": ["g1", "g1", "g2", "g3"], "spread": [3.0, 2.5, -1.0, 0.5]}
+        )
+        with pytest.raises(DuplicateMarketRowError, match="g1"):
+            MarketBlender().blend_predictions(self._predictions(), market, "ats")
+
+    def test_an_ats_game_with_no_line_refuses_the_whole_blend(self) -> None:
+        """Rows without a line used to keep their raw model value beside blended ones."""
+        market = pd.DataFrame(
+            {"game_id": ["g1", "g2", "g3"], "spread": [3.0, None, 0.5]}
+        )
+        with pytest.raises(MarketProbabilityUnavailable, match="g2"):
+            MarketBlender().blend_predictions(self._predictions(), market, "ats")
+
+    def test_the_ats_blend_is_positional_on_a_non_default_index(self) -> None:
+        preds = self._predictions().set_axis([10, 20, 30])
+        market = pd.DataFrame(
+            {"game_id": ["g3", "g1", "g2"], "spread": [0.0, 1.0, 0.0]}
+        )
+        blender = MarketBlender(
+            config=BlendConfig(weights=BlendWeights(ats_model_weight=0.5))
+        )
+        out = blender.blend_predictions(preds, market, "ats")
+        assert_allclose(out["model_spread"].to_numpy(), [2.0, -1.0, 0.5])
+
+    def test_history_uses_each_seasons_prior_only_slope_not_the_serving_slope(
+        self,
+    ) -> None:
+        """WR-04: the historical WP blend converts with walk_forward_slopes, per season."""
+        from scipy.special import expit, logit
+
+        lines = pd.DataFrame(
+            {
+                "game_id": ["g1", "g2", "g3"],
+                "season": [2021, 2022, 2020],
+                "market_spread": [7.0, -3.0, 4.0],
+            }
+        )
+        slopes = {"2021": 0.14, "2022": 0.16}  # 2020 has no prior fold
+        blender = MarketBlender(
+            config=BlendConfig(weights=BlendWeights(wp_model_weight=0.5)),
+            market_probability_artifact_id="market_probability_x",
+            market_probability_slope_beta=9.99,  # a serving slope that must NOT be used
+        )
+        out = blender.blend_historical_wp_predictions(
+            self._predictions(), lines, slopes
+        )
+
+        assert list(out["game_id"]) == ["g1", "g2"], "the 2020 game has no prior fold"
+        market = np.array([expit(0.14 * 7.0), expit(0.16 * -3.0)])
+        assert_allclose(out["market_prob_oof"].to_numpy(), market)
+        expected = expit(0.5 * logit(np.array([0.60, 0.40])) + 0.5 * logit(market))
+        assert_allclose(out["model_prob"].to_numpy(), expected)
+
+    def test_the_historical_blend_refuses_a_blender_with_no_converter(self) -> None:
+        from models.blending_data import blend_historical_predictions
+
+        with pytest.raises(MarketProbabilityUnavailable, match="BOUND converter"):
+            blend_historical_predictions(
+                MarketBlender(), self._predictions(), pd.DataFrame(), "wp"
+            )
+
+    def test_the_historical_line_blend_leaves_out_games_with_no_line(self) -> None:
+        from models.blending_data import blend_historical_predictions
+
+        market = pd.DataFrame(
+            {"game_id": ["g1", "g2", "g3"], "spread": [3.0, None, 0.5]}
+        )
+        out = blend_historical_predictions(
+            MarketBlender(), self._predictions(), market, "ats"
+        )
+        assert list(out["game_id"]) == ["g1", "g3"]

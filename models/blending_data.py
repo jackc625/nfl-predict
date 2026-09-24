@@ -54,9 +54,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from models.blending import BLEND_TUNING_COLUMNS
+from models.blending import (
+    BLEND_TUNING_COLUMNS,
+    MarketBlender,
+    MarketProbabilityUnavailable,
+)
 from models.market_probability import (
     OWNED_LINE_SEASONS,
+    load_market_probability_artifact,
     oof_market_probability,
     timeline_spread_to_home_fav_margin,
 )
@@ -512,3 +517,83 @@ def build_tuning_frames(
         )
 
     return BlendTuningFrames(frames=frames, excluded=excluded)
+
+
+# ---------------------------------------------------------------------------
+# Blending HISTORY: the one path every historical consumer takes
+# ---------------------------------------------------------------------------
+
+#: The market line each target's historical blend needs a game to carry.
+_HISTORICAL_LINE_COLUMN: dict[str, str] = {"ats": "spread", "ou": "total"}
+
+
+def blend_historical_predictions(
+    blender: MarketBlender,
+    predictions_df: pd.DataFrame,
+    market_df: pd.DataFrame,
+    target: str,
+    *,
+    artifacts_dir: Path | str = Path("artifacts"),
+    silver_dir: Path | str = Path("data/silver"),
+) -> pd.DataFrame:
+    """Blend HISTORICAL predictions for *target*, honestly, over the games that can be blended.
+
+    A33.2-review WR-04/WR-05. The diagnosis blended cut, the gate's blend re-score and the
+    backtest's ``--blend`` all blend COMPLETED seasons, and all three used to route WP
+    through the serving blend -- converting a CLOSING spread with the bound serving slope,
+    which was fitted partly on those games' own outcomes (and, for the backtest, with no
+    converter bound at all, so ``run_backtest(blend=True)`` raised on WP).
+
+    * WP: the market side is each game's OWNED pre-lock spread (:func:`load_tuning_period_data`)
+      converted with its own season's PRIOR-ONLY slope from the blend's BOUND converter
+      artifact (``MarketBlender.blend_historical_wp_predictions``). *market_df* is not read.
+    * ATS / O/U: the blend reads *market_df*'s line. Only games carrying that line are
+      blended; the rest are LEFT OUT and counted, never kept unblended in a blended column.
+
+    Args:
+        blender: The loaded blend. For WP it must carry a converter binding.
+        predictions_df: One row per game in the backtest contract.
+        market_df: One row per game (ATS/O/U line source).
+        target: ``"wp"``, ``"ats"`` or ``"ou"``.
+        artifacts_dir: The root holding the blend's bound converter artifact.
+        silver_dir: The silver root holding ``odds_timeline`` and ``games``.
+
+    Returns:
+        The blended rows.
+
+    Raises:
+        MarketProbabilityUnavailable: for WP, when the blender has no bound converter.
+        ValueError: for an unknown target.
+    """
+    if target == "wp":
+        if blender.market_probability_artifact_id is None:
+            msg = (
+                "the historical WP blend needs the blend's BOUND converter artifact for its "
+                "prior-only walk_forward_slopes, and this blender has none bound. Load the "
+                "blend with MarketBlender.from_artifacts rather than building one from a "
+                "bare BlendConfig."
+            )
+            raise MarketProbabilityUnavailable(msg)
+        converter = load_market_probability_artifact(
+            blender.market_probability_artifact_id, artifacts_dir
+        )
+        corpus = load_tuning_period_data(silver_dir)
+        return blender.blend_historical_wp_predictions(
+            predictions_df, corpus.frame, converter["walk_forward_slopes"]
+        )
+
+    if target not in _HISTORICAL_LINE_COLUMN:
+        msg = f"Unknown target: {target}. Must be 'wp', 'ats', or 'ou'."
+        raise ValueError(msg)
+
+    line_column = _HISTORICAL_LINE_COLUMN[target]
+    with_line = set(market_df.loc[market_df[line_column].notna(), "game_id"])
+    has_line = predictions_df["game_id"].isin(with_line)
+    if not bool(has_line.all()):
+        logger.info(
+            "Historical blend leaves out games with no market line",
+            target=target,
+            n_excluded=int((~has_line).sum()),
+            n_total=len(predictions_df),
+        )
+    return blender.blend_predictions(predictions_df.loc[has_line], market_df, target)
