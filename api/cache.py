@@ -1711,6 +1711,22 @@ PREDICTIONS_TABLE_COLUMNS: list[str] = [
 ]
 
 
+def _kickoff_et_wall_clock(values: pd.Series) -> pd.Series:
+    """Each kickoff as a NAIVE Eastern wall-clock time, for the naive ``game_date`` column.
+
+    THE ZONE IS PINNED HERE, NOT BY THE SERVER (33.2 review C2 IN-03). Silver ``kickoff_et`` is
+    tz-aware UTC, and handing a tz-aware column to the naive ``TIMESTAMP`` column made DuckDB cast
+    it through the SESSION ``TimeZone`` -- the ``materialize_bet_week_freeze`` CR-01 mechanism.
+    The cards print ``game_date`` with no zone, so it read as Eastern only because this machine is
+    Eastern. It is now converted to America/New_York explicitly and stored naive. A naive input
+    is taken to be Eastern already and kept as it is.
+    """
+    parsed = pd.to_datetime(values, errors="coerce")
+    if getattr(parsed.dtype, "tz", None) is None:
+        return parsed
+    return parsed.dt.tz_convert("America/New_York").dt.tz_localize(None)
+
+
 def _set_display_wp_edge(frame: pd.DataFrame) -> None:
     """Set ``wp_edge`` in place to the model's WP MINUS the market WP shown beside it.
 
@@ -1832,7 +1848,7 @@ def _load_predictions(
     )
 
     # Map to predictions schema
-    merged["game_date"] = pd.to_datetime(merged["kickoff_et"])
+    merged["game_date"] = _kickoff_et_wall_clock(merged["kickoff_et"])
     merged["status"] = np.where(merged["home_score"].notna(), "completed", "scheduled")
     merged["home_score"] = merged["home_score"].astype("Int64")
     merged["away_score"] = merged["away_score"].astype("Int64")
@@ -1991,7 +2007,7 @@ def _load_current_week_predictions(
         games_path, columns=["game_id", "home_score", "away_score", "kickoff_et"]
     )
     merged = current.merge(games, on="game_id", how="left")
-    merged["game_date"] = pd.to_datetime(merged["kickoff_et"])
+    merged["game_date"] = _kickoff_et_wall_clock(merged["kickoff_et"])
     merged["status"] = np.where(merged["home_score"].notna(), "completed", "scheduled")
     # A column an older CSV predates (market_wp) is added as NULL rather than refused.
     merged = merged.reindex(columns=PREDICTIONS_TABLE_COLUMNS)

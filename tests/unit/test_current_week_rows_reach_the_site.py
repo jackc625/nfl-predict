@@ -282,3 +282,52 @@ def test_a_game_in_two_week_files_keeps_its_most_recent_prediction(
     assert game is not None
     assert game["wp_prob"] == pytest.approx(0.30), "the older week-10 row survived"
     assert game["week"] == 2
+
+
+@pytest.mark.parametrize("session_tz", ["UTC", "America/Los_Angeles", "Asia/Tokyo"])
+def test_game_date_is_the_eastern_kickoff_whatever_the_server_zone(
+    tmp_path: Path, session_tz: str
+) -> None:
+    """33.2 review C2 IN-03: ``game_date`` is the Eastern wall clock, pinned by the loader.
+
+    Silver ``kickoff_et`` is tz-aware; written into the naive TIMESTAMP column it was cast through
+    the DuckDB SESSION zone, so it read as Eastern only on an Eastern machine.
+    """
+    row = dict.fromkeys(PREDICTION_OUTPUT_COLUMNS)
+    row.update(
+        game_id=GAME_ID,
+        season=2026,
+        week=1,
+        home_team="KC",
+        away_team="DEN",
+        wp_prob=0.64,
+        ats_prediction=4.2,
+        ou_prediction=45.1,
+    )
+    predictions_dir = tmp_path / "predictions"
+    predictions_dir.mkdir()
+    pd.DataFrame([row], columns=PREDICTION_OUTPUT_COLUMNS).to_csv(
+        predictions_dir / "predictions_2026_week1.csv", index=False
+    )
+    silver_dir = tmp_path / "silver"
+    silver_dir.mkdir()
+    pd.DataFrame(
+        {
+            "game_id": [GAME_ID],
+            "home_score": [None],
+            "away_score": [None],
+            # 16:25 ET, stored UTC exactly as silver stores it.
+            "kickoff_et": [pd.Timestamp("2026-09-13 20:25", tz="UTC")],
+        }
+    ).to_parquet(silver_dir / "games.parquet")
+
+    conn = duckdb.connect(":memory:")
+    conn.execute(f"SET TimeZone='{session_tz}'")
+    for statement in CACHE_SCHEMA.strip().split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    assert _load_current_week_predictions(conn, predictions_dir, silver_dir) == 1
+
+    game = DataService(conn).get_game_detail(GAME_ID)
+    assert game is not None
+    assert str(game["game_date"]) == "2026-09-13 16:25:00"
