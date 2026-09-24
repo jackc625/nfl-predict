@@ -732,7 +732,9 @@ def test_a_spread_pick_shows_the_picked_teams_own_line(tmp_path: Path) -> None:
 _CACHE_ABSENT_HEADING = "Bet list not built yet"
 _ZERO_ADMITTED_HEADING = "No bets cleared the floor this week"
 _NO_CURRENT_WEEK_HEADING = "No current week"
-_HARD_BLOCK_MESSAGE = "This week&#39;s list is withheld -- the cache is older than this week&#39;s line freeze"
+_HARD_BLOCK_MESSAGE = (
+    "This week&#39;s list is missing -- its locked games have no list in the cache"
+)
 
 # The TWO-COMMAND recovery sequence, in the order an operator must run it (plan 31-23,
 # G-31-123b). Both non-happy renders that name a recovery must name BOTH, generation first.
@@ -907,18 +909,19 @@ def test_state_three_off_season_no_current_week(tmp_path: Path) -> None:
     assert _BANNER_EYEBROW in body
 
 
-def test_state_four_stale_cache_hard_block(tmp_path: Path) -> None:
-    """A cache older than the week's LATEST per-game freeze is REFUSED, not silently served.
+def test_state_four_a_week_with_no_list_for_its_locked_games_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Games past their lock with NO list anywhere in the week: the refusal, not an empty week.
 
-    D31-27: staleness is the cache timestamp preceding the latest per-game freeze among the
-    week's games. The refusal is a server-rendered 200 -- it is NOT the failed-fragment path.
+    D31-27, judged game by game since 33.2 review C2 CR-02: the week is refused only when its
+    locked games have no bet-list row at all. The refusal is a server-rendered 200 -- it is NOT
+    the failed-fragment path -- and names the games so the claim can be checked.
     """
     clear_cache()
     db_path = tmp_path / "stale.duckdb"
     conn = _build_bare_cache(db_path)
-    rows = [_live_row("2023_W01_DET@KC", "ou")]
     try:
-        materialize_bet_list(conn, pd.DataFrame(rows))
         materialize_available_bet_weeks(
             conn,
             pd.DataFrame(
@@ -928,7 +931,14 @@ def test_state_four_stale_cache_hard_block(tmp_path: Path) -> None:
         materialize_bet_week_freeze(
             conn,
             pd.DataFrame(
-                [{"season": _SEASON, "week": _WEEK, "game_freeze_ts": _LATER_FREEZE}]
+                [
+                    {
+                        "game_id": "2023_W01_DET@KC",
+                        "season": _SEASON,
+                        "week": _WEEK,
+                        "game_freeze_ts": _LATER_FREEZE,
+                    }
+                ]
             ),
         )
         _stamp_populated_at(conn, _POPULATED_AT)
@@ -943,6 +953,7 @@ def test_state_four_stale_cache_hard_block(tmp_path: Path) -> None:
     assert _HARD_BLOCK_MESSAGE in body
     assert "bg-red-50" in body, "the refusal did not render through _error_state.html"
     assert "Past weeks below are unaffected and remain readable." in body
+    assert "DET @ KC" in body, "the refusal does not name the game that has no list"
     # Both timestamps are repeated in the recovery text so the two claims can be compared.
     assert _POPULATED_AT in body
     assert str(_LATER_FREEZE) in body
@@ -997,6 +1008,7 @@ def test_a_fresh_cache_is_not_blocked(tmp_path: Path) -> None:
             pd.DataFrame(
                 [
                     {
+                        "game_id": "2023_W01_DET@KC",
                         "season": _SEASON,
                         "week": _WEEK,
                         "game_freeze_ts": datetime(2023, 9, 8, 22, 0, 0, tzinfo=UTC),
@@ -1013,6 +1025,226 @@ def test_a_fresh_cache_is_not_blocked(tmp_path: Path) -> None:
 
     assert _HARD_BLOCK_MESSAGE not in body
     assert "Stake (units)" in body
+    assert "data-missing-games" not in body
+
+
+# 2026 week 3 under the daily pre-lock run (33.2 review C2 CR-02): a Thursday game locking Wed
+# 18:00 ET, a Sunday game locking Sat 18:00 ET and a Monday-night game locking Sun 18:00 ET. The
+# daily run builds each game's list at about 17:20 ET on its lock day, so every population finishes
+# BEFORE the week's latest lock -- which is what the old week-level comparison could never accept.
+_DAILY_WEEK = 3
+_THURSDAY_GAME = "2026_W03_BUF@MIA"
+_SUNDAY_GAME = "2026_W03_NYJ@NE"
+_MONDAY_GAME = "2026_W03_DAL@CHI"
+_DAILY_LOCKS = {
+    _THURSDAY_GAME: datetime(2026, 9, 23, 22, 0, tzinfo=UTC),  # Wed 18:00 ET
+    _SUNDAY_GAME: datetime(2026, 9, 26, 22, 0, tzinfo=UTC),  # Sat 18:00 ET
+    _MONDAY_GAME: datetime(2026, 9, 27, 22, 0, tzinfo=UTC),  # Sun 18:00 ET
+}
+
+
+def _daily_week_service(
+    tmp_path: Path, name: str, built: list[str]
+) -> tuple[DataService, duckdb.DuckDBPyConnection]:
+    """A cache for the 2026 week-3 schedule in which only *built* games have bet-list rows."""
+    clear_cache()
+    db_path = tmp_path / f"{name}.duckdb"
+    conn = _build_bare_cache(db_path)
+    rows = [
+        {**_suppressed_row(game_id, "ou", "ev_below_floor"), "season": 2026}
+        for game_id in built
+    ]
+    for row in rows:
+        row["week"] = _DAILY_WEEK
+    if rows:
+        materialize_bet_list(conn, pd.DataFrame(rows))
+    materialize_bet_week_freeze(
+        conn,
+        pd.DataFrame(
+            [
+                {
+                    "game_id": game_id,
+                    "season": 2026,
+                    "week": _DAILY_WEEK,
+                    "game_freeze_ts": lock,
+                }
+                for game_id, lock in _DAILY_LOCKS.items()
+            ]
+        ),
+    )
+    return DataService(conn), conn
+
+
+@pytest.mark.parametrize(
+    ("name", "built", "now", "missing", "pending"),
+    [
+        # Saturday 17:30 ET: the Saturday run (17:20) built the Sunday game; Monday's lock is ahead.
+        (
+            "saturday",
+            [_THURSDAY_GAME, _SUNDAY_GAME],
+            datetime(2026, 9, 26, 21, 30, tzinfo=UTC),
+            [],
+            [_MONDAY_GAME],
+        ),
+        # Sunday 17:30 ET: the Sunday run built the Monday-night game; the week is complete.
+        (
+            "sunday",
+            [_THURSDAY_GAME, _SUNDAY_GAME, _MONDAY_GAME],
+            datetime(2026, 9, 27, 21, 30, tzinfo=UTC),
+            [],
+            [],
+        ),
+        # The Saturday run FAILED: the Sunday game passed its lock with no list, and is named.
+        (
+            "saturday_failed",
+            [_THURSDAY_GAME],
+            datetime(2026, 9, 27, 16, 0, tzinfo=UTC),
+            [_SUNDAY_GAME],
+            [_MONDAY_GAME],
+        ),
+    ],
+)
+def test_a_week_built_before_each_lock_is_shown_game_by_game(
+    tmp_path: Path,
+    name: str,
+    built: list[str],
+    now: datetime,
+    missing: list[str],
+    pending: list[str],
+) -> None:
+    """33.2 review C2 CR-02: the current week is never withheld for being built before its locks.
+
+    The old verdict compared the week's populated-at marker (17:20 ET on the lock day) against the
+    week's LATEST lock (Sunday 18:00 ET for a Monday-night week), so every population during the
+    live week read as stale and the week was withheld until after its games were played. Each game
+    is now judged against its own lock: built games are shown, a game past its lock with no list is
+    named as missing, and a game whose lock is ahead is not evaluated yet.
+    """
+    from api.routes.pages import _bet_week_coverage
+
+    service, conn = _daily_week_service(tmp_path, name, built)
+    try:
+        coverage = _bet_week_coverage(service, 2026, _DAILY_WEEK, now=now)
+    finally:
+        conn.close()
+
+    assert coverage.blocked is False, (
+        "a week with built games was withheld; the populations finish before the week's latest "
+        "lock by design, so a week-level comparison against it can never pass"
+    )
+    assert coverage.built is True
+    assert coverage.missing_games == missing
+    assert coverage.pending_games == pending
+    assert coverage.not_evaluated is False
+
+
+def test_a_game_exactly_at_its_lock_counts_as_locked(tmp_path: Path) -> None:
+    """At-lock counts as passed (D33.2-01): a game with no list AT its lock is missing, not pending."""
+    from api.routes.pages import _bet_week_coverage
+
+    service, conn = _daily_week_service(tmp_path, "at_lock", [_THURSDAY_GAME])
+    try:
+        coverage = _bet_week_coverage(
+            service, 2026, _DAILY_WEEK, now=_DAILY_LOCKS[_SUNDAY_GAME]
+        )
+    finally:
+        conn.close()
+
+    assert coverage.missing_games == [_SUNDAY_GAME]
+    assert coverage.pending_games == [_MONDAY_GAME]
+
+
+def test_a_partly_built_week_shows_its_rows_and_names_the_rest(tmp_path: Path) -> None:
+    """The rendered page for a week built in part: the list, the missing game and the pending one.
+
+    DET@KC has a list, CAR@ATL passed its lock with none (2023), and JAX@IND's lock is far ahead.
+    """
+    clear_cache()
+    db_path = tmp_path / "partial_week.duckdb"
+    conn = _build_bare_cache(db_path)
+    schedule = [
+        ("2023_W01_DET@KC", _LATER_FREEZE),
+        ("2023_W01_CAR@ATL", _LATER_FREEZE),
+        ("2023_W01_JAX@IND", datetime(2099, 9, 8, 22, 0, tzinfo=UTC)),
+    ]
+    try:
+        materialize_bet_list(conn, pd.DataFrame([_live_row("2023_W01_DET@KC", "ou")]))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [
+                    {"game_id": game_id, "season": _SEASON, "week": _WEEK}
+                    for game_id, _lock in schedule
+                ]
+            ),
+        )
+        materialize_bet_week_freeze(
+            conn,
+            pd.DataFrame(
+                [
+                    {
+                        "game_id": game_id,
+                        "season": _SEASON,
+                        "week": _WEEK,
+                        "game_freeze_ts": lock,
+                    }
+                    for game_id, lock in schedule
+                ]
+            ),
+        )
+        _stamp_populated_at(conn, _POPULATED_AT)
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert _HARD_BLOCK_MESSAGE not in body
+    assert "Stake (units)" in body, "the built game's list was withheld"
+    assert "DET @ KC" in body
+    missing = body[body.index("data-missing-games") :]
+    assert "CAR @ ATL" in missing[: missing.index("</div>")]
+    assert "Not evaluated yet: JAX @ IND." in body
+    assert "Suppressed candidates (0)" in body
+
+
+def test_a_week_whose_locks_are_all_ahead_is_not_evaluated_yet(tmp_path: Path) -> None:
+    """33.2 review C2 WR-01: a future week is 'not evaluated yet', never the stale-cache refusal."""
+    clear_cache()
+    db_path = tmp_path / "future_week.duckdb"
+    conn = _build_bare_cache(db_path)
+    future_lock = datetime(2099, 9, 8, 22, 0, tzinfo=UTC)
+    try:
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}]
+            ),
+        )
+        materialize_bet_week_freeze(
+            conn,
+            pd.DataFrame(
+                [
+                    {
+                        "game_id": "2023_W01_DET@KC",
+                        "season": _SEASON,
+                        "week": _WEEK,
+                        "game_freeze_ts": future_lock,
+                    }
+                ]
+            ),
+        )
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert "Not evaluated yet" in body
+    assert _HARD_BLOCK_MESSAGE not in body
+    assert _FORWARD_WITHHELD_MESSAGE not in body
+    assert _ZERO_ADMITTED_HEADING not in body
+    assert "Suppressed candidates" not in body
 
 
 def test_the_cache_stamp_makes_the_per_game_claim_and_no_week_level_one(
@@ -1699,7 +1931,7 @@ _TRACKER_FIGURE_LABELS = (
     "Hit rate",
     "Return (flat, units)",
 )
-_FORWARD_WITHHELD_MESSAGE = "The forward record is withheld -- the cache is older than this week&#39;s line freeze"
+_FORWARD_WITHHELD_MESSAGE = "The forward record is withheld -- this week&#39;s locked games have no list in the cache"
 
 # The three honesty classes, in the declared display order (weakest evidence to strongest).
 _CONTAMINATED = ("backtest_replay", "contaminated")
@@ -1749,26 +1981,20 @@ def _client_with_tracker(
     bet_rows = rows if rows is not None else [_live_row("2023_W01_DET@KC", "ou")]
     db_path = tmp_path / f"{name}.duckdb"
     conn = _build_bare_cache(db_path)
+    schedule = [
+        {"game_id": r["game_id"], "season": _SEASON, "week": r["week"]}
+        for r in bet_rows
+    ] or [{"game_id": "2023_W01_AAA@BBB", "season": _SEASON, "week": _WEEK}]
     try:
         if bet_rows:
             materialize_bet_list(conn, pd.DataFrame(bet_rows))
-        materialize_available_bet_weeks(
-            conn,
-            pd.DataFrame(
-                [
-                    {"game_id": r["game_id"], "season": _SEASON, "week": r["week"]}
-                    for r in bet_rows
-                ]
-                or [{"game_id": "2023_W01_AAA@BBB", "season": _SEASON, "week": _WEEK}]
-            ),
-        )
+        materialize_available_bet_weeks(conn, pd.DataFrame(schedule))
         materialize_bet_tracker_blocks(conn, to_tracker_frame(blocks))
         if freeze is not None:
+            # Every scheduled game locks at *freeze*: with no bet rows, that is the hard block.
             materialize_bet_week_freeze(
                 conn,
-                pd.DataFrame(
-                    [{"season": _SEASON, "week": _WEEK, "game_freeze_ts": freeze}]
-                ),
+                pd.DataFrame([{**game, "game_freeze_ts": freeze} for game in schedule]),
             )
         _stamp_populated_at(conn, _POPULATED_AT)
     finally:
@@ -2139,8 +2365,9 @@ def test_the_forward_block_is_withheld_under_the_hard_block_while_replay_stays_r
 ) -> None:
     """The refusal is SCOPED: the forward totals are withheld, the replay figures are not.
 
-    A replay figure does not depend on the current week's line freeze, so refusing it would be a
-    refusal nothing justified (UI-SPEC E4 error).
+    A replay figure does not depend on the current week's locks, so refusing it would be a
+    refusal nothing justified (UI-SPEC E4 error). The week has a locked game and NO bet row, which
+    is the hard block since 33.2 review C2 CR-02.
     """
     blocks = [
         _block(
@@ -2163,7 +2390,7 @@ def test_the_forward_block_is_withheld_under_the_hard_block_while_replay_stays_r
         ),
     ]
     with _client_with_tracker(
-        tmp_path, blocks, "scoped_refusal", freeze=_LATER_FREEZE
+        tmp_path, blocks, "scoped_refusal", rows=[], freeze=_LATER_FREEZE
     ) as client:
         response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
 
@@ -2528,31 +2755,27 @@ def test_exactly_one_partial_owns_the_validation_type_vocabulary() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The SCOPED stale-cache hard-block, wired to the per-week marker (plan 31-18, D31-27/29)
+# The SCOPED hard-block, judged game by game against each game's own lock (33.2 review C2 CR-02)
 # ---------------------------------------------------------------------------
 #
-# WHAT PLAN 31-15 LEFT AND WHAT THIS SECTION ADDS. Plan 31-15 wired the page-level trigger as a
-# TIMESTAMP COMPARISON that FAILED OPEN on either value being unreadable. That was right while the
-# marker had no writer: blocking on a value nothing established would have put an unsupported claim
-# on the page. Now that plan 31-18 writes the marker, the ABSENT-MARKER case has a definite meaning
-# -- the population never succeeded for that week -- and it is the guarded failure itself. So the
-# two absent-value cases are now handled EXPLICITLY and asymmetrically:
+# WHAT CHANGED. Plan 31-18 compared the per-week populated-at marker against the week's LATEST
+# per-game lock. Under the daily pre-lock run every population finishes BEFORE that lock by
+# design, so the current week was withheld for its whole live window. The verdict is now per game:
+# a game with a bet-list row is built, a game past its lock with none is missing (named), a game
+# whose lock is ahead is pending. The week is refused only when games have locked and NONE has a
+# row -- the failed insertion.
 #
-#   * expected freeze ABSENT      -> no threshold exists, so no claim is made (not blocked);
-#   * expected freeze PRESENT and marker ABSENT/unreadable -> STALE.
-#
-# THE THRESHOLD COMES FROM THE SCHEDULE, NOT FROM THE BET ROWS (REVIEW-STALE). The failure being
+# THE LOCKS COME FROM THE SCHEDULE, NOT FROM THE BET ROWS (REVIEW-STALE). The failure being
 # guarded is a MISSING bet-list insertion, and in that state the week may have NO rows at all. A
 # guard reading its own threshold out of the data it is checking could not fire in the one case it
 # was built for, and would render a blank list as an honest empty week. That is exactly what
 # ``test_the_zero_row_case_renders_the_refusal_and_not_the_zero_admitted_state`` pins.
 
-_REFUSAL_BRANCH_FUNCTION = "_bets_blocked"
-_REFUSAL_REQUIRED_GETTERS = frozenset(
-    {"get_bet_week_freeze", "get_bet_list_populated_at"}
-)
+_REFUSAL_BRANCH_FUNCTION = "_bet_week_coverage"
+_REFUSAL_REQUIRED_GETTERS = frozenset({"get_bet_game_locks", "get_bet_game_ids"})
 # ``get_cache_meta`` is the generic-timestamp source D31-29 rejected; ``get_bet_list`` is the
-# bet-row source REVIEW-STALE rejected. Neither may appear in the freshness verdict.
+# ranked live list, which is empty for a week whose games were all suppressed and so cannot say
+# whether a game was evaluated. Neither may decide the verdict.
 _REFUSAL_FORBIDDEN_GETTERS = frozenset({"get_cache_meta", "get_bet_list"})
 
 
@@ -2587,21 +2810,21 @@ def _service_calls_in(function_name: str) -> set[str]:
     }
 
 
-def test_the_refusal_branch_reads_the_schedule_freeze_and_the_per_week_marker() -> None:
-    """The staleness verdict is computed from the two LOOKUPS, and from nothing else."""
+def test_the_refusal_branch_reads_the_schedule_locks_and_the_week_coverage() -> None:
+    """The verdict is computed from the per-game schedule locks and the rows' game ids only."""
     called = _service_calls_in(_REFUSAL_BRANCH_FUNCTION)
 
     missing = _REFUSAL_REQUIRED_GETTERS - called
     assert not missing, (
-        f"{_REFUSAL_BRANCH_FUNCTION} does not call {sorted(missing)}; the staleness verdict is "
-        "not being computed from the schedule-derived freeze and the per-week marker"
+        f"{_REFUSAL_BRANCH_FUNCTION} does not call {sorted(missing)}; the verdict is not being "
+        "computed from each game's schedule-derived lock and the week's bet-list coverage"
     )
     forbidden = _REFUSAL_FORBIDDEN_GETTERS & called
     assert not forbidden, (
         f"{_REFUSAL_BRANCH_FUNCTION} calls {sorted(forbidden)}. get_cache_meta is the generic "
         "timestamp D31-29 rejected (it advances when ANY table is repopulated); get_bet_list is "
-        "the bet-row source REVIEW-STALE rejected (it is empty in the very case the guard exists "
-        "for). Neither may decide freshness."
+        "the ranked live list, empty for a week whose games were all suppressed. Neither may "
+        "decide the verdict."
     )
 
 
@@ -2663,7 +2886,12 @@ def test_the_zero_row_case_renders_the_refusal_and_not_the_zero_admitted_state(
         "zero_rows",
         bet_rows=[],
         freeze_weeks=[
-            {"season": _SEASON, "week": _WEEK, "game_freeze_ts": _LATER_FREEZE}
+            {
+                "game_id": "2023_W01_DET@KC",
+                "season": _SEASON,
+                "week": _WEEK,
+                "game_freeze_ts": _LATER_FREEZE,
+            }
         ],
         week_rows=[{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}],
         stamp=None,
@@ -2760,6 +2988,9 @@ def test_the_two_schedule_derived_tables_carry_the_same_weeks(tmp_path: Path) ->
         freezes = set(
             conn.execute("SELECT season, week FROM bet_week_freeze").fetchall()
         )
+        game_locks = set(
+            conn.execute("SELECT game_id, season, week FROM bet_game_lock").fetchall()
+        )
     finally:
         conn.close()
 
@@ -2768,6 +2999,11 @@ def test_the_two_schedule_derived_tables_carry_the_same_weeks(tmp_path: Path) ->
         f"{sorted(freezes)}. A selectable week with no freeze threshold would resolve to the "
         "no-current-week state while plainly being a current week."
     )
+    # The per-game locks the /bets verdict reads come from the SAME frame (33.2 review C2 CR-02).
+    assert game_locks == {
+        ("2023_W01_DET@KC", _SEASON, _WEEK),
+        ("2023_W02_AAA@BBB", _SEASON, _EMPTY_WEEK),
+    }
 
 
 def test_a_past_week_renders_normally_in_the_same_response_shape_as_a_blocked_one(
@@ -2775,10 +3011,9 @@ def test_a_past_week_renders_normally_in_the_same_response_shape_as_a_blocked_on
 ) -> None:
     """The refusal is SCOPED: one week is refused while another is served, from ONE cache.
 
-    Week 1's population succeeded (its marker is stamped and postdates its freeze); week 2's did
-    not (no marker, freeze present). Requesting week 2 refuses; requesting week 1 in the same cache
-    serves the list. Blocking the whole page was rejected -- it punishes the reader for an
-    unrelated failure and trains people to ignore the guard.
+    Week 1's game has a list; week 2's locked game has none. Requesting week 2 refuses;
+    requesting week 1 in the same cache serves the list. Blocking the whole page was rejected --
+    it punishes the reader for an unrelated failure and trains people to ignore the guard.
     """
     early_freeze = datetime(2023, 9, 8, 22, 0, 0, tzinfo=UTC)  # BEFORE _POPULATED_AT
     db_path = _blocked_cache(
@@ -2786,8 +3021,14 @@ def test_a_past_week_renders_normally_in_the_same_response_shape_as_a_blocked_on
         "scoped",
         bet_rows=[_live_row("2023_W01_DET@KC", "ou")],
         freeze_weeks=[
-            {"season": _SEASON, "week": _WEEK, "game_freeze_ts": early_freeze},
             {
+                "game_id": "2023_W01_DET@KC",
+                "season": _SEASON,
+                "week": _WEEK,
+                "game_freeze_ts": early_freeze,
+            },
+            {
+                "game_id": "2023_W02_AAA@BBB",
                 "season": _SEASON,
                 "week": _EMPTY_WEEK,
                 "game_freeze_ts": _LATER_FREEZE,
@@ -2805,11 +3046,11 @@ def test_a_past_week_renders_normally_in_the_same_response_shape_as_a_blocked_on
         served = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
 
     assert _HARD_BLOCK_MESSAGE in blocked, (
-        "week 2's population never recorded a success, yet its list was served"
+        "week 2's locked game has no list, yet the week was not refused"
     )
     assert _HARD_BLOCK_MESSAGE not in served, (
-        "week 1 was refused although its own marker postdates its own freeze; the refusal is not "
-        "scoped to the week that failed"
+        "week 1 was refused although its game has a list; the refusal is not scoped to the week "
+        "that failed"
     )
     assert "Stake (units)" in served
     # The replay tracker survives the refusal: a replay figure does not depend on the current
@@ -2837,9 +3078,16 @@ def test_the_recovery_text_names_the_full_sequence_and_both_timestamps(
     db_path = _blocked_cache(
         tmp_path,
         "recovery",
-        bet_rows=[_live_row("2023_W01_DET@KC", "ou")],
+        # No bet row for the week's locked game: the failed insertion (33.2 review C2 CR-02). The
+        # marker is still stamped, so the refusal has a populated-at value to show.
+        bet_rows=[],
         freeze_weeks=[
-            {"season": _SEASON, "week": _WEEK, "game_freeze_ts": _LATER_FREEZE}
+            {
+                "game_id": "2023_W01_DET@KC",
+                "season": _SEASON,
+                "week": _WEEK,
+                "game_freeze_ts": _LATER_FREEZE,
+            }
         ],
         week_rows=[{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}],
         stamp=(_SEASON, _WEEK),

@@ -222,6 +222,18 @@ CREATE TABLE IF NOT EXISTS bet_week_freeze (
     -- this comment: readers of CACHE_SCHEMA split it on that character.
 );
 
+CREATE TABLE IF NOT EXISTS bet_game_lock (
+    season INTEGER,
+    week INTEGER,
+    game_id VARCHAR,
+    lock_ts TIMESTAMP WITH TIME ZONE
+    -- SCHEDULE-derived, one row per game: its own day-before-kickoff lock (D33.2-01).
+    -- /bets judges a week game by game against it (33.2 review C2 CR-02) -- a game whose
+    -- lock has passed with no bet-list row is missing, one whose lock is ahead is not
+    -- evaluated yet. Written by the same writer and from the same frame as
+    -- bet_week_freeze, so the two cannot disagree.
+);
+
 CREATE TABLE IF NOT EXISTS bet_tracker_blocks (
     provenance VARCHAR,
     validation_type VARCHAR,
@@ -822,6 +834,18 @@ CREATE TABLE IF NOT EXISTS bet_week_freeze (
 )
 """
 
+# Each game's OWN day-before-kickoff lock (D33.2-01), for the per-game /bets coverage verdict
+# (33.2 review C2 CR-02). TIMESTAMPTZ for the same reason as ``bet_week_freeze`` (CR-01).
+BET_GAME_LOCK_COLUMNS: list[str] = ["season", "week", "game_id", "lock_ts"]
+BET_GAME_LOCK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bet_game_lock (
+    season INTEGER,
+    week INTEGER,
+    game_id VARCHAR,
+    lock_ts TIMESTAMP WITH TIME ZONE
+)
+"""
+
 BET_TRACKER_BLOCK_COLUMNS: list[str] = [
     "provenance",
     "validation_type",
@@ -1379,25 +1403,39 @@ def materialize_bet_week_freeze(
     localized to UTC here, which is the one place the "naive means UTC" convention can be applied
     before DuckDB has already reinterpreted it.
 
+    THE PER-GAME LOCKS ARE PERSISTED TOO, FROM THE SAME FRAME (33.2 review C2 CR-02). Under the
+    daily pre-lock run a week is built game by game, each game the day before its own kickoff, so
+    a single week-level threshold cannot say whether the week is complete: every population
+    finishes BEFORE that week's latest lock, and a comparison against it withheld the current
+    week for its whole live window. ``bet_game_lock`` keeps one row per game so ``/bets`` can
+    name exactly the games that passed their lock with no list and show the ones that have one.
+    Writing both tables here, from one frame, is what keeps them from disagreeing.
+
     Args:
-        conn: An open DuckDB connection. The table is created if absent.
-        schedule_df: A schedule frame carrying ``season``, ``week`` and ``game_freeze_ts``.
+        conn: An open DuckDB connection. Both tables are created if absent.
+        schedule_df: A schedule frame carrying ``game_id``, ``season``, ``week`` and
+            ``game_freeze_ts`` (each game's own lock).
 
     Returns:
-        The number of (season, week) rows inserted.
+        The number of (season, week) rows inserted into ``bet_week_freeze``.
     """
     conn.execute(BET_WEEK_FREEZE_SCHEMA)
+    conn.execute(BET_GAME_LOCK_SCHEMA)
     if schedule_df.empty:
         return 0
 
     _require_columns(
         schedule_df,
-        ["season", "week", "game_freeze_ts"],
+        ["game_id", "season", "week", "game_freeze_ts"],
         "materialize_bet_week_freeze",
         "schedule_df",
     )
-    normalized = schedule_df[["season", "week", "game_freeze_ts"]].copy()
+    normalized = schedule_df[["game_id", "season", "week", "game_freeze_ts"]].copy()
     normalized["game_freeze_ts"] = _to_utc_series(normalized["game_freeze_ts"])
+    game_locks = normalized.rename(columns={"game_freeze_ts": "lock_ts"}).sort_values(
+        ["season", "week", "lock_ts", "game_id"]
+    )
+    _explicit_column_insert(conn, "bet_game_lock", BET_GAME_LOCK_COLUMNS, game_locks)
     # Same pandas-stubs groupby gap as materialize_available_bet_weeks above.
     grouped = (
         normalized.groupby(["season", "week"], as_index=False)["game_freeze_ts"]
@@ -2670,6 +2708,7 @@ def populate_cache(
         if bet_schedule_df is None:
             conn.execute(AVAILABLE_BET_WEEKS_SCHEMA)
             conn.execute(BET_WEEK_FREEZE_SCHEMA)
+            conn.execute(BET_GAME_LOCK_SCHEMA)
             logger.warning(
                 "No bet schedule supplied to cache population -- /bets navigation and the "
                 "per-week freeze the stale-cache block compares against will both be empty"

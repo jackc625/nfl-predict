@@ -411,92 +411,110 @@ def _as_utc(value: Any) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def _is_bet_cache_stale(populated_at: Any, latest_game_freeze: Any) -> bool:
-    """Return whether the bet-list cache is older than this week's LATEST per-game freeze (D31-27).
+def _lock_has_passed(lock: Any, now: datetime) -> bool | None:
+    """Whether a game's lock is at or before *now*; None when the lock cannot be read.
 
-    That is the whole definition of staleness for ``/bets``: the Friday population run did not
-    complete after the most recent line freeze, so the week's rows -- if any exist at all -- were
-    written against lines that have since moved.
-
-    It is a TIMESTAMP COMPARISON, not a metric. No EV, stake, tier or return is derived here, so
-    the zero-computation contract of the request path is untouched (UIAP-01).
-
-    THE TWO ABSENT-VALUE CASES ARE HANDLED EXPLICITLY, AND ASYMMETRICALLY (plan 31-18). Plan 31-15
-    failed open on either value, which was right while the marker had no writer: blocking on a
-    value nothing established would have put an unsupported claim on the page. Now that the
-    population stamps a per-week marker, each absence has its own meaning:
-
-    * **No expected freeze** -> there is no threshold, so no claim is made and the week is not
-      blocked. An absent freeze means the week is not in the schedule at all; refusing it would
-      assert staleness against a line freeze nothing recorded. (The two schedule-derived tables
-      are built from ONE frame in one population, so a week reachable through the selector always
-      has a freeze -- see ``test_the_two_schedule_derived_tables_carry_the_same_weeks``.)
-    * **A freeze exists but the marker does not, or cannot be read** -> STALE. The marker is
-      written STRICTLY AFTER a successful blob insert, so its absence means the population never
-      recorded a success for this week. That IS the guarded failure, and it is the state in which
-      the week may carry no bet rows at all -- so failing open here would render a failed
-      insertion as an honest empty week, which is a claim about the models made from the absence
-      of an insertion.
-
-    A PAST week is not blocked by construction: its own freeze instant precedes its own population
-    run, so the comparison is false without needing a separate current-week test.
+    At-lock counts as passed: information timed at the lock is admissible (D33.2-01), so the run
+    that builds a game's list must finish before it. A TIMESTAMP COMPARISON, not a metric.
     """
-    freeze = _as_utc(latest_game_freeze)
-    if freeze is None:
-        return False
-    populated = _as_utc(populated_at)
-    if populated is None:
-        return True
-    return populated < freeze
+    instant = _as_utc(lock)
+    if instant is None:
+        return None
+    return instant <= now
 
 
-class BetFreshness(NamedTuple):
-    """The staleness verdict and the two timestamps the refusal interpolates.
+class BetWeekCoverage(NamedTuple):
+    """Which of a week's games have a bet list, judged game by game against each game's own lock.
 
-    Returned as one object so the verdict and the values the reader is shown to check it against
-    come from the SAME pair of reads -- a second, separate lookup for display could disagree with
-    the one the block was decided on.
+    Returned as one object so the verdict and the values the page shows beside it come from the
+    SAME reads -- a second, separate lookup for display could disagree with the one the verdict
+    was decided on.
+
+    Attributes:
+        built: At least one game of the week has a bet-list row.
+        missing_games: Games whose lock has passed with no bet-list row. Permanent -- a game's
+            list cannot be built after its lock -- and named on the page, never dropped.
+        pending_games: Games whose lock is still ahead with no row yet: not evaluated YET.
+        populated_at: This week's populated-at marker, shown for the reader to check.
+        expected_freeze: The week's latest game lock, shown beside it.
     """
 
-    blocked: bool
+    built: bool
+    missing_games: list[str]
+    pending_games: list[str]
     populated_at: Any
     expected_freeze: Any
 
+    @property
+    def blocked(self) -> bool:
+        """Games have locked and NONE has a list: the failed-insertion state, nothing to show."""
+        return bool(self.missing_games) and not self.built
 
-def _bets_blocked(
-    service: DataService, season: int | None, week: int | None
-) -> BetFreshness:
-    """THE refusal branch: is this week's bet list older than this week's latest line freeze?
+    @property
+    def not_evaluated(self) -> bool:
+        """Nothing is built and nothing is missing: every game's lock is still ahead."""
+        return bool(self.pending_games) and not self.missing_games and not self.built
 
-    Both sides are keyed LOOKUPS and NEITHER depends on a bet row existing, which is what lets the
-    block fire in the zero-row case it was built for (REVIEW-STALE):
 
-    * ``get_bet_week_freeze`` reads the SCHEDULE-derived ``bet_week_freeze`` table. Reading the
-      threshold off the bet rows was rejected because the failure being guarded is a missing
-      bet-list insertion -- a guard that reads its own threshold from the data it is checking
-      cannot fire in the case it was built for.
-    * ``get_bet_list_populated_at`` reads the PER-WEEK marker. Reading it off ``get_cache_meta``'s
-      generic ``last_updated`` was rejected because that advances whenever ANY cache table is
-      repopulated, so a run that populated predictions and failed on the bet list would look fresh
-      (D31-29).
+def _bet_week_coverage(
+    service: DataService,
+    season: int | None,
+    week: int | None,
+    now: datetime | None = None,
+) -> BetWeekCoverage:
+    """THE per-game coverage verdict for ``/bets`` (33.2 review C2 CR-02).
 
-    ``tests/api/test_bets_page.py`` asserts that source restriction STRUCTURALLY, by walking this
-    function's AST for the attributes called on ``service`` -- so the two rejected sources can be
-    named in this docstring without a text search reporting a false violation.
+    WHY PER GAME. Under the daily run each game's list is built the day before its own kickoff,
+    before its 18:00 ET lock (D33.2-01). The previous verdict compared the per-week populated-at
+    marker against the week's LATEST lock -- and every population finishes before that lock by
+    design, so the current week read "withheld" from its first built game until the following
+    week, after every one of its games had kicked off. Now each game is judged on its own:
 
-    Zero computation: two reads and one timestamp comparison (UIAP-01).
+    * a game with a bet-list row (live or suppressed -- every evaluated game yields one per bet
+      type) is BUILT and shown;
+    * a game whose lock has passed with no row is MISSING, and is named;
+    * a game whose lock is still ahead with no row is PENDING -- not evaluated yet, not stale.
+
+    The week is BLOCKED (nothing to show) only when games have locked and none has a row: the
+    failed-insertion state the refusal exists for, in which there may be no bet rows at all.
+
+    THE SOURCES. The locks come from the SCHEDULE-derived ``bet_game_lock`` table, never from bet
+    rows: a guard reading its threshold from the rows it checks could not fire in the zero-row
+    case (REVIEW-STALE). Coverage comes from the rows' game ids -- a keyed existence probe, not a
+    metric. The generic ``last_updated`` stamp is not consulted at all (D31-29); the per-week
+    marker and the week-level lock are read for DISPLAY only. ``tests/api/test_bets_page.py``
+    asserts these sources structurally, by walking this function's AST.
+
+    Args:
+        service: The request's data service.
+        season: The resolved season, or None.
+        week: The resolved week, or None.
+        now: The instant to judge at; the current UTC time when omitted.
+
+    Returns:
+        The :class:`BetWeekCoverage`.
     """
-    populated_at = service.get_bet_list_populated_at(season, week)
+    instant = now if now is not None else datetime.now(tz=UTC)
+    built = set(service.get_bet_game_ids(season, week))
+    missing: list[str] = []
+    pending: list[str] = []
+    for game in service.get_bet_game_locks(season, week):
+        if game["game_id"] in built:
+            continue
+        passed = _lock_has_passed(game["lock_ts"], instant)
+        if passed is True:
+            missing.append(game["game_id"])
+        elif passed is False:
+            pending.append(game["game_id"])
+    # The refusal shows the instants normalized to UTC (CR-01): DuckDB hands a TIMESTAMPTZ back in
+    # the SESSION's own zone, and an UNREADABLE value falls back to the raw stored one.
     expected_freeze = service.get_bet_week_freeze(season, week)
-    # The refusal shows the instant the VERDICT was computed from, normalized to UTC (CR-01).
-    # DuckDB hands a TIMESTAMPTZ back in the SESSION's own zone, so rendering the raw value would
-    # print one instant in the server's zone next to a populated-at marker printed in UTC -- two
-    # renderings of one comparison that read as two unrelated claims. An UNREADABLE freeze falls
-    # back to the raw stored value rather than to nothing, so the reader still sees what is there.
     freeze_utc = _as_utc(expected_freeze)
-    return BetFreshness(
-        blocked=_is_bet_cache_stale(populated_at, expected_freeze),
-        populated_at=populated_at,
+    return BetWeekCoverage(
+        built=bool(built),
+        missing_games=missing,
+        pending_games=pending,
+        populated_at=service.get_bet_list_populated_at(season, week),
         expected_freeze=expected_freeze if freeze_utc is None else freeze_utc,
     )
 
@@ -517,10 +535,10 @@ def _build_bets_context(
     one place and cannot drift between them.
     """
     cache_meta = service.get_cache_meta()
-    # The staleness verdict and the two timestamps the refusal interpolates, from ONE pair of
-    # reads (D31-27/29). See _bets_blocked for why neither side may come from get_cache_meta or
-    # from the bet rows.
-    freshness = _bets_blocked(service, season, week)
+    # The per-game coverage verdict and the two timestamps the refusal interpolates, from ONE set
+    # of reads (33.2 review C2 CR-02). See _bet_week_coverage for why each game is judged against
+    # its own lock rather than the week against its latest one.
+    freshness = _bet_week_coverage(service, season, week)
     bet_list_available = service.bet_list_table_exists()
     tracker_blocks = service.get_bet_tracker_blocks()
 
@@ -544,13 +562,17 @@ def _build_bets_context(
         # as a modelling result (plan 31-15, UI-SPEC E2 empty).
         "bet_list_available": bet_list_available,
         "bet_list_populated_at": freshness.populated_at,
-        # The stale-cache hard-block (D31-27), SCOPED. It withholds the current week's list, that
-        # week's suppressed disclosure and the forward tracker block -- all three are computed
-        # from the cache this verdict just declared out of date. Replay weeks and the replay
-        # tracker block render normally in the SAME response, because they predate the failure
-        # entirely and cannot be mistaken for current. Blocking the whole page was rejected: it
-        # denies access to content that is not stale and trains readers to ignore the guard.
+        # The hard-block (D31-27), SCOPED and now PER GAME (33.2 review C2 CR-02). It fires only
+        # when games of the week have passed their lock and NONE has a list -- the failed
+        # insertion -- and then withholds the week's list, its suppressed disclosure and the
+        # forward tracker block. Replay weeks and the replay tracker render normally in the SAME
+        # response. A week with SOME games built shows them, and names the missing ones.
         "bets_blocked": freshness.blocked,
+        # Games past their lock with no list (named, never dropped), and games whose lock is still
+        # ahead (not evaluated yet). A week where every game is pending is not evaluated yet.
+        "missing_games": freshness.missing_games,
+        "pending_games": freshness.pending_games,
+        "week_not_evaluated": freshness.not_evaluated,
         # The PRECOMPUTED realized-vs-expected tracker blocks (SPEC R8, D31-22, plan 31-16). One
         # stored row per (provenance, validation_type) class, aggregated at population time by
         # ``backtest.bet_tracker`` and read here without a single arithmetic operation -- no count,

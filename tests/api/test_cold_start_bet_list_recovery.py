@@ -7,10 +7,10 @@ From a genuinely cold start the ``/bets`` cache-absent empty state told the read
 reads ``outputs/bet_list/`` through ``read_bet_list_cache_sources``, which by documented design
 degrades an ABSENT source to a zero-row frame rather than raising. So from a cold checkout it
 succeeded, created the ``bet_list`` table EMPTY, stamped no per-week populated-at marker, but DID
-build the schedule-derived ``bet_week_freeze`` table -- and a freeze present beside an absent
-marker is exactly the condition ``_is_bet_cache_stale`` treats as stale. The page therefore flipped
-from the empty state into the withheld refusal, whose own recovery text named the SAME insufficient
-command again. Re-running it could never break the loop.
+build the schedule-derived lock tables -- and a game past its lock with no bet row is exactly the
+condition ``_bet_week_coverage`` refuses on. The page therefore flipped from the empty state into
+the refusal, whose own recovery text named the SAME insufficient command again. Re-running it could
+never break the loop.
 
 THE COVERAGE GAP THAT LET IT SHIP
 ---------------------------------
@@ -80,7 +80,9 @@ from backtest.weekly_bet_list import (
 # Transcribed from the design contract, exactly as ``tests/api/test_bets_page.py`` transcribes
 # them. The refusal is HTML-escaped because it reaches the page through ``{{ recovery_text }}``.
 _CACHE_ABSENT_HEADING = "Bet list not built yet"
-_HARD_BLOCK_MESSAGE = "This week&#39;s list is withheld -- the cache is older than this week&#39;s line freeze"
+_HARD_BLOCK_MESSAGE = (
+    "This week&#39;s list is missing -- its locked games have no list in the cache"
+)
 # Unique to the LIVE row table: "Matchup" also heads the suppressed-candidates table, so it cannot
 # distinguish a served list from a served disclosure.
 _ROW_TABLE_HEADER = "Stake (units)"
@@ -507,8 +509,8 @@ def test_follow_the_named_sequence_and_the_page_serves_the_row_table(
         "the cache-absent empty state still renders after the rows were loaded"
     )
     assert _HARD_BLOCK_MESSAGE not in body, (
-        "the page flipped into the withheld refusal after a COMPLETE recovery; the per-week "
-        "populated-at marker was not stamped, or it did not postdate the week freeze"
+        "the page flipped into the refusal after a COMPLETE recovery; the recovered rows did "
+        "not reach the cache for the week's locked games"
     )
     assert _default_dir_state() == default_before, (
         f"{DEFAULT_BET_LIST_DIR.as_posix()} changed during a run directed at a temporary "
@@ -532,10 +534,10 @@ def test_copy_only_from_a_cold_state_does_not_serve_a_list(
     The reported chain, reproduced: the reader runs the copy step, it reads an absent artifact
     through ``read_bet_list_cache_sources``, which degrades to a zero-row frame rather than
     raising, so it exits successfully; ``materialize_bet_list_with_marker`` returns early on an
-    empty frame and stamps NOTHING; but ``bet_week_freeze`` is built from the SCHEDULE
-    independently of the bet rows, so a freeze exists with no marker beside it -- which
-    ``_is_bet_cache_stale`` treats as stale. The page therefore has no rows to withhold and
-    withholds them anyway, which is the honest render of a failed insertion.
+    empty frame and stamps NOTHING; but the lock tables are built from the SCHEDULE
+    independently of the bet rows, so the week's games have passed their locks with no row --
+    which ``_bet_week_coverage`` refuses on. The page therefore has no rows to show and says so,
+    which is the honest render of a failed insertion.
     """
     db_path = _cold_cache(tmp_path / "cold.duckdb", seed_navigation=False)
     empty_artifacts = tmp_path / "never_generated"

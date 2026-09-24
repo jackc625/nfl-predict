@@ -137,6 +137,22 @@
      reconstructed by the old models. The route scopes it to the selected season. #}
   {% with scope=week_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
 
+  {# The week's games judged against their own locks (33.2 review C2 CR-02), as matchup labels. #}
+  {% set missing_labels = [] %}
+  {% for _game_id in missing_games or [] %}{% set _ = missing_labels.append(_game_id.split('_')[-1].replace('@', ' @ ')) %}{% endfor %}
+  {% set pending_labels = [] %}
+  {% for _game_id in pending_games or [] %}{% set _ = pending_labels.append(_game_id.split('_')[-1].replace('@', ' @ ')) %}{% endfor %}
+
+  {# A week built in part: the games that passed their lock with NO list are named above whatever
+     was built, never silently left out (33.2 review C2 CR-02). Neutral gray, like every other
+     non-tracker surface on this page -- colour is tracker-only here. #}
+  {% if bet_list_available and not bets_blocked and missing_labels %}
+  <div class="mb-4 rounded-md border border-gray-300 bg-gray-50 p-3 text-sm text-gray-700 max-w-3xl" data-missing-games>
+    <p class="font-semibold text-gray-900">No list for {{ missing_labels | length }} game{{ "" if missing_labels | length == 1 else "s" }} past {{ "its" if missing_labels | length == 1 else "their" }} lock</p>
+    <p class="mt-1">{{ missing_labels | join(", ") }}. Each game's list is built the day before its kickoff, before its 6:00 PM Eastern lock; these were not, so they carry no recommendation. The games below are unaffected.</p>
+  </div>
+  {% endif %}
+
   {# The four distinct non-happy renders (SPEC R5, UI-SPEC E2 empty / E7). Order matters:
      a missing TABLE is checked first because it is the only one of the four that names an action
      the reader can take, and reporting it as "no bets cleared the floor" would be a claim about
@@ -148,14 +164,22 @@
       {% include "components/_empty_state.html" %}
     {% endwith %}
   {% elif bets_blocked %}
-    {# The stale-cache hard-block (D31-27). Rank 1 of the section the list would have held, so the
-       absence is STRUCTURAL rather than something the reader has to notice. The recovery text
-       repeats both timestamps so the two claims can be compared rather than taken. The suppressed
-       section is withheld with it: every suppression reason is a verdict computed from the same
-       cache this block just declared out of date (UI-SPEC E3 error, owner decision). #}
-    {% with message="This week's list is withheld -- the cache is older than this week's line freeze",
-            recovery_text='The Friday cache population did not complete after the most recent line freeze, so the current week\'s bets and the forward record\'s totals would be out of date. Past weeks below are unaffected and remain readable. To restore this section, rebuild the list with "uv run python scripts/generate_bet_list.py" and then load it into the cache with "uv run python scripts/populate_cache.py". The second command only COPIES what the first produces, so running it on its own leaves this section withheld. The running server picks the rebuilt cache up on the next request, so no restart is needed. Cache last populated: ' ~ (bet_list_populated_at or "not recorded") ~ "; latest line freeze this week: " ~ (bet_week_freeze or "not recorded") ~ "." %}
+    {# The hard-block (D31-27), now judged game by game (33.2 review C2 CR-02): games of this week
+       have passed their own lock and NONE has a list in the cache -- the failed-insertion state.
+       Rank 1 of the section the list would have held, so the absence is STRUCTURAL. The recovery
+       text names the games and repeats both timestamps so the claim can be checked rather than
+       taken. The suppressed section is withheld with it (UI-SPEC E3 error, owner decision). #}
+    {% with message="This week's list is missing -- its locked games have no list in the cache",
+            recovery_text="Each game's list is built the day before its kickoff, before its 6:00 PM Eastern lock. These games have passed that lock with no list in the cache: " ~ (missing_labels | join(", ")) ~ '. Past weeks below are unaffected and remain readable. To restore this section, rebuild the list with "uv run python scripts/generate_bet_list.py" and then load it into the cache with "uv run python scripts/populate_cache.py". The second command only COPIES what the first produces, so running it on its own leaves this section withheld. The running server picks the rebuilt cache up on the next request, so no restart is needed. Cache last populated: ' ~ (bet_list_populated_at or "not recorded") ~ "; latest game lock this week: " ~ (bet_week_freeze or "not recorded") ~ "." %}
       {% include "components/_error_state.html" %}
+    {% endwith %}
+  {% elif week_not_evaluated %}
+    {# Every game of this week is still ahead of its lock and none has a list yet: NOT EVALUATED,
+       which is neither a refusal nor a result (33.2 review C2 WR-01). #}
+    {% with heading="Not evaluated yet",
+            body="No game of this week has reached its lock. Each game's list is built by the daily run the day before its kickoff, before its 6:00 PM Eastern lock, and appears here once it is.",
+            action_text=none, action_url=none %}
+      {% include "components/_empty_state.html" %}
     {% endwith %}
   {% elif current_week is none %}
     {% with heading="No current week",
@@ -164,8 +188,10 @@
       {% include "components/_empty_state.html" %}
     {% endwith %}
   {% elif not bets %}
+    {# The claim is scoped to what was evaluated: with a game missing or still ahead of its lock,
+       "every scheduled game" would be false (33.2 review C2 CR-02). #}
     {% with heading="No bets cleared the floor this week",
-            body="Every scheduled game was evaluated for all three bet types and none cleared the pre-registered expected-value floor. An empty list is a result, not a failure or an outage. The full record of what was evaluated and why each candidate was declined is in the suppressed section below.",
+            body=("Every game with a list so far was checked" if (missing_labels or pending_labels) else "Every scheduled game was evaluated") ~ " for all three bet types and none cleared the pre-registered expected-value floor. An empty list is a result, not a failure or an outage. The full record of what was evaluated and why each candidate was declined is in the suppressed section below.",
             action_text=none, action_url=none %}
       {% include "components/_empty_state.html" %}
     {% endwith %}
@@ -262,6 +288,10 @@
   </div>
   <p class="text-xs text-gray-500 mt-3 max-w-2xl">Stakes are quarter-Kelly, capped at 5% of bankroll per bet and 10% across all bets in a week pooled over all three bet types, then de-weighted where bets on the same game or the same side are correlated. Order is by expected value, not by stake -- a capped bet can outrank a larger one.</p>
   {% endif %}
+  {# Games still ahead of their lock, in a week that has something to show: not evaluated YET. #}
+  {% if bet_list_available and not bets_blocked and not week_not_evaluated and pending_labels %}
+  <p class="text-xs text-gray-500 mt-3 max-w-2xl" data-pending-games>Not evaluated yet: {{ pending_labels | join(", ") }}. Each game's list is built by the daily run the day before its kickoff, before its 6:00 PM Eastern lock.</p>
+  {% endif %}
 </section>
 
 {# The suppressed section is WITHHELD in three states, each for its own reason:
@@ -270,8 +300,10 @@
      cache the block just declared out of date, so showing them would assert a current record of
      what was declined that is exactly as stale as the list being refused (UI-SPEC E3 error);
    - no current week: season and week are both None, so the getter carries NO week filter and
-     would dump every suppressed row in the cache under a single week's heading. #}
-{% if bet_list_available and not bets_blocked and current_week is not none %}
+     would dump every suppressed row in the cache under a single week's heading;
+   - a week not evaluated yet: nothing was evaluated, so "no candidate was suppressed" would be
+     a claim about an evaluation that has not happened (33.2 review C2 WR-01). #}
+{% if bet_list_available and not bets_blocked and not week_not_evaluated and current_week is not none %}
 {# ------------------------------------------------------------------------ #}
 {# Rank 3: the suppressed-candidates disclosure (SPEC R6, UI-SPEC E3).       #}
 {#                                                                          #}
@@ -563,9 +595,9 @@
   {{ tracker_section("backtest_replay", none, none) }}
 {% endif %}
 
-{# The forward section. Under the stale-cache hard-block it is WITHHELD while the replay sections
-   above stay readable in the SAME response -- a replay figure does not depend on the current
-   week's line freeze, so refusing it would be a refusal nothing justified (UI-SPEC E4 error). #}
+{# The forward section. Under the hard-block it is WITHHELD while the replay sections above stay
+   readable in the SAME response -- a replay figure does not depend on the current week's locks,
+   so refusing it would be a refusal nothing justified (UI-SPEC E4 error). #}
 {% if bets_blocked %}
 <section class="mb-8" hx-indicator="#bets-loading" data-tracker-block="forward">
   <div class="mb-4">
@@ -580,8 +612,8 @@
     </div>
     <p class="text-sm text-gray-500 max-w-2xl mt-1">{{ TRACKER_CAPTIONS["forward"] }}</p>
   </div>
-  {% with message="The forward record is withheld -- the cache is older than this week's line freeze",
-          recovery_text='The forward record\'s totals are computed from the same cache the list above was refused on, so they would be out of date. The backtest replay above is unaffected and remains readable, because a replay figure does not depend on the current week\'s line freeze. To restore this section, rebuild the list with "uv run python scripts/generate_bet_list.py" and then load it into the cache with "uv run python scripts/populate_cache.py". The second command only COPIES what the first produces, so running it on its own leaves this section withheld.' %}
+  {% with message="The forward record is withheld -- this week's locked games have no list in the cache",
+          recovery_text='The forward record\'s totals are computed from the same cache the list above is missing from, so they would be incomplete. The backtest replay above is unaffected and remains readable, because a replay figure does not depend on the current week\'s locks. To restore this section, rebuild the list with "uv run python scripts/generate_bet_list.py" and then load it into the cache with "uv run python scripts/populate_cache.py". The second command only COPIES what the first produces, so running it on its own leaves this section withheld.' %}
     {% include "components/_error_state.html" %}
   {% endwith %}
 </section>

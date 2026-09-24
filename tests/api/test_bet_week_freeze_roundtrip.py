@@ -8,9 +8,10 @@ the round trip looked self-consistent. The shift only shows up when the recovere
 compared against the ORIGINAL -- which is what these tests do, and they close the connection
 between the write and the read so the storage is genuinely re-parsed.
 
-The stake: ``_is_bet_cache_stale`` compares a true-UTC populated-at marker against this instant.
-A four- or five-hour shift moved the staleness threshold by the server's own UTC offset, so a bet
-list priced BEFORE the lines stopped moving was served with no refusal on any host west of UTC.
+The stake: ``/bets`` judges each game against its own lock (``_lock_has_passed``, 33.2 review C2
+CR-02), and the per-game lock table is written by the same writer as this one. A four- or five-hour
+shift would move every game's lock by the server's own UTC offset, so a game whose lock had passed
+would read as not locked yet -- a missing list reported as a pending one.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -26,12 +27,13 @@ import pandas as pd
 import pytest
 
 from api.cache import CACHE_SCHEMA, materialize_bet_week_freeze
-from api.routes.pages import _as_utc, _is_bet_cache_stale
+from api.routes.pages import _as_utc, _lock_has_passed
 from api.services import DataService, clear_cache
 from scripts.ingest_historical_odds import gameday_lock
 
 _SEASON = 2025
 _WEEK = 2
+_GAME_ID = "2025_W02_CHI@DET"
 # A Sunday gameday, so its own lock is Saturday 18:00 ET -- the real rule (D33.2-01), taken from
 # the one source, not a hand-authored instant. The cache column keeps its published name
 # ``latest_game_freeze_ts`` (a rename is HOST-07's schema change); only the instant changed.
@@ -55,7 +57,14 @@ def _write_freeze(db_path: Path, session_tz: str, freeze: pd.Timestamp) -> None:
         materialize_bet_week_freeze(
             conn,
             pd.DataFrame(
-                [{"season": _SEASON, "week": _WEEK, "game_freeze_ts": freeze}]
+                [
+                    {
+                        "game_id": _GAME_ID,
+                        "season": _SEASON,
+                        "week": _WEEK,
+                        "game_freeze_ts": freeze,
+                    }
+                ]
             ),
         )
     finally:
@@ -70,6 +79,20 @@ def _read_freeze(db_path: Path, session_tz: str) -> datetime | None:
         conn.execute(f"SET TimeZone='{session_tz}'")
         service = DataService(conn)
         return _as_utc(service.get_bet_week_freeze(_SEASON, _WEEK))
+    finally:
+        conn.close()
+        clear_cache()
+
+
+def _read_game_lock(db_path: Path, session_tz: str) -> object:
+    """Read the per-game lock back, RAW, through the real getter on a FRESH connection."""
+    clear_cache()
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        conn.execute(f"SET TimeZone='{session_tz}'")
+        (game,) = DataService(conn).get_bet_game_locks(_SEASON, _WEEK)
+        assert game["game_id"] == _GAME_ID
+        return game["lock_ts"]
     finally:
         conn.close()
         clear_cache()
@@ -100,24 +123,28 @@ def test_the_freeze_instant_survives_storage_unshifted(
 
 
 @pytest.mark.parametrize("session_tz", _SESSION_ZONES)
-def test_a_cache_populated_before_the_freeze_is_refused_in_every_session_zone(
+def test_a_game_lock_is_judged_at_its_true_instant_in_every_session_zone(
     tmp_path: Path, session_tz: str
 ) -> None:
-    """The concrete CR-01 scenario: populated 20:00Z, freeze 22:00Z -- STALE everywhere.
+    """The CR-01 scenario on the per-game lock: 22:00Z is passed at 22:00Z, not at 18:00Z.
 
-    Under the naive column this evaluated as ``20:00Z < 18:00Z -> False`` on an
-    America/New_York host and the stale week was served.
+    Under a naive column the lock would come back shifted by the session offset, and a game
+    one minute before its lock would read as locked (or four hours after it as not locked).
     """
-    freeze = datetime(2025, 9, 12, 22, 0, tzinfo=UTC)
-    populated_at = datetime(2025, 9, 12, 20, 0, tzinfo=UTC).isoformat()
-    db_path = tmp_path / f"stale_{session_tz.replace('/', '_')}.duckdb"
+    lock = datetime(2025, 9, 12, 22, 0, tzinfo=UTC)
+    db_path = tmp_path / f"lock_{session_tz.replace('/', '_')}.duckdb"
 
-    _write_freeze(db_path, session_tz, pd.Timestamp(freeze))
-    recovered = _read_freeze(db_path, session_tz)
+    _write_freeze(db_path, session_tz, pd.Timestamp(lock))
+    recovered = _read_game_lock(db_path, session_tz)
 
-    assert _is_bet_cache_stale(populated_at, recovered) is True, (
-        "a bet list populated two hours BEFORE the week's latest line freeze was not refused "
-        f"under session TimeZone {session_tz}"
+    assert _as_utc(recovered) == lock
+    assert (
+        _lock_has_passed(recovered, datetime(2025, 9, 12, 21, 59, tzinfo=UTC)) is False
+    ), (
+        f"a game one minute before its lock read as locked under session TimeZone {session_tz}"
+    )
+    assert _lock_has_passed(recovered, lock) is True, (
+        f"a game AT its lock did not read as locked under session TimeZone {session_tz}"
     )
 
 

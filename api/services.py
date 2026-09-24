@@ -866,6 +866,63 @@ class DataService:
         row = result.fetchone()
         return row[0] if row else None
 
+    def get_bet_game_locks(
+        self, season: int | None, week: int | None
+    ) -> list[dict[str, Any]]:
+        """Return ``{game_id, lock_ts}`` for every scheduled game of the week, earliest lock first.
+
+        SCHEDULE-derived (``bet_game_lock``), so it names every game of the week whether or not
+        any bet row exists for it -- which is what lets ``/bets`` name a game that passed its lock
+        with no list (33.2 review C2 CR-02). Empty when the table is absent (a cache that predates
+        it) or either identifier is missing.
+        """
+        if season is None or week is None:
+            return []
+        key = ("bet_game_locks", season, week)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        try:
+            result = self._conn.execute(
+                "SELECT game_id, lock_ts FROM bet_game_lock "
+                "WHERE season = ? AND week = ? ORDER BY lock_ts, game_id",
+                [season, week],
+            )
+        except duckdb.Error:
+            logger.warning("bet_game_lock table not available in cache")
+            return []
+        rows = [
+            {"game_id": game_id, "lock_ts": lock_ts}
+            for game_id, lock_ts in result.fetchall()
+        ]
+        _cache_set(key, rows)
+        return copy.deepcopy(rows)
+
+    def get_bet_game_ids(self, season: int | None, week: int | None) -> list[str]:
+        """Return the distinct game ids the week's bet list carries a row for, live or suppressed.
+
+        Every evaluated game yields one record per bet type, live or suppressed, so a game with
+        no row at all was not evaluated. A zero-row probe of coverage, not a metric (UIAP-01).
+        """
+        if season is None or week is None:
+            return []
+        key = ("bet_game_ids", season, week)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        try:
+            result = self._conn.execute(
+                "SELECT DISTINCT game_id FROM bet_list "
+                "WHERE season = ? AND week = ? ORDER BY game_id",
+                [season, week],
+            )
+        except duckdb.Error:
+            logger.warning("bet_list table not available in cache")
+            return []
+        ids = [row[0] for row in result.fetchall()]
+        _cache_set(key, ids)
+        return list(ids)
+
     def get_bet_list_populated_at(
         self, season: int | None, week: int | None
     ) -> str | None:

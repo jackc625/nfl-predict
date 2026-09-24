@@ -62,17 +62,15 @@ _SNAPSHOT_TS = "2023-09-07T18:00:00-04:00"
 _FREEZE_TS = "2023-09-08T18:00:00-04:00"
 _MINUS_110 = -110.0
 
-# The per-week freeze instant the two markers below straddle. TZ-AWARE, like every instant
-# ``build_bet_week_schedule`` produces: ``api.routes.pages._as_utc`` REFUSES a naive value
-# rather than guessing a zone for it (CR-01), so a naive fixture would exercise a shape the
-# real writer cannot emit.
+# The game's own lock, long past. TZ-AWARE, like every instant ``build_bet_week_schedule``
+# produces: ``api.routes.pages._as_utc`` REFUSES a naive value rather than guessing a zone for
+# it (CR-01), so a naive fixture would exercise a shape the real writer cannot emit.
 _FREEZE = datetime(2023, 9, 8, 23, 0, 0, tzinfo=UTC)
 
-# STRICTLY BEFORE the freeze: the population run finished before the lines moved, so this
-# week's list is withheld. This is the pre-swap state the recovery command has to clear.
+# The pre-swap build: its population left NO bet row for the locked game, so the week's list is
+# missing and refused (33.2 review C2 CR-02). This is the state the recovery command has to clear.
 _OLD_POPULATED_AT = "2023-09-08T22:30:00+00:00"
-# STRICTLY AFTER the freeze: the recovery ran and recorded a success. This is the value the
-# post-swap page must render.
+# The recovery ran and loaded the row. This is the value the post-swap page must render.
 _NEW_POPULATED_AT = "2023-09-09T01:15:00+00:00"
 
 # ``cache_meta.last_updated``, which is the ONE cache value ``/health`` reports. Distinct per
@@ -82,7 +80,9 @@ _NEW_POPULATED_AT = "2023-09-09T01:15:00+00:00"
 _OLD_LAST_UPDATED = "2023-09-08T22:30:00"
 _NEW_LAST_UPDATED = "2023-09-09T01:15:00"
 
-_HARD_BLOCK_MESSAGE = "This week&#39;s list is withheld -- the cache is older than this week&#39;s line freeze"
+_HARD_BLOCK_MESSAGE = (
+    "This week&#39;s list is missing -- its locked games have no list in the cache"
+)
 # The live row table's stake column header -- present only when the list is actually served.
 _ROW_TABLE_HEADER = "Stake (units)"
 _POPULATED_AT_LABEL = "Bet list last populated"
@@ -123,9 +123,16 @@ def _live_row() -> dict[str, Any]:
 
 
 def _build_cache(
-    db_path: Path, *, populated_at: str, last_updated: str | None = None
+    db_path: Path,
+    *,
+    populated_at: str,
+    last_updated: str | None = None,
+    with_rows: bool = True,
 ) -> None:
     """Build a complete one-week cache at *db_path*, stamped with *populated_at*.
+
+    *with_rows* False builds the pre-swap state: the schedule and the marker, but no bet row for
+    the locked game -- the failed insertion the /bets refusal is for.
 
     *last_updated* stamps ``cache_meta.last_updated``, the ONE value ``/health`` reports and the
     only thing that distinguishes two builds from that endpoint's point of view. It defaults to
@@ -143,7 +150,8 @@ def _build_cache(
             stmt = statement.strip()
             if stmt:
                 conn.execute(stmt)
-        materialize_bet_list(conn, pd.DataFrame([_live_row()]))
+        if with_rows:
+            materialize_bet_list(conn, pd.DataFrame([_live_row()]))
         materialize_available_bet_weeks(
             conn,
             pd.DataFrame([{"game_id": _GAME_ID, "season": _SEASON, "week": _WEEK}]),
@@ -151,7 +159,14 @@ def _build_cache(
         materialize_bet_week_freeze(
             conn,
             pd.DataFrame(
-                [{"season": _SEASON, "week": _WEEK, "game_freeze_ts": _FREEZE}]
+                [
+                    {
+                        "game_id": _GAME_ID,
+                        "season": _SEASON,
+                        "week": _WEEK,
+                        "game_freeze_ts": _FREEZE,
+                    }
+                ]
             ),
         )
         stamped_at = datetime(2023, 9, 8, 22, 30, 0)
@@ -196,7 +211,10 @@ def swap_client(
     """
     db_path = tmp_path / "web_cache.duckdb"
     _build_cache(
-        db_path, populated_at=_OLD_POPULATED_AT, last_updated=_OLD_LAST_UPDATED
+        db_path,
+        populated_at=_OLD_POPULATED_AT,
+        last_updated=_OLD_LAST_UPDATED,
+        with_rows=False,
     )
 
     monkeypatch.setattr(deps, "DB_PATH", db_path)
@@ -255,14 +273,14 @@ def test_a_cache_swap_is_picked_up_without_restarting_the_server(
     """
     db_path = tmp_path / "web_cache.duckdb"
 
-    # 1. Pre-swap: the population run predates the freeze, so the week is withheld.
+    # 1. Pre-swap: the population left no row for the locked game, so the week is refused.
     body = _bets(swap_client)
     assert _HARD_BLOCK_MESSAGE in body, (
         "the fixture did not reach the withheld state, so the swap would prove nothing"
     )
     assert _ROW_TABLE_HEADER not in body, "the list rendered despite the hard block"
 
-    # 2. The rebuilt cache: identical rows and freeze, a marker that POSTDATES the freeze.
+    # 2. The rebuilt cache: the same schedule, now WITH the game's row, and a newer marker.
     new_path = tmp_path / "web_cache.duckdb.tmp"
     _build_cache(new_path, populated_at=_NEW_POPULATED_AT)
 
@@ -449,13 +467,13 @@ def test_a_swap_inside_the_reconnect_connect_window_is_still_detected(
     # 2. The FIRST population run's swap. This is only the trigger: it makes the next request
     #    enter the reconnect, which is where the defect lives.
     second_path = tmp_path / "web_cache.duckdb.tmp"
-    _build_cache(second_path, populated_at=_OLD_POPULATED_AT)
+    _build_cache(second_path, populated_at=_OLD_POPULATED_AT, with_rows=False)
     _swap_in(second_path, db_path)
     identity_of_the_file_the_reconnect_opens = deps.cache_identity(db_path)
     assert identity_of_the_file_the_reconnect_opens is not None
 
     # 3. The SECOND population run's swap, armed to land inside the connect window. This one
-    #    carries the post-freeze marker, so the page can prove which file it ended up serving.
+    #    carries the row and the newer marker, so the page can prove which file it serves.
     third_path = tmp_path / "web_cache.duckdb.tmp2"
     _build_cache(third_path, populated_at=_NEW_POPULATED_AT)
     connect_then_swap, fired = _connect_that_swaps_after_opening(third_path, db_path)
@@ -507,7 +525,7 @@ def test_a_swap_inside_the_lifespan_connect_window_is_still_detected(
     lifespan's own connect -- that is, before any fixture could hand back a client.
     """
     db_path = tmp_path / "web_cache.duckdb"
-    _build_cache(db_path, populated_at=_OLD_POPULATED_AT)
+    _build_cache(db_path, populated_at=_OLD_POPULATED_AT, with_rows=False)
     identity_of_the_file_the_lifespan_opens = deps.cache_identity(db_path)
     assert identity_of_the_file_the_lifespan_opens is not None
 
