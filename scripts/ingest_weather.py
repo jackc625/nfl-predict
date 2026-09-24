@@ -70,6 +70,31 @@ logger = get_logger(__name__)
 # archive call already uses and accepted the same start_date/end_date pair.
 FORECAST_ENDPOINT_URL = "https://api.open-meteo.com/v1/forecast"
 
+# ---------------------------------------------------------------------------
+# THE PINNED MODEL AND ITS RUN TIME (Plan 33.2-27 Task 2, D33.2-18).
+#
+# THIS IS A LIVE-VALUE CHANGE, DECLARED AS ONE. Before this plan the request sent NO `models=`
+# parameter, so Open-Meteo answered with `best_match` -- a blend whose answering model is unnamed,
+# which is why no run time could ever be attached to a live forecast. Pinning changes what the
+# live system stores. Measured by probe on 2026-09-15 (33.2-RESEARCH.md pitfall P7):
+#   * `gfs013` returns `wind_gusts_10m` ALL NULL (24/24 hours);
+#   * `gfs_seamless` differs from `gfs_global` at short lead (19.0 vs 17.8 C at Green Bay's first
+#     hour) because it blends HRRR over CONUS;
+#   * `gfs025` is accepted but returns ALL NULLS.
+# `gfs_global` keeps gusts, keeps global coverage for the international games, and is the closest
+# to the old `best_match` output. RESEARCH assumption A7 (LOW): the single-domain `gfs013` pin is
+# also defensible and costs nothing today, because no feature reads gusts.
+#
+# The forecast response never names its run (`generationtime_ms` is server CPU time). The free,
+# quota-exempt `meta.json` does, per internal DOMAIN name -- and `gfs_global` is served from TWO
+# domains, so the honest information time is the LATER of their `last_run_availability_time`s.
+# ---------------------------------------------------------------------------
+
+OPENMETEO_FORECAST_MODEL = "gfs_global"
+OPENMETEO_MODEL_DOMAINS: tuple[str, ...] = ("ncep_gfs013", "ncep_gfs025")
+OPENMETEO_META_URL = "https://api.open-meteo.com/data/{domain}/static/meta.json"
+_META_TIMEOUT_SECONDS = 30.0
+
 FORECAST_HORIZON_DAYS: int = 14
 """How many days ahead THIS PROJECT will ask the forecast endpoint for (D33-26).
 
@@ -227,6 +252,23 @@ class IncompleteForecastPayloadError(WeatherDataError):
     def __init__(self, message: str, absent_game_ids: tuple[str, ...] = ()) -> None:
         super().__init__(message)
         self.absent_game_ids = absent_game_ids
+
+
+class ModelRunTimeUnavailableError(WeatherDataError):
+    """The pinned model's run time could not be read from ``meta.json``.
+
+    A NAMED REFUSAL, never a fall-back to our own clock: a forecast row stamped with the fetch
+    instant in the upstream column would claim a provenance nobody established.
+    """
+
+
+class CaptureAfterKickoffError(WeatherDataError):
+    """A forecast was requested for a game that has already kicked off.
+
+    The ``2026_W02_DET@BUF`` row -- captured two days after the game was played -- is the defect
+    this refusal closes: a "forecast" taken after the whistle is not information the game's lock
+    could have seen, and writing it invites a later reader to use it.
+    """
 
 
 @dataclass(frozen=True)
@@ -414,6 +456,46 @@ def select_forecast_hour_for_kickoff(
     return resolve_venue_local_hour(game, venue)
 
 
+def fetch_model_run_available_at(get: Any = httpx.get) -> datetime:
+    """The pinned model's latest run availability instant: the LATER of its domains' stamps.
+
+    Args:
+        get: ``httpx.get``'s shape (the test seam).
+
+    Returns:
+        A tz-aware UTC instant.
+
+    Raises:
+        ModelRunTimeUnavailableError: any domain's ``meta.json`` could not be read or carries no
+            ``last_run_availability_time``. Never substituted with our own clock.
+    """
+    stamps: list[datetime] = []
+    for domain in OPENMETEO_MODEL_DOMAINS:
+        url = OPENMETEO_META_URL.format(domain=domain)
+        try:
+            response = get(url, timeout=_META_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ModelRunTimeUnavailableError(
+                f"Open-Meteo meta.json for {domain} ({url}) could not be read: {exc}. The "
+                f"{OPENMETEO_FORECAST_MODEL} run time is unknown, so no forecast row is stamped "
+                "or written; re-run the capture."
+            ) from exc
+        raw = (
+            payload.get("last_run_availability_time")
+            if isinstance(payload, dict)
+            else None
+        )
+        if not isinstance(raw, int | float) or isinstance(raw, bool):
+            raise ModelRunTimeUnavailableError(
+                f"Open-Meteo meta.json for {domain} carries no numeric "
+                f"last_run_availability_time (got {raw!r}); refusing rather than defaulting."
+            )
+        stamps.append(datetime.fromtimestamp(float(raw), tz=UTC))
+    return max(stamps)
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -457,6 +539,8 @@ async def fetch_game_forecast(
         "temperature_unit": "fahrenheit",
         "wind_speed_unit": "mph",
         "timezone": venue_timezone,
+        # The pin (a declared live-value change; see OPENMETEO_FORECAST_MODEL).
+        "models": OPENMETEO_FORECAST_MODEL,
     }
 
     try:
@@ -1035,6 +1119,19 @@ class WeatherDataIngester:
                 client, latitude, longitude, game_date, game_hour, venue_timezone
             )
 
+    def _fetch_model_run_available_at(self) -> datetime:
+        """The pinned model's run availability instant. The seam tests replace."""
+        return fetch_model_run_available_at()
+
+    @staticmethod
+    def played_game_ids(games_df: pd.DataFrame, as_of_utc: datetime) -> list[str]:
+        """The games whose kickoff is at or before *as_of_utc*: never captured."""
+        return [
+            str(game["game_id"])
+            for _, game in games_df.iterrows()
+            if kickoff_wall_clock_et(game["kickoff_et"]).astimezone(UTC) <= as_of_utc
+        ]
+
     def fetch_forecast_for_games(
         self,
         games_df: pd.DataFrame,
@@ -1073,6 +1170,14 @@ class WeatherDataIngester:
         if forecast_time is None:
             forecast_time = datetime.now(UTC)
 
+        # NO CAPTURE AFTER KICKOFF (Plan 33.2-27 Task 2), refused before any request is made.
+        played = self.played_game_ids(games_df, as_of_utc)
+        if played:
+            raise CaptureAfterKickoffError(
+                f"{len(played)} game(s) have already kicked off as of {as_of_utc.isoformat()}: "
+                f"{', '.join(played)}. A forecast taken after the whistle is never captured."
+            )
+
         logger.info(
             "Fetching FORECAST weather for games",
             games=len(games_df),
@@ -1080,6 +1185,7 @@ class WeatherDataIngester:
         )
 
         weather_records: list[dict[str, Any]] = []
+        forecast_records: list[dict[str, Any]] = []
 
         for _, game in games_df.iterrows():
             game_id = str(game["game_id"])
@@ -1119,16 +1225,25 @@ class WeatherDataIngester:
                     selected.timezone,
                 )
             )
-            weather_records.append(
-                self._create_weather_record(
-                    game_id,
-                    selected.kickoff_utc,
-                    forecast_time,
-                    weather_data,
-                    roof_type,
-                    weather_source=WEATHER_SOURCE_FORECAST,
-                )
+            record = self._create_weather_record(
+                game_id,
+                selected.kickoff_utc,
+                forecast_time,
+                weather_data,
+                roof_type,
+                weather_source=WEATHER_SOURCE_FORECAST,
             )
+            weather_records.append(record)
+            forecast_records.append(record)
+
+        # THE SOURCE'S OWN TIME, read ONCE and AFTER every forecast, so it bounds the run that
+        # served them; a dome row carries no forecast and so no model stamp. A refusal here
+        # raises and the caller writes nothing (D33.2-18's first proof; forecast_time, our
+        # capture instant, is the second).
+        if forecast_records:
+            model_run_available_at = self._fetch_model_run_available_at()
+            for record in forecast_records:
+                record["model_run_available_at"] = model_run_available_at
 
         return pd.DataFrame(weather_records)
 
@@ -1164,6 +1279,19 @@ class WeatherDataIngester:
             forecast_time = datetime.now(UTC)
 
         season, week = self._single_season_week(games_df)
+
+        # A game that has already kicked off is LEFT OUT by name, never captured (Plan 33.2-27
+        # Task 2): the rest of the week still gets its forecast.
+        played = set(self.played_game_ids(games_df, as_of_utc))
+        if played:
+            logger.warning(
+                "Games already kicked off are not captured",
+                game_ids=sorted(played),
+                as_of=as_of_utc.isoformat(),
+            )
+            games_df = games_df[~games_df["game_id"].astype(str).isin(played)]
+            if games_df.empty:
+                return pd.DataFrame()
         requested_game_ids = [str(value) for value in games_df["game_id"]]
 
         weather_df = self.fetch_forecast_for_games(
@@ -1359,7 +1487,13 @@ def main():
             try:
                 forecast_time = datetime.fromisoformat(args.forecast_time)
                 if forecast_time.tzinfo is None:
-                    forecast_time = forecast_time.replace(tzinfo=ZoneInfo("Etc/UTC"))
+                    # Refused, never relabelled UTC (Plan 33.2-27 Task 2).
+                    print(
+                        f"--forecast-time {args.forecast_time!r} carries no time zone; "
+                        "give an offset (e.g. 2026-09-26T21:30:00+00:00).",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             except ValueError:
                 print(f"Invalid forecast time format: {args.forecast_time}")
                 sys.exit(1)

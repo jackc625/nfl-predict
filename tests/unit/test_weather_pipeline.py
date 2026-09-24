@@ -100,6 +100,11 @@ def sample_outdoor_weather() -> dict[str, Any]:
 #
 # Each id below was read from `data.upstream_pin.load_schedules` on 2026-09-12,
 # with its stadium and its own feed `roof` recorded beside it.
+# The live weather ingest reads the pinned model's run time from meta.json once a
+# forecast is fetched (Plan 33.2-27 Task 2); this module stubs the forecast, so the
+# stamp is kept offline too.
+pytestmark = pytest.mark.usefixtures("openmeteo_meta_offline")
+
 _DOME_GAME_ID = "2024_W06_PIT@LV"  # VEG00 Allegiant, feed roof "dome"
 _DOME_KICKOFF_ET = datetime(2024, 10, 13, 16, 5)
 

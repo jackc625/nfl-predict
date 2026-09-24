@@ -158,7 +158,13 @@ class OddsSchema(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
     game_id: str = Field(..., description="Foreign key to games table")
-    snapshot_ts: datetime = Field(..., description="Timestamp when odds were captured")
+    snapshot_ts: datetime = Field(
+        ...,
+        description=(
+            "The game's day-before lock (utils.game_lock) the row is stamped with; the capture "
+            "instant is created_at"
+        ),
+    )
     sportsbook: str = Field(..., description="Sportsbook identifier")
 
     # Moneyline odds
@@ -229,20 +235,26 @@ class OddsSchema(BaseModel):
 
     @field_validator("snapshot_ts", "last_update", "created_at", mode="before")
     @classmethod
-    def validate_timestamps(cls, v):
-        """Ensure timestamps are timezone-aware."""
-        if v is None:
+    def validate_timestamps(cls, v, info):
+        """A naive timestamp is REFUSED, never relabelled UTC (Plan 33.2-27 Task 2).
+
+        This used to attach UTC to any naive value -- including the naive result of parsing a
+        naive string -- so an Eastern wall-clock time was stored four or five hours wrong,
+        silently. The three fields are three time claims (``snapshot_ts`` the game's lock,
+        ``last_update`` the bookmaker's own time, ``created_at`` the capture instant), and a
+        relabel falsifies whichever it lands in. Now the same refusal
+        ``OddsTimelineSchema.reject_naive_snapshot_ts`` applies. ``None`` / NaN / NaT stay None;
+        an aware value or an offset-bearing string passes unchanged in instant.
+        """
+        if _is_missing(v):
             return None
-        try:
-            if pd.isna(v):
-                return None
-        except (ValueError, TypeError):
-            pass
-        if isinstance(v, str):
-            return pd.to_datetime(v)
-        if isinstance(v, datetime) and v.tzinfo is None:
-            return v.replace(tzinfo=UTC)
-        return v
+        parsed = pd.to_datetime(v) if isinstance(v, str) else v
+        if getattr(parsed, "tzinfo", None) is None:
+            raise ValueError(
+                f"{info.field_name} {v!r} carries no time zone. A naive timestamp is refused "
+                "and never coerced to UTC: relabelling a wall-clock value moves its instant."
+            )
+        return parsed
 
     @field_validator("spread")
     @classmethod
@@ -274,11 +286,10 @@ class OddsTimelineSchema(BaseModel):
     Totals are primary for the line-movement signal (D-07); the consensus
     spread is conditional/optional.
 
-    CRITICAL (review 29-02 HIGH): unlike ``OddsSchema`` -- whose timestamp
-    validator silently attaches UTC to a NAIVE datetime (schemas.py:194-195) --
-    a timezone-naive ``snapshot_ts`` is REJECTED here, never coerced. The
-    trajectory grain must never store an ambiguous wall-clock time as if it
-    were UTC.
+    CRITICAL (review 29-02 HIGH): a timezone-naive ``snapshot_ts`` is REJECTED
+    here, never coerced. The trajectory grain must never store an ambiguous
+    wall-clock time as if it were UTC. Since Plan 33.2-27 ``OddsSchema`` applies
+    the same refusal to its three time fields, so the two schemas agree.
     """
 
     model_config = ConfigDict(use_enum_values=True)
@@ -313,9 +324,8 @@ class OddsTimelineSchema(BaseModel):
     def reject_naive_snapshot_ts(cls, v):
         """Require a tz-aware ``snapshot_ts``; REJECT naive (review 29-02 HIGH).
 
-        Unlike ``OddsSchema.validate_timestamps`` (which silently attaches UTC
-        to a naive datetime, schemas.py:194-195), a naive ``snapshot_ts`` is a
-        HARD error here -- it is never silently coerced to UTC.
+        A naive ``snapshot_ts`` is a HARD error -- it is never silently coerced to
+        UTC. ``OddsSchema.validate_timestamps`` applies the same rule.
         """
         if v is None:
             raise ValueError("snapshot_ts is required and must be timezone-aware")
@@ -502,6 +512,23 @@ class WeatherSchema(BaseModel):
             "cycle is never used). Always timezone-aware UTC; a naive value is refused."
         ),
     )
+    # THE LIVE FORECAST'S UPSTREAM INFORMATION TIME (Plan 33.2-27 Task 2, D33.2-18). The live
+    # ingest pins ``models=gfs_global`` and reads that model's ``last_run_availability_time`` from
+    # Open-Meteo's free ``meta.json`` (the later of its two domains) AFTER fetching the forecasts,
+    # so the stamp bounds the run that served them. It is the SOURCE's proof; ``forecast_time``
+    # (our capture instant) is the second, independent one -- either is sufficient, and they
+    # corroborate each other. NULL on every row that carries no live forecast.
+    #
+    # DECLARED IN THE SAME TASK THAT EMITS IT (RESEARCH P-6): ``validate_bronze_to_silver``
+    # rebuilds each row as ``schema_class(**row).model_dump()`` and Pydantic v2 defaults to
+    # extra='ignore', so an emitted-but-undeclared column disappears with no error.
+    model_run_available_at: datetime | None = Field(
+        None,
+        description=(
+            "The pinned Open-Meteo model run's last_run_availability_time (meta.json), read "
+            "after the forecasts were fetched. tz-aware UTC; a naive value is refused"
+        ),
+    )
     mos_model: str | None = Field(
         None,
         description=(
@@ -613,6 +640,14 @@ class WeatherSchema(BaseModel):
                 "never relabelled."
             )
         return parsed.to_pydatetime()
+
+    @field_validator("model_run_available_at", mode="before")
+    @classmethod
+    def refuse_naive_model_run_available_at(cls, v):
+        """NaN / NaT / None -> None; a present value must be tz-aware, never relabelled."""
+        if _is_missing(v):
+            return None
+        return _aware_utc(v, "model_run_available_at")
 
     @field_validator("mos_model")
     @classmethod

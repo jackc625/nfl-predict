@@ -133,13 +133,22 @@ class TestTheBoundsWereCommittedFirst:
 
 
 def test_the_witnessed_schema_width_is_the_live_one() -> None:
-    """The slot's WeatherSchema width is measured, not transcribed from a guess."""
+    """The slot's WeatherSchema width is measured, not transcribed from a guess.
+
+    Was: the live width against ``P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS`` (30). Plan 33.2-27
+    Task 2 declared ONE more column, ``model_run_available_at``, and appended the new width in
+    its own slot; the MOS slot is still asserted, now as the width before that one column.
+    """
     from data.schemas import WeatherSchema
     from tests import phase33_state
 
-    assert (
-        len(WeatherSchema.model_fields)
-        == phase33_state.P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS
+    live = len(WeatherSchema.model_fields)
+    assert live == phase33_state.P332_27_WEATHER_SCHEMA_FIELDS_AFTER_MODEL_STAMP
+    assert set(phase33_state.P332_27_WEATHER_SCHEMA_NEW_FIELDS) <= set(
+        WeatherSchema.model_fields
+    )
+    assert live - len(phase33_state.P332_27_WEATHER_SCHEMA_NEW_FIELDS) == (
+        phase33_state.P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS
     )
 
 

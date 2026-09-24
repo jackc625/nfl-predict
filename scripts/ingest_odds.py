@@ -396,10 +396,12 @@ class OddsAPIClient:
                 game_spread = round(base_spread + spread_variation, 1)
                 game_total = round(base_total + total_variation, 1)
 
+                # NO "last_update": a mock has no bookmaker time, and stamping our own clock
+                # there would forge the upstream information time (Plan 33.2-27 Task 2's
+                # no-substitution scan found this).
                 bookmaker = {
                     "key": book_key,
                     "title": book_key.replace("ag", ".ag").title(),
-                    "last_update": datetime.now().isoformat(),
                     "markets": [
                         {
                             "key": "h2h",

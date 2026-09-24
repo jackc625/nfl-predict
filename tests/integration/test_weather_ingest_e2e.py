@@ -22,6 +22,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
+# The live weather ingest reads the pinned model's run time from meta.json once a
+# forecast is fetched (Plan 33.2-27 Task 2); this module stubs the forecast, so the
+# stamp is kept offline too.
+pytestmark = pytest.mark.usefixtures("openmeteo_meta_offline")
+
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "openmeteo_buf_2024_W06.json"
 
 

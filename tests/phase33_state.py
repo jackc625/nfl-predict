@@ -18850,3 +18850,15 @@ P332_20_CLEAN_BUILD_PIN_WIDTHS: tuple[int, int, int] = (188, 188, 187)
 #: The width ladder's resolved value, tests/unit/test_data_qa_gold_width.current_ladder_widths():
 #: the widths_after of the last Phase-33.2 width-delta slot (P332_19_RUNG9_GOLD_WIDTH_DELTA).
 P332_20_CLEAN_BUILD_LADDER_WIDTHS: tuple[int, int, int] = (188, 188, 187)
+
+# ---------------------------------------------------------------------------
+# THE LIVE WEATHER MODEL STAMP (Plan 33.2-27 Task 2, D33.2-18).
+#
+# APPENDED 2026-09-24. Nothing above this line was edited. Task 2 declares ONE new WeatherSchema
+# column, `model_run_available_at` (the pinned Open-Meteo model run's last_run_availability_time,
+# read from meta.json), so the schema's measured width moves from
+# P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS (30) to 31. Measured on the live class, not transcribed.
+# ---------------------------------------------------------------------------
+
+P332_27_WEATHER_SCHEMA_NEW_FIELDS: tuple[str, ...] = ("model_run_available_at",)
+P332_27_WEATHER_SCHEMA_FIELDS_AFTER_MODEL_STAMP: int = 31

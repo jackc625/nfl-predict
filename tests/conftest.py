@@ -7,7 +7,7 @@ import shutil
 # Add project root to path
 import sys
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from zoneinfo import ZoneInfo
 
@@ -881,6 +881,29 @@ def sealed_probe_offline(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "data.graded_weeks.graded_weeks_record", _no_graded_weeks, raising=True
+    )
+
+
+#: The fixed model-run stamp ``openmeteo_meta_offline`` hands every forecast row.
+OFFLINE_MODEL_RUN_AVAILABLE_AT = datetime(2026, 9, 11, 16, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def openmeteo_meta_offline(monkeypatch):
+    """Keep the live weather ingest's ``meta.json`` read OFFLINE (Plan 33.2-27 Task 2).
+
+    Once any forecast is fetched, ``scripts.ingest_weather`` reads the pinned model's run time
+    from Open-Meteo's ``meta.json``. A module that stubs the forecast fetch would otherwise still
+    reach the network for that stamp. Requested per module with
+    ``pytestmark = pytest.mark.usefixtures(...)``, as ``sealed_probe_offline`` is; the module
+    that tests the stamp itself (``tests/unit/test_openmeteo_model_pin.py``) sets its own seams.
+    """
+    from scripts import ingest_weather
+
+    monkeypatch.setattr(
+        ingest_weather,
+        "fetch_model_run_available_at",
+        lambda *_args, **_kwargs: OFFLINE_MODEL_RUN_AVAILABLE_AT,
     )
 
 

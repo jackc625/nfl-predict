@@ -37,6 +37,11 @@ import pytest
 from tests.data_boundary import digest_file
 from utils.exceptions import WeatherDataError
 
+# The live weather ingest reads the pinned model's run time from meta.json once a
+# forecast is fetched (Plan 33.2-27 Task 2); this module stubs the forecast, so the
+# stamp is kept offline too.
+pytestmark = pytest.mark.usefixtures("openmeteo_meta_offline")
+
 AS_OF = datetime(2026, 9, 11, 20, 0, tzinfo=UTC)
 KICKOFF = AS_OF + timedelta(days=3)
 

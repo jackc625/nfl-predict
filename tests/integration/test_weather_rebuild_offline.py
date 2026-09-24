@@ -79,6 +79,7 @@ from scripts.backfill_historical_weather import (
     load_pinned_game_facts,
     promote_corpus_to_silver,
 )
+from tests import phase33_state
 from tests.fixtures.elo_sandbox import redirect_storage_to_sandbox
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -532,10 +533,24 @@ class TestTheMosHistoryRebuildsOfflineByteIdentically:
             "a second regeneration over its own output wrote different bytes: the "
             "regeneration is not a function of the bronze it reads"
         )
+        # Was: a whole-frame comparison. Plan 33.2-27 Task 2 declared ONE new WeatherSchema
+        # column, `model_run_available_at` (the live forecast's model-run stamp). A MOS history
+        # row carries no live forecast, so the regeneration now writes it and it is ENTIRELY
+        # NULL; production silver predates the column. The intent is kept: every production
+        # column reproduces exactly, and the only extra column is that one, all null.
+        new_columns = set(phase33_state.P332_27_WEATHER_SCHEMA_NEW_FIELDS)
         for table in MOS_REBUILT_TABLES:
+            regenerated = pd.read_parquet(root / "silver" / f"{table}.parquet")
+            production = pd.read_parquet(PRODUCTION_SILVER / f"{table}.parquet")
+            extra = set(regenerated.columns) - set(production.columns)
+            assert extra <= new_columns, f"silver {table}: unexpected columns {extra}"
+            for column in extra:
+                assert regenerated[column].isna().all(), (
+                    f"silver {table}: {column} carries a value on a MOS history row"
+                )
             pd.testing.assert_frame_equal(
-                pd.read_parquet(root / "silver" / f"{table}.parquet"),
-                pd.read_parquet(PRODUCTION_SILVER / f"{table}.parquet"),
+                regenerated[list(production.columns)],
+                production,
                 obj=f"silver {table}: sandbox regeneration vs production",
             )
 
