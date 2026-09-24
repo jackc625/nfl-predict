@@ -1,4 +1,10 @@
-# AUTOMATION.md -- Friday Automation Explanation (Phase 21)
+# AUTOMATION.md -- Scheduled Automation Explanation (Phase 21; daily run since Plan 33.2-28)
+
+> **Changed 2026-09-24 (Plan 33.2-28):** the scheduled task no longer runs once a week on
+> Friday. It runs EVERY DAY at 5 PM ET and predicts tomorrow's games before today's 6 PM ET
+> lock (section 1). The weekly Friday run is retired as a scheduled job;
+> `scripts/friday_pipeline.py` remains as a manual tool. Sections 2-7 still describe the
+> orchestrator both runs share; sections 8-9 are the Phase 21 record and are kept as history.
 
 This is the single source of truth for HOW the Friday automation runs and how to
 tell whether a run succeeded. It explains what fires, when, what each of the 18
@@ -17,22 +23,35 @@ Status tags are ASCII `[PASS]` / `[FAIL]` (no emoji, per CLAUDE.md).
 
 ## 1. What runs + when
 
-The Friday automation is a single Windows Task Scheduler task, `NFL_Predict_Pipeline`,
-that fires once a week.
+The automation is a single Windows Task Scheduler task, `NFL_Predict_Pipeline`,
+that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday).
 
-- **Trigger:** Friday `18:00` LOCAL = `6 PM ET`. The `StartBoundary` in
-  `deployment/windows_scheduler.xml` carries NO timezone offset
-  (`2026-09-11T18:00:00`), so `schtasks` interprets it in **machine-LOCAL time**.
-  `18:00` local equals `6 PM ET` **only while the machine stays on Eastern Time**
-  (the D-09 caveat). If the machine is moved to another timezone, the 6 PM ET freeze
-  is no longer honored and the trigger must be re-pointed.
-- **Canonical command:** `uv run python scripts/friday_pipeline.py --log-level INFO`
+- **Trigger:** every day at `17:00` LOCAL = `5 PM ET`, one hour before the `18:00`
+  (`6 PM ET`) lock. Every game locks at 18:00 ET on the ET calendar day before its
+  kickoff (`utils/game_lock.py`), so all of tomorrow's games share one lock: 18:00 ET
+  today. The `StartBoundary` in `deployment/windows_scheduler.xml`
+  (`2026-09-24T17:00:00`, a `ScheduleByDay` trigger with `DaysInterval=1`) carries NO
+  timezone offset, so `schtasks` interprets it in **machine-LOCAL time**. `17:00` local
+  equals `5 PM ET` **only while the machine stays on Eastern Time** (the D-09 caveat). A
+  daily run has 365 chances a year to be wrong rather than 52, so
+  `setup_scheduling.py --install` now REFUSES to install on a machine whose Windows time
+  zone is not Eastern. A zone changed after install can still mis-time the run, but the
+  run's own passed-lock refusal compares absolute UTC instants, so it cannot collect or
+  predict after a lock.
+- **Finish before 6 PM (owner ruling 2026-09-23):** the WHOLE run -- collection, the
+  gold build, prediction and emission -- must finish before the lock, so every emitted
+  row was computed before its game locked. Measured at about 14.5 minutes, plus about
+  12.4 more when one bad game forces the build to run again (27 minutes together). The
+  one-hour lead leaves 33 minutes spare. The time of day is asserted by parsing the XML
+  (`tests/unit/test_scheduler_xml_unchanged.py`, `MIN_COLLECTION_MARGIN_MINUTES`), not
+  only by its byte pin. A run too slow for the lock is refused per game, never back-dated.
+- **Canonical command:** `uv run python scripts/daily_lock_pipeline.py`
   (the `<Exec>` in the XML: `<Command>` = the absolute `uv.exe` path +
-  `<Arguments>run python scripts/friday_pipeline.py --log-level INFO</Arguments>`).
+  `<Arguments>run python scripts/daily_lock_pipeline.py</Arguments>`).
 - **Principal:** the owner user `jackc` with `LogonType=S4U` and
   `RunLevel=HighestAvailable` (NOT the SYSTEM SID `S-1-5-18`, which cannot see the
   owner's `uv` / `.venv` / `.env`). S4U runs whether or not the owner is interactively
-  logged on, which the `WakeToRun` Friday-evening run needs. `LogonType=S4U` is the
+  logged on, which the `WakeToRun` evening run needs. `LogonType=S4U` is the
   CONFIRMED working principal (D-08 register-and-verify, Section 9). Because the S4U
   logon does NOT load the owner's USER PATH, the `<Command>` must be the ABSOLUTE
   `uv.exe` path (`C:\Users\jackc\AppData\Roaming\Python\Python313\Scripts\uv.exe`) -- a
@@ -42,20 +61,72 @@ that fires once a week.
   machine-specific (this path + the `UserId` principal) and must be re-pointed if the
   repo moves to a different machine or user.
 - **Robustness settings (XML):** `MultipleInstancesPolicy=IgnoreNew`,
-  `StartWhenAvailable=true`, `RunOnlyIfNetworkAvailable=true`, `WakeToRun=true`,
-  `ExecutionTimeLimit=PT2H`, `AllowHardTerminate=true`, `AllowStartOnDemand=true`,
-  `Priority=7`. The XML is UTF-16 encoded.
+  `StartWhenAvailable=false`, `RunOnlyIfNetworkAvailable=true`, `WakeToRun=true`,
+  `StopIfGoingOnBatteries=true`, `ExecutionTimeLimit=PT2H`, `AllowHardTerminate=true`,
+  `AllowStartOnDemand=true`, `Priority=7`. The XML is UTF-16 LE with a BOM and CRLF line
+  endings, and is byte-pinned (`tests/unit/test_scheduler_xml_unchanged.py`).
+  `StartWhenAvailable` is FALSE on purpose (it was true for the weekly run): a trigger
+  missed while the machine slept or was off is simply missed, because running it on wake
+  could be hours after the lock. The next day's run predicts its own games at its own lock.
 - **Installer (single source of truth, D-07):** the task is registered by
-  `uv run python deployment/setup_scheduling.py --install`, which runs
+  `uv run python deployment/setup_scheduling.py --install` (elevated), which checks that
+  `scripts/daily_lock_pipeline.py` exists and the machine is on Eastern time (`--test`
+  separately rehearses the entry point with `--dry-run` and the Odds API key blanked),
+  then runs
   `schtasks /create /tn NFL_Predict_Pipeline /xml deployment/windows_scheduler.xml /f`
   (idempotent overwrite) and cleans up the old split tasks (`NFL_Predict_DataUpdate`,
-  `NFL_Predict_Predictions`). The installer installs the committed XML so the installer
-  and the definition can never drift; there is no second scheduling mechanism (no
-  PowerShell `Register-ScheduledTask`, no cron).
+  `NFL_Predict_Predictions`). The task name did not change when the run went daily, so the
+  install overwrote the weekly definition in place and no Friday task was left behind. The
+  installer installs the committed XML so the installer and the definition can never
+  drift; there is no second scheduling mechanism (no PowerShell `Register-ScheduledTask`,
+  no cron).
+- **Read-back (no admin needed):** `uv run python deployment/setup_scheduling.py
+  --verify-installed` exports the installed task, parses it and the committed XML, and
+  prints one `FIELD= committed | installed | MATCH` line each for the trigger, start time,
+  `Command`, `Arguments` and `StartWhenAvailable`, then `READBACK_MATCH= True|False`
+  (True also needs exactly one NFL task installed). The 2026-09-24 result is in section 9.
 
-### CLI modes
+### What one daily run does
 
-`scripts/friday_pipeline.py` accepts (the phase flags are mutually exclusive):
+`scripts/daily_lock_pipeline.py` (Plan 33.2-27), in order:
+
+0. **Passed-lock refusal, before any request.** If the run starts at or after 18:00 ET on
+   its run date, every one of tomorrow's games has already locked: it appends a
+   `lock_passed` record to `logs/daily_lock_runs.jsonl`, makes ZERO network requests and
+   exits 0. A missed day is never back-filled.
+1. **Schedule refresh.** Captures what nflverse serves now and ingests the season's
+   schedule from that capture, so results, moved games and each new playoff round arrive
+   with no manual step. The season is read from the recorded schedule and rolls over on
+   its own.
+2. **Select tomorrow's games** -- the games whose lock is today's 18:00 ET. None (most
+   weekdays): a `no_games` record in `logs/daily_lock_runs.jsonl`, exit 0, nothing built.
+3. **The run proper**, through the same orchestrator as section 2
+   (`FridayPipeline(steps=pipeline.daily_steps.build_daily_step_registry(slate))`), with
+   its own 22-step registry in three stages:
+   - **Collection** -- tomorrow's weather forecasts, the season's snaps and injuries, and
+     tomorrow's odds from The Odds API (real requests against the API key's quota), then
+     `close_collection`, which stamps `captured_at_utc` and refuses the slate if
+     collection itself ended after the lock.
+   - **Build** -- data QA, Elo (with a flagged provisional pre-game row per slate game),
+     team form, contextual and weather features, then the **FULL-HISTORY gold build,
+     every night** (owner ruling 2026-09-23, "Rebuild everything nightly": a one-season
+     build diverges from the full build on 139 of 186 numeric columns, so only the full
+     build is the real one), then the leakage scan, gold currency and model loading.
+   - **Predict and emit** -- tomorrow's predictions merged into the week's file with three
+     stamps (`captured_at_utc`, `information_cutoff_utc` = the lock, `computed_at_utc`),
+     the bet list, the exports, validation and the web cache.
+
+   A defective row refuses only its own game (the live-skip rule), never tomorrow's slate.
+   The run prints `RUN_STATUS=` and a `SKIPPED <game>` line per dropped game.
+
+`--date YYYY-MM-DD` runs as of another ET day; `--dry-run` runs the schedule refresh and
+the collection stage under a recording write sink, writing nothing (it stops before the
+build, which cannot read captures that were never saved).
+
+### CLI modes (the manual Friday tool)
+
+`scripts/friday_pipeline.py` is no longer scheduled; it remains a manual operator tool.
+It accepts (the phase flags are mutually exclusive):
 
 | Flag | Effect |
 |------|--------|
@@ -66,9 +137,9 @@ that fires once a week.
 | `--force` | Bypass the pre-flight staleness/season checks AND the offseason no-op short-circuit; pre-flight health becomes advisory. |
 | `--log-level {DEBUG,INFO,WARNING,ERROR}` | Logging verbosity (default INFO). |
 
-> Note: the scheduled task runs the FULL pipeline (no phase flag). The
-> `--predictions-only` / `--data-only` / `--dry-run` / `--force` modes are operator
-> tools for manual / out-of-season runs.
+> Note: until Plan 33.2-28 the scheduled task ran this script's FULL pipeline (no phase
+> flag). The scheduled task now runs `scripts/daily_lock_pipeline.py` instead; every mode
+> in this table is a manual / out-of-season operator tool.
 
 ---
 
@@ -250,6 +321,12 @@ The execution log is written to `logs/friday_pipeline.json`.
   total_duration_ms, forced, mode, pid, `steps[]` of `StepLogEntry`, `warnings[]`,
   `error`).
 
+The daily run writes that same file on every night it has games (it runs the same
+orchestrator). A night that predicts nothing -- no games tomorrow, or the lock already
+passed -- returns before any orchestrator exists, so it leaves `logs/friday_pipeline.json`
+as the last real run wrote it and instead appends one line (`run_date_et`, `outcome` =
+`no_games` or `lock_passed`, `game_ids`, `recorded_at`) to `logs/daily_lock_runs.jsonl`.
+
 > Note: per-run log history is a deferred FUTURE enhancement (D-11). It is deliberately
 > NOT added in this phase (documentation / verification only); the single-file overwrite
 > is documented as-is.
@@ -275,6 +352,10 @@ Stated plainly:
 > **"Friday succeeded"** == `log.status` in `{success, degraded}` AND
 > `outputs/predictions/predictions_<S>_week<W>.csv` exists (non-empty, `wp_prob` in
 > `[0,1]`).
+
+For the daily run the same triad applies on a night with games, and `finished_with_skips`
+also exits `0`. A night with nothing to predict exits `0` with no predictions file; its
+signal is the new `no_games` / `lock_passed` line in `logs/daily_lock_runs.jsonl`.
 
 The exit code is `0` for BOTH `success` and `degraded` (a degraded run still produced
 predictions; only a non-critical step like weather or output-file verification failed),
@@ -522,6 +603,33 @@ absolute `uv.exe` path). **Final working `LogonType` = S4U** (the remedy for the
 > corrected boundary is OPTIONAL / non-urgent -- the registered task already fires on
 > Fridays (the Saturday anchor only ever shifted the first eligible fire to the next
 > Friday), so behavior is unchanged either way.
+
+The table above is the Phase 21 WEEKLY task and is kept as history; the next subsection
+supersedes it.
+
+### Plan 33.2-28 -- the daily task installed and read back [PASS]
+
+On 2026-09-24 the owner re-ran `uv run python deployment/setup_scheduling.py --install`
+(elevated). The same task name was overwritten in place, so the weekly Friday task is gone.
+`--verify-installed`, re-run read-only afterwards, printed:
+
+| Field | Committed | Installed | Result |
+|-------|-----------|-----------|--------|
+| Trigger | `CalendarTrigger ScheduleByDay(DaysInterval=1)` | same | MATCH |
+| StartTime | `17:00:00` | same | MATCH |
+| Command | the absolute `uv.exe` path | same | MATCH |
+| Arguments | `run python scripts/daily_lock_pipeline.py` | same | MATCH |
+| StartWhenAvailable | `false` | `false` | MATCH |
+
+`NFL_TASKS= ['NFL_Predict_Pipeline']`, `READBACK_MATCH= True`. `schtasks /query /v` reports
+Schedule Type Daily, Start Time 5:00:00 PM, Start Date 9/24/2026, Run As User `jackc`,
+State Enabled, Status Ready, Next Run Time 9/24/2026 5:00:00 PM. The owner authorised it
+to run for real every day ("Install and run for real", 2026-09-24).
+
+**Liveness limits, stated plainly:** the trigger fires in machine-local time (see section 1);
+a night the machine is off at 5 PM, or asleep and not woken (`WakeToRun` needs Windows wake
+timers allowed), is a missed night, never a late one; and a run whose laptop is unplugged
+mid-run is stopped (`StopIfGoingOnBatteries=true`).
 
 ### D-05 (alert path) -- documented-only; email + Slack are inert [PASS]
 
