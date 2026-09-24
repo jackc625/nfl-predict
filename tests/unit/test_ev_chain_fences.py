@@ -322,3 +322,24 @@ class TestNoTestModuleReachesThePhase27Fence:
             f"Phase-31 test module(s) reference {PHASE_27_FENCE_HELPER} at {offenders}; "
             "that helper reads the Phase-27 window (D31-14)."
         )
+
+
+def test_a_nan_ats_juice_prices_at_the_reference_juice_not_as_a_nan_ev() -> None:
+    """A33.2-review IN-07: a DataFrame's NaN juice cell is an ABSENT price.
+
+    ``row.get`` handed NaN to ``devig`` as a real two-sided price, which yielded a NaN EV. It is
+    now normalised through the selection path's ``_juice_price``, so the row prices exactly as a
+    row that carries no juice at all.
+    """
+    import math
+
+    from backtest.ats_ev_chain import ATS_JUICE_FIELDS
+
+    fit = _fit_with("ats", frozen_sd=11.0)
+    nan_row = {**_PRICEABLE_ATS_ROWS[0], **dict.fromkeys(ATS_JUICE_FIELDS, math.nan)}
+    with_nan = price_ats_candidates((nan_row,), fit).records[0]
+    without = price_ats_candidates(_PRICEABLE_ATS_ROWS, fit).records[0]
+
+    assert math.isfinite(with_nan["per_bet_ev"])
+    assert with_nan["per_bet_ev"] == without["per_bet_ev"]
+    assert with_nan["devig_method"] == without["devig_method"]

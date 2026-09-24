@@ -131,6 +131,7 @@ from backtest.ou_ev_chain import (
 # only the EXCEPTION is taken from that module -- the Phase-27 fence helper itself reads the
 # Phase-27 window and is deliberately not imported (D31-14).
 from backtest.ou_monetization import LeakageError
+from backtest.selector_strategies import _juice_price
 from backtest.simulation import (
     SLIPPAGE_POINTS,
     BettingSimulator,
@@ -868,8 +869,13 @@ def price_ats_candidates(
                 )
             )
             p_side = ats_side_probability(bet_side, p_home_cover)
+            # A33.2-review IN-07: normalised through the SAME helper the selection path
+            # uses. ``row.get`` handed a DataFrame's NaN cell to ``devig`` as a real price,
+            # which then took the two-sided branch and yielded a NaN EV; an absent price must
+            # fall back to the reference juice, and a malformed one must refuse.
             prices = ats_two_sided_prices(
-                row.get(ATS_JUICE_FIELDS[0]), row.get(ATS_JUICE_FIELDS[1])
+                _juice_price(dict(row), ATS_JUICE_FIELDS[0]),
+                _juice_price(dict(row), ATS_JUICE_FIELDS[1]),
             )
             payout = (
                 prices["payout_home_cover"]
