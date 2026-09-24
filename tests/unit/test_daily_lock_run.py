@@ -747,3 +747,24 @@ def test_a_repeat_skip_on_the_same_day_is_still_reported(monkeypatch, tmp_path, 
     assert "SKIPPED 2026_W03_LAC@BUF: post_lock (source decision_instant)" in (
         capsys.readouterr().out
     )
+
+
+def test_a_slate_outside_the_elo_season_is_refused_by_name(monkeypatch):
+    """33.2 review B IN-05: was pandas' opaque "No objects to concatenate"."""
+    from pipeline.steps import persist_current_season_elo
+    from scripts import build_elo
+
+    class _OtherSeasonElo:
+        pending_snapshot_rows = 0
+
+        def update_current_season(self):
+            return build_elo.LiveSeasonUpdate(
+                season=2025, snapshots=pd.DataFrame({"game_id": []})
+            )
+
+        def load_games_data(self, seasons=None):
+            return pd.DataFrame({"game_id": ["2025_W22_SEA@NE"], "week": [22]})
+
+    monkeypatch.setattr(build_elo, "EloBuilder", _OtherSeasonElo)
+    with pytest.raises(ValueError, match="2026_W03_LAC@BUF"):
+        persist_current_season_elo(frozenset({"2026_W03_LAC@BUF"}))

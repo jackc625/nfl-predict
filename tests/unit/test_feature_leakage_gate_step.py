@@ -125,3 +125,17 @@ def test_a_run_with_no_loadable_gold_matrix_raises_rather_than_passing(
     _patch_gold(monkeypatch, {})
     with pytest.raises(RuntimeError, match="did not run"):
         steps.step_validate_features()
+
+
+def test_a_missing_table_reported_the_way_storage_reports_it_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """33.2 review B IN-03: load_dataframe raises DataIngestionError for a missing table."""
+    from utils.exceptions import DataIngestionError
+
+    def fake_load(table: str, layer: str = "silver", **_: object) -> pd.DataFrame:
+        raise DataIngestionError(f"no table {table}")
+
+    monkeypatch.setattr("data.storage.load_dataframe", fake_load)
+    with pytest.raises(RuntimeError, match="did not run"):
+        steps.step_validate_features()

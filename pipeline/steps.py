@@ -649,6 +649,14 @@ def persist_current_season_elo(
             season_schedule["game_id"].astype(str).isin(sorted(provisional_game_ids)),
             "week",
         ].unique()
+        if len(weeks) == 0:
+            # Named, not pandas' opaque "No objects to concatenate" (33.2 review B IN-05).
+            msg = (
+                f"none of the games needing a provisional Elo row, "
+                f"{sorted(provisional_game_ids)}, is in the {update.season} schedule the Elo "
+                "update covers; the slate and the Elo season disagree."
+            )
+            raise ValueError(msg)
         provisional = pd.concat(
             [
                 builder.snapshot_upcoming_week(
@@ -888,6 +896,7 @@ def step_validate_features() -> None:
     from data.storage import load_dataframe
     from features.validation import FeatureValidator
     from models.temporal import _DEFAULT_ID_COLS
+    from utils.exceptions import DataIngestionError
 
     # The identifier and OUTCOME columns every gold matrix carries BY CONSTRUCTION -- the labels
     # a walk-forward fit trains against. They are excluded from the scan because a gold matrix is
@@ -900,9 +909,13 @@ def step_validate_features() -> None:
     validator = FeatureValidator()
     checked: list[str] = []
     for table in _GOLD_FEATURE_TABLES:
+        # load_dataframe reports a missing table as DataIngestionError, never FileNotFoundError
+        # (33.2 review B IN-03): catching only the latter left this handler dead. A missing
+        # table is skipped here and the gate still refuses when NONE could be scanned; the gold
+        # currency step names a missing matrix.
         try:
             target_df = load_dataframe(table, layer="gold")
-        except FileNotFoundError:
+        except (FileNotFoundError, DataIngestionError):
             continue
         checked.append(table)
         scanned = target_df[
