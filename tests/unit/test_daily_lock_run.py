@@ -695,3 +695,29 @@ def test_an_odds_failure_still_predicts_every_slate_game_and_names_them(
     assert set(written["game_id"]) == set(slate.game_ids)
     assert set(slate.odds_missing) == set(slate.game_ids)
     assert all("DataIngestionError" in r for r in slate.odds_missing.values())
+
+
+# ---------------------------------------------------------------------------
+# The dry run's WRITES= line is a measurement, not a constant (C1 IN-01)
+# ---------------------------------------------------------------------------
+
+
+def test_the_dry_run_counts_a_write_that_bypassed_the_sink(monkeypatch, tmp_path):
+    from conf.settings import get_settings
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    data_root = tmp_path / "data"
+    (data_root / "silver").mkdir(parents=True)
+    monkeypatch.setattr(get_settings().config.data, "root_path", str(data_root))
+
+    sink = daily._MeasuredRecordingSink()
+    assert sink.measured_writes() == 0
+
+    (data_root / "__pycache__").mkdir()
+    (data_root / "__pycache__" / "storage.pyc").write_bytes(b"import cache")
+    assert sink.measured_writes() == 0, "a byte-code cache is not a data write"
+
+    (data_root / "silver" / "games.parquet").write_bytes(b"a side-door write")
+    (tmp_path / "config" / "skip_records.jsonl").write_text("{}\n", encoding="utf-8")
+    assert sink.measured_writes() == 2

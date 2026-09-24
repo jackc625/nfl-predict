@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -165,6 +166,45 @@ def _record_run_failure(
 
 class ScheduleNotPublishedError(RuntimeError):
     """nflverse serves no schedule yet for the season the run has to refresh."""
+
+
+def _write_census() -> dict[str, tuple[int, int]]:
+    """Every file under the data root and ``config/``, with its size and modification time.
+
+    Byte-code caches are left out: importing the ``data`` package legitimately writes them.
+    """
+    from conf.settings import get_settings
+
+    census: dict[str, tuple[int, int]] = {}
+    for root in (Path(get_settings().config.data.root_path), Path("config")):
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if "__pycache__" in path.parts or not path.is_file():
+                continue
+            stat = path.stat()
+            census[path.as_posix()] = (stat.st_size, stat.st_mtime_ns)
+    return census
+
+
+@dataclass
+class _MeasuredRecordingSink(RecordingSink):
+    """The dry run's sink, which also MEASURES writes instead of asserting there were none.
+
+    33.2 review C1 IN-01: ``RecordingSink.production_write_count`` is zero by construction, so
+    the dry run's ``WRITES=`` line could never report a write that bypassed the sink. It now
+    counts the files under the data root and ``config/`` that appeared, vanished or changed
+    between the start of the run and the contract line.
+    """
+
+    baseline: dict[str, tuple[int, int]] = field(default_factory=_write_census)
+
+    def measured_writes(self) -> int:
+        """Files added, removed or modified since the sink was created."""
+        now = _write_census()
+        changed = {path for path in now if self.baseline.get(path) != now[path]}
+        removed = set(self.baseline) - set(now)
+        return len(changed | removed)
 
 
 def _final_game_awaits_result(season: int, instant: datetime) -> bool:
@@ -386,9 +426,10 @@ def _print_contract(
     """The output lines Plan 33.2-28's rehearsal keys on."""
     intended = len(sink.intended_writes) if isinstance(sink, RecordingSink) else 0
     print(f"DRY_RUN= {dry_run}")
-    print(
-        f"WRITES= {sink.production_write_count if isinstance(sink, RecordingSink) else 'n/a'}"
+    writes = (
+        sink.measured_writes() if isinstance(sink, _MeasuredRecordingSink) else "n/a"
     )
+    print(f"WRITES= {writes}")
     print(f"INTENDED_WRITES= {intended}")
     print(f"LOCK_PASSED_BEFORE_COLLECTION= {lock_passed}")
     print(f"DECISION_TIME_BRANCH= {DECISION_TIME_BRANCH}")
@@ -435,7 +476,7 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
     _refuse_an_unrunnable_date(run_date_et, start, dry_run=dry_run)
     lock = slate_lock(run_date_et)
     sink: ProductionSink | RecordingSink = (
-        RecordingSink() if dry_run else ProductionSink()
+        _MeasuredRecordingSink() if dry_run else ProductionSink()
     )
 
     with active_sink(sink):
