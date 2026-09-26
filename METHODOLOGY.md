@@ -133,11 +133,18 @@ Elo is a real, active rating system -- not an inactive default. Ground truth:
 All trainers delegate hyperparameter search to the shared Optuna infrastructure and
 walk-forward splitter; per-target specifics:
 
-- **WP** -- Logistic Regression with `StandardScaler`, calibrated with isotonic
-  regression (Platt scaling as the small-sample fallback). Ground truth:
-  `models/trainers/wp_trainer.py` + `models/calibrate.py`. Calibration quality is
-  reported as ECE + a Brier reliability/resolution decomposition (`MODEL-DIAGNOSIS.md`
-  records WP ECE 0.05499).
+- **WP** -- Logistic Regression with `StandardScaler`, calibrated with **Platt scaling**
+  (isotonic regression is configured as the fallback, not the primary). Ground truth:
+  `models/trainers/wp_trainer.py` -- `primary_method="platt"`, `fallback_method="isotonic"` --
+  plus `models/calibrate.py`. The calibrator was switched from isotonic to Platt in commit
+  `353d3ad` (2026-03-27) because isotonic was saturating predictions to exactly 0.0 or 1.0;
+  the commit records the rate dropping from 15% to 1.5%. Calibration quality is reported as
+  ECE + a Brier reliability/resolution decomposition. The Phase-30 model
+  (`artifacts/wp_20260824_113325`) records a pooled walk-forward **holdout ECE of 0.0445**;
+  Phase 33.2 replaced it on 2026-09-23 with `artifacts/wp_20260923_172144`, also Platt, which
+  records **0.0856**. The 0.05499 figure in `MODEL-DIAGNOSIS.md` predates both retrains. (Each
+  artifact also records `calibration.hp_val_ece` -- ECE on the hyperparameter-validation split,
+  not the holdout, and not the headline number.)
 - **ATS** -- `XGBRegressor` predicts the home margin, then a residual-distribution
   converter turns the margin into a cover probability. Ground truth:
   `models/trainers/ats_trainer.py` (the `ResidualDistributionConverter` still lives in
@@ -165,7 +172,9 @@ frozen v2.1 diagnosis.
 
 **What the gate does NOT assert.** Under `floor_mode = non_regression` it asks whether a
 candidate is not WORSE than the incumbent, never whether it is positive in absolute terms.
-WP ships on a pooled probability CLV of -0.0380: an improvement on its incumbent, and still
+WP ships on a pooled probability CLV of -0.0380 as the gate measured it (`GATED-REFIT-READOUT.md`;
+the artifact's own training-time summary records -0.0347 over n=1,019 games with odds): an
+improvement on its incumbent, and still
 negative. Removing closing-line-value leakage and having a market edge are different claims,
 and this methodology keeps those two bars apart deliberately.
 

@@ -523,7 +523,7 @@ class WPTrainer(BaseTrainer):
             hp_val_model, train_val_split.test_data[self.feature_names]
         )
 
-        # Fit isotonic calibrator on HP-val predictions
+        # Fit Platt calibrator on HP-val predictions (isotonic is the fallback)
         prob_calibrator = ProbabilityCalibrator(
             primary_method="platt",
             fallback_method="isotonic",
