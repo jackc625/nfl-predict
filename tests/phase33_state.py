@@ -18932,3 +18932,221 @@ P332_REVIEW3_TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
     ("models.train_ou", "main", 1421),
     ("models.train", "main", 972),
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33-18 Task 1 (replanned 2026-09-28, D33-37(a)) -- THE WEEK-3 ELO CHECK ON THE
+# 2026-09-26 RUN'S GOLD.
+#
+# APPENDED 2026-09-28. Nothing above this line was edited; the paused ACCEPTANCE_RUN_* slots
+# stay byte-unchanged as the record of attempts 1 and 2.
+#
+# MEASURED 2026-09-28 (about 13:10-13:25 ET) on commit 83802af, read-only, on the gold
+# generation the first real scheduled daily run built (logs/friday_pipeline.json: start
+# 2026-09-26T17:00:19-04:00, end 17:15:15-04:00, status degraded, week 3). No later run had
+# rebuilt gold: the build clock below is that run's, identical in all three matrices. The
+# instrument is tests/integration/test_live_2026_prediction_set.py (committed RED at 92fe2b4):
+# an INDEPENDENT recomputation of every 2026 gold Elo cell from
+# data/silver/elo_game_snapshots.parquet through the build's documented transform (a
+# strictly-prior 1st/99th-percentile clip, then the lock-ordered expanding z-score). A zero
+# exit code is not the evidence; the deviations below are.
+# ---------------------------------------------------------------------------
+
+#: The live season and the first week the value check covers (every 2026 gold row with
+#: week >= this is compared; weeks 1-2 feed every window but are not the recorded week).
+LIVE_ACCEPTANCE_SEASON: int = 2026
+LIVE_ACCEPTANCE_WEEK: int = 3
+
+#: (snapshot column, gold column): the six directly joined fields. READ from
+#: features/elo_features.py build_features (the explicit snapshot subset minus game_id, and the
+#: home_elo_pre -> home_elo / away_elo_pre -> away_elo rename); the same six ELO_GOLD_JOIN_SUBSET
+#: names. The snapshot side is selected and renamed BEFORE the merge, never by a suffixed merge.
+LIVE_ACCEPTANCE_ELO_COLUMN_MAP: tuple[tuple[str, str], ...] = (
+    ("home_elo_pre", "home_elo"),
+    ("away_elo_pre", "away_elo"),
+    ("home_elo_uncertainty", "home_elo_uncertainty"),
+    ("away_elo_uncertainty", "away_elo_uncertainty"),
+    ("elo_prob_home", "elo_prob_home"),
+    ("hfa_used", "hfa_used"),
+)
+
+#: Computed by formula on the RAW joined values (elo_features.build_features), then put through
+#: the same clip and z-score as every other column.
+LIVE_ACCEPTANCE_DERIVED_ELO_COLUMNS: tuple[str, ...] = ("elo_diff", "elo_prob_away")
+
+#: Derived from the week's snapshot POPULATION (_add_rank_features, _add_momentum_features), not
+#: joined per game: checked for presence and non-nullity only (the rank reproducibility hazard is
+#: handed to Phase 34 in _add_rank_features' docstring).
+LIVE_ACCEPTANCE_PRESENCE_ONLY_ELO_COLUMNS: tuple[str, ...] = (
+    "home_elo_rank",
+    "away_elo_rank",
+    "home_elo_percentile",
+    "away_elo_percentile",
+    "home_elo_momentum",
+    "away_elo_momentum",
+)
+
+LIVE_ACCEPTANCE_TOLERANCE: float = 1e-9
+
+#: The 15 week-3 gold rows of the checked generation (identical in all three matrices): the 14
+#: Sunday games predicted for the 2026-09-26 18:00 ET lock plus 2026_W03_ATL@GB (played
+#: 2026-09-24). 2026_W03_PHI@CHI has no gold row: the 2026-09-27 run was missed (D33-39).
+LIVE_ACCEPTANCE_CHECKED_GAME_IDS: tuple[str, ...] = (
+    "2026_W03_ARI@SF",
+    "2026_W03_ATL@GB",
+    "2026_W03_BAL@DAL",
+    "2026_W03_CAR@CLE",
+    "2026_W03_CIN@PIT",
+    "2026_W03_HOU@IND",
+    "2026_W03_KC@MIA",
+    "2026_W03_LA@DEN",
+    "2026_W03_LAC@BUF",
+    "2026_W03_LV@NO",
+    "2026_W03_MIN@TB",
+    "2026_W03_NE@JAX",
+    "2026_W03_NYJ@DET",
+    "2026_W03_SEA@WAS",
+    "2026_W03_TEN@NYG",
+)
+
+#: The checked ids whose snapshot row carried is_provisional True at the check: every unplayed
+#: Sunday game (14). 2026_W03_ATL@GB's row was real (final score on record).
+LIVE_ACCEPTANCE_PROVISIONAL_AT_CHECK: tuple[str, ...] = (
+    "2026_W03_ARI@SF",
+    "2026_W03_BAL@DAL",
+    "2026_W03_CAR@CLE",
+    "2026_W03_CIN@PIT",
+    "2026_W03_HOU@IND",
+    "2026_W03_KC@MIA",
+    "2026_W03_LA@DEN",
+    "2026_W03_LAC@BUF",
+    "2026_W03_LV@NO",
+    "2026_W03_MIN@TB",
+    "2026_W03_NE@JAX",
+    "2026_W03_NYJ@DET",
+    "2026_W03_SEA@WAS",
+    "2026_W03_TEN@NYG",
+)
+
+#: The checked generation's build clock: the single feature_timestamp value, identical across the
+#: three matrices, inside the 2026-09-26 run's window (21:00:19Z..21:15:15Z).
+LIVE_ACCEPTANCE_GOLD_BUILD_CLOCK_UTC: str = "2026-09-26T21:12:02.795159+00:00"
+
+#: sha256 of each checked matrix, through tests.data_boundary.require_content_digest (a content
+#: hash; never a stat signature).
+LIVE_ACCEPTANCE_GOLD_SHA256: tuple[tuple[str, str], ...] = (
+    (
+        "data/gold/features_wp.parquet",
+        "92f203951ac6ac91062bc1a125a9708433e1471e2d8a136a6c384736d6a8f6c3",
+    ),
+    (
+        "data/gold/features_ats.parquet",
+        "06c2dbfc11fbf58df2b6894aa67c0e9f24d89c90ed859cf57e0d8ebad46fcad8",
+    ),
+    (
+        "data/gold/features_ou.parquet",
+        "28e9dfe8209e40af99d1b834d6fce39f13ba016faa99d071fc417e2cc3d4c031",
+    ),
+)
+
+#: sha256 of data/silver/elo_game_snapshots.parquet at the check (written 2026-09-26 17:01 ET).
+LIVE_ACCEPTANCE_SNAPSHOT_SHA256: str = (
+    "f3d91fa52220fa90d51159499a308c3dd6cea2396ca94f4727e8391dfc9f3e85"
+)
+
+#: (matrix, gold column, max abs(gold - recomputed)) over the 15 in-scope week-3 rows, measured
+#: with the committed module's own helper (math.fsum window statistics). A throwaway numpy
+#: cross-check of the same cells (np.mean / np.std) gave a maximum of 2.6645352591003757e-15.
+#: Out of scope at this generation: week-1 rows only (the first lock group's window is under four
+#: values; both uncertainty columns are constant 100 across week 1), never a checked game.
+LIVE_ACCEPTANCE_MAX_ABS_DEVIATION: tuple[tuple[str, str, float], ...] = (
+    ("wp", "home_elo", 0.0),
+    ("wp", "away_elo", 8.881784197001252e-16),
+    ("wp", "home_elo_uncertainty", 4.440892098500626e-16),
+    ("wp", "away_elo_uncertainty", 8.881784197001252e-16),
+    ("wp", "elo_prob_home", 0.0),
+    ("wp", "hfa_used", 0.0),
+    ("wp", "elo_diff", 0.0),
+    ("wp", "elo_prob_away", 4.440892098500626e-16),
+    ("ats", "home_elo", 0.0),
+    ("ats", "away_elo", 8.881784197001252e-16),
+    ("ats", "home_elo_uncertainty", 4.440892098500626e-16),
+    ("ats", "away_elo_uncertainty", 8.881784197001252e-16),
+    ("ats", "elo_prob_home", 0.0),
+    ("ats", "hfa_used", 0.0),
+    ("ats", "elo_diff", 0.0),
+    ("ats", "elo_prob_away", 4.440892098500626e-16),
+    ("ou", "home_elo", 0.0),
+    ("ou", "away_elo", 8.881784197001252e-16),
+    ("ou", "home_elo_uncertainty", 4.440892098500626e-16),
+    ("ou", "away_elo_uncertainty", 8.881784197001252e-16),
+    ("ou", "elo_prob_home", 0.0),
+    ("ou", "hfa_used", 0.0),
+    ("ou", "elo_diff", 0.0),
+    ("ou", "elo_prob_away", 4.440892098500626e-16),
+)
+
+#: Every 2026 week-3 game in silver games (16), partitioned below by EACH GAME'S OWN day-before
+#: lock (utils/game_lock.py), never by the obsolete ELIGIBLE / LOST_FREEZE split (D33-38).
+LIVE_ACCEPTANCE_WEEK3_SCHEDULED_GAME_IDS: tuple[str, ...] = (
+    "2026_W03_ARI@SF",
+    "2026_W03_ATL@GB",
+    "2026_W03_BAL@DAL",
+    "2026_W03_CAR@CLE",
+    "2026_W03_CIN@PIT",
+    "2026_W03_HOU@IND",
+    "2026_W03_KC@MIA",
+    "2026_W03_LA@DEN",
+    "2026_W03_LAC@BUF",
+    "2026_W03_LV@NO",
+    "2026_W03_MIN@TB",
+    "2026_W03_NE@JAX",
+    "2026_W03_NYJ@DET",
+    "2026_W03_PHI@CHI",
+    "2026_W03_SEA@WAS",
+    "2026_W03_TEN@NYG",
+)
+
+#: The 14 rows of outputs/predictions/predictions_2026_week3.csv, all stamped
+#: information_cutoff_utc 2026-09-26T22:00:00+00:00 (the lock), captured_at_utc
+#: 2026-09-26T21:01:04.934431+00:00 and computed_at_utc 2026-09-26T21:14:37.646196+00:00.
+LIVE_ACCEPTANCE_WEEK3_PREDICTED_GAME_IDS: tuple[str, ...] = (
+    "2026_W03_ARI@SF",
+    "2026_W03_BAL@DAL",
+    "2026_W03_CAR@CLE",
+    "2026_W03_CIN@PIT",
+    "2026_W03_HOU@IND",
+    "2026_W03_KC@MIA",
+    "2026_W03_LA@DEN",
+    "2026_W03_LAC@BUF",
+    "2026_W03_LV@NO",
+    "2026_W03_MIN@TB",
+    "2026_W03_NE@JAX",
+    "2026_W03_NYJ@DET",
+    "2026_W03_SEA@WAS",
+    "2026_W03_TEN@NYG",
+)
+
+#: (game_id, lock_utc, reason) for the two scheduled week-3 games with no prediction.
+LIVE_ACCEPTANCE_WEEK3_NOT_PREDICTED: tuple[tuple[str, str, str], ...] = (
+    (
+        "2026_W03_ATL@GB",
+        "2026-09-23T22:00:00+00:00",
+        "its lock (2026-09-23 18:00 ET) passed before the daily task was installed on "
+        "2026-09-24 at 00:38 ET",
+    ),
+    (
+        "2026_W03_PHI@CHI",
+        "2026-09-27T22:00:00+00:00",
+        "the 2026-09-27 17:00 ET run was missed while the laptop slept on battery, and a "
+        "missed day is never back-filled (D33-39)",
+    ),
+)
+
+#: 2026 provenance == forward rows in outputs/bet_list/bet_list.parquet at the check: 14 games x
+#: 3 targets, all suppressed (no odds that day), every decided_at_utc non-null and admitted by
+#: utils.game_lock.is_admissible against its game's lock, every freeze_ts equal to that lock.
+LIVE_ACCEPTANCE_FORWARD_ROWS_AT_CHECK: int = 42
+
+#: max(decided_at_utc - lock) in seconds over those rows: decided 2026-09-26T21:14:37.706834Z,
+#: 2722.29 s BEFORE the 22:00:00Z lock (negative = before).
+LIVE_ACCEPTANCE_FORWARD_MAX_MARGIN_SECONDS: float = -2722.293166
