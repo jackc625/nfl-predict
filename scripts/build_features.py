@@ -2793,7 +2793,7 @@ class FeatureMatrixBuilder:
     #     `extreme_weather` -- each of which carries exactly ONE non-null value on
     #     today's corpus and is therefore "discrete" only by accident of the data.
     #     Two of the three are continuous PROBABILITIES: exempting them would be
-    #     threat T-33-81 realised, and worse, the exemption would FLICKER between
+    #     threat T-33-114 realised, and worse, the exemption would FLICKER between
     #     generations, since a 2026 live forecast supplying real probabilities
     #     makes the column continuous again and silently drops it back out.
     #

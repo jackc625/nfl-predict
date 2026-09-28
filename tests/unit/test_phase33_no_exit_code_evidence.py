@@ -1,6 +1,6 @@
 """Every recorded Phase-33 acceptance artifact carries a VALUE, never only a status.
 
-WHY (T-33-90). The defect this phase exists to fix produced GREEN RUNS while serving imputed
+WHY (T-33-97). The defect this phase exists to fix produced GREEN RUNS while serving imputed
 Elo to the deployed WP model. A zero exit code, a boolean "passed", or a verdict word with no
 number behind it is therefore not evidence of anything this phase claims. This module walks
 each committed acceptance artifact and asserts the recorded evidence is a measurement:

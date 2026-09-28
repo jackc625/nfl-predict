@@ -393,7 +393,7 @@ class TestTheExemptionIsAPredicateWithAPinnedResolvedSet:
     THE TWO ARMS CARRY DIFFERENT RULES, AND THAT IS THE POINT.
     A predicate that widens a REFUSAL fails safe. This one widens an EXEMPTION,
     so a column it wrongly selects silently stops being normalized and reaches
-    the re-fit as a raw level -- threat T-33-81. So:
+    the re-fit as a raw level -- threat T-33-114. So:
 
     * the NAME arm (``*_coverage``) has NO varying-levels requirement, because a
       coverage flag's canonical state is CONSTANT and that constant being
@@ -478,7 +478,7 @@ class TestTheExemptionIsAPredicateWithAPinnedResolvedSet:
         )
 
     def test_a_single_level_indicator_is_still_z_scored(self) -> None:
-        """THE T-33-81 GUARD, and the clause that makes the predicate resolve to 26.
+        """THE T-33-114 GUARD, and the clause that makes the predicate resolve to 26.
 
         Without the varying-levels clause the value arm selects three columns
         nobody declared. On today's corpus ``precip_prob`` and
@@ -509,7 +509,7 @@ class TestTheExemptionIsAPredicateWithAPinnedResolvedSet:
 
         assert _scored_levels(result["extreme_weather"]) == {0.0}, (
             "a SINGLE-level indicator is not level-bearing; it is discrete only "
-            "by accident of the data, and exempting it is T-33-81"
+            "by accident of the data, and exempting it is T-33-114"
         )
         assert 1.0 not in result["extreme_weather"].tolist(), (
             "a constant 1.0 that came back 1.0 would prove the column was "

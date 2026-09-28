@@ -237,7 +237,7 @@ class TestThreeVerdictsExistAgainstOneFrozenState:
 
 
 class TestEveryVerdictIsLabelledInSample:
-    """T-33-86: an in-sample verdict presented as a clean gate pass."""
+    """T-33-119: an in-sample verdict presented as a clean gate pass."""
 
     def test_the_record_header_carries_the_label(
         self, committed_verdicts: dict[str, Any]
@@ -287,7 +287,7 @@ class TestEveryVerdictIsLabelledInSample:
 
 
 class TestEveryWindowCameFromTheCommittedRule:
-    """T-33-88: a window read out of a VOID pre-correction artifact's metadata."""
+    """T-33-121: a window read out of a VOID pre-correction artifact's metadata."""
 
     def test_all_three_windows_equal_the_partition_rule_on_every_target(
         self, committed_verdicts: dict[str, Any]

@@ -11479,7 +11479,7 @@ GOLD_REBUILD_LADDER_33_14: tuple[tuple[int, str], ...] = (
 # `raw_precip_prob` and `extreme_weather` each carry exactly ONE non-null value
 # on today's corpus and are therefore "discrete" only by accident of the data.
 # Two of the three are continuous PROBABILITIES; exempting them would be threat
-# T-33-81 realised, and the exemption would FLICKER between generations, because
+# T-33-114 realised, and the exemption would FLICKER between generations, because
 # a 2026 live forecast supplying real probabilities makes the column continuous
 # again and silently drops it back out. The declaration was NOT widened to 29 to
 # match the predicate -- the predicate was corrected to match the declaration,
