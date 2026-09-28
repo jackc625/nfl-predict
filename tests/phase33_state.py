@@ -19150,3 +19150,309 @@ LIVE_ACCEPTANCE_FORWARD_ROWS_AT_CHECK: int = 42
 #: max(decided_at_utc - lock) in seconds over those rows: decided 2026-09-26T21:14:37.706834Z,
 #: 2722.29 s BEFORE the 22:00:00Z lock (negative = before).
 LIVE_ACCEPTANCE_FORWARD_MAX_MARGIN_SECONDS: float = -2722.293166
+
+# ---------------------------------------------------------------------------
+# Plan 33-18 Task 2 (replanned 2026-09-28, D33-37(b)) -- THE DAILY BRACKET, DECLARED BEFORE
+# THE RUN.
+#
+# APPENDED 2026-09-28. Nothing above this line was edited. The paused ACCEPTANCE_RUN_* slots
+# (Plan 33-18 attempts 1 and 2, 2026-09-15) stay BYTE-UNCHANGED as those attempts' record and
+# are NOT reused: this is a different run (the Task Scheduler's own daily run, unmodified) under
+# a different registry (pipeline.daily_steps, not pipeline.steps.build_step_registry).
+#
+# DERIVED BY READING THE CODE, in the order SLICE -> WRITES -> ROOTS, on commit c1ff05d. Each
+# entry names the reading that produced it. Corroborated (never derived) against the files the
+# 2026-09-26 predicting run moved between 21:00:13Z and 21:15:15Z (mtimes read 2026-09-28).
+# A path the run moves that matches nothing below is a FINDING recorded with its cause; this
+# declaration is never widened after the fact.
+# ---------------------------------------------------------------------------
+
+#: The bracketed run: the Task Scheduler's NFL_Predict_Pipeline at 17:00 ET on this date
+#: (deployment/windows_scheduler.xml: daily trigger, StartBoundary 2026-09-24T17:00:00,
+#: StartWhenAvailable false, WakeToRun true, StopIfGoingOnBatteries false,
+#: RunOnlyIfNetworkAvailable true, ExecutionTimeLimit PT2H; command
+#: `uv run python scripts/daily_lock_pipeline.py`, no --date). Never a hand run.
+DAILY_BRACKET_RUN_DATE_ET: str = "2026-09-30"
+
+#: pipeline.daily_steps.slate_lock(date(2026, 9, 30)): 18:00 ET on the run date.
+DAILY_BRACKET_LOCK_UTC: str = "2026-09-30T22:00:00+00:00"
+
+#: Every 2026 game in silver games whose utils.game_lock lock equals DAILY_BRACKET_LOCK_UTC
+#: (measured 2026-09-28): Thursday night, kickoff 2026-10-02T00:15:00Z (20:15 ET 2026-10-01).
+DAILY_BRACKET_SLATE_GAME_IDS: tuple[str, ...] = ("2026_W04_PIT@CLE",)
+
+#: The fallback (Fallback procedure): the next real game-day run, Saturday 17:00 ET.
+DAILY_BRACKET_FALLBACK_RUN_DATE_ET: str = "2026-10-03"
+DAILY_BRACKET_FALLBACK_LOCK_UTC: str = "2026-10-03T22:00:00+00:00"
+
+#: Measured the same way: the 14 week-4 games whose lock is 2026-10-03 18:00 ET (every Sunday
+#: 2026-10-04 game, the 13:30Z early kickoff and the night game included). The Monday game,
+#: 2026_W04_ATL@NO, locks on 2026-10-04.
+DAILY_BRACKET_FALLBACK_SLATE_GAME_IDS: tuple[str, ...] = (
+    "2026_W04_ARI@NYG",
+    "2026_W04_DAL@HOU",
+    "2026_W04_DEN@SF",
+    "2026_W04_DET@CAR",
+    "2026_W04_GB@TB",
+    "2026_W04_IND@WAS",
+    "2026_W04_JAX@CIN",
+    "2026_W04_KC@LV",
+    "2026_W04_LA@PHI",
+    "2026_W04_LAC@SEA",
+    "2026_W04_MIA@MIN",
+    "2026_W04_NE@BUF",
+    "2026_W04_NYJ@CHI",
+    "2026_W04_TEN@BAL",
+)
+
+#: The schedule refresh, run by scripts/daily_lock_pipeline._refresh_schedule BEFORE the slate
+#: is selected and therefore BEFORE the registry is built: run_daily -> _run_the_day calls
+#: _refresh_schedule first, then select_slate, then FridayPipeline(build_daily_step_registry).
+#: The week is utils.current_slate.refresh_target at the run date's lock -- measured read-only
+#: 2026-09-28: (2026, 4) for both 2026-09-30 and 2026-10-03.
+DAILY_BRACKET_PRE_REGISTRY_OPERATIONS: tuple[tuple[str, str], ...] = (
+    (
+        "pipeline.steps.step_capture_live_season(season=2026, week=4, "
+        "datasets=['depth_charts', 'pbp', 'schedules'])",
+        "_refresh_schedule: first_recorded_kickoff(2026) is recorded, so pbp is NOT removed "
+        "from upstream_pin.DATASET_COLUMNS; not a dry run, so the capture runs. "
+        "scripts/capture_live_season.run_capture writes one exclusive bronze snapshot per "
+        "dataset (data.storage.save_bronze_snapshot), rewrites config/upstream_live/2026.json "
+        "atomically (data.upstream_live.write_live_manifest) and appends ONE line to "
+        "config/upstream_probe_log.jsonl (data.sealed_probe_log.record_probe_run)",
+    ),
+    (
+        "scripts.ingest_games.GameDataIngester().ingest_games(seasons=[2026], "
+        "include_results=True)",
+        "_refresh_schedule, after the capture: include_results is "
+        "season_has_kicked_off(2026, lock), true since week 1. It writes one bronze snapshot "
+        "(week=weeks[0] if weeks else 0, so W00) and upserts silver games with a fresh "
+        "created_at (data.storage.upsert_silver, which also replaces the DuckDB copy)",
+    ),
+)
+
+#: pipeline.daily_steps.build_daily_step_registry(slate), name for name, in registry order (21).
+#: The run executes all of them; pipeline.orchestrator stops early only on a CRITICAL step's
+#: failure, which Task 7 reads from logs/friday_pipeline.json. Non-critical: ingest_weather,
+#: ingest_snaps, ingest_injuries, ingest_odds, verify_output_files, populate_web_cache.
+DAILY_BRACKET_STEP_SLICE: tuple[str, ...] = (
+    "ingest_weather",
+    "ingest_snaps",
+    "ingest_injuries",
+    "ingest_odds",
+    "close_collection",
+    "data_qa",
+    "build_elo",
+    "build_team_form",
+    "build_weather_features",
+    "verify_data_artifacts",
+    "build_features",
+    "validate_features",
+    "verify_gold_currency",
+    "validate_models",
+    "generate_predictions",
+    "verify_prediction_currency",
+    "generate_recommendations",
+    "export_artifacts",
+    "validate_predictions",
+    "verify_output_files",
+    "populate_web_cache",
+)
+
+#: The five bracketed roots, each with its before-document. The documents live under
+#: .planning/, OUTSIDE all five roots: .json is a tracked suffix, so a document written inside a
+#: root would report itself as an added file. `config` (not only config/upstream_live) so an
+#: unexpected write to ANY tracked .json under config/ is visible; `logs` because a predicting
+#: run rewrites logs/friday_pipeline.json; `artifacts` although nothing may move there.
+DAILY_BRACKET_ROOTS: tuple[tuple[str, str], ...] = (
+    (
+        "data",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-09-30/data_before.json",
+    ),
+    (
+        "outputs",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-09-30/outputs_before.json",
+    ),
+    (
+        "artifacts",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-09-30/artifacts_before.json",
+    ),
+    (
+        "config",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-09-30/config_before.json",
+    ),
+    (
+        "logs",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-09-30/logs_before.json",
+    ),
+)
+
+DAILY_BRACKET_FALLBACK_ROOTS: tuple[tuple[str, str], ...] = (
+    (
+        "data",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-10-03/data_before.json",
+    ),
+    (
+        "outputs",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-10-03/outputs_before.json",
+    ),
+    (
+        "artifacts",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-10-03/artifacts_before.json",
+    ),
+    (
+        "config",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-10-03/config_before.json",
+    ),
+    (
+        "logs",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/daily-2026-10-03/logs_before.json",
+    ),
+)
+
+#: Repo-relative POSIX paths the run writes UNCONDITIONALLY on a normal night (every step it
+#: reaches succeeds). An angle-bracket segment is run-dependent and matches as a wildcard:
+#: <utc stamp> is data.storage.save_bronze_snapshot's second-resolution UTC stamp
+#: (%Y%m%dT%H%M%S); <generation id> is scripts.elo_generation.new_generation_id. The same list
+#: serves the fallback: both runs are week 4 (a week-4 prediction file the 2026-09-30 run
+#: created is CHANGED on 2026-10-03 rather than added, and matches the same entry).
+#: `.jsonl` writes are in DAILY_BRACKET_JSONL_APPENDS instead: TRACKED_SUFFIXES has no .jsonl,
+#: so the digest cannot see them and listing one here could never be satisfied.
+#: NOTHING UNDER artifacts/ IS DECLARED, and that is the claim: validate_models loads the
+#: deployed models (pipeline.model_validation) and predict_slate scores them; neither writes.
+DAILY_BRACKET_MUST_WRITE: tuple[str, ...] = (
+    # -- schedule refresh: the live capture (pre-registry operation 1) ------------------
+    "data/bronze/depth_charts_raw_bronze_2026_W04_<utc stamp>.parquet",
+    "data/bronze/pbp_raw_bronze_2026_W04_<utc stamp>.parquet",
+    "data/bronze/schedules_raw_bronze_2026_W04_<utc stamp>.parquet",
+    "config/upstream_live/2026.json",
+    # -- schedule refresh: the games ingest (pre-registry operation 2) ------------------
+    "data/bronze/games_raw_bronze_2026_W00_<utc stamp>.parquet",
+    "data/silver/games.parquet",
+    # -- ingest_weather: daily_steps.ingest_slate_weather -> ingest_week_forecast; the bronze
+    #    week is _single_season_week of the slate (4); silver carries a fresh created_at --
+    "data/bronze/weather_raw_bronze_2026_W04_<utc stamp>.parquet",
+    "data/silver/weather.parquet",
+    # -- ingest_snaps / ingest_injuries: a whole-season capture, weeks=None -> bronze W00,
+    #    exclusive and newly stamped every run (the SILVER halves are MAY, below) ---------
+    "data/bronze/snap_counts_raw_bronze_2026_W00_<utc stamp>.parquet",
+    "data/bronze/injuries_raw_bronze_2026_W00_<utc stamp>.parquet",
+    # -- build_elo: persist_current_season_elo -> save_live_append -> publish_elo_generation:
+    #    stage the generation, upsert the live table (the slate's provisional row; week-3
+    #    results replace provisional rows), move the pointer --------------------------------
+    "data/silver/elo_generations/<generation id>/elo_game_snapshots.parquet",
+    "data/silver/elo_game_snapshots.parquet",
+    "data/silver/elo_generation.json",
+    # -- build_team_form: TeamFormBuilder.build_for_current_week -> save_dataframe replace --
+    "data/silver/team_form_features.parquet",
+    # -- build_weather_features: build_slate_weather_features -> save_dataframe ------------
+    "data/silver/weather_features.parquet",
+    # -- build_features: build_and_save_gold -> save_feature_matrices, a full rebuild with a
+    #    new build clock (replace_mode) ------------------------------------------------------
+    "data/gold/features_wp.parquet",
+    "data/gold/features_ats.parquet",
+    "data/gold/features_ou.parquet",
+    # save_dataframe's save_to_db default (games, Elo, team form, weather features, gold).
+    "data/nfl_predictions.duckdb",
+    # -- generate_predictions: predict_slate -> _merge_into_week_file (write_csv) ----------
+    "outputs/predictions/predictions_2026_week4.csv",
+    "outputs/predictions/game_context_2026_week4.csv",
+    # -- export_artifacts: export_slate_week -------------------------------------------------
+    "outputs/predictions/predictions_2026_week4.json",
+    # -- generate_recommendations: recommend_slate -> generate_weekly_bet_list ->
+    #    write_bet_list_pair (both halves, every call) -----------------------------------------
+    "outputs/bet_list/bet_list.parquet",
+    "outputs/bet_list/bet_tracker.json",
+    # -- populate_web_cache: step_populate_web_cache -> api.cache.populate_cache (temp db
+    #    renamed over the live file). IN THE SLICE, SO DECLARED. ----------------------------
+    "data/web_cache.duckdb",
+    # -- the orchestrator's run record: pipeline.orchestrator.LOG_PATH, rewritten atomically --
+    "logs/friday_pipeline.json",
+)
+
+#: (pattern, condition) for writes that depend on upstream or on the night. Each condition is a
+#: sentence Task 7 can check against logs/friday_pipeline.json or the two stores' own values.
+DAILY_BRACKET_MAY_WRITE: tuple[tuple[str, str], ...] = (
+    (
+        "data/silver/snap_counts.parquet",
+        "moves only if the nflverse 2026 snap-count asset differs from what silver already "
+        "holds: upsert_silver is latest-wins by game_id over the whole-season capture, so an "
+        "unchanged asset (same upstream_captured_at, same rows) rewrites identical bytes; check "
+        "max(upstream_captured_at) of the 2026 rows before against after",
+    ),
+    (
+        "data/silver/injuries.parquet",
+        "moves only if the capture carries a (game_id, gsis_id, date_modified, "
+        "upstream_captured_at) key silver does not hold: upsert_silver_composite de-duplicates "
+        "on that key, so an unchanged asset rewrites identical bytes; check "
+        "max(upstream_captured_at) before against after",
+    ),
+    (
+        "data/bronze/odds_raw_bronze_2026_W04.parquet",
+        "written only if ingest_odds matched at least one Odds API line to a slate game before "
+        "its lock (ingest_odds step status success in logs/friday_pipeline.json); an empty or "
+        "failed capture raises before this save_dataframe call and writes nothing",
+    ),
+    (
+        "data/silver/odds_snapshot.parquet",
+        "the same condition as the odds bronze file: append_odds_captures runs only after at "
+        "least one line matched (ingest_odds step status success)",
+    ),
+    (
+        "outputs/diagnostics/leakage_<local stamp>.json",
+        "written only if the gold build's leakage gate refused (scripts/build_features.py "
+        "write_diagnostic_report on a LeakageViolation): logs/friday_pipeline.json then shows a "
+        "build_features failure or a skipped game naming a leakage source",
+    ),
+    (
+        "data/web_cache.tmp.duckdb",
+        "left behind only if populate_web_cache failed after api.cache.populate_cache created "
+        "its temporary database (populate_web_cache step status failed in "
+        "logs/friday_pipeline.json); a successful step renames it over data/web_cache.duckdb",
+    ),
+)
+
+#: (pattern, condition) for files the run may DELETE. Not in the plan's slot list; appended
+#: because reading scripts/elo_generation.prune_elo_generations showed a removal the Task 7
+#: comparison would otherwise meet undeclared. publish_elo_generation prunes all but the newest
+#: ELO_GENERATIONS_KEPT (5) staged generations AFTER moving the pointer. Four existed at this
+#: declaration (20260914T235426782597, 20260915T124923653678, 20260919T153744623671,
+#: 20260926T210109328901), so the 2026-09-30 run stages the fifth and removes none.
+DAILY_BRACKET_MAY_REMOVE: tuple[tuple[str, str], ...] = (
+    (
+        "data/silver/elo_generations/<generation id>/elo_game_snapshots.parquet",
+        "removed only when more than 5 staged generations exist after the publish: none on "
+        "2026-09-30 (4 before, 5 after); on the 2026-10-03 fallback after a 2026-09-30 run "
+        "that published, the oldest, 20260914T235426782597, is pruned",
+    ),
+)
+
+#: The three .jsonl files the digest cannot see (TRACKED_SUFFIXES has no .jsonl), each with its
+#: expected LINE delta on a normal predicting night. logs/daily_lock_runs.jsonl and
+#: config/skip_records.jsonl did not exist at this declaration (an absent file counts 0).
+DAILY_BRACKET_JSONL_APPENDS: tuple[tuple[str, str], ...] = (
+    (
+        "config/upstream_probe_log.jsonl",
+        "+1: run_capture appends exactly one probe-log line per run, complete or partial",
+    ),
+    (
+        "logs/daily_lock_runs.jsonl",
+        "+0: DAILY_RUN_RECORDS is appended only on a no-prediction day (lock_passed, "
+        "offseason, no_games) or, +1, when the run raises (_record_run_failure: run_failed)",
+    ),
+    (
+        "config/skip_records.jsonl",
+        "+0 unless a slate game is skipped: pipeline.skip_log.append_skip_record adds one line "
+        "per skipped game with a new natural key",
+    ),
+)
