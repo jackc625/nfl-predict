@@ -40,8 +40,12 @@ SCHEDULER_PATH = pathlib.Path("deployment") / "windows_scheduler.xml"
 # Friday run is replaced rather than supplemented (RESEARCH 11.1). Was: sha256
 # ac93a32a07574eb2f3998439f600c5c4fa773998e39a347e381bdf0ca2a767ff, 6186 bytes (plan 31-17).
 # What the file SAYS is asserted separately below, over the parsed tree.
-EXPECTED_SHA256 = "b098acc2b239f6af265b230481815e2f4a6cea75840294bfd8f0daac8499163e"
-EXPECTED_BYTES = 7946
+# RE-PINNED DELIBERATELY 2026-09-28 (owner ruling after the 2026-09-27 run was missed asleep on
+# battery): StopIfGoingOnBatteries became false, and the header records that wake timers work on
+# AC power only. Was: sha256 b098acc2b239f6af265b230481815e2f4a6cea75840294bfd8f0daac8499163e,
+# 7946 bytes (Plan 33.2-28).
+EXPECTED_SHA256 = "2fd04c703205795e339d6e286fa4c43c111a14241b50857a4f32e53147a56950"
+EXPECTED_BYTES = 8640
 
 #: THE LOCK every scheduled run must beat: 18:00 ET on the day before each game (D33.2-01).
 LOCK_TIME_OF_DAY = time(18, 0)
