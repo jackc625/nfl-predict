@@ -899,16 +899,16 @@ class TestSnapshotValueShapes:
         with pytest.raises(NaiveTimestampError):
             _totals_verdict("2023-09-09T18:00:00")
 
-    def test_a_complete_row_with_no_snapshot_refuses_rather_than_assuming_admissible(
+    def test_a_complete_row_with_no_snapshot_is_stale_never_assumed_admissible(
         self,
     ) -> None:
-        """A row with market data and a kickoff date but no timestamp is a pipeline bug.
+        """A row with market data and a kickoff date but no information time is not admissible.
 
-        Treating it as admissible would make the fence unable to fire on exactly the rows a
-        broken cache builder produces; suppressing it would hide the bug behind a data label.
+        Owner ruling 2026-09-22 (Option B): only a real recorded capture time counts, so a line
+        with none is suppressed as ``stale_line`` -- never priced, never assumed admissible.
         """
-        with pytest.raises(ValueError, match="snapshot_ts"):
-            _totals_verdict(None)
+        reasons, _record = _totals_verdict(None)
+        assert reasons == ["stale_line"]
 
 
 class TestAdmissibilityIsTimezoneIndependent:

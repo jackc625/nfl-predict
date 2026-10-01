@@ -813,9 +813,10 @@ def build_weekly_candidates(
     odds = dedupe_odds_by_book_preference(
         odds[odds["game_id"].isin(game_ids)], locks=locks, keep_inadmissible=True
     )
-    # The selector's freshness fence reads ``snapshot_ts``. For a live capture that column is the
-    # lock LABEL, which always passes; hand the fence the line's REAL information time -- the
-    # capture instant -- instead (33.2 review C1 CR-02). A historical row keeps its label.
+    # The selector's freshness fence reads ``snapshot_ts``. That column is a LABEL (a live
+    # capture's is its lock, which always passes; a historical row's was manufactured), so hand
+    # the fence the line's REAL information time -- its recorded capture instant -- instead (33.2
+    # review C1 CR-02; owner ruling 2026-09-22). A row with none is a stale line, never priced.
     odds["snapshot_ts"] = odds_information_time(odds)
 
     slope = _bound_spread_slope(artifacts_dir)

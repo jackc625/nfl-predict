@@ -229,8 +229,12 @@ def test_the_book_only_breaks_a_tie_in_capture_time() -> None:
     assert chosen.iloc[0]["sportsbook"] == "betmgm", "by name, never by file order"
 
 
-def test_a_historical_row_is_judged_by_its_snapshot_label() -> None:
-    """A consensus row's created_at is its ingest date; its only time is the label."""
+def test_a_historical_row_is_judged_by_its_capture_time_never_its_label() -> None:
+    """Owner ruling 2026-09-22 (Option B): a pre-lock LABEL with a post-lock capture is refused.
+
+    A consensus row's ``snapshot_ts`` is a manufactured label; only ``created_at`` (here the
+    backfill, after the lock) is an information time, so the row is admissible at no lock.
+    """
     frame = pd.DataFrame(
         [
             {
@@ -242,8 +246,7 @@ def test_a_historical_row_is_judged_by_its_snapshot_label() -> None:
             }
         ]
     )
-    chosen = dedupe_odds_by_book_preference(frame, locks={_LIVE_GAME: _LOCK})
-    assert chosen.iloc[0]["spread"] == pytest.approx(-3.5)
+    assert dedupe_odds_by_book_preference(frame, locks={_LIVE_GAME: _LOCK}).empty
 
 
 def test_the_serving_market_line_reads_the_latest_pre_lock_capture(

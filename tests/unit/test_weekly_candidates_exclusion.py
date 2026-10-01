@@ -102,6 +102,8 @@ def _write_sandbox(root: Path) -> tuple[Path, Path, Path]:
         {
             "game_id": _GAME_IDS,
             "snapshot_ts": [FREEZE_AT_SUNDAY] * N_GAMES,
+            # The recorded capture time: the only information time (owner ruling 2026-09-22).
+            "created_at": pd.to_datetime([FREEZE_AT_SUNDAY] * N_GAMES, utc=True),
             "ml_home": [-130.0] * N_GAMES,
             "ml_away": [110.0] * N_GAMES,
             "spread": [-2.5] * N_GAMES,

@@ -917,17 +917,11 @@ class BetSelector:
         if two_test and _is_absent(row.get(SPREAD_MARKET_PROB_FIELD)):
             return record, "missing_snapshot"
 
-        # A row that HAS market data and a kickoff date but no timestamp is a pipeline bug, and it
-        # is the one shape that would make this fence unable to fire. Assuming it fresh would
-        # silently admit whatever the cache builder dropped the column on; calling it stale would
-        # hide the bug behind a data label. So it raises, naming the column.
+        # A row that HAS market data and a kickoff date but no information time is NOT admissible
+        # (owner ruling 2026-09-22, Option B: only a real recorded capture time counts). A line
+        # with no recorded capture time is never assumed fresh; it is suppressed as stale.
         if freeze_instant is not None and snapshot_instant is None:
-            msg = (
-                f"candidate {game_id!r} for target {strategy.target!r} carries market data and a "
-                "gameday but no 'snapshot_ts'; the freshness fence cannot be evaluated and a "
-                "missing freeze instant is never treated as fresh (D31-17/18)."
-            )
-            raise ValueError(msg)
+            return record, "stale_line"
         if is_fresh is False:
             # Suppressed BEFORE pricing: a line captured after the game's lock is information the
             # decision could not have had, and an EV computed from it would be exactly the number

@@ -73,7 +73,6 @@ __all__ = [
     "DEBIAS_RESIDUAL_THRESHOLD",
     "DEPLOYED_OU_ARTIFACT",
     "EDGE_MAGNITUDE_GRID",
-    "HISTORICAL_LINE_SPORTSBOOKS",
     "N_FLOOR",
     "OU_BREAKEVEN_HIT_RATE",
     "SD_SENSITIVITY_BAND",
@@ -137,14 +136,6 @@ assert set(SPORTSBOOK_PREFERENCE) == set(_ALLOWED_SPORTSBOOKS), (
 )
 
 
-#: The book labels of rows written by the HISTORICAL closing-line ingests. Such a row's only time is
-#: its ``snapshot_ts`` label (the frozen closing-line population, disclosed as such). Every other row
-#: is a LIVE capture, whose ``snapshot_ts`` is its game's lock and whose real information time is
-#: the instant it was captured, ``created_at`` (33.2 review C1 CR-02 / WR-01).
-HISTORICAL_LINE_SPORTSBOOKS: frozenset[str] = frozenset(
-    {"consensus", "consensus_median"}
-)
-
 _AWARE_UTC = "datetime64[ns, UTC]"
 
 
@@ -163,20 +154,15 @@ def _aware_instants(odds: pd.DataFrame, column: str) -> pd.Series:
 
 
 def odds_information_time(odds: pd.DataFrame) -> pd.Series:
-    """When each stored line was KNOWN, as tz-aware UTC (NaT when nothing says).
+    """When each stored line was KNOWN: its recorded capture time, as tz-aware UTC.
 
-    A live capture's ``snapshot_ts`` is its game's lock, a LABEL shared by every capture of that
-    game, so it cannot tell an opening line from the lock-day one. Its ``created_at`` is the
-    instant the response was observed -- the real information time. A historical row carries only
-    its ``snapshot_ts`` label (see :data:`HISTORICAL_LINE_SPORTSBOOKS`). A frame with no
-    ``sportsbook`` column is read by its labels, as it always was.
+    OWNER RULING 2026-09-22 (Option B): only a REAL recorded capture time counts. That is
+    ``created_at``, the instant the response was observed, for EVERY row. ``snapshot_ts`` is a
+    LABEL and is never read here: a live capture's is its game's lock, and the stored 2018-2025
+    historical rows' was manufactured (one constant per season, or the retired Friday rule). A row
+    with no ``created_at`` has no information time (NaT), so it is admissible at no lock.
     """
-    label = _aware_instants(odds, "snapshot_ts")
-    if "sportsbook" not in odds.columns:
-        return label
-    captured = _aware_instants(odds, "created_at")
-    historical = odds["sportsbook"].astype(str).isin(HISTORICAL_LINE_SPORTSBOOKS)
-    return label.where(historical, captured)
+    return _aware_instants(odds, "created_at")
 
 
 def dedupe_odds_by_book_preference(

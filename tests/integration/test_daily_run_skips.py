@@ -242,6 +242,8 @@ def _write_stores(root: Path, games: tuple[str, ...], *, schedule_week: int) -> 
         {
             "game_id": list(games),
             "snapshot_ts": [ODDS_CAPTURED_AT] * len(games),
+            # The recorded capture time: the only information time (owner ruling 2026-09-22).
+            "created_at": pd.to_datetime([ODDS_CAPTURED_AT] * len(games), utc=True),
             "ml_home": [-130.0] * len(games),
             "ml_away": [110.0] * len(games),
             "spread": [2.5] * len(games),
