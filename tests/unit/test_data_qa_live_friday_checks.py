@@ -257,6 +257,20 @@ class TestWeatherIsWatchedWhereTheLiveIngestWrites:
         result = DataQualityMonitor().check_data_completeness("weather", SEASON, WEEK)
         assert result["status"] == "incomplete"
 
+    def test_the_daily_run_is_judged_on_its_slate_and_an_empty_slate_still_fails(
+        self, lake
+    ):
+        """The daily run forecasts tomorrow's games only (2026-09-30: 1 of 16 refused)."""
+        _save_both(lake, _games(WEEK_2_IDS, created_at=NOW), "games")
+        slate = frozenset(WEEK_2_IDS[:1])
+        _save_parquet(lake, _weather(WEEK_2_IDS[:1]), "weather")
+        monitor = DataQualityMonitor()
+        result = monitor.check_data_completeness("weather", SEASON, WEEK, slate)
+        assert (result["status"], result["expected_count"]) == ("complete", 1)
+        _save_parquet(lake, _weather(["2025_W01_DAL@PHI"]), "weather")
+        result = monitor.check_data_completeness("weather", SEASON, WEEK, slate)
+        assert (result["status"], result["actual_count"]) == ("incomplete", 0)
+
 
 # ---------------------------------------------------------------------------
 # The two TRUE refusals survive

@@ -579,12 +579,19 @@ def step_ingest_injuries() -> None:
     ingest_injuries_season(season)
 
 
-def step_data_qa() -> None:
-    """Run data quality validation checks."""
+def step_data_qa(weather_game_ids: frozenset[str] | None = None) -> None:
+    """Run data quality validation checks.
+
+    Args:
+        weather_game_ids: The daily run's slate, whose forecasts are the only ones that run
+            fetched; the weather completeness check then expects exactly those games. None
+            (this Friday registry) expects the whole week, which ``step_ingest_weather``
+            forecasts.
+    """
     from scripts.data_qa import DataQualityMonitor
 
     monitor = DataQualityMonitor()
-    report = monitor.generate_qa_report()
+    report = monitor.generate_qa_report(weather_game_ids=weather_game_ids)
     # Fail if overall status indicates issues
     summary = report.get("summary", {})
     if (

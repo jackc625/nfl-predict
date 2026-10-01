@@ -676,7 +676,12 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
             description="Stamp captured_at_utc; refuse a capture after the lock",
         ),
         # -- BUILD -----------------------------------------------------------------------
-        step("data_qa", step_data_qa, build, description="Data quality validation"),
+        step(
+            "data_qa",
+            lambda: step_data_qa(slate.game_ids),
+            build,
+            description="Data quality validation (weather expected for the slate)",
+        ),
         step(
             "build_elo",
             lambda: persist_current_season_elo(slate.game_ids),

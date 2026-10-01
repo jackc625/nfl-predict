@@ -395,9 +395,24 @@ class DataQualityMonitor:
         return result
 
     def check_data_completeness(
-        self, table_name: str, season: int, week: int
+        self,
+        table_name: str,
+        season: int,
+        week: int,
+        game_ids: frozenset[str] | None = None,
     ) -> dict[str, Any]:
-        """Check data completeness for a specific season/week."""
+        """Check data completeness for a specific season/week.
+
+        Args:
+            table_name: The monitored table.
+            season: The season checked.
+            week: The week checked.
+            game_ids: The games the RUNNING cycle fetched weather for. The daily lock-time
+                run passes its slate (``pipeline.daily_steps.DailySlate.game_ids``, selected
+                through ``utils.game_lock``): it forecasts tomorrow's games only, so the rest
+                of the week cannot have weather yet. None (the Friday step and the CLI) keeps
+                the whole week, which the weekly ingest forecasts in full.
+        """
         logger.info(
             "Checking data completeness", table=table_name, season=season, week=week
         )
@@ -436,7 +451,12 @@ class DataQualityMonitor:
             if "season" in df.columns and "week" in df.columns:
                 filtered_df = df[(df["season"] == season) & (df["week"] == week)]
             elif "game_id" in df.columns:
-                filtered_df = df[df["game_id"].isin(self._week_game_ids(season, week))]
+                wanted = (
+                    game_ids
+                    if game_ids is not None
+                    else self._week_game_ids(season, week)
+                )
+                filtered_df = df[df["game_id"].isin(wanted)]
             else:
                 filtered_df = df
 
@@ -453,10 +473,15 @@ class DataQualityMonitor:
                     games_count * 3 if games_count else None
                 )  # Assume 3 sportsbooks avg
             elif table_name == "weather":
-                # The live forecast ingest covers EVERY scheduled game in the week (it
+                # The weekly forecast ingest covers EVERY scheduled game in the week (it
                 # refuses an incomplete payload), so the week's game count is the target.
-                games_count = self._get_games_count(season, week)
-                expected_count = games_count if games_count else None
+                # The daily run forecasts its slate only (daily_steps.ingest_slate_weather),
+                # so its slate is.
+                if game_ids is not None:
+                    expected_count = len(game_ids) or None
+                else:
+                    games_count = self._get_games_count(season, week)
+                    expected_count = games_count if games_count else None
             else:
                 expected_count = None
 
@@ -1115,9 +1140,17 @@ class DataQualityMonitor:
         return result
 
     def generate_qa_report(
-        self, season: int | None = None, week: int | None = None
+        self,
+        season: int | None = None,
+        week: int | None = None,
+        weather_game_ids: frozenset[str] | None = None,
     ) -> dict[str, Any]:
-        """Generate comprehensive QA report."""
+        """Generate comprehensive QA report.
+
+        *weather_game_ids* is the daily run's slate: the weather completeness check then
+        expects a forecast for those games, not the whole week (see
+        :meth:`check_data_completeness`). None keeps the whole week.
+        """
         if season is None or week is None:
             current_season, current_week = get_current_nfl_week()
             season = season or current_season
@@ -1153,7 +1186,10 @@ class DataQualityMonitor:
                 table_report = {
                     "freshness": self.check_data_freshness(table_name),
                     "completeness": self.check_data_completeness(
-                        table_name, season, week
+                        table_name,
+                        season,
+                        week,
+                        weather_game_ids if table_name == "weather" else None,
                     ),
                     "quality": self.check_data_quality(table_name),
                 }
