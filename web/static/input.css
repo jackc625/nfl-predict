@@ -5,6 +5,7 @@
    folders named here are scanned. Task 17 adds @source "../../api/charts"; for the class strings
    that api/charts/core.py emits from Python. */
 @source "../../web/templates";
+@source "../../api/charts";
 
 /* ============================================================================================
    Self-hosted fonts (SIL Open Font License; the texts ship in web/static/fonts/OFL-*.txt).

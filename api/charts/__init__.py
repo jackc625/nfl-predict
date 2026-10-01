@@ -29,7 +29,6 @@ from api.charts.betting import (  # noqa: F401
     generate_betting_roi_type,
 )
 from api.charts.core import (  # noqa: F401
-    CHART_LAYOUT_DEFAULTS,
     DEFAULT_COLOR,
     PLOTLY_CONFIG,
     _apply_layout_defaults,

@@ -11,12 +11,11 @@ Chart types:
 - Equity curve (flat-stake vs Kelly)
 
 Each function returns an HTML div string via plotly.io.to_html with
-include_plotlyjs=False (Plotly CDN loaded in base.html).
+include_plotlyjs=False (Plotly CDN loaded in base.html). Every figure gets the dark
+dashboard theme from api.charts.theme through _apply_layout_defaults.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 import numpy as np
 import plotly.graph_objects as go
@@ -24,38 +23,36 @@ import plotly.io as pio
 from plotly.subplots import make_subplots
 from sklearn.calibration import calibration_curve
 
-from backtest.report import SEASON_COLORS, TARGET_COLORS
+from api.charts.theme import (
+    MUTED,
+    SEASON_COLORS,
+    TARGET_COLORS,
+    LegendPosition,
+    apply_dark_theme,
+)
 
 # ---------------------------------------------------------------------------
-# Layout defaults (per UI-SPEC CHART_LAYOUT_DEFAULTS)
+# Layout defaults
 # ---------------------------------------------------------------------------
-
-CHART_LAYOUT_DEFAULTS: dict[str, Any] = {
-    "font_family": "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-    "font_size": 13,
-    "plot_bgcolor": "#FFFFFF",
-    "paper_bgcolor": "#FFFFFF",
-    "margin": {"l": 48, "r": 16, "t": 48, "b": 48},
-    "gridcolor": "#E5E7EB",
-}
 
 PLOTLY_CONFIG = {"responsive": True, "displayModeBar": False}
 
-DEFAULT_COLOR = "#95a5a6"
+# A series with no palette entry falls back to the theme's muted grey, never a light grey
+# that disappears on the dark panel.
+DEFAULT_COLOR = MUTED
 
 
-def _apply_layout_defaults(fig: go.Figure) -> None:
-    """Apply the UI-SPEC layout defaults to a Plotly figure."""
-    defaults = CHART_LAYOUT_DEFAULTS
-    fig.update_layout(
-        font_family=defaults["font_family"],
-        font_size=defaults["font_size"],
-        plot_bgcolor=defaults["plot_bgcolor"],
-        paper_bgcolor=defaults["paper_bgcolor"],
-        margin=defaults["margin"],
-    )
-    fig.update_xaxes(gridcolor=defaults["gridcolor"])
-    fig.update_yaxes(gridcolor=defaults["gridcolor"])
+def _apply_layout_defaults(
+    fig: go.Figure, *, legend_position: LegendPosition = "top"
+) -> None:
+    """Apply the shared dark chart theme (api.charts.theme) to a Plotly figure.
+
+    Every generator calls this LAST, after its own layout. The theme's backgrounds, fonts,
+    gridlines, hover label and legend placement therefore win over any per-chart leftovers.
+    Pass legend_position="bottom" when subplot titles or a long legend already occupy the
+    top edge.
+    """
+    apply_dark_theme(fig, legend_position=legend_position)
 
 
 def _to_html(fig: go.Figure) -> str:
@@ -79,9 +76,14 @@ def _get_target_color(target: str) -> str:
 
 
 def _empty_chart_div(message: str) -> str:
-    """Return an HTML div indicating no chart data is available."""
+    """Return an HTML div indicating no chart data is available.
+
+    The classes are dark-theme tokens. web/static/input.css scans api/charts, so they are
+    compiled even though they appear only in this Python string.
+    """
     return (
-        '<div class="flex items-center justify-center h-full text-sm text-gray-500">'
+        '<div class="flex min-h-[220px] items-center justify-center rounded-sm '
+        'border border-dashed border-line px-4 text-center text-sm text-muted">'
         f"<p>{message}</p></div>"
     )
 
