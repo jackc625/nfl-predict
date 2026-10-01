@@ -93,17 +93,6 @@
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
-/* LEGACY -- the pre-redesign palette, kept ONLY so templates not yet restyled keep rendering
-   while the branch is in progress. Not `static`: it emits only while something still uses it.
-   Task 20 deletes this block once `grep -rn "nfl-" web/templates api` finds nothing. */
-@theme {
-  --color-nfl-primary: #013369;
-  --color-nfl-secondary: #D50A0A;
-  --color-nfl-accent: #FF8C00;
-  --color-nfl-dark: #1a1a1a;
-  --color-nfl-light: #F8F9FA;
-}
-
 @layer base {
   html {
     color-scheme: dark;
