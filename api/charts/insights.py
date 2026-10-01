@@ -440,7 +440,8 @@ def _generate_feature_importance(importances: list[dict], target: str) -> str:
     )
     fig.update_layout(
         title={"text": f"Top features — {target.upper()}", "x": 0.5},
-        yaxis={"automargin": True},
+        # A small gap between each feature name and its bar, as in mockup 04.
+        yaxis={"automargin": True, "ticklabelstandoff": 6},
         xaxis_title="Importance",
         showlegend=False,
         height=400,

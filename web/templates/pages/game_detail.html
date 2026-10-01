@@ -249,7 +249,9 @@
               paper_bgcolor: "rgba(0,0,0,0)",
               margin: { l: 160, r: 16, t: 8, b: 40 },
               xaxis: { title: { text: "IMPORTANCE" }, gridcolor: "rgba(255,255,255,0.06)", zeroline: false, color: "#8A93A8" },
-              yaxis: { color: "#C4CAD8", tickfont: { family: "JetBrains Mono, monospace", size: 11 } },
+              // A small gap between each feature name and its bar, as in mockup 04; automargin
+              // widens the left margin when the longest name no longer fits in 160px.
+              yaxis: { color: "#C4CAD8", tickfont: { family: "JetBrains Mono, monospace", size: 11 }, ticklabelstandoff: 6, automargin: true },
               hoverlabel: { bgcolor: "#0B0F17", bordercolor: "#FFD400", font: { family: "JetBrains Mono, monospace", color: "#FFFFFF" } }
             }, { responsive: true, displayModeBar: false });
           }
