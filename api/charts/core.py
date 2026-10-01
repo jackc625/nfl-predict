@@ -201,6 +201,9 @@ def generate_dashboard_calibration_chart(predictions: list[dict]) -> str:
         yaxis_title="Observed Frequency",
         xaxis={"range": [0, 1]},
         yaxis={"range": [0, 1]},
+        # The same height as the ATS and O/U calibration charts beside it. Plotly's default 450px
+        # left too short a plot on a narrow card for the six-entry legend to clear the x-axis title.
+        height=480,
     )
     # Up to seven entries (reference, seasons, overall) would wrap into the title on top.
     _apply_layout_defaults(fig, legend_position="bottom")

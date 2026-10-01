@@ -75,7 +75,9 @@ LegendPosition = Literal["top", "bottom"]
 
 # "top": just above the plot area, under the title.
 # "bottom": under the x-axis title, for charts whose top edge already carries subplot
-# titles or a long legend.
+# titles or a long legend. Its offset is a fraction of the plot height, so it must leave room
+# for the tick labels and axis title on a short plot too: at -0.22 a narrow card's wrapped
+# legend sat on the x-axis title.
 _LEGENDS: dict[str, dict[str, Any]] = {
     "top": {
         "orientation": "h",
@@ -88,7 +90,7 @@ _LEGENDS: dict[str, dict[str, Any]] = {
         "orientation": "h",
         "x": 0,
         "xanchor": "left",
-        "y": -0.22,
+        "y": -0.3,
         "yanchor": "top",
     },
 }
