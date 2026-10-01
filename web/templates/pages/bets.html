@@ -548,17 +548,22 @@
   <span class="display text-2xl text-fg whitespace-nowrap" data-tracker-record>{{ block.wins }}-{{ block.losses }}-{{ block.pushes }}</span>
   {{ result_strip(outcomes, block) }}
 </div>
+{# LAYOUT: one row of six equal tiles on lg+, each group growing by its tile count (mockup 03).
+   Below lg the groups are display:contents, so the six tiles fall into a 2-column (phone) or
+   3-column (tablet) grid. Three equal-width groups wrapped the counts group's tiles and left a
+   lone Pushes tile as wide as three below 1440px. The group wrappers stay in the markup either
+   way, so pushes remains structurally outside the hit-rate group. #}
 <div class="overflow-x-auto">
-  <div class="flex flex-wrap gap-2">
-    <div data-figure-group="counts" class="flex flex-wrap gap-2 flex-1">
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:flex gap-2">
+    <div data-figure-group="counts" class="contents lg:flex lg:gap-2 lg:flex-[3_1_0%]">
       {{ tracker_figure("Bets graded", block.bets_graded, "text-fg") }}
       {{ tracker_figure("Wins", block.wins, "text-green-400") }}
       {{ tracker_figure("Losses", block.losses, "text-red-400") }}
     </div>
-    <div data-figure-group="pushes" class="flex flex-wrap gap-2 flex-1">
+    <div data-figure-group="pushes" class="contents lg:flex lg:gap-2 lg:flex-[1_1_0%]">
       {{ tracker_figure("Pushes", block.pushes, "text-muted") }}
     </div>
-    <div data-figure-group="rates" class="flex flex-wrap gap-2 flex-1">
+    <div data-figure-group="rates" class="contents lg:flex lg:gap-2 lg:flex-[2_1_0%]">
       {# hit_rate is stored as a FRACTION of the contested rows; the x100 is a unit render under a
          per-cent label, the same formatting transform the EV column applies (UIAP-01). #}
       {% if _hit_rate_measured %}
