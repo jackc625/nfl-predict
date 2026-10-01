@@ -161,18 +161,30 @@ def ingest_slate_weather(slate: DailySlate) -> None:
 
     One game's failed forecast never costs the others theirs (step 27b): each failure is recorded
     in ``slate.weather_failures`` and that game is built with its weather unknown.
+
+    Any OTHER error ends the capture with nothing written (the write is all-or-nothing and
+    last), so every slate game is recorded as failed with that reason before it is re-raised:
+    the night then follows the same policy (D33.2-05), not a halt at ``data_qa``. Each attempt
+    starts from an empty record, so a retry that succeeds leaves no stale failure behind.
     """
     from scripts.ingest_weather import WeatherDataIngester
 
-    ingester = WeatherDataIngester()
-    games = ingester._load_games_data(slate.season, slate.week)
-    games = games.loc[games["game_id"].astype(str).isin(sorted(slate.game_ids))]
-    ingester.ingest_week_forecast(
-        games,
-        ingester._load_venue_data(),
-        as_of_utc=datetime.now(UTC),
-        failed_games=slate.weather_failures,
-    )
+    slate.weather_failures.clear()
+    try:
+        ingester = WeatherDataIngester()
+        games = ingester._load_games_data(slate.season, slate.week)
+        games = games.loc[games["game_id"].astype(str).isin(sorted(slate.game_ids))]
+        ingester.ingest_week_forecast(
+            games,
+            ingester._load_venue_data(),
+            as_of_utc=datetime.now(UTC),
+            failed_games=slate.weather_failures,
+        )
+    except Exception as exc:
+        reason = f"the forecast capture failed ({type(exc).__name__}: {exc})"
+        for game_id in sorted(slate.game_ids):
+            slate.weather_failures.setdefault(game_id, reason)
+        raise
 
 
 #: What a no-write dry run captures odds from instead of the PAID Odds API (33.2 review C1
@@ -676,9 +688,12 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
             description="Stamp captured_at_utc; refuse a capture after the lock",
         ),
         # -- BUILD -----------------------------------------------------------------------
+        # A slate game whose forecast failed WITH a recorded reason is built with its weather
+        # unknown (step 27b, D33.2-05), so it is not expected here; a game missing its row
+        # with NO recorded reason (an ingest that silently wrote nothing) still fails.
         step(
             "data_qa",
-            lambda: step_data_qa(slate.game_ids),
+            lambda: step_data_qa(slate.game_ids - frozenset(slate.weather_failures)),
             build,
             description="Data quality validation (weather expected for the slate)",
         ),

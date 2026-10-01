@@ -496,6 +496,49 @@ def test_the_slate_weather_capture_collects_failures_on_the_slate(monkeypatch):
     assert slate.weather_failures == {"2026_W03_LA@DEN": "WeatherDataError: timeout"}
 
 
+def test_an_unexpected_capture_error_records_every_slate_game_and_reraises(monkeypatch):
+    """A non-WeatherDataError writes nothing, so every slate game carries its reason."""
+    from scripts import ingest_weather
+
+    slate = DailySlate(
+        run_date_et=RUN_DATE,
+        lock=slate_lock(RUN_DATE),
+        schedule=_schedule().iloc[1:3].reset_index(drop=True),
+    )
+
+    class _Ingester:
+        def _load_games_data(self, season, week):
+            raise OSError("silver games unreadable")
+
+    monkeypatch.setattr(ingest_weather, "WeatherDataIngester", _Ingester)
+
+    with pytest.raises(OSError, match="unreadable"):
+        daily_steps.ingest_slate_weather(slate)
+
+    reason = "the forecast capture failed (OSError: silver games unreadable)"
+    assert slate.weather_failures == {
+        "2026_W03_LA@DEN": reason,
+        "2026_W03_LAC@BUF": reason,
+    }
+
+
+def test_data_qa_expects_the_slate_minus_only_its_recorded_failures(monkeypatch):
+    """A recorded failure is not expected; a game missing with no reason still is (2026-09-30)."""
+    handed: list[frozenset[str]] = []
+    monkeypatch.setattr(daily_steps, "step_data_qa", handed.append)
+    slate = DailySlate(
+        run_date_et=RUN_DATE,
+        lock=slate_lock(RUN_DATE),
+        schedule=_schedule().iloc[1:3].reset_index(drop=True),
+        weather_failures={"2026_W03_LA@DEN": "WeatherDataError: timeout"},
+    )
+    registry = {s.name: s for s in daily_steps.build_daily_step_registry(slate)}
+
+    registry["data_qa"].callable()
+
+    assert handed == [frozenset({"2026_W03_LAC@BUF"})]
+
+
 # ---------------------------------------------------------------------------
 # 33.2 review C1 WR-02: the no-write dry run makes no paid Odds API request
 # ---------------------------------------------------------------------------
