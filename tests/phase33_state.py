@@ -19460,7 +19460,7 @@ DAILY_BRACKET_JSONL_APPENDS: tuple[tuple[str, str], ...] = (
 # ---------------------------------------------------------------------------
 # Plan 33-18 fallback (2026-09-30) -- WHY THE DAILY BRACKET MOVES TO 2026-10-03.
 #
-# APPENDED 2026-10-01 (00:30 ET, the night of 2026-09-30). Nothing above this line was edited.
+# APPENDED 2026-09-30 (about 20:25 ET). Nothing above this line was edited.
 # Fallback procedure step 1, recorded BEFORE any Saturday picture. MEASURED read-only on
 # 2026-09-30 at about 20:12-20:15 ET on commit 878116b, from the run's own records:
 # logs/friday_pipeline.json (start 2026-09-30T17:00:16.711976-04:00, end
