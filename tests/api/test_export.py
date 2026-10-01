@@ -289,15 +289,19 @@ def _bets_query() -> str:
 def _page_row_identifiers(body: str) -> list[tuple[str, str]]:
     """Every (game_id, bet-type label) the page renders, in document order.
 
-    Both tables are read: the live list and the collapsed suppressed disclosure, whose rows are in
-    the document even while closed. That is the set an export must equal.
+    Both halves are read: the live bet slips and the collapsed suppressed disclosure's table, whose
+    rows are in the document even while closed. That is the set an export must equal. Each row's
+    matchup link is paired with the first ``data-bet-type`` label after it and before the next
+    matchup link -- a data hook both halves carry, so a restyle cannot make this read zero rows.
     """
     return [
         (match.group(1), match.group(2))
         for match in re.finditer(
-            r'<a href="/games/([^"]+)"[^>]*>[^<]*</a>\s*</td>\s*'
-            r'<td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">([^<]+)</td>',
+            r'<a href="/games/([^"]+)"[^>]*>[^<]*</a>'
+            r'(?:(?!<a href="/games/).)*?'
+            r"data-bet-type[^>]*>([^<]+)<",
             body,
+            flags=re.S,
         )
     ]
 
@@ -461,7 +465,8 @@ def test_the_page_offers_both_exports_and_the_cross_link(
     assert 'id="export-buttons"' in body
     assert body.count("min-h-[44px]") >= 2
     assert _BETS_CROSS_LINK in body
-    assert 'href="/betting"' in body
+    # /betting was merged into Track Record's betting-simulation section (redesign spec 7.5).
+    assert 'href="/track-record#betting-sim"' in body
 
 
 def test_the_export_links_follow_the_week_the_page_is_showing(

@@ -7,14 +7,19 @@
 {# It is included HERE -- above every conditional branch and OUTSIDE the      #}
 {# bets_content swap target -- so it is present in the first byte of every    #}
 {# response, in every empty state, and in the stale-cache hard-block          #}
-{# (UI-SPEC E1). Do not move it inside the block.                             #}
+{# (UI-SPEC E1). Do not move it inside the block. The redesign condenses it   #}
+{# to a one-line note whose "Why?" expands to the full original text; the     #}
+{# text stays in the HTML either way.                                         #}
 {# ------------------------------------------------------------------------ #}
 {% include "components/_not_advice_banner.html" %}
 
-<div class="mb-6">
-  <h1 class="text-xl font-semibold text-gray-900 mb-1">Weekly Bet List</h1>
-  <p class="text-sm text-gray-500 max-w-2xl">Every scheduled game is evaluated for all three bet types. Bets that clear the pre-registered expected-value floor are listed here; every candidate that did not is listed below with its reason.</p>
-</div>
+{# The heading names the PAGE, not the week: it sits OUTSIDE the #bets-content swap target, so a
+   week in it would go stale on the first week change. The week is named by the selector beside it
+   and by the "Live bets -- <season> Week <n>" tag inside the swap target. #}
+<header class="mt-2 mb-5 flex flex-wrap items-end gap-x-6 gap-y-2">
+  <h1 class="display text-4xl md:text-5xl leading-none text-fg">Weekly Bet List</h1>
+  <p class="text-sm text-muted max-w-2xl pb-1">Every scheduled game is evaluated for all three bet types. Bets that clear the pre-registered expected-value floor are listed here; every candidate that did not is listed below with its reason.</p>
+</header>
 
 {# ------------------------------------------------------------------------ #}
 {# The week selector, OUTSIDE the swap target so it stays in place and       #}
@@ -109,13 +114,17 @@
     {% include "components/_error_state.html" %}
   {% endwith %}
   <div class="mt-4 text-center">
-    <a href="/bets?season={{ current_season if current_season is not none else '' }}&amp;week={{ current_week if current_week is not none else '' }}" class="inline-flex items-center px-4 py-2 bg-nfl-primary text-white text-sm font-medium rounded-md hover:bg-nfl-secondary transition-colors min-h-[44px]">Retry this week</a>
+    <a href="/bets?season={{ current_season if current_season is not none else '' }}&amp;week={{ current_week if current_week is not none else '' }}" class="skew-control skew-control-active inline-flex items-center px-4 min-h-[44px]"><span class="unskew">Retry this week</span></a>
   </div>
 </template>
 
 {# HTMX swap target: the fragment route returns exactly this block. #}
 <div id="bets-content">
 {% block bets_content %}
+{# Imported INSIDE the block, not at the top of the file: an HX-Request renders ONLY this block
+   (jinja2-fragments), and a child template's top-level imports do not run in a block render. #}
+{% import "components/_broadcast.html" as bc %}
+{% import "components/_bet_pick.html" as bp %}
 
 {# The swap indicator. It occupies the swap target during a week change so the
    swap causes no layout shift, mirroring the shipped _betting_scope_toggle.html
@@ -127,10 +136,14 @@
 </div>
 
 <section class="mb-8" hx-indicator="#bets-loading">
-  <div class="mb-4">
-    <h2 class="text-base font-semibold text-gray-900">
-      Live bets{% if current_season and current_week %} -- {{ current_season }} Week {{ current_week }}{% endif %}
-    </h2>
+  <div class="section-head mb-3">
+    <h2 class="tag"><span class="unskew">Live bets{% if current_season and current_week %} -- {{ current_season }} Week {{ current_week }}{% endif %}</span></h2>
+    <span class="flex-1 h-px bg-line" aria-hidden="true"></span>
+    {# A count of the rows on this page, like "Suppressed candidates (N)". No stake total: summing
+       the stakes here would be a request-path aggregate (UIAP-01). #}
+    {% if bet_list_available and not bets_blocked and bets %}
+    <span class="text-xs text-muted whitespace-nowrap">ranked by expected value &middot; {{ bets|length }} {{ "bet" if bets|length == 1 else "bets" }}</span>
+    {% endif %}
   </div>
 
   {# Old-rule label for the selected week (R16 / D33.2-07): a 2021-2025 week is a replay
@@ -144,12 +157,13 @@
   {% for _game_id in pending_games or [] %}{% set _ = pending_labels.append(_game_id.split('_')[-1].replace('@', ' @ ')) %}{% endfor %}
 
   {# A week built in part: the games that passed their lock with NO list are named above whatever
-     was built, never silently left out (33.2 review C2 CR-02). Neutral gray, like every other
-     non-tracker surface on this page -- colour is tracker-only here. #}
+     was built, never silently left out (33.2 review C2 CR-02). Neutral, like every other
+     non-tracker surface on this page -- colour is tracker-only here. Paragraphs only inside this
+     box: a test reads the missing games up to its FIRST closing div. #}
   {% if bet_list_available and not bets_blocked and missing_labels %}
-  <div class="mb-4 rounded-md border border-gray-300 bg-gray-50 p-3 text-sm text-gray-700 max-w-3xl" data-missing-games>
-    <p class="font-semibold text-gray-900">No list for {{ missing_labels | length }} game{{ "" if missing_labels | length == 1 else "s" }} past {{ "its" if missing_labels | length == 1 else "their" }} lock</p>
-    <p class="mt-1">{{ missing_labels | join(", ") }}. Each game's list is built the day before its kickoff, before its 6:00 PM Eastern lock; these were not, so they carry no recommendation. The games below are unaffected.</p>
+  <div class="mb-4 border border-line bg-panel px-4 py-3 text-sm max-w-3xl" data-missing-games>
+    <p class="font-semibold text-fg">No list for {{ missing_labels | length }} game{{ "" if missing_labels | length == 1 else "s" }} past {{ "its" if missing_labels | length == 1 else "their" }} lock</p>
+    <p class="mt-1 text-muted">{{ missing_labels | join(", ") }}. Each game's list is built the day before its kickoff, before its 6:00 PM Eastern lock; these were not, so they carry no recommendation. The games below are unaffected.</p>
   </div>
   {% endif %}
 
@@ -199,82 +213,83 @@
   {# Bet-type label vocabulary. The raw wp / ats / ou codes are NEVER rendered --
      this is the exact wording betting.html already uses. #}
   {% set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} %}
-  {# The pick, and a spread bet's line FROM THE PICKED SIDE the way a sportsbook quotes it (33.2
-     review C2 CR-03), from the ONE shared partial: the This Week headliners name the same bets
-     and must word and sign them identically. Imported inside the block, because this block is
-     also rendered alone as the /bets fragment. #}
-  {% import "components/_bet_pick.html" as bp %}
-  <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
-    {# overflow-x-auto + whitespace-nowrap numeric cells: the shipped betting.html
-       ROI-table pattern. Horizontal scroll on narrow viewports, never a squeezed
-       or clipped column (UI-SPEC E2 overflow). #}
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead class="bg-gray-50">
-          <tr>
-            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">#</th>
-            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Matchup</th>
-            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Bet type</th>
-            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Pick</th>
-            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap" title="A spread line is the picked team's own line, as a sportsbook quotes it">Line</th>
-            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">EV %</th>
-            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">EV band</th>
-            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap" title="1 unit = 1% of a notional bankroll">Stake (units)</th>
-            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">Line as of</th>
-            {# R8 requires the two honesty labels on every DISPLAYED and exported row, so the
-               table carries a tenth column the design contract's nine-column sketch does not
-               list. A tracker-level label alone would leave an individual row unattributed, and
-               a reader looking at one row is exactly who needs to know whether it was
-               recommended in advance or reconstructed afterwards. #}
-            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Provenance</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100">
-          {# Order is fixed by the cache query (per-bet EV descending, ties broken
-             season, week, game_id, target). No sort control is offered, so a reader
-             cannot re-rank away from the pre-registered order (D31-28). #}
-          {% for bet in bets %}
-          <tr class="hover:bg-gray-50 transition-colors">
-            <td class="px-4 py-3 text-right stat-num whitespace-nowrap text-gray-500">{{ loop.index }}</td>
-            <td class="px-4 py-3 text-left whitespace-nowrap">
-              <a href="/games/{{ bet.game_id }}" class="text-nfl-primary hover:underline">{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }}</a>
-            </td>
-            <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</td>
-            {# The pick names the TEAM, never the raw side code (components/_bet_pick.html). #}
-            <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ bp.pick_label(bet) }}</td>
-            <td class="px-4 py-3 text-right stat-num whitespace-nowrap">
-              {%- if bet.line is none -%}--
-              {%- elif bet.target == "ats" -%}{{ bp.side_line(bet, "%+.1f") }}
-              {%- else -%}{{ "%.1f"|format(bet.line) }}
-              {%- endif -%}
-            </td>
-            {# per_bet_ev is stored as a FRACTION of stake; the x100 below is a unit
-               render (fraction -> percent) under a "EV %" header, not a derivation.
-               No metric is recomputed on the request path (UIAP-01). #}
-            <td class="px-4 py-3 text-right stat-num whitespace-nowrap font-semibold">{{ "%+.2f"|format(bet.per_bet_ev * 100) }}%</td>
-            <td class="px-4 py-3 text-left whitespace-nowrap">
-              {% with band=bet.ev_tier %}
-                {% include "components/_ev_band_badge.html" %}
-              {% endwith %}
-            </td>
-            <td class="px-4 py-3 text-right stat-num whitespace-nowrap">{{ "%.2f"|format(bet.stake_units) }}</td>
-            <td class="px-4 py-3 text-right stat-num text-xs whitespace-nowrap text-gray-500">{{ bet.snapshot_ts or "--" }}</td>
-            <td class="px-4 py-3 text-left whitespace-nowrap">
-              {% with provenance=bet.provenance, validation_type=bet.validation_type %}
-                {% include "components/_provenance_badge.html" %}
-              {% endwith %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-  <p class="text-xs text-gray-500 mt-3 max-w-2xl">Stakes are quarter-Kelly, capped at 5% of bankroll per bet and 10% across all bets in a week pooled over all three bet types, then de-weighted where bets on the same game or the same side are correlated. Order is by expected value, not by stake -- a capped bet can outrank a larger one.</p>
+  {# The spread sign rule (a pick's own line, as a sportsbook quotes it) lives ONLY in
+     components/_bet_pick.html (Task 8), imported as bp at the top of this block. #}
+  {# One RANKED bet slip per live bet (redesign spec 7.3). Order is fixed by the cache query
+     (per-bet EV descending, ties broken season, week, game_id, target). No sort control is
+     offered, so a reader cannot re-rank away from the pre-registered order (D31-28).
+
+     R8 requires the two honesty labels on every DISPLAYED and exported row, so every slip carries
+     its own evidence chip; a tracker-level label alone would leave an individual row unattributed.
+
+     LAYOUT: two columns below lg (rank, then the slip's content stacked), seven on lg+. The seven
+     tracks and their gaps need ~820px, more than the 720px a 768px tablet leaves, so the stacked
+     layout holds until lg (Decision 14; spec 10: no sideways scroll). The figure group is
+     display:contents on lg+ so its three figures become grid columns there and a three-up row
+     below it. Tailwind utilities sit in the utilities layer, so they win over the
+     .bet-slip component defaults from Task 1. #}
+  <ol class="space-y-2" aria-label="Live bets, ranked by expected value">
+    {% for bet in bets %}
+    {%- set matchup = bet.game_id.split('_')[-1] -%}
+    {%- set away_team, home_team = matchup.split('@') if '@' in matchup else ("Away", "Home") -%}
+    {%- set away_colors = team_colors(away_team) -%}
+    {%- set home_colors = team_colors(home_team) -%}
+    <li class="bet-slip grid grid-cols-[2.5rem_minmax(0,1fr)] lg:grid-cols-[3rem_12rem_minmax(0,1fr)_5rem_6rem_6rem_12rem] items-center gap-x-4 gap-y-2 py-3 pr-4">
+      <span class="display text-3xl text-dim text-center row-span-4 lg:row-span-1">{{ loop.index }}</span>
+      <div class="flex flex-col gap-1 min-w-0">
+        <div class="flex items-center gap-2">{{ bc.team_block(away_team, away_colors.bg, away_colors.fg) }}<span class="label text-fg truncate">{{ team_nickname(away_team) }}</span></div>
+        <div class="flex items-center gap-2">{{ bc.team_block(home_team, home_colors.bg, home_colors.fg) }}<span class="label text-fg truncate">{{ team_nickname(home_team) }}</span></div>
+      </div>
+      <div class="min-w-0">
+        <a href="/games/{{ bet.game_id }}" class="text-xs text-muted hover:text-accent">{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }}</a>
+        <span class="label block" data-bet-type>{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</span>
+        {# The pick names the TEAM, never the raw side code. The two teams come from the game
+           id's AWAY@HOME matchup; an id without one falls back to the words. #}
+        <p class="display text-2xl md:text-3xl leading-none text-accent mt-1 whitespace-nowrap">{{ bp.pick_label(bet) }}</p>
+      </div>
+      <div class="col-start-2 lg:col-start-auto grid grid-cols-3 gap-3 lg:contents">
+        <div class="lg:text-right">
+          <span class="label block" title="A spread line is the picked team's own line, as a sportsbook quotes it">Line</span>
+          <span class="num text-fg whitespace-nowrap" data-slip-line>
+            {%- if bet.line is none -%}--
+            {%- elif bet.target == "ats" -%}{{ bp.side_line(bet, "%+.1f") }}
+            {%- else -%}{{ "%.1f"|format(bet.line) }}
+            {%- endif -%}
+          </span>
+        </div>
+        {# per_bet_ev is stored as a FRACTION of stake; the x100 below is a unit
+           render (fraction -> percent) under an "EV %" label, not a derivation.
+           No metric is recomputed on the request path (UIAP-01). #}
+        <div class="lg:text-right">
+          <span class="label block">EV %</span>
+          <span class="num font-bold text-fg whitespace-nowrap">{{ "%+.2f"|format(bet.per_bet_ev * 100) }}%</span>
+        </div>
+        <div class="lg:text-right">
+          <span class="label block" title="1 unit = 1% of a notional bankroll">Stake (units)</span>
+          <span class="num font-bold text-fg whitespace-nowrap" data-slip-stake>{{ "%.2f"|format(bet.stake_units) }}</span>
+        </div>
+      </div>
+      <div class="col-start-2 lg:col-start-auto flex flex-wrap lg:flex-col items-start lg:items-end gap-1.5">
+        {% with band=bet.ev_tier %}
+          {% include "components/_ev_band_badge.html" %}
+        {% endwith %}
+        <span data-slip-provenance>
+          {%- with provenance=bet.provenance, validation_type=bet.validation_type -%}
+            {% include "components/_provenance_badge.html" %}
+          {%- endwith -%}
+        </span>
+        {# The per-row capture time, visible, so the per-game lock rule stated at the foot of the
+           page can be checked row by row rather than taken. #}
+        <span class="num text-xs text-muted whitespace-nowrap" title="Line as of {{ bet.snapshot_ts or '--' }}">Line as of {{ bet.snapshot_ts or "--" }}</span>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  <p class="text-xs text-muted mt-3 max-w-2xl">Stakes are quarter-Kelly, capped at 5% of bankroll per bet and 10% across all bets in a week pooled over all three bet types, then de-weighted where bets on the same game or the same side are correlated. Order is by expected value, not by stake -- a capped bet can outrank a larger one.</p>
   {% endif %}
   {# Games still ahead of their lock, in a week that has something to show: not evaluated YET. #}
   {% if bet_list_available and not bets_blocked and not week_not_evaluated and pending_labels %}
-  <p class="text-xs text-gray-500 mt-3 max-w-2xl" data-pending-games>Not evaluated yet: {{ pending_labels | join(", ") }}. Each game's list is built by the daily run the day before its kickoff, before its 6:00 PM Eastern lock.</p>
+  <p class="text-xs text-muted mt-3 max-w-2xl" data-pending-games>Not evaluated yet: {{ pending_labels | join(", ") }}. Each game's list is built by the daily run the day before its kickoff, before its 6:00 PM Eastern lock.</p>
   {% endif %}
 </section>
 
@@ -346,56 +361,69 @@
   {# Zero suppressed rows renders the HEADER plus one line -- never an empty <details>, whose
      collapsed summary would promise a record that has no body (UI-SPEC E3 empty). #}
   <div class="min-h-[44px] flex flex-col justify-center gap-1">
-    <h2 class="text-sm font-semibold text-gray-700">Suppressed candidates (0)</h2>
-    <p class="text-xs text-gray-500 max-w-2xl">{{ SUPPRESSION_CAPTION }}</p>
+    <h2 class="display text-lg text-fg">Suppressed candidates (0)</h2>
+    <p class="text-xs text-muted max-w-2xl">{{ SUPPRESSION_CAPTION }}</p>
   </div>
-  <p class="text-sm text-gray-500 mt-2">No candidate was suppressed this week.</p>
+  <p class="text-sm text-muted mt-2">No candidate was suppressed this week.</p>
   {% else %}
+  {# Grouped by reason with a count per group. A row whose rejection_reason is SQL NULL is keyed
+     to an explicit marker FIRST: groupby's own default fires only on a MISSING attribute, not on
+     a present-but-None one, so a raw group would sort None against strings (a TypeError, a 500)
+     and would render the word None as the reason. A suppressed row with no reason is a data
+     defect and is shown as one -- never as a blank and never as a minted taxonomy member.
+     Keyed BEFORE the disclosure so the summary and the body read the same groups. #}
+  {% set _keyed_rows = [] %}
+  {% for _row in suppressed_bets %}
+    {% set _ = _keyed_rows.append(dict(_row, reason_key=_row.rejection_reason or "(no reason recorded)")) %}
+  {% endfor %}
+  {# The opening tag stays exactly <details id="suppressed-candidates"> (a test pins it); the
+     panel styling sits on the summary and the body instead. #}
   <details id="suppressed-candidates">
     {# The caption lives INSIDE <summary> so it is visible while collapsed: anything after the
        summary is hidden until the disclosure is opened, and a reader who never opens it must
-       still be told this section is the complete record. #}
-    <summary class="cursor-pointer min-h-[44px] flex flex-col justify-center gap-1">
-      <span class="text-sm font-semibold text-gray-700">Suppressed candidates ({{ suppressed_bets|length }})</span>
-      <span class="text-xs text-gray-500 max-w-2xl">{{ SUPPRESSION_CAPTION }}</span>
+       still be told this section is the complete record. The per-reason counts sit in the summary
+       too -- each is the length of the SAME group the body renders, so the two cannot disagree. #}
+    <summary class="bg-panel cursor-pointer min-h-[44px] flex flex-col gap-2 px-4 py-3">
+      <span class="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span class="display text-lg text-fg">Suppressed candidates ({{ suppressed_bets|length }})</span>
+        <span class="text-xs text-muted max-w-2xl">{{ SUPPRESSION_CAPTION }}</span>
+        <span class="ml-auto text-sm font-semibold text-accent" aria-hidden="true">Show / hide</span>
+      </span>
+      <span class="flex flex-wrap gap-1.5" data-suppressed-reason-counts>
+        {%- for reason, rows in _keyed_rows|groupby("reason_key") %}
+        <span class="bg-panel-2 px-2 py-0.5 text-xs text-fg">{{ SUPPRESSION_LABELS.get(reason, reason) }} <b class="num">{{ rows|length }}</b></span>
+        {%- endfor %}
+      </span>
     </summary>
 
-    {# Grouped by reason with a count per group. A row whose rejection_reason is SQL NULL is keyed
-       to an explicit marker FIRST: groupby's own default fires only on a MISSING attribute, not on
-       a present-but-None one, so a raw group would sort None against strings (a TypeError, a 500)
-       and would render the word None as the reason. A suppressed row with no reason is a data
-       defect and is shown as one -- never as a blank and never as a minted taxonomy member. #}
-    {% set _keyed_rows = [] %}
-    {% for _row in suppressed_bets %}
-      {% set _ = _keyed_rows.append(dict(_row, reason_key=_row.rejection_reason or "(no reason recorded)")) %}
-    {% endfor %}
+    <div class="bg-panel px-4 pb-4">
     {% for reason, rows in _keyed_rows|groupby("reason_key") %}
     <div class="mt-4">
-      <h3 class="text-sm font-semibold text-gray-700">{{ SUPPRESSION_LABELS.get(reason, reason) }} ({{ rows|length }})</h3>
-      <p class="text-xs text-gray-500 max-w-2xl mt-1">{{ SUPPRESSION_HELP.get(reason, "This reason code is not in the displayed vocabulary; the raw code from the selector is shown above.") }}</p>
-      <div class="bg-white rounded-lg border border-gray-200 overflow-hidden mt-2">
-        {# Same overflow-x-auto + whitespace-nowrap pattern as the live list, applied inside the
-           disclosure (UI-SPEC E3 overflow). #}
+      <h3 class="display text-base text-fg">{{ SUPPRESSION_LABELS.get(reason, reason) }} ({{ rows|length }})</h3>
+      <p class="text-xs text-muted max-w-2xl mt-1">{{ SUPPRESSION_HELP.get(reason, "This reason code is not in the displayed vocabulary; the raw code from the selector is shown above.") }}</p>
+      <div class="border border-line overflow-hidden mt-2">
+        {# overflow-x-auto + whitespace-nowrap: horizontal scroll on narrow viewports, never a
+           squeezed or clipped column (UI-SPEC E3 overflow). #}
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
-            <thead class="bg-gray-50">
+            <thead class="bg-panel-2">
               <tr>
-                <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Matchup</th>
-                <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Bet type</th>
-                <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Reason</th>
-                <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">Line as of</th>
-                <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Provenance</th>
+                <th scope="col" class="px-4 py-2 text-left label whitespace-nowrap">Matchup</th>
+                <th scope="col" class="px-4 py-2 text-left label whitespace-nowrap">Bet type</th>
+                <th scope="col" class="px-4 py-2 text-left label whitespace-nowrap">Reason</th>
+                <th scope="col" class="px-4 py-2 text-right label whitespace-nowrap">Line as of</th>
+                <th scope="col" class="px-4 py-2 text-left label whitespace-nowrap">Provenance</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-gray-100">
+            <tbody class="divide-y divide-line">
               {% for bet in rows %}
-              <tr class="hover:bg-gray-50 transition-colors">
+              <tr class="hover:bg-panel-2 transition-colors">
                 <td class="px-4 py-3 text-left whitespace-nowrap">
-                  <a href="/games/{{ bet.game_id }}" class="text-nfl-primary hover:underline">{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }}</a>
+                  <a href="/games/{{ bet.game_id }}" class="text-accent hover:underline">{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }}</a>
                 </td>
-                <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</td>
-                <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ SUPPRESSION_LABELS.get(reason, reason) }}</td>
-                <td class="px-4 py-3 text-right stat-num text-xs whitespace-nowrap text-gray-500">{{ bet.snapshot_ts or "--" }}</td>
+                <td class="px-4 py-3 text-left text-fg whitespace-nowrap" data-bet-type>{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</td>
+                <td class="px-4 py-3 text-left text-fg whitespace-nowrap" data-reason-cell>{{ SUPPRESSION_LABELS.get(reason, reason) }}</td>
+                <td class="px-4 py-3 text-right num text-xs whitespace-nowrap text-muted">{{ bet.snapshot_ts or "--" }}</td>
                 <td class="px-4 py-3 text-left whitespace-nowrap">
                   {% with provenance=bet.provenance, validation_type=bet.validation_type %}
                     {% include "components/_provenance_badge.html" %}
@@ -409,6 +437,7 @@
       </div>
     </div>
     {% endfor %}
+    </div>
   </details>
   {% endif %}
 </section>
@@ -623,10 +652,8 @@
 {# week other than the one on screen, which is the export-disagrees-with-the #}
 {# -page failure this whole task exists to prevent.                           #}
 {#                                                                          #}
-{# _export_buttons.html is reused VERBATIM: its in-flight and failure        #}
-{# behaviour is whatever it already does on /betting and is deliberately not #}
-{# re-decided here. No class inside it is edited, and a test asserts the file #}
-{# is byte-unchanged.                                                        #}
+{# _export_buttons.html is the one shared export partial, reused as-is: its  #}
+{# in-flight and failure behaviour is not re-decided here.                   #}
 {#                                                                          #}
 {# The export routes take type=bets and return BOTH halves of the week --    #}
 {# the live rows and the suppressed ones -- through the same two getters     #}
@@ -635,7 +662,7 @@
 {# just refused to show would be the refusal undone by a link beneath it.    #}
 {# ------------------------------------------------------------------------ #}
 {% if bet_list_available %}
-<div class="mt-8 pt-4 border-t border-gray-200 flex flex-wrap items-center justify-between gap-4">
+<div class="mt-8 pt-4 border-t border-line flex flex-wrap items-center justify-between gap-4">
   {% if not bets_blocked and current_season is not none and current_week is not none %}
     {# Raw ampersands, matching the shipped this_week.html call site: autoescape turns them into
        &amp; in the rendered href, and pre-escaping here would emit &amp;amp; and break the URL. #}
@@ -644,8 +671,10 @@
       {% include "components/_export_buttons.html" %}
     {% endwith %}
   {% endif %}
-  {# A plain navigation. It adds no request behaviour and moves none of /betting's figures. #}
-  <a href="/betting" class="text-sm text-nfl-primary hover:underline">See the backtest evidence behind these bets</a>
+  {# A plain navigation to the betting-simulation evidence. /betting was merged into Track
+     Record's betting-simulation section (redesign spec 7.5), so the link points there directly
+     rather than through the redirect. #}
+  <a href="/track-record#betting-sim" class="text-sm font-semibold text-accent hover:underline">See the backtest evidence behind these bets</a>
 </div>
 {% endif %}
 
@@ -662,12 +691,12 @@
 {#                                                                          #}
 {# The freeze sentence makes NO week-level claim. A week-level "lines were   #}
 {# locked Saturday 6 PM ET" would be FALSE for every Thursday game (D31-18).#}
-{# The per-game rule is stated once here and each row carries its own        #}
+{# The per-game rule is stated once here and each slip carries its own       #}
 {# Line as of value, so the reader can check the claim rather than take it.  #}
 {# ------------------------------------------------------------------------ #}
 {% if bet_list_available %}
-<div class="mt-8 pt-4 border-t border-gray-200">
-  <p class="text-xs text-gray-500 max-w-2xl">Bet list last populated: {% if bet_list_populated_at %}{{ bet_list_populated_at }}{% else %}not recorded{% endif %}. Each game's line locks at 6:00 PM Eastern the day before its own kickoff -- a Thursday game locks on the Wednesday, that week's Sunday games on the Saturday.</p>
+<div class="mt-8 pt-4 border-t border-line">
+  <p class="text-xs text-muted max-w-2xl">Bet list last populated: {% if bet_list_populated_at %}{{ bet_list_populated_at }}{% else %}not recorded{% endif %}. Each game's line locks at 6:00 PM Eastern the day before its own kickoff -- a Thursday game locks on the Wednesday, that week's Sunday games on the Saturday.</p>
 </div>
 {% endif %}
 {% endblock %}

@@ -317,10 +317,7 @@ def test_served_equals_selector_top_row(
 
     assert _rendered_ev_values(body)[0] == expected_ev
     assert f"{expected_ev}%" in body
-    assert (
-        f'class="px-4 py-3 text-right stat-num whitespace-nowrap">{expected_stake}<'
-        in body
-    )
+    assert f"data-slip-stake>{expected_stake}<" in body
 
     expected_matchup = top["game_id"].split("_")[-1].replace("@", " @ ")
     assert _rendered_matchups(body)[0] == expected_matchup
@@ -444,7 +441,8 @@ def test_nav_carries_the_bets_item(bets_client: TestClient) -> None:
 def test_raw_target_codes_are_never_rendered(bets_client: TestClient) -> None:
     """Bet type renders Winner / Spread / Totals, never the raw wp / ats / ou codes."""
     body = bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
-    assert ">Totals</td>" in body
+    assert "data-bet-type>Totals<" in body
+    assert "data-bet-type>ou<" not in body
 
 
 def test_empty_week_renders_empty_state_not_500(bets_client: TestClient) -> None:
@@ -481,9 +479,9 @@ _EXPECTED_LABELS: dict[str, str] = {
     "no_bound_converter": "No spread converter bound to the blend",
 }
 
-_BLANK_REASON_CELL = (
-    '<td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap"></td>'
-)
+# The reason cell is located by its data hook rather than by a class string, so a restyle cannot
+# turn this "must not appear" check vacuous by changing the classes it spelled.
+_BLANK_REASON_CELL = "data-reason-cell></td>"
 
 
 def _suppressed_row(
@@ -694,8 +692,8 @@ def test_total_but_no_moneyline_yields_one_live_and_one_suppressed_row(
     assert body.count(f'href="/games/{game_id}"') == 2, (
         "the same game must appear once in the live list and once in the disclosure"
     )
-    assert ">Totals</td>" in body
-    assert ">Winner</td>" in body
+    assert "data-bet-type>Totals<" in body
+    assert "data-bet-type>Winner<" in body
     assert "No market line for this bet type" in body
     assert "Suppressed candidates (1)" in body
 
@@ -729,9 +727,61 @@ def test_a_spread_pick_shows_the_picked_teams_own_line(tmp_path: Path) -> None:
         assert pick in body, f"the spread pick {pick!r} is not rendered"
     for wrong in ("CLE -5.5", "IND +1.5", "Home_cover", "Away_cover", "home_cover"):
         assert wrong not in body, f"the page renders {wrong!r}"
-    # The Line column carries the same side-perspective number as the pick.
-    assert 'whitespace-nowrap">+5.5</td>' in body
-    assert 'whitespace-nowrap">-1.5</td>' in body
+    # The slip's Line figure carries the same side-perspective number as the pick.
+    assert "data-slip-line>+5.5<" in body
+    assert "data-slip-line>-1.5<" in body
+
+
+def test_each_live_bet_renders_one_ranked_slip(
+    bets_client: TestClient, selected_records: list[dict[str, Any]]
+) -> None:
+    """Redesign: one bet slip per live bet, carrying both teams and its line capture time.
+
+    The slip replaces the ten-column table. The per-row "Line as of" the table showed in its own
+    column is now visible text on the slip, so the reader can still check each row's capture time
+    against the per-game lock rule stated at the foot of the page.
+    """
+    from api.presentation import team_nickname
+
+    body = bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    count = len(selected_records)
+
+    assert body.count('<li class="bet-slip') == count
+    assert f"Line as of {_SNAPSHOT_TS}" in body
+    # The header meta, with its row count -- not the <ol>'s aria-label, which also says
+    # "ranked by expected value" and would satisfy a bare substring check on its own.
+    noun = "bet" if count == 1 else "bets"
+    assert f"ranked by expected value &middot; {count} {noun}</span>" in body
+    for record in selected_records:
+        away, home = record["game_id"].split("_")[-1].split("@")
+        assert team_nickname(away) in body
+        assert team_nickname(home) in body
+
+
+def test_the_suppressed_summary_counts_each_reason_while_collapsed(
+    tmp_path: Path,
+) -> None:
+    """Redesign: the closed disclosure's summary names each reason with its row count.
+
+    Each count is the length of the SAME group the disclosure body renders under that reason, so
+    the summary and the body cannot disagree. It is a count of rows on the page, not a metric.
+    """
+    rows = [
+        _suppressed_row("2023_W01_AAA@BBB", "ou", "ev_below_floor"),
+        _suppressed_row("2023_W01_CCC@DDD", "ou", "ev_below_floor"),
+        _suppressed_row("2023_W01_EEE@FFF", "ats", "stale_line"),
+    ]
+    with _client_for(tmp_path, rows, "summary_counts") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    start = body.index('<details id="suppressed-candidates"')
+    summary = body[body.index("<summary", start) : body.index("</summary>", start)]
+    assert "data-suppressed-reason-counts" in summary
+    assert 'Expected value below the floor <b class="num">2</b>' in summary
+    assert 'Line captured after the lock <b class="num">1</b>' in summary
+    # The body's per-reason headings carry the same counts.
+    assert "Expected value below the floor (2)" in body
+    assert "Line captured after the lock (1)" in body
 
 
 # ---------------------------------------------------------------------------
@@ -2903,8 +2953,13 @@ def test_the_badge_renders_on_every_displayed_row(tmp_path: Path) -> None:
     with _client_with_tracker(tmp_path, [], "badge_every_row", rows=rows) as client:
         body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
 
-    assert body.count("Provenance</th>") == 2, (
-        "the live table and the suppressed table do not both carry the provenance column"
+    # The live list is a column of bet slips and the suppressed list a table: each carries its
+    # own provenance slot, so both halves still label every displayed row.
+    assert body.count("Provenance</th>") == 1, (
+        "the suppressed table does not carry its provenance column"
+    )
+    assert body.count("data-slip-provenance") == 1, (
+        "the live bet slip does not carry its provenance slot"
     )
     # Two rows, two badges -- and both rows are in the document even though the disclosure is
     # collapsed, so the suppressed row's labels survive into an HTML export too.
