@@ -15,7 +15,7 @@
    inside the tracker's realized outcomes, where green means a bet WON and red means it LOST. A
    coloured honesty label would borrow that meaning for a statement about evidence class.
 
-   NO whitespace-nowrap: the longest label is 33 characters and the badge sits on a block header
+   NO whitespace-nowrap: the longest label is 30 characters and the badge sits on a block header
    where it must WRAP rather than clip (UI-SPEC E10 overflow). Inside a table cell the cell's own
    whitespace-nowrap governs, and the row already scrolls horizontally rather than clipping.
 
@@ -28,7 +28,7 @@
 {% set _VALIDATION_LABELS = {
      "backtest_replay": {
        "contaminated": "Contaminated split",
-       "clean_holdout": "Clean holdout -- 2025, single use"
+       "clean_holdout": "Old rule -- 2025, not evidence"
      },
      "forward": {
        "forward_realized": "Live forward record"
@@ -41,7 +41,7 @@
    } %}
 {% set _VALIDATION_DESCRIPTIONS = {
      "contaminated": "measured on seasons already used to build and tune the models, so the figure is optimistic by construction",
-     "clean_holdout": "measured on the 2025 season, held out and spent exactly once",
+     "clean_holdout": "measured on the 2025 season under the old rule, on inputs later found defective, so it is not evidence",
      "forward_realized": "recommended before kickoff and graded afterwards"
    } %}
 {% set _provenance_label = _PROVENANCE_LABELS.get(provenance, provenance) %}

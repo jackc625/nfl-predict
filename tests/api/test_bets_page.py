@@ -2518,7 +2518,7 @@ def test_the_tracker_shares_the_single_week_swap_indicator(tmp_path: Path) -> No
 
 _VALIDATION_LABELS: dict[str, str] = {
     "contaminated": "Contaminated split",
-    "clean_holdout": "Clean holdout -- 2025, single use",
+    "clean_holdout": "Old rule -- 2025, not evidence",
     "forward_realized": "Live forward record",
 }
 _VALIDATION_CLASSES: dict[str, str] = {
