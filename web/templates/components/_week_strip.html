@@ -1,0 +1,30 @@
+{# Week-by-week strip for the Season page. Pass: weeks -- the season KPI blob's "weeks" list of
+   {"week", "wins", "losses"}, written at population time by
+   api.season_metrics.compute_weekly_records -- and current_week, the live slate's week while this
+   is the live season, else none.
+
+   NOTHING IS COMPUTED HERE (UIAP-01). The bar's two halves are sized by CSS flex-grow set to the
+   stored win and loss COUNTS, so the proportion is drawn without a division in the template.
+   Green and red are allowed because every tick is a realised result. A week with no decided pick
+   shows a dot and is dimmed -- never "0-0", which would read as a measured record.
+
+   18 tiles for the regular season; a postseason week in the data extends the strip. #}
+{% set by_week = {} %}
+{% for w in weeks %}{% set _ = by_week.update({w.week: w}) %}{% endfor %}
+{% set last_week = ([18] + (weeks | map(attribute="week") | list)) | max %}
+<ol class="grid grid-cols-6 sm:grid-cols-9 lg:grid-cols-18 gap-1" aria-label="Week-by-week record, all three bet types combined">
+  {% for n in range(1, last_week + 1) %}
+  {% set rec = by_week.get(n) %}
+  {% set is_current = current_week is not none and n == current_week %}
+  <li data-week="{{ n }}" class="bg-panel px-1 pt-1.5 pb-1.5 text-center{% if is_current %} outline-2 outline-offset-1 outline-accent{% endif %}{% if not rec %} opacity-40{% endif %}"{% if is_current %} aria-current="true"{% endif %} aria-label="Week {{ n }}: {% if rec %}{{ rec.wins }} wins, {{ rec.losses }} losses{% else %}no graded picks{% endif %}">
+    <span class="label block">Wk {{ n }}</span>
+    <span class="block font-display font-extrabold text-[15px] text-fg num">{% if rec %}{{ rec.wins }}-{{ rec.losses }}{% else %}&middot;{% endif %}</span>
+    <span class="flex h-1 mt-1 bg-panel-2" aria-hidden="true">
+      {% if rec %}
+      <span class="bg-green-500" style="flex: {{ rec.wins }} 1 0%"></span>
+      <span class="bg-red-500" style="flex: {{ rec.losses }} 1 0%"></span>
+      {% endif %}
+    </span>
+  </li>
+  {% endfor %}
+</ol>

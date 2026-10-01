@@ -93,7 +93,7 @@ def test_season_fragment_returns_block_only(test_client: TestClient):
     # ... but DOES contain season-content markers (a section heading + a KPI
     # label) and the selected season's cumulative chart marker.
     assert "Cumulative Accuracy" in html
-    assert "WP Hit Rate" in html
+    assert "Winner hit rate" in html
     assert f'data-chart-id="season_cumulative_{season}"' in html
 
 

@@ -2,13 +2,11 @@
 {% block title %}Season Tracking{% endblock %}
 {% block content %}
 
-<div class="mb-6">
-  <h1 class="text-xl font-semibold text-gray-900 mb-1">Season Tracking</h1>
-  <p class="text-sm text-gray-500">How is the model tracking this season, week by week? Unified hit-rate across Winner, Spread, and Totals -- cumulative trajectory and recent weekly form.</p>
-</div>
-
-{# Season selector (no "All Seasons" option -- D-04). Swaps #season-content via HTMX. #}
-<div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+{# Season selector (no "All Seasons" option -- D-04), OUTSIDE the swap target so it stays in place
+   while #season-content swaps. The big season heading lives INSIDE the block, so a swap can never
+   leave last season's name above this season's numbers. #}
+<div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+  <p class="label">Season tracking</p>
   {% include "components/_season_tracking_selector.html" %}
 </div>
 
@@ -31,9 +29,18 @@
 {# HTMX swap target: the fragment route returns exactly this block (D-11). #}
 <div id="season-content">
 {% block season_tracking_content %}
+{# Imported INSIDE the block: jinja2-fragments renders this block on its own for the HTMX swap and
+   does not run the template's top-level statements, so a top-level import would be undefined. #}
+{% import "components/_broadcast.html" as bc %}
+{% import "components/_chart_panel.html" as cp %}
 
 {% set cumulative_id = "season_cumulative_" ~ current_season %}
 {% set weekly_id = "season_weekly_" ~ current_season %}
+
+<header class="mb-4">
+  <h1 class="display text-4xl md:text-5xl leading-none text-fg">{% if current_season is not none %}{{ current_season }} Season{% else %}Season{% endif %}</h1>
+  <p class="text-sm text-muted mt-2 max-w-2xl">How the picks are grading, week by week -- Winner, Spread and Totals, graded on the same rules as the rest of the site.</p>
+</header>
 
 {# Old-rule label for the selected season (R16 / D33.2-07). The route passes a known-empty
    scope when the season has nothing to show, so the empty state below carries no label. #}
@@ -56,72 +63,52 @@
   {% endwith %}
 {% else %}
 
-{# ----------------------------------------------------------------- #}
-{# Section 1: KPI strip (D-08) -- season-to-date scoreboard           #}
-{# ----------------------------------------------------------------- #}
-<section class="mb-8">
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-    <div class="bg-white rounded-lg border border-gray-200 p-4 text-center">
-      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">WP Hit Rate</p>
-      <p class="text-2xl font-semibold text-gray-900 mt-1 stat-num">{% if kpis.wp_hit_rate is not none %}{{ "%.1f"|format(kpis.wp_hit_rate) }}%{% else %}--{% endif %}</p>
-    </div>
-    <div class="bg-white rounded-lg border border-gray-200 p-4 text-center">
-      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">ATS Hit Rate</p>
-      <p class="text-2xl font-semibold text-gray-900 mt-1 stat-num">{% if kpis.ats_hit_rate is not none %}{{ "%.1f"|format(kpis.ats_hit_rate) }}%{% else %}--{% endif %}</p>
-    </div>
-    <div class="bg-white rounded-lg border border-gray-200 p-4 text-center">
-      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">OU Hit Rate</p>
-      <p class="text-2xl font-semibold text-gray-900 mt-1 stat-num">{% if kpis.ou_hit_rate is not none %}{{ "%.1f"|format(kpis.ou_hit_rate) }}%{% else %}--{% endif %}</p>
-    </div>
-    <div class="bg-white rounded-lg border border-gray-200 p-4 text-center">
-      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Record (W-L)</p>
-      <p class="text-2xl font-semibold text-gray-900 mt-1 stat-num">{{ kpis.record if kpis.record else "--" }}</p>
-    </div>
+{# Section 1: the season-to-date scoreboard (D-08). Every figure is read from the KPI blob as
+   stored; the strings below only format it. Tile accents are the bet-type colour tokens every
+   chart on the site uses (Winner yellow, Spread cyan, Totals violet), read from the Task 1
+   variables as Task 5's week summary does, so a token change cannot leave a stale hex here. The
+   Record tile is the WINNER record only, so its sub-line says so -- the week strip below
+   combines all three bet types. #}
+{% set wp_rate = ("%.1f"|format(kpis.wp_hit_rate) ~ "%") if kpis.wp_hit_rate is not none else "--" %}
+{% set ats_rate = ("%.1f"|format(kpis.ats_hit_rate) ~ "%") if kpis.ats_hit_rate is not none else "--" %}
+{% set ou_rate = ("%.1f"|format(kpis.ou_hit_rate) ~ "%") if kpis.ou_hit_rate is not none else "--" %}
+{% set wp_sub = (kpis.wp_hits|default(0)|string ~ " of " ~ kpis.wp_decided|default(0)|string) if kpis.wp_decided|default(0) else "no graded picks" %}
+{% set ats_sub = (kpis.ats_hits|default(0)|string ~ " of " ~ kpis.ats_decided|default(0)|string) if kpis.ats_decided|default(0) else "no graded picks" %}
+{% set ou_sub = (kpis.ou_hits|default(0)|string ~ " of " ~ kpis.ou_decided|default(0)|string) if kpis.ou_decided|default(0) else "no graded picks" %}
+<section class="mb-8" aria-label="Season-to-date scoreboard">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+    {{ bc.stat_tile("Winner hit rate", wp_rate, sub=wp_sub, accent="var(--color-target-wp)") }}
+    {{ bc.stat_tile("Spread hit rate", ats_rate, sub=ats_sub, accent="var(--color-target-ats)") }}
+    {{ bc.stat_tile("Totals hit rate", ou_rate, sub=ou_sub, accent="var(--color-target-ou)") }}
+    {{ bc.stat_tile("Record (W-L)", kpis.record if kpis.record else "--", sub="straight-up winner picks", accent="var(--color-fg)") }}
   </div>
-  <p class="text-xs text-gray-500 mt-3 max-w-3xl">Pushes are excluded from the denominator.</p>
+  <p class="text-xs text-muted mt-3 max-w-3xl">Pushes are excluded from the denominator.</p>
 </section>
 
-{# ----------------------------------------------------------------- #}
-{# Section 1: Cumulative Accuracy (DASH-07)                           #}
-{# ----------------------------------------------------------------- #}
+{# Section 2: the week strip. A cache built before population wrote "weeks" has none, and then
+   the strip is simply not shown -- never an empty or zeroed strip. #}
+{% if kpis.weeks %}
+<section class="mb-8" aria-label="Week by week">
+  {{ bc.section_head("Week by week", meta="all three bet types combined") }}
+  {% with weeks=kpis.weeks, current_week=current_slate_week|default(none) %}
+    {% include "components/_week_strip.html" %}
+  {% endwith %}
+</section>
+{% endif %}
+
+{# Section 3: Cumulative Accuracy (DASH-07) #}
 <section class="mb-8">
-  <div class="mb-4">
-    <h2 class="text-base font-semibold text-gray-900">Cumulative Accuracy</h2>
-    <p class="text-sm text-gray-500">Running season-to-date hit rate for each target. The line is the trend -- where the season has settled so far.</p>
-  </div>
-  <div class="bg-white rounded-lg border border-gray-200 p-4 md:p-6">
-    <div class="chart-container" style="min-height: 320px;">
-      {% if charts[cumulative_id] %}
-        {{ charts[cumulative_id]|safe }}
-      {% else %}
-        {% with heading="Chart unavailable", body="Season-tracking data has not been generated. Run the cache rebuild to populate this view.", action_text=none, action_url=none %}
-          {% include "components/_empty_state.html" %}
-        {% endwith %}
-      {% endif %}
-    </div>
-  </div>
+  {{ bc.section_head("Cumulative Accuracy", meta="running season-to-date hit rate") }}
+  <p class="text-sm text-muted mb-3 max-w-3xl">Running season-to-date hit rate for each target. The line is the trend -- where the season has settled so far.</p>
+  {{ cp.chart_panel(none, charts[cumulative_id], "Season-tracking data has not been generated. Run the cache rebuild to populate this view.", min_height=320) }}
 </section>
 
-{# ----------------------------------------------------------------- #}
-{# Section 2: Weekly Performance (DASH-08)                            #}
-{# ----------------------------------------------------------------- #}
+{# Section 4: Weekly Performance (DASH-08) #}
 <section class="mb-8">
-  <div class="mb-4">
-    <h2 class="text-base font-semibold text-gray-900">Weekly Performance</h2>
-    <p class="text-sm text-gray-500">Hit rate week by week, with a rolling-average overlay to smooth small-sample weeks. This is the model's recent form.</p>
-  </div>
-  <div class="bg-white rounded-lg border border-gray-200 p-4 md:p-6">
-    <div class="chart-container" style="min-height: 320px;">
-      {% if charts[weekly_id] %}
-        {{ charts[weekly_id]|safe }}
-      {% else %}
-        {% with heading="Chart unavailable", body="Season-tracking data has not been generated. Run the cache rebuild to populate this view.", action_text=none, action_url=none %}
-          {% include "components/_empty_state.html" %}
-        {% endwith %}
-      {% endif %}
-    </div>
-  </div>
-  <p class="text-xs text-gray-500 mt-4 max-w-3xl">52.4% is the standard -110 break-even, exact for spread and totals. Moneyline (Winner) odds vary, so per-game breakeven differs -- treat this as a reference, not a per-game truth.</p>
+  {{ bc.section_head("Weekly Performance", meta="per-week hit rate with a rolling average") }}
+  <p class="text-sm text-muted mb-3 max-w-3xl">Hit rate week by week, with a rolling-average overlay to smooth small-sample weeks. This is the model's recent form.</p>
+  {{ cp.chart_panel(none, charts[weekly_id], "Season-tracking data has not been generated. Run the cache rebuild to populate this view.", min_height=320) }}
+  <p class="text-xs text-muted mt-4 max-w-3xl">52.4% is the standard -110 break-even, exact for spread and totals. Moneyline (Winner) odds vary, so per-game breakeven differs -- treat this as a reference, not a per-game truth.</p>
 </section>
 
 {% endif %}

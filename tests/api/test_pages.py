@@ -558,7 +558,7 @@ def test_season_error_state_wired_and_distinct_from_empty(test_client: TestClien
     # the whole-season empty state), proving the visible content is real data with
     # the error state held in reserve in the hidden template.
     assert "No completed games yet" not in html
-    assert "WP Hit Rate" in html
+    assert "Winner hit rate" in html
 
 
 def test_season_error_copy_renders_via_error_component(empty_test_client: TestClient):
@@ -714,6 +714,9 @@ def test_a_season_with_nothing_graded_renders_the_empty_state_not_zeroes() -> No
 
         def get_cache_meta(self) -> dict:
             return {}
+
+        def get_current_slate(self) -> None:
+            return None
 
     class _Request:
         def url_for(self, name: str, **path_params: object) -> str:

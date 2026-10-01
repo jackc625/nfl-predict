@@ -311,6 +311,7 @@ def _build_season_context(
     if not season_has_graded_games(kpis):
         kpis = {}
     shows_numbers = season is not None and bool(kpis)
+    slate = service.get_current_slate()
     return {
         "request": request,
         "charts": charts,
@@ -320,6 +321,13 @@ def _build_season_context(
         "current_path": "/season",
         "cache_meta": service.get_cache_meta(),
         "old_rule_scope": DataService.old_rule_scope([season] if shows_numbers else []),
+        # The live slate's week, outlined on the week strip -- only while the page shows that
+        # slate's season. A past season has no "current" week to point at.
+        "current_slate_week": (
+            slate[1]
+            if slate is not None and season is not None and slate[0] == season
+            else None
+        ),
     }
 
 
