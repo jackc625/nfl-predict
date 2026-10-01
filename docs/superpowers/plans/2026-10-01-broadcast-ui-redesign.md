@@ -21,7 +21,7 @@ Every task's requirements implicitly include this section.
 - **Colour meaning:** green/red only for a realised result (bet won/lost, pick correct/incorrect, recorded W/L, realised return, realised CLV). Never for a pre-game edge, confidence, EV band or evidence label. EV band, provenance, confidence and old-rule labels are grey-scale only. Yellow `accent` is brand/emphasis only. Error red stays distinct from the grey empty state. Outcome colours use Tailwind `green-*` / `red-*` class names so the substring hue-guard tests stay meaningful.
 - **Structure kept:** ids `game-grid`, `bets-content`, `bets-loading`, `bets-failure-template`, `season-error-template`, `suppressed-candidates`, `export-buttons`, the `*-select` ids, `tab-wp|ats|ou`, `feature-chart`, `performance-content`, `betting-content`, `season-content`; data attributes `data-chart-id`, `data-tracker-block`, `data-figure-group`, `data-provenance`, `data-validation-type`, `data-missing-games`, `data-old-rule-label`, `data-utc`; suppressed candidates a collapsed native `<details>` with the caption in `<summary>`; one `<section>` per tracker block; pushes outside the hit-rate group; declared tracker block order; EV-descending bet order with the existing tie-break and no sort control; page order equals export order; all HTMX wiring (endpoints, targets, `hx-include`, the /bets timeout + `hx-sync` + `hx-disabled-elt` + failure handlers); fragments contain no `<html>`/`<head>`/`<nav>`; Cache-Control exactly as today; malformed params fall back (200, never 500).
 - **UIAP-01:** no metric is computed in the request path. Grouping, ordering and formatting are presentation; aggregation is not.
-- **Number formatting** stays in `components/_prediction_values.html` (`win_prob`, `margin`, `total`, `market_wp_missing`, `absent`) and the existing `side_line` macro in `pages/bets.html`. No new sign logic anywhere.
+- **Number formatting** stays in `components/_prediction_values.html` (`win_prob`, `margin`, `total`, `market_wp_missing`, `absent`) and the existing `side_line` macro, which Task 8 moves verbatim from `pages/bets.html` into `components/_bet_pick.html` (Decision 8). No new sign logic anywhere.
 - `components/_game_card.html` must render with only `game=` in a plain `jinja2.Environment(FileSystemLoader)` (no app globals or filters). New fields are read with `|default(...)`.
 - `components/_old_rule_label.html` uses only plain (non-variant) classes; each must appear literally as `.classname` in `web/static/css/tailwind-compiled.css`.
 - **Tests:** run targeted node ids or single test files only -- NEVER a bare `uv run pytest` (the full suite is too slow). Ruff (`uv run ruff check <files>` and `uv run ruff format <files>`) and pyright (`uv run pyright <files>`) on every touched Python file.
@@ -92,7 +92,7 @@ Outcome / state classes (Tailwind built-ins, used ONLY for their meaning):
 | `score-row` (+ `is-fav` / `is-dog`) | 3-column row: `team-block`, name strip (`bg-panel-2`), value cell (`bg-ink`, `display` value); `is-fav` value in `text-accent`, `is-dog` name and value in `text-muted` |
 | `edge-chip` / `edge-chip-soft` | yellow skewed chip (ink text) / outlined yellow chip |
 | `stat-tile` | scoreboard tile: `bg-panel`, 3px top rule in `var(--tile-accent, rgb(255 255 255 / .12))`, `label` + big `display` value |
-| `bet-slip` | ranked bet row: `bg-panel`, 4px accent left border, grid layout that collapses to two lines under 768px |
+| `bet-slip` | ranked bet row: `bg-panel`, 4px accent left border, grid layout that collapses to two lines below 1024px (`lg`, Decision 14) |
 | `honesty-note` | the condensed one-liner `<details>`: 1px `rgb(255 255 255/.16)` border; `<summary>` holds `.honesty-note-key` (display label), the one-line text, and `.honesty-note-why` ("Why?" in accent, chevron flips when open); `.honesty-note-body` holds the full original text |
 | `band` + `band-high` / `band-medium` / `band-low` | monochrome EV-band / confidence label: high `#E6E9F0` fill ink text; medium `#5B6478` fill white text; low 1px `#5B6478` outline `#C4CAD8` text |
 | `evidence-chip` / `evidence-chip-strong` | monochrome rounded provenance chip: 1px `rgb(255 255 255/.28)` border, `#D5DAE5` text / strong: `rgb(255 255 255/.12)` fill, white text |
@@ -185,10 +185,10 @@ def apply_dark_theme(fig: go.Figure) -> None
 | `web/templates/components/_game_card.html` | score-bug game card | 7 |
 | `web/templates/components/_bet_headliners.html`, `web/templates/pages/this_week.html` | This Week layout | 8 |
 | `web/templates/pages/game_detail.html` (+ route decoration) | game detail layout | 9 |
-| `api/services.py`, `api/routes/pages.py`, `api/routes/fragments.py` (bets context) | `get_graded_bet_outcomes`, `graded_outcomes` | 10 |
+| `api/services.py`, `api/routes/pages.py` (bets context) | `get_graded_bet_outcomes`, `graded_outcomes` | 10 |
 | `web/templates/pages/bets.html` (header, slips, notices, states, suppressed) | bets layout | 11 |
 | `web/templates/pages/bets.html` (tracker), `components/_result_strip.html` | tracker restyle + tick strip | 12 |
-| `api/season_metrics.py`, `api/charts/prerender.py` | weekly records into the season KPI blob | 13 |
+| `api/season_metrics.py`, `api/charts/prerender.py`, `api/charts/season.py`, `tests/api/conftest.py` | weekly records into the season KPI blob | 13 |
 | `web/templates/pages/season.html`, `components/_week_strip.html` | season layout | 14 |
 | `web/templates/pages/track_record.html`, `pages/how_it_works.html`, `api/routes/pages.py`, `api/routes/fragments.py`; deleted `pages/{performance,backtest,betting,insights}.html` | merged pages, redirects, label-test machinery | 15 |
 | `web/templates/pages/how_it_works.html` (methodology section) | owner-reviewed plain-English methodology | 16 |
@@ -211,6 +211,10 @@ def apply_dark_theme(fig: go.Figure) -> None
 8. **Shared spread-pick wording:** `side_line`, `picked_team` and `pick_label` move verbatim from `pages/bets.html` into `components/_bet_pick.html` (Task 8) so /bets and the This Week headliners cannot sign a bet differently.
 9. **`bet-slip` is a visual container only;** the slip's grid layout lives in `pages/bets.html` (Task 11).
 10. **The week strip is a labelled `<ol>`** (each week's record is real text) rather than `role="img"`; the result strip, which has no per-item text, is `role="img"` with its counts in the label.
+11. **Suppressed-candidate groups stay restyled tables, not slips** (spec 7.3.4 says "styled like slips"): a suppressed group can hold many rows, and a dense table scans better than a stack of slips. The native collapsed `<details>` and its `<summary>` caption are unchanged (Task 11).
+12. **The This Week week-results strip keeps the labels "Win Prob" / "Spread" / "Total"** (spec 7.1 and Part D use "Winner"): `tests/api/test_fragments.py` pins those exact labels, and the strip is restyled only (Task 5's `_week_summary.html`).
+13. **The model-vs-market "Gap" on Track Record is monochrome** (Task 15): the number keeps its sign and a muted "favours model" / "favours market" word, read from the stored `gap_favorable`, says which side it is on. A metric gap is a comparison, not a realised result, so it never takes green/red (the same reasoning as Decision 6).
+14. **Tags wrap below 640px, and the 7-column bet-slip grid starts at `lg`:** `.tag` / `.tag-ghost` drop `white-space: nowrap` under 640px (Task 1) so the long tracker headings cannot push a 390px phone sideways, and the slip's seven columns need more than the 720px a 768px tablet gives, so slips keep the stacked two-line layout below `lg` (Task 11). Spec 10: no horizontal scroll at any width.
 
 ---
 
@@ -226,7 +230,7 @@ These refine the Shared Interface Contract where the real code, or another part'
    - A `skew-control` keeps a 44px touch target and paints a 32px band: its background is a gradient sized `100% calc(100% - 12px)`.
 3. **`tag-ghost` is a standalone class, not a modifier.** Write `<h2 class="tag-ghost">`, as Part C does. It carries every `tag` property plus the outline, and never needs `tag` beside it. `section_head(..., ghost=true)` emits `class="tag-ghost"`.
 4. **`section-head` is a plain flex row** (`display:flex; align-items:center; gap:.75rem`). It draws no rule of its own and has no margin. The rule is an explicit child, `<span class="flex-1 h-px bg-line" aria-hidden="true">`, and the meta is `<span class="text-xs text-muted whitespace-nowrap">`. The `section_head` macro emits exactly that, adds `mb-3` to the row, and puts the label in a `.unskew` span inside the `<h2>`. That keeps Part C's tracker test true: a badge placed after the `<h2>` sits before the section's first `</div>`.
-5. **Classes added beyond contract section 2** (all in `input.css`, all compiled): `nav-link`, `wordmark`, `skip-link`, `score-name`, `score-value`, `stat-tile-value`, `stat-tile-sub`, `honesty-note-key`, `honesty-note-line`, `honesty-note-why`, `honesty-note-body`. `bet-slip` is a visual container only (panel background, accent left border, hover); Task 11 lays the slip out with grid utilities in `pages/bets.html` (reconciled with Part C, which owns that layout).
+5. **Classes added beyond contract section 2** (all in `input.css`, all compiled): `nav-link`, `wordmark`, `skip-link`, `score-name`, `score-value`, `stat-tile-value`, `stat-tile-sub` (12px: spec 5 allows 11px only in uppercase), `honesty-note-key`, `honesty-note-line`, `honesty-note-why`, `honesty-note-body`, `grow-in` (the one-shot win-probability bar animation, switched off under `prefers-reduced-motion`). `bet-slip` is a visual container only (panel background, accent left border, hover); Task 11 lays the slip out with grid utilities in `pages/bets.html` (reconciled with Part C, which owns that layout).
 6. **Confidence label markup** (Task 4): `<span class="band band-{high|medium|low}" data-confidence-band="{band}">{label}</span>`. The EV-band label shares the `band band-*` classes, keeps `class` BEFORE `title="EV band ..."` (Part C 5a), and has no `data-confidence-band`. **Part B:** any test that counts confidence labels must key on `data-confidence-band`, never on the class.
 7. **Provenance chip mapping** (Part C 5b, used exactly). The before-redesign strongest grey keeps the strong chip.
 
@@ -241,9 +245,9 @@ These refine the Shared Interface Contract where the real code, or another part'
    - Task 5 does NOT touch `test_green_and_red_appear_only_inside_the_tracker_sections`. Part C's Task 12 rewrites that test whole.
    - Between the two tasks it still passes. Above the tracker, `text-red-600` and `bg-red-50` both count zero once the error state stops using them.
 9. **Week selector root.** Task 5 gives the selector root a unique class, `week-selector`, so `SELECTOR_OPEN` becomes `'<div class="week-selector flex flex-wrap items-center gap-2">'`. **Any later edit to `components/_week_selector.html` must re-record both snapshots with Task 5 Step 6**, and must not change the root tag.
-10. **Active nav item.** `base.html` highlights This Week when `current_path` is `"/"` or starts with `"/games"`. **Part B (Task 9):** pass either from the game-detail route (Part E recommends `"/"`). Today the route passes `""`, which highlights nothing. Every active nav link carries `aria-current="page"`. The hamburger carries `aria-controls="mobile-menu"`, `aria-expanded` and `aria-label`, using Part E's exact markup.
+10. **Active nav item.** `base.html` highlights This Week when `current_path` is `"/"` or starts with `"/games"`. **Part B (Task 9):** the game-detail route passes `f"/games/{game_id}"`, which that rule highlights. Today the route passes `""`, which highlights nothing. Every active nav link carries `aria-current="page"`. The hamburger carries `aria-controls="mobile-menu"`, `aria-expanded` and `aria-label`, using Part E's exact markup.
 11. **Macro imports inside blocks** (Part C note 4). jinja2-fragments renders only the named block for an `HX-Request`, and a child template's top-level `{% import %}` does not run in a block render. Any page rendered with `block_name=` imports `components/_broadcast.html` INSIDE that block, or inside the included component. `_week_summary.html` imports it itself for that reason.
-12. **`@source`.** Task 1 keeps the single `@source "../../web/templates";`. Part E's Task 17 adds `@source "../../api/charts";` for the class strings in `_empty_chart_div`; Part A adds no `@source` for `api/`.
+12. **`@source`.** Task 1 imports Tailwind with `@import "tailwindcss" source(none);`, which turns off Tailwind v4's automatic whole-repo scan, and registers `@source "../../web/templates";` as the only scanned folder. Without `source(none)` Tailwind scans every file in the repo (today's sheet carries `.top-25` only because `SELECTION-CENSUS.md` mentions it), so the compiled CSS would change whenever a .py, .md or test file changes and Task 20's drift and grep checks would report false defects. Part E's Task 17 adds `@source "../../api/charts";` for the class strings in `_empty_chart_div`, which `source(none)` makes required; Part A adds no `@source` for `api/`.
 13. **One file not in the contract's file table:** `api/main.py` registers the `font/woff2` MIME type (Task 1). The Windows MIME registry does not know `.woff2`, so Starlette would otherwise serve the fonts as `text/plain`.
 14. **Team colour rule** (Task 2). Each team keeps its primary colour unless that colour's contrast against the panel `#151B29` is below `MIN_BLOCK_CONTRAST = 1.15`, or it is pure black or white; then it uses the secondary. The fallback branch reaches no current team.
     - **Changed by the rule** (exact, for Part B's tests):
@@ -291,7 +295,7 @@ These refine the Shared Interface Contract where the real code, or another part'
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: every token in contract section 1 (emitted statically, so `var(--color-*)` works anywhere); every component class in contract section 2 plus the extras in Contract note 4; the font families `"Barlow Condensed"`, `"Inter"`, `"JetBrains Mono"` served from `/static/fonts/*.woff2` as `font/woff2`.
+- Produces: every token in contract section 1 (emitted statically, so `var(--color-*)` works anywhere); every component class in contract section 2 plus the extras in Contract note 5, plus the `grow-in` animation class (spec 5's win-probability grow-in, used by Task 9); the font families `"Barlow Condensed"`, `"Inter"`, `"JetBrains Mono"` served from `/static/fonts/*.woff2` as `font/woff2`.
 
 - [ ] **Step 1: Check the clock, then set up the worktree**
 
@@ -427,6 +431,7 @@ COMPONENT_CLASSES = (
     "band-low",
     "evidence-chip",
     "evidence-chip-strong",
+    "grow-in",
 )
 
 FONT_FILES = (
@@ -509,7 +514,7 @@ def test_the_self_hosted_fonts_are_served_as_woff2(test_client: TestClient) -> N
 
 - [ ] **Step 4: Run the tests to verify they fail**
 
-Run: `uv run pytest tests/unit/test_broadcast_theme_css.py tests/api/test_static_fonts.py -q`
+Run: `uv run pytest tests/unit/test_broadcast_theme_css.py -q`, then `uv run pytest tests/api/test_static_fonts.py -q`
 
 Expected:
 - **Fail:** the token, component-class and `@font-face` tests, because the sheet has no Broadcast tokens yet.
@@ -519,10 +524,12 @@ Expected:
 - [ ] **Step 5: Replace `web/static/input.css`**
 
 ```css
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 
-/* Scan the templates. Task 17 adds @source "../../api/charts"; for the class strings that
-   api/charts/core.py emits from Python. */
+/* source(none) turns off Tailwind v4's automatic scan of the WHOLE repo (which would pull class
+   names out of .md, .py and test files and change this sheet whenever they change), so only the
+   folders named here are scanned. Task 17 adds @source "../../api/charts"; for the class strings
+   that api/charts/core.py emits from Python. */
 @source "../../web/templates";
 
 /* ============================================================================================
@@ -779,6 +786,15 @@ Expected:
     color: var(--color-fg);
   }
 
+  /* Under 640px a long tag ("Backtest replay -- reconstructed after the fact") is wider than a
+     390px phone, so it wraps onto a second line instead of pushing the page sideways (spec 10). */
+  @media (max-width: 639.98px) {
+    .tag,
+    .tag-ghost {
+      white-space: normal;
+    }
+  }
+
   /* -- Controls: nav links, tabs, buttons, selects ------------------------------------------ */
   /* A 44px touch target that PAINTS a 32px slanted band: the background is a gradient sized to
      the middle of the box, and the whole element is skewed (its text sits in a .unskew child). */
@@ -1027,13 +1043,14 @@ Expected:
     color: var(--color-fg);
   }
 
+  /* 12px, not 11px: spec 5 allows 11px only for uppercase labels, and this line is lowercase. */
   .stat-tile-sub {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--color-muted);
   }
 
   /* -- Bet slips: the visual container only. pages/bets.html (Task 11) lays each slip out with
-     grid utilities -- seven columns on md+, rank + stacked content under 768px -- so the layout
+     grid utilities -- seven columns on lg+, rank + stacked content below 1024px -- so the layout
      lives next to the markup it arranges and no component grid competes with it. ---------- */
   .bet-slip {
     min-height: 64px;
@@ -1054,11 +1071,13 @@ Expected:
     color: #C4CAD8;
   }
 
+  /* The summary is the note's only control, so it keeps the 44px touch target (spec 10). */
   .honesty-note > summary {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 4px 10px;
+    min-height: 44px;
     padding: 7px 12px;
     list-style: none;
     cursor: pointer;
@@ -1100,6 +1119,28 @@ Expected:
     padding: 0 12px 10px;
     line-height: 1.55;
     color: var(--color-muted);
+  }
+
+  /* -- Motion: the win-probability bar grows in from the left once, on load (spec 5). Readers
+     who ask for reduced motion get the final width at once (spec 10). ---------------------- */
+  .grow-in {
+    transform-origin: left center;
+    animation: grow-in 600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .grow-in {
+      animation: none;
+    }
+  }
+}
+
+@keyframes grow-in {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
   }
 }
 ```
@@ -1147,15 +1188,17 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 Expected:
 - The run ends with a `Done in ...` line.
 - `grep -c "@font-face" web/static/css/tailwind-compiled.css` prints `8`.
+- `grep -o '\.top-25' web/static/css/tailwind-compiled.css | wc -l` prints `0`: `source(none)` is in force, so a class that only a Markdown file mentions (`SELECTION-CENSUS.md`) is no longer compiled.
 
 - [ ] **Step 8: Run the tests to verify they pass**
 
 ```bash
-uv run pytest tests/unit/test_broadcast_theme_css.py tests/api/test_static_fonts.py -q
+uv run pytest tests/unit/test_broadcast_theme_css.py -q
+uv run pytest tests/api/test_static_fonts.py -q
 uv run pytest tests/unit/test_page_labels.py::TestThePartial -q
 uv run ruff check api/main.py tests/unit/test_broadcast_theme_css.py tests/api/test_static_fonts.py
 uv run ruff format api/main.py tests/unit/test_broadcast_theme_css.py tests/api/test_static_fonts.py
-uv run pyright api/main.py
+uv run pyright api/main.py tests/unit/test_broadcast_theme_css.py tests/api/test_static_fonts.py
 ```
 
 Expected:
@@ -1192,7 +1235,7 @@ EOF
 - Test: `tests/unit/test_presentation.py` (new)
 
 **Interfaces:**
-- Consumes: `utils.team_data.get_team_info(abbr) -> dict` (keys `name`, `colors`) and `utils.team_data.validate_team_abbreviation(abbr) -> bool` (accepts aliases such as `LAR`, `OAK`, `JAC`).
+- Consumes: `utils.team_data.get_team_info(abbr) -> dict` (keys `name`, `colors`), `utils.team_data.validate_team_abbreviation(abbr) -> bool` (accepts aliases such as `LAR`, `OAK`, `JAC`) and `utils.date_utils.ET` (the existing `ZoneInfo("America/New_York")` constant).
 - Produces (exact, contract section 4 plus the extras):
   - `class TeamColors(NamedTuple): bg: str; fg: str`
   - `team_block_colors(abbr: str | None) -> TeamColors`
@@ -1475,11 +1518,10 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any, NamedTuple
-from zoneinfo import ZoneInfo
 
+# The project's one America/New_York constant, not a third copy of it.
+from utils.date_utils import ET
 from utils.team_data import get_team_info, validate_team_abbreviation
-
-EASTERN = ZoneInfo("America/New_York")
 
 #: The card colour team blocks sit on (``--color-panel`` in web/static/input.css).
 PANEL_HEX = "#151B29"
@@ -1592,7 +1634,7 @@ def _to_eastern(game_date: datetime | date | str | None) -> tuple[date, datetime
         if value != value:  # noqa: PLR0124
             return None
         if value.tzinfo is not None:
-            value = value.astimezone(EASTERN)
+            value = value.astimezone(ET)
         # A midnight stamp is a date with no kickoff time: no NFL game kicks off at 00:00 ET.
         if (value.hour, value.minute, value.second) == (0, 0, 0):
             return value.date(), None
@@ -1753,11 +1795,11 @@ uv run pytest tests/unit/test_presentation.py -q
 uv run pytest tests/api/test_import_guard.py -q
 uv run ruff check api/presentation.py api/dependencies.py tests/unit/test_presentation.py
 uv run ruff format api/presentation.py api/dependencies.py tests/unit/test_presentation.py
-uv run pyright api/presentation.py api/dependencies.py
+uv run pyright api/presentation.py api/dependencies.py tests/unit/test_presentation.py
 ```
 
 Expected:
-- All PASS. The import guard still passes because `api/presentation.py` imports only `utils.team_data` and the standard library.
+- All PASS. The import guard still passes because `api/presentation.py` imports only `utils.team_data`, `utils.date_utils` (already imported by `api/routes/health.py`) and the standard library.
 - Ruff is clean. If ruff flags `PLR0124` as an unknown or unused `noqa` code in this repo's configuration, delete the `# noqa: PLR0124`.
 - pyright reports 0 errors.
 
@@ -1795,7 +1837,7 @@ EOF
 **Interfaces:**
 - Consumes: tokens and component classes (Task 1).
 - Produces:
-  - The five nav items `("/", "This Week")`, `("/bets", "Bets")`, `("/season", "Season")`, `("/track-record", "Track Record")`, `("/how-it-works", "How It Works")`, each emitted twice: once in the desktop row, once in `#mobile-menu`. Each label sits in a `<span class="unskew">`. The active one carries `class="nav-link skew-control skew-control-active" aria-current="page"`.
+  - The five nav items `("/", "This Week")`, `("/bets", "Bets")`, `("/season", "Season")`, `("/track-record", "Track Record")`, `("/how-it-works", "How It Works")`, each emitted twice: once in the desktop row, once in `#mobile-menu`. Each label sits in a `<span class="unskew">`. The active one's class list starts `nav-link skew-control` and ends `skew-control-active` (`class="nav-link skew-control skew-control-active"` in the desktop row, `class="nav-link skew-control justify-start skew-control-active"` in `#mobile-menu`), followed by `aria-current="page"`.
   - `<main id="main">`.
   - The macros in contract section 3, in `components/_broadcast.html`.
   - The `.game-card` hover rule in `custom.css`.
@@ -1924,7 +1966,11 @@ def test_the_nav_carries_the_five_broadcast_items_in_order(test_client: TestClie
 def test_the_nav_marks_only_the_current_page_active(test_client: TestClient):
     html = test_client.get("/season").text
     nav = html[html.index("<nav") : html.index("</nav>")]
-    active = re.findall(r'<a href="([^"]+)" class="nav-link skew-control skew-control-active"', nav)
+    # The mobile link carries `justify-start` between the base and the active class, so the active
+    # class is matched anywhere in the list rather than at a fixed position.
+    active = re.findall(
+        r'<a href="([^"]+)" class="nav-link skew-control[^"]*\bskew-control-active\b"', nav
+    )
     assert active == ["/season", "/season"]
     assert nav.count('aria-current="page"') == 2
     # Skewed links keep their label upright in a .unskew child (spec 10).
@@ -2022,8 +2068,10 @@ Expected:
 </head>
 <body class="min-h-screen flex flex-col bg-ink text-fg font-sans antialiased">
   <a href="#main" class="skip-link">Skip to content</a>
-  {# The five nav items (spec section 6). A game-detail page (/games/...) counts as This Week. #}
+  {# The five nav items (spec section 6). The active-item rule lives here once, for both lists: a
+     game-detail page (/games/...) counts as This Week. #}
   {% set _path = current_path if current_path is defined and current_path else "" %}
+  {% set _active_href = "/" if _path.startswith("/games") else _path %}
   {% set _nav_items = [
        ("/", "This Week"),
        ("/bets", "Bets"),
@@ -2037,7 +2085,7 @@ Expected:
         <a href="/" class="wordmark">NFL<span class="text-accent">/</span>Predict</a>
         <div class="hidden md:flex items-center gap-1">
           {% for href, label in _nav_items %}
-          {% set _on = _path == href or (href == "/" and _path.startswith("/games")) %}
+          {% set _on = href == _active_href %}
           <a href="{{ href }}" class="nav-link skew-control{% if _on %} skew-control-active{% endif %}"{% if _on %} aria-current="page"{% endif %}><span class="unskew">{{ label }}</span></a>
           {% endfor %}
         </div>
@@ -2058,7 +2106,7 @@ Expected:
     <div id="mobile-menu" class="hidden md:hidden border-t border-line">
       <div class="px-4 py-3 flex flex-col items-stretch gap-1">
         {% for href, label in _nav_items %}
-        {% set _on = _path == href or (href == "/" and _path.startswith("/games")) %}
+        {% set _on = href == _active_href %}
         <a href="{{ href }}" class="nav-link skew-control justify-start{% if _on %} skew-control-active{% endif %}"{% if _on %} aria-current="page"{% endif %}><span class="unskew">{{ label }}</span></a>
         {% endfor %}
       </div>
@@ -2242,10 +2290,6 @@ html {
   .bet-slip {
     outline: 1px solid rgb(255 255 255 / 0.6);
   }
-
-  .skew-control::before {
-    outline: 1px solid rgb(255 255 255 / 0.6);
-  }
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -2285,9 +2329,10 @@ html {
 
 - [ ] **Step 6: Update the nav assertions that named the retired items**
 
-`tests/api/test_pages.py`, in `test_insights_page_has_nav_link`. Old:
+`tests/api/test_pages.py`, the def line and body of `test_insights_page_has_nav_link`. The test is renamed so its name says what it now checks; Task 15 deletes it under the new name. Old:
 
 ```python
+def test_insights_page_has_nav_link(test_client: TestClient):
     """D-16: Insights link appears in rendered HTML (desktop + mobile menus)."""
     response = test_client.get("/insights")
     # Exactly two occurrences expected: desktop nav + mobile menu.
@@ -2297,6 +2342,7 @@ html {
 New:
 
 ```python
+def test_insights_page_nav_links_to_how_it_works(test_client: TestClient):
     """The insights content moves to How It Works (Task 15); the nav already links there."""
     response = test_client.get("/insights")
     # Desktop nav + mobile menu.
@@ -2342,17 +2388,24 @@ def test_nav_carries_the_bets_item(bets_client: TestClient) -> None:
 
 ```bash
 ./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
-uv run pytest tests/unit/test_broadcast_macros.py tests/unit/test_broadcast_theme_css.py -q
-uv run pytest "tests/api/test_pages.py::test_the_nav_carries_the_five_broadcast_items_in_order" "tests/api/test_pages.py::test_the_nav_marks_only_the_current_page_active" "tests/api/test_pages.py::test_insights_page_has_nav_link" "tests/api/test_pages.py::test_betting_page_200" "tests/api/test_pages.py::test_season_page_200" "tests/api/test_pages.py::test_this_week_page" "tests/api/test_pages.py::test_game_detail_not_found" -q
-uv run pytest tests/api/test_bets_page.py -k "nav_carries or not_advice or unknown or data_updated" -q
-uv run pytest tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py -q
+uv run pytest tests/unit/test_broadcast_macros.py -q
+uv run pytest tests/unit/test_broadcast_theme_css.py -q
+uv run pytest "tests/api/test_pages.py::test_the_nav_carries_the_five_broadcast_items_in_order" "tests/api/test_pages.py::test_the_nav_marks_only_the_current_page_active" "tests/api/test_pages.py::test_insights_page_nav_links_to_how_it_works" "tests/api/test_pages.py::test_betting_page_200" "tests/api/test_pages.py::test_season_page_200" "tests/api/test_pages.py::test_this_week_page" "tests/api/test_pages.py::test_game_detail_not_found" -q
+uv run pytest tests/api/test_bets_page.py -k "nav_carries or not_advice or unknown or data_updated or last_updated or cache_meta or footer" -q
+uv run pytest tests/unit/test_page_labels.py -q
+uv run pytest tests/api/test_page_labels_routes.py -q
 uv run pytest tests/api/test_fragments.py -q
+uv run ruff check tests/unit/test_broadcast_macros.py tests/api/test_pages.py tests/api/test_bets_page.py
+uv run ruff format tests/unit/test_broadcast_macros.py tests/api/test_pages.py tests/api/test_bets_page.py
+uv run pyright tests/unit/test_broadcast_macros.py tests/api/test_pages.py tests/api/test_bets_page.py
 ```
 
 Expected:
 - All PASS.
+- The `-k` expression on `test_bets_page.py` also selects the three DEF-31-16 footer guards (`test_a_cache_meta_with_rows_but_no_last_updated_does_not_500_the_bets_page`, `test_the_same_cache_meta_does_not_500_any_other_page_either`, `test_the_footer_still_renders_the_timestamp_when_it_is_present`): this task rewrites the shared footer, and a footer that 500s takes every page down with it.
 - The page-label suites still pass: every page renders through the new `base.html`, `_StubRequest.url_for` serves the font preload URLs, and the footer keeps `Data updated:` and `Unknown`.
 - `test_fragments.py` still finds no `<nav` in any fragment.
+- Ruff is clean (`ruff format` reformats only the new test file, if anything). pyright reports no error on a line this task wrote; an error it reports elsewhere in an existing test file predates the branch -- note it in the task report and leave it.
 
 - [ ] **Step 8: Visual check against the mockups**
 
@@ -2406,7 +2459,7 @@ EOF
 
 **Files:**
 - Modify (full replacements): `web/templates/components/_not_advice_banner.html`, `_old_rule_label.html`, `_provenance_badge.html`, `_ev_band_badge.html`, `_confidence_badge.html`, `_status_badge.html`
-- Modify: `tests/api/test_bets_page.py` (Part C 5a, 5b, 5d, 5e: `test_ev_band_badge_is_monochrome`; the `_VALIDATION_CLASSES` table; `test_zero_suppressed_rows_renders_the_line_and_no_disclosure`; `test_the_caption_is_present_whether_or_not_the_disclosure_is_expanded`)
+- Modify: `tests/api/test_bets_page.py` (Part C 5a, 5b, 5d, 5e: `test_ev_band_badge_is_monochrome`; the `_VALIDATION_CLASSES` table and the assertion that reads it; `test_zero_suppressed_rows_renders_the_line_and_no_disclosure`; `test_the_caption_is_present_whether_or_not_the_disclosure_is_expanded`)
 - Modify: `tests/api/test_pages.py` (`test_this_week_page_confidence_badges`, `test_the_landing_page_still_renders_all_three_edge_band_labels`, `test_the_landing_page_renders_the_band_it_was_served_and_never_rederives_one`)
 - Regenerate: `web/static/css/tailwind-compiled.css`
 - Test: `tests/unit/test_broadcast_components.py` (new)
@@ -2803,7 +2856,7 @@ New:
     ), "the high EV band did not render with the monochrome band-high style"
 ```
 
-**5b.** `tests/api/test_bets_page.py`, the `_VALIDATION_CLASSES` table. The assertion that reads it is left as it is. Old:
+**5b.** `tests/api/test_bets_page.py`, the `_VALIDATION_CLASSES` table. Old:
 
 ```python
 _VALIDATION_CLASSES: dict[str, str] = {
@@ -2821,6 +2874,25 @@ _VALIDATION_CLASSES: dict[str, str] = {
     "clean_holdout": "evidence-chip evidence-chip-strong",
     "forward_realized": "evidence-chip",
 }
+```
+
+The assertion that reads the table, in `test_every_validation_type_renders_its_declared_label_and_classes`, is tightened to the exact class attribute: a bare `"evidence-chip" in section` would also match inside the strong chip's `"evidence-chip evidence-chip-strong"`, so it could not fail. Old:
+
+```python
+        assert _VALIDATION_CLASSES[validation_type] in section, (
+            f"{validation_type} rendered without its declared class set"
+        )
+```
+
+New:
+
+```python
+        # The WHOLE class attribute, anchored on the data-provenance that follows it: a bare
+        # "evidence-chip" would also match inside "evidence-chip evidence-chip-strong".
+        assert (
+            f'class="{_VALIDATION_CLASSES[validation_type]}" data-provenance="{pair[0]}"'
+            in section
+        ), f"{validation_type} rendered without its declared class set"
 ```
 
 **5d.** `tests/api/test_bets_page.py::test_zero_suppressed_rows_renders_the_line_and_no_disclosure`. The condensed honesty notes are `<details>` too. Old:
@@ -2874,8 +2946,10 @@ New:
     assert 'class="band band-high" data-confidence-band="high"' in html
     assert 'class="band band-medium" data-confidence-band="medium"' in html
     assert 'class="band band-low" data-confidence-band="low"' in html
-    for hue in ("bg-green-100", "bg-amber-100", "bg-red-100"):
-        assert hue not in html
+    # Only amber is checked here: until Task 7 replaces the card, its Correct/Incorrect result
+    # badge still (rightly) renders bg-green-100 / bg-red-100 for the fixture's completed games.
+    # Task 7 adds the green/red check once that badge is gone.
+    assert "bg-amber-100" not in html
 ```
 
 `tests/api/test_pages.py::test_the_landing_page_still_renders_all_three_edge_band_labels`. Old:
@@ -2957,15 +3031,20 @@ New:
 ```bash
 ./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
 uv run pytest tests/unit/test_broadcast_components.py -q
-uv run pytest tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py -q
+uv run pytest tests/unit/test_page_labels.py -q
+uv run pytest tests/api/test_page_labels_routes.py -q
 uv run pytest "tests/api/test_pages.py::test_this_week_page_confidence_badges" "tests/api/test_pages.py::test_the_landing_page_still_renders_all_three_edge_band_labels" "tests/api/test_pages.py::test_the_landing_page_renders_the_band_it_was_served_and_never_rederives_one" "tests/api/test_pages.py::test_the_landing_page_sort_by_band_is_unchanged" -q
 uv run pytest tests/api/test_bets_page.py -k "monochrome or validation_type or badge or not_advice or banner or provenance or label or suppressed or caption or disclosure" -q
 uv run pytest tests/unit/test_current_week_rows_reach_the_site.py -q
+uv run ruff check tests/unit/test_broadcast_components.py tests/api/test_bets_page.py tests/api/test_pages.py
+uv run ruff format tests/unit/test_broadcast_components.py tests/api/test_bets_page.py tests/api/test_pages.py
+uv run pyright tests/unit/test_broadcast_components.py tests/api/test_bets_page.py tests/api/test_pages.py
 ```
 
 Expected:
 - All PASS. `test_page_labels.py::TestThePartial` confirms three things: the partial is ASCII, it carries the label phrase and no over-claim word, and its six plain classes (`mb-4`, `honesty-note`, `honesty-note-key`, `honesty-note-line`, `honesty-note-why`, `honesty-note-body`) are in the compiled sheet.
 - `test_current_week_rows_reach_the_site.py` still renders the card in a bare environment. Its "Low" check passes because a game with no band renders no confidence label.
+- Ruff is clean. pyright reports no error on a line this task wrote; an error elsewhere in an existing test file predates the branch -- note it in the task report and leave it.
 
 - [ ] **Step 11: Commit**
 
@@ -3598,17 +3677,22 @@ def test_regenerate(test_client: TestClient) -> None:
     )
 ```
 
+The wiring check compares the old and new snapshots with every ` class="..."` attribute (and any carriage return) stripped from BOTH sides first. Edits 3 and 5 change only the class on the two `<label for=...>` lines; diffing the raw files would print those lines on every run, because they contain `for=`, and the check could never pass.
+
 ```bash
 uv run pytest tests/api/test_zz_regenerate_selector_snapshots.py -q
 rm tests/api/test_zz_regenerate_selector_snapshots.py
 git diff --stat tests/api/snapshots/
-git diff -U0 tests/api/snapshots/ | grep -E "^[-+]" | grep -vE "^(\+\+\+|---)" | grep -E "hx-|id=|for=|aria-label|<option|value=|Week [0-9]|data-season|disabled" || echo "WIRING UNCHANGED"
+for snap in week_selector_this_week.html week_selector_prev_next.html; do
+  diff <(git show "HEAD:tests/api/snapshots/$snap" | sed -E 's/\r$//; s/ class="[^"]*"//g') \
+       <(sed -E 's/\r$//; s/ class="[^"]*"//g' "tests/api/snapshots/$snap")
+done | grep -E "^[<>]" | grep -E "hx-|id=|for=|aria-label|<option|value=|Week [0-9]|data-season|disabled" || echo "WIRING UNCHANGED"
 ```
 
 Expected:
 - The first command passes and writes the two files.
 - `git diff --stat` shows both snapshot files changed.
-- The final pipeline prints `WIRING UNCHANGED`: every changed line is a class, label-class or svg change.
+- The final pipeline prints `WIRING UNCHANGED`. With classes stripped, the only lines left that differ are the two chevrons (Edits 8 and 9: the new `<span>` wrapper and `aria-hidden="true"`), and neither matches the wiring pattern.
 
 If the pipeline prints any line, the restyle altered wiring. Revert that edit (`git checkout -- web/templates/components/_week_selector.html`) and redo Step 4.
 
@@ -3729,18 +3813,23 @@ import threading
 - [ ] **Step 8: Run every affected test**
 
 ```bash
-uv run pytest tests/unit/test_broadcast_components.py tests/unit/test_broadcast_macros.py -q
+uv run pytest tests/unit/test_broadcast_components.py -q
+uv run pytest tests/unit/test_broadcast_macros.py -q
 uv run pytest "tests/api/test_pages.py::test_the_this_week_selector_renders_byte_identically" "tests/api/test_pages.py::test_the_prev_next_branch_renders_byte_identically" "tests/api/test_pages.py::test_the_this_week_page_still_targets_the_games_grid" "tests/api/test_pages.py::test_season_error_state_wired_and_distinct_from_empty" "tests/api/test_pages.py::test_season_error_copy_renders_via_error_component" "tests/api/test_pages.py::test_game_detail_not_found" "tests/api/test_pages.py::test_this_week_page_with_sort" "tests/api/test_pages.py::test_betting_fragment" "tests/api/test_pages.py::test_betting_fragment_scope_whitelist" "tests/api/test_pages.py::test_performance_fragment" -q
 uv run pytest tests/api/test_bets_page.py -k "selector or failure or timeout or sync or element_ids or layout_and_type or state_four or withheld or green_and_red or empty or nothing_graded" -q
-uv run pytest tests/api/test_export.py tests/api/test_cold_start_bet_list_recovery.py tests/api/test_fragments.py -q
-uv run pytest tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py -q
-uv run ruff check tests/api/test_export.py tests/api/week_selector_snapshot.py tests/unit/test_broadcast_components.py
-uv run ruff format tests/api/test_export.py tests/api/week_selector_snapshot.py tests/unit/test_broadcast_components.py
+uv run pytest tests/api/test_export.py -q
+uv run pytest tests/api/test_cold_start_bet_list_recovery.py -q
+uv run pytest tests/api/test_fragments.py -q
+uv run pytest tests/unit/test_page_labels.py -q
+uv run pytest tests/api/test_page_labels_routes.py -q
+uv run ruff check tests/api/test_export.py tests/api/week_selector_snapshot.py tests/unit/test_broadcast_components.py tests/api/test_pages.py tests/api/test_bets_page.py
+uv run ruff format tests/api/test_export.py tests/api/week_selector_snapshot.py tests/unit/test_broadcast_components.py tests/api/test_pages.py tests/api/test_bets_page.py
+uv run pyright tests/api/test_export.py tests/api/week_selector_snapshot.py tests/unit/test_broadcast_components.py tests/api/test_pages.py tests/api/test_bets_page.py
 git status --short
 ```
 
 Expected:
-- All PASS, and ruff is clean.
+- All PASS, and ruff is clean. pyright reports no error on a line this task wrote; an error elsewhere in an existing test file predates the branch -- note it in the task report and leave it.
 - `test_cold_start_bet_list_recovery.py` still finds every instruction inside a `<p>`.
 - `git status --short` lists no `test_zz_regenerate_selector_snapshots.py`.
 
@@ -4002,20 +4091,6 @@ def _build_state_cache(db_path: Path, state: str) -> None:
             materialize_bet_list(conn, pd.DataFrame([_bet_row("suppressed")]))
         elif state == "bets":
             materialize_bet_list(conn, pd.DataFrame([_bet_row("live")]))
-    finally:
-        conn.close()
-
-
-def _insert_predictions(db_path: Path, rows: list[dict[str, Any]]) -> None:
-    """Add prediction rows to a cache built by _build_state_cache, so / has games to show."""
-    conn = duckdb.connect(str(db_path))
-    try:
-        columns = ", ".join(PREDICTIONS_TABLE_COLUMNS)
-        placeholders = ", ".join("?" for _ in PREDICTIONS_TABLE_COLUMNS)
-        conn.executemany(
-            f"INSERT INTO predictions ({columns}) VALUES ({placeholders})",
-            [[row[c] for c in PREDICTIONS_TABLE_COLUMNS] for row in rows],
-        )
     finally:
         conn.close()
 
@@ -4444,7 +4519,13 @@ Expected: 14 passed (6 parity + 6 precedence + 1 mismatch + 1 grid).
 
 - [ ] **Step 7: Run the This Week regressions (the templates have not changed yet, so they must still pass)**
 
-Run: `uv run pytest tests/api/test_pages.py tests/api/test_fragments.py tests/api/test_cache_headers.py tests/api/test_page_labels_routes.py -q`
+```bash
+uv run pytest tests/api/test_pages.py -q
+uv run pytest tests/api/test_fragments.py -q
+uv run pytest tests/api/test_cache_headers.py -q
+uv run pytest tests/api/test_page_labels_routes.py -q
+```
+
 Expected: every test that passed before this task still passes. Task 3's nav change may already have deliberately updated some of these.
 
 - [ ] **Step 8: Lint and type-check**
@@ -4473,7 +4554,7 @@ EOF
 - Replace: `web/templates/components/_game_card.html` (whole file)
 - Create: `tests/unit/test_game_card_broadcast.py`
 - Modify: `tests/unit/test_current_week_rows_reach_the_site.py:215` (and add `import re`)
-- Modify: `tests/api/test_pages.py:61-69` and `tests/api/test_pages.py:633-718`
+- Modify: `tests/api/test_pages.py` -- the function `test_this_week_page_confidence_badges` (as Task 4 left it), and the two functions `test_the_landing_page_still_renders_all_three_edge_band_labels` and `test_the_landing_page_renders_the_band_it_was_served_and_never_rederives_one`
 - Rebuild: `web/static/css/tailwind-compiled.css`
 
 **Interfaces:**
@@ -4599,9 +4680,14 @@ def test_model_and_market_numbers_pick_words_and_edges_render() -> None:
 def test_a_bet_game_carries_the_flag_and_a_solid_chip_for_its_bet_type() -> None:
     game = {**decorate_game(_row(**_MARKET)), "bet_targets": ["ou"]}
     card = _render(game)
+    plain_card = _render(decorate_game(_row(**_MARKET)))
 
     assert "data-on-bet-list" in card
-    assert "border-accent" in card.split(">", 1)[0], "the card's top edge is not the accent"
+    # The TOP RULE's colour, not any "border-accent": every card also carries hover:border-accent,
+    # so a bare substring check would pass for a card with no bet. The plain card is the control.
+    top_rule = "border-t-[3px] border-accent "
+    assert top_rule in card.split(">", 1)[0], "the bet card's top edge is not the accent"
+    assert top_rule not in plain_card.split(">", 1)[0], "a card with no bet has the accent top edge"
     # Three edges, one of them the bet's own: two outlined chips and one solid.
     assert card.count("edge-chip-soft") == 2
 
@@ -4821,21 +4907,26 @@ New:
     )
 ```
 
-In `tests/api/test_pages.py`, old (lines 61-69):
+In `tests/api/test_pages.py`, replace the whole function `test_this_week_page_confidence_badges` (from its `def` line through its last line) as Task 4 Step 9 left it. Old:
 
 ```python
 def test_this_week_page_confidence_badges(test_client: TestClient):
-    """D-08: Confidence badges with color-coded levels."""
+    """D-08: Confidence labels render one monochrome band each (Broadcast redesign)."""
     response = test_client.get("/")
     assert response.status_code == 200
     html = response.text
-    # Sample data contains high, medium, and low confidence values
-    assert "bg-green-100" in html  # high
-    assert "bg-amber-100" in html  # medium
-    assert "bg-red-100" in html  # low
+    # Sample data contains high, medium, and low confidence values. The labels are grey-scale:
+    # green and red now mean a realised result only, and a pre-game band is not one.
+    assert 'class="band band-high" data-confidence-band="high"' in html
+    assert 'class="band band-medium" data-confidence-band="medium"' in html
+    assert 'class="band band-low" data-confidence-band="low"' in html
+    # Only amber is checked here: until Task 7 replaces the card, its Correct/Incorrect result
+    # badge still (rightly) renders bg-green-100 / bg-red-100 for the fixture's completed games.
+    # Task 7 adds the green/red check once that badge is gone.
+    assert "bg-amber-100" not in html
 ```
 
-New:
+If `ruff format` in Task 4 rewrapped any of those lines, match the function by name and replace it whole. New (this is where the green/red check Task 4 deferred lands, now that the card's result badge uses the `-400`/`-500` outcome classes):
 
 ```python
 def test_this_week_cards_carry_no_confidence_pill(test_client: TestClient):
@@ -4852,7 +4943,7 @@ def test_this_week_cards_carry_no_confidence_pill(test_client: TestClient):
     assert "data-band" not in html
 ```
 
-Replace the two band tests (lines 633-718) -- old: the whole of `test_the_landing_page_still_renders_all_three_edge_band_labels` and `test_the_landing_page_renders_the_band_it_was_served_and_never_rederives_one`, from `def test_the_landing_page_still_renders_all_three_edge_band_labels(` through the closing `)` of the final `assert Counter(rendered) == Counter(served), (...)`. New:
+Replace the two band tests -- old: the whole of `test_the_landing_page_still_renders_all_three_edge_band_labels` and `test_the_landing_page_renders_the_band_it_was_served_and_never_rederives_one`, from `def test_the_landing_page_still_renders_all_three_edge_band_labels(` through the closing `)` of the final `assert Counter(rendered) == Counter(served), (...)`. New:
 
 ```python
 def test_the_landing_page_renders_no_edge_band_and_so_cannot_rederive_one(
@@ -4860,10 +4951,9 @@ def test_the_landing_page_renders_no_edge_band_and_so_cannot_rederive_one(
 ) -> None:
     """The band left the cards in the Broadcast redesign (31-17 / D31-23 history above).
 
-    The served-equals-rendered guard moved with it to game detail
-    (tests/api/test_game_detail_page.py::test_the_detail_page_renders_the_band_it_was_served).
-    On / the claim is now the stronger one: no band label is rendered at all, so none can be
-    re-derived.
+    The band now renders only on game detail, and the served-equals-rendered guard belongs there
+    with it. On / the claim is now the stronger one: no band label is rendered at all, so none can
+    be re-derived.
     """
     from utils.edge_tier import EDGE_TIER_LABELS
 
@@ -4884,7 +4974,12 @@ Expected: `Done in ...` with no error.
 
 - [ ] **Step 7: Run the card tests and every test that renders the card**
 
-Run: `uv run pytest tests/unit/test_game_card_broadcast.py tests/unit/test_current_week_rows_reach_the_site.py tests/api/test_fragments.py -v`
+```bash
+uv run pytest tests/unit/test_game_card_broadcast.py -v
+uv run pytest tests/unit/test_current_week_rows_reach_the_site.py -v
+uv run pytest tests/api/test_fragments.py -v
+```
+
 Expected: all pass.
 
 Run: `uv run pytest "tests/api/test_pages.py::test_this_week_page" "tests/api/test_pages.py::test_this_week_page_has_game_cards" "tests/api/test_pages.py::test_this_week_page_responsive_grid" "tests/api/test_pages.py::test_this_week_cards_carry_no_confidence_pill" "tests/api/test_pages.py::test_the_landing_page_renders_no_edge_band_and_so_cannot_rederive_one" "tests/api/test_pages.py::test_the_landing_page_sort_by_band_is_unchanged" "tests/api/test_pages.py::test_this_week_htmx_returns_fragment" -v`
@@ -4892,8 +4987,8 @@ Expected: all pass.
 
 - [ ] **Step 8: Lint the touched Python**
 
-Run: `uv run ruff check tests/unit/test_game_card_broadcast.py tests/unit/test_current_week_rows_reach_the_site.py tests/api/test_pages.py && uv run ruff format tests/unit/test_game_card_broadcast.py tests/unit/test_current_week_rows_reach_the_site.py tests/api/test_pages.py && uv run pyright tests/unit/test_game_card_broadcast.py`
-Expected: no errors.
+Run: `uv run ruff check tests/unit/test_game_card_broadcast.py tests/unit/test_current_week_rows_reach_the_site.py tests/api/test_pages.py && uv run ruff format tests/unit/test_game_card_broadcast.py tests/unit/test_current_week_rows_reach_the_site.py tests/api/test_pages.py && uv run pyright tests/unit/test_game_card_broadcast.py tests/unit/test_current_week_rows_reach_the_site.py tests/api/test_pages.py`
+Expected: no ruff error; pyright reports no error on a line this task wrote (an error elsewhere in an existing test file predates the branch -- note it in the task report and leave it).
 
 - [ ] **Step 9: Commit**
 
@@ -4920,7 +5015,8 @@ EOF
 - Modify: `web/templates/pages/bets.html` (lines 202-210, 247-260, 263) -- the pick macros move out, verbatim
 - Create: `web/templates/components/_bet_headliners.html`
 - Replace: `web/templates/pages/this_week.html` (whole file)
-- Modify: `tests/api/test_this_week_headliner.py` (append the layout tests)
+- Modify: `tests/api/test_this_week_headliner.py` (append the `_insert_predictions` helper, which first has a caller here, and the layout tests)
+- Modify: `tests/api/test_pages.py` (`test_this_week_page_responsive_grid`: the slate's grid classes change on purpose, spec 11)
 - Rebuild: `web/static/css/tailwind-compiled.css`
 
 **Interfaces:**
@@ -4949,8 +5045,28 @@ _WEEK_GAMES = [
 ]
 
 
-def _page(tmp_path: Path, state: str, path: str) -> str:
-    db_path = tmp_path / f"page_{state}.duckdb"
+def _insert_predictions(db_path: Path, rows: list[dict[str, Any]]) -> None:
+    """Add prediction rows to a cache built by _build_state_cache, so / has games to show."""
+    conn = duckdb.connect(str(db_path))
+    try:
+        columns = ", ".join(PREDICTIONS_TABLE_COLUMNS)
+        placeholders = ", ".join("?" for _ in PREDICTIONS_TABLE_COLUMNS)
+        conn.executemany(
+            f"INSERT INTO predictions ({columns}) VALUES ({placeholders})",
+            [[row[c] for c in PREDICTIONS_TABLE_COLUMNS] for row in rows],
+        )
+    finally:
+        conn.close()
+
+
+def _page(tmp_path: Path, state: str, path: str, *, name: str = "page") -> str:
+    """Build a fresh cache for *state*, serve it, and return the body of GET *path*.
+
+    A test that renders twice passes a distinct *name*: building onto a file that already holds
+    the week's predictions would insert the same game ids again and hit the predictions table's
+    primary key.
+    """
+    db_path = tmp_path / f"{name}_{state}.duckdb"
     _build_state_cache(db_path, state)
     _insert_predictions(db_path, _WEEK_GAMES)
     with _serving(db_path) as (client, _conn):
@@ -4997,10 +5113,12 @@ def test_a_week_change_re_renders_the_headliners_with_the_slate(tmp_path: Path) 
 def test_the_default_sort_groups_by_tv_window_and_a_non_time_sort_does_not(
     tmp_path: Path,
 ) -> None:
-    grouped = _page(tmp_path, "bets", f"/?season={_SEASON}&week={_WEEK}")
+    grouped = _page(tmp_path, "bets", f"/?season={_SEASON}&week={_WEEK}", name="grouped")
     assert grouped.count("data-window=") == 2, "Thursday night and Sunday 1:00 are two windows"
 
-    by_edge = _page(tmp_path, "bets", f"/?season={_SEASON}&week={_WEEK}&sort=edge")
+    by_edge = _page(
+        tmp_path, "bets", f"/?season={_SEASON}&week={_WEEK}&sort=edge", name="by_edge"
+    )
     assert "data-window=" not in by_edge
     assert by_edge.count("game-card") == grouped.count("game-card")
 
@@ -5352,21 +5470,63 @@ Whole file:
 Run: `./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify`
 Expected: `Done in ...` with no error.
 
-- [ ] **Step 9: Run the layout tests and the This Week / label regressions**
+- [ ] **Step 9: Update the grid assertion the slate changes on purpose**
+
+The slate's grid is `grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4`; `md:grid-cols-2` no longer appears on `/`, so the D-07 test is updated (spec 11 lists grid-class assertions as updated on purpose). In `tests/api/test_pages.py`, old:
+
+```python
+def test_this_week_page_responsive_grid(test_client: TestClient):
+    """D-07: Grid uses responsive column classes."""
+    response = test_client.get("/")
+    assert response.status_code == 200
+    html = response.text
+    assert "grid-cols-1" in html
+    assert "md:grid-cols-2" in html
+    assert "lg:grid-cols-3" in html
+```
+
+New:
+
+```python
+def test_this_week_page_responsive_grid(test_client: TestClient):
+    """D-07: Grid uses responsive column classes (Broadcast slate: 1, 2, 3, then 4 columns)."""
+    response = test_client.get("/")
+    assert response.status_code == 200
+    html = response.text
+    assert "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" in html
+```
+
+- [ ] **Step 10: Run the layout tests and the This Week / label regressions**
 
 Run: `uv run pytest tests/api/test_this_week_headliner.py -v`
 Expected: all pass. That is 24 items: 14 from Task 6, plus 10 layout items (5 from the parametrised state test and 5 single tests).
 
-Run: `uv run pytest tests/api/test_fragments.py tests/api/test_cache_headers.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py -q`
+```bash
+uv run pytest tests/api/test_fragments.py -q
+uv run pytest tests/api/test_cache_headers.py -q
+uv run pytest tests/unit/test_page_labels.py -q
+uv run pytest tests/api/test_page_labels_routes.py -q
+```
+
 Expected: pass. `this_week.html` still renders exactly one `data-old-rule-label` and the marker `This Week's Predictions`.
 
 Run: `uv run pytest tests/api/test_pages.py -q -k "this_week or landing or selector"`
-Expected: pass. The selector snapshot is unchanged, because the include and its parameters are identical.
+Expected: pass, including `test_this_week_page_responsive_grid` as updated in Step 9. The selector snapshot is unchanged, because the include and its parameters are identical.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Lint and type-check the touched tests**
 
 ```bash
-git add web/templates/components/_bet_pick.html web/templates/pages/bets.html web/templates/components/_bet_headliners.html web/templates/pages/this_week.html web/static/css/tailwind-compiled.css tests/api/test_this_week_headliner.py
+uv run ruff check tests/api/test_this_week_headliner.py tests/api/test_pages.py
+uv run ruff format tests/api/test_this_week_headliner.py tests/api/test_pages.py
+uv run pyright tests/api/test_this_week_headliner.py tests/api/test_pages.py
+```
+
+Expected: no ruff error. pyright reports no error on a line this task wrote; an error elsewhere in `test_pages.py` predates the branch -- note it in the task report and leave it.
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add web/templates/components/_bet_pick.html web/templates/pages/bets.html web/templates/components/_bet_headliners.html web/templates/pages/this_week.html web/static/css/tailwind-compiled.css tests/api/test_this_week_headliner.py tests/api/test_pages.py
 git commit -m "$(cat <<'EOF'
 feat(redesign): This Week layout with headliner bets and the TV-window slate
 
@@ -5385,9 +5545,9 @@ EOF
 
 **Files:**
 - Replace: `web/templates/pages/game_detail.html` (whole file)
-- Modify: `api/routes/pages.py` -- `game_detail_page` (lines 1050-1076)
+- Modify: `api/routes/pages.py` -- the `game_detail_page` handler
 - Create: `tests/api/test_game_detail_page.py`
-- Modify: `tests/api/test_pages.py:177-196` (`test_game_detail_page`, `test_game_detail_team_context`)
+- Modify: `tests/api/test_pages.py` -- the functions `test_game_detail_page` and `test_game_detail_team_context`
 - Rebuild: `web/static/css/tailwind-compiled.css`
 
 **Interfaces:**
@@ -5395,7 +5555,8 @@ EOF
 - Consumes (Task 3): `bc.team_block(abbr, bg, fg, large)`, `bc.edge_chip(text, soft)`, and the classes `panel`, `panel-title`, `skew`, `unskew`, `skew-control`, `skew-control-active`, `display`, `label`, `num`.
 - Consumes (Task 4): `components/_confidence_badge.html` (monochrome, takes `level` and `value`), `components/_status_badge.html`, `components/_old_rule_label.html`.
 - Consumes (Task 7): `pv.team_pct`.
-- Consumes (Task 17, Part E): the chart colours in `api/charts/theme.py`. The feature-chart script mirrors them as literals, because it runs client-side.
+- Consumes (Task 1): the `grow-in` class, on the win-probability bar.
+- The feature-chart script mirrors the chart colours of contract section 8 as literals, because it runs client-side; it imports nothing from `api/charts/theme.py`, which Task 17 creates later.
 - Produces: `data-band="<level>"` and `data-edge="<target>"` hooks on the detail page. The kept ids are `tab-wp|ats|ou`, `feature-chart`, `role="tablist"` and `showFeatureChart`. The kept text is "Model vs Market", "What drives the prediction", "Tale of the tape", "Elo rating", "Venue &amp; Weather", "Published", the result badges and "20 - 27"-style scores.
 
 - [ ] **Step 1: Write the failing detail tests**
@@ -5425,6 +5586,13 @@ from api.services import DataService, clear_cache
 
 _GAME_ID = "2026_W03_KC@MIA"
 _HUE = re.compile(r"\b(?:text|bg|border)-(green|red)-\d{2,3}")
+# One rendered band: the data-band hook, the monochrome label inside it, the band that label
+# declares, and its visible text. Whitespace between the tags is the include's own newlines.
+_BAND = re.compile(
+    r'<span data-band="([a-z]+)">\s*'
+    r'<span class="band band-([a-z]+)" data-confidence-band="([a-z]+)">([^<]+)</span>\s*'
+    r"</span>"
+)
 
 
 class _StubRequest:
@@ -5492,14 +5660,16 @@ def test_the_detail_page_renders_the_band_it_was_served(test_client: TestClient)
     """Moved from / (31-17 / D31-23): the page renders the STORED band, never a re-derived one.
 
     Every stored band must appear once, for its own target, as a monochrome label -- a page that
-    turned a served "low" into a "high" keeps the vocabulary intact and changes these counts.
+    turned a served "low" into a "high" keeps the vocabulary intact and changes these counts. The
+    check reads the LABEL the reader sees, not only the data-band hook that echoes the stored
+    value: the hook, the label's class, its data-confidence-band and its text must all agree.
     """
+    from api.main import app
     from utils.edge_tier import EDGE_TIER_LABELS
 
     html = test_client.get("/games/2024_W01_BUF@KC").text
-    game = DataService(test_client.app.dependency_overrides[get_db]()).get_game_detail(
-        "2024_W01_BUF@KC"
-    )
+    # The app object, not test_client.app: TestClient types .app as a bare ASGI callable.
+    game = DataService(app.dependency_overrides[get_db]()).get_game_detail("2024_W01_BUF@KC")
     assert game is not None
     served = [
         game[f"{target}_confidence"]
@@ -5509,11 +5679,15 @@ def test_the_detail_page_renders_the_band_it_was_served(test_client: TestClient)
     assert served, "the fixture served no band; the check would pass vacuously"
     assert set(served) <= set(EDGE_TIER_LABELS)
 
-    rendered = re.findall(r'data-band="([a-z]+)"', html)
-    assert Counter(rendered) == Counter(served)
-    for badge in re.findall(r'data-band="[a-z]+">(.*?)</span>\s*</span>', html, re.DOTALL):
-        assert not re.search(r"(green|amber|red)", " ".join(re.findall(r'class="([^"]*)"', badge))), (
-            "a confidence band carries a hue; bands are monochrome"
+    hooks = re.findall(r'data-band="([a-z]+)"', html)
+    labels = _BAND.findall(html)
+    assert len(labels) == len(hooks), "a data-band hook does not wrap exactly one monochrome label"
+    assert Counter(hook for hook, _css, _attr, _text in labels) == Counter(served)
+    for hook, css_band, attr_band, text in labels:
+        # The class is exactly "band band-<level>", so no hue can ride on it.
+        assert hook == css_band == attr_band == text.strip().lower(), (
+            f"the {hook!r} slot renders the label {text!r} (class band-{css_band}, "
+            f"data-confidence-band={attr_band!r}); all four must name the stored band"
         )
 
 
@@ -5563,6 +5737,10 @@ def test_the_page_is_decorated_and_links_back_to_its_week(test_client: TestClien
     assert "#E31837" in html, "the KC team colour from utils/team_data.py is missing"
     assert 'href="/?season=2024&amp;week=1"' in html
     assert "Published" in html and "Blended" not in html
+    # Spec 5: the win-probability bar grows in once (Task 1's .grow-in, off under reduced motion).
+    assert re.search(
+        r'<div class="[^"]*\bgrow-in\b[^"]*" role="img" aria-label="Win probability:', html
+    ), "the win-probability bar does not carry the grow-in animation"
 ```
 
 - [ ] **Step 2: Run the detail tests to verify they fail**
@@ -5649,7 +5827,7 @@ Whole file:
     </div>
     <div class="text-center">
       <p class="display text-2xl text-white/40">@</p>
-      <p class="label text-[#C4CAD8]">{{ game.kickoff_label|default(game.game_date) }}</p>
+      <p class="label text-[#C4CAD8]">{{ game.kickoff_label|default(game.game_date if game.game_date is not none else "Time TBD") }}</p>
       {% if ctx and ctx.venue_name %}<p class="label">{{ ctx.venue_name }}</p>{% endif %}
       <p class="mt-1">{% with status=game.status %}{% include "components/_status_badge.html" %}{% endwith %}</p>
     </div>
@@ -5663,7 +5841,9 @@ Whole file:
     </div>
   </div>
   {% if game.wp_prob is not none %}
-  <div class="mt-4 flex h-1.5 gap-1" role="img" aria-label="Win probability: {{ away }} {{ pv.team_pct(game.wp_prob, 'away') }}, {{ home }} {{ pv.team_pct(game.wp_prob, 'home') }}">
+  {# grow-in (Task 1): the bar sweeps in from the left once on load (spec 5); a reader who asks for
+     reduced motion sees it at its final width at once. #}
+  <div class="mt-4 flex h-1.5 gap-1 grow-in" role="img" aria-label="Win probability: {{ away }} {{ pv.team_pct(game.wp_prob, 'away') }}, {{ home }} {{ pv.team_pct(game.wp_prob, 'home') }}">
     <span class="skew" style="width: {{ ((1 - game.wp_prob) * 100)|round(1) }}%; background: {{ away_bg }};"></span>
     <span class="skew" style="width: {{ (game.wp_prob * 100)|round(1) }}%; background: {{ home_bg }};"></span>
   </div>
@@ -5870,9 +6050,11 @@ Whole file:
         <div class="mb-4 mt-1 grid grid-cols-[4rem_1fr_4rem] items-center gap-3">
           <p><span class="label block">{{ away }}</span><span class="display text-2xl">{% if ctx.away_elo is not none %}{{ "%.0f"|format(ctx.away_elo) }}{% else %}<span class="text-dim">N/A</span>{% endif %}</span></p>
           {% if ctx.away_elo is not none and ctx.home_elo is not none %}
+          {# NOTHING IS COMPUTED HERE (UIAP-01): each half's CSS flex-grow is that team's stored
+             Elo, so the browser sizes the split -- the same technique as the Season week strip. #}
           <div class="flex h-2.5 gap-1" role="img" aria-label="Elo rating: {{ away }} {{ "%.0f"|format(ctx.away_elo) }}, {{ home }} {{ "%.0f"|format(ctx.home_elo) }}">
-            <span class="skew" aria-hidden="true" style="width: {{ (ctx.away_elo / (ctx.away_elo + ctx.home_elo) * 100)|round(1) }}%; background: {{ away_bg }};"></span>
-            <span class="skew" aria-hidden="true" style="width: {{ (ctx.home_elo / (ctx.away_elo + ctx.home_elo) * 100)|round(1) }}%; background: {{ home_bg }};"></span>
+            <span class="skew" aria-hidden="true" style="flex: {{ "%.0f"|format(ctx.away_elo) }} 1 0%; background: {{ away_bg }};"></span>
+            <span class="skew" aria-hidden="true" style="flex: {{ "%.0f"|format(ctx.home_elo) }} 1 0%; background: {{ home_bg }};"></span>
           </div>
           {% else %}
           <span></span>
@@ -5957,7 +6139,7 @@ Whole file:
 
 - [ ] **Step 5: Update the two detail tests the renames deliberately break**
 
-In `tests/api/test_pages.py`, old (lines 182-183):
+In `tests/api/test_pages.py`, in `test_game_detail_page`, old:
 
 ```python
     assert "Feature Importance" in html
@@ -5972,7 +6154,7 @@ New:
     assert "Model vs Market" in html
 ```
 
-Old (lines 189-196):
+Old (the whole function `test_game_detail_team_context`):
 
 ```python
 def test_game_detail_team_context(test_client: TestClient):
@@ -6013,13 +6195,19 @@ Expected: all pass:
 - `test_game_detail_page`, `_team_context`, `_venue_weather`, `_result_overlay` ("20 - 27", "Correct"), `_feature_chart` (`Plotly.newPlot("feature-chart"`), `_multi_target_importances`, `_not_found`, `_export_buttons`;
 - `test_the_detail_badge_grades_a_tie_and_a_missing_pick_as_neither`.
 
-Run: `uv run pytest "tests/unit/test_cache_ats_edge.py::test_the_game_detail_page_renders_the_ats_edge_in_points_not_as_a_percentage" tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py tests/api/test_cache_headers.py -q`
+```bash
+uv run pytest "tests/unit/test_cache_ats_edge.py::test_the_game_detail_page_renders_the_ats_edge_in_points_not_as_a_percentage" -q
+uv run pytest tests/unit/test_page_labels.py -q
+uv run pytest tests/api/test_page_labels_routes.py -q
+uv run pytest tests/api/test_cache_headers.py -q
+```
+
 Expected: pass. The ATS edge line still contains `game.ats_edge` and "pts", there is exactly one old-rule label, and the marker `BUF @ KC` is in `<title>` and the sr-only `<h1>`.
 
 - [ ] **Step 8: Lint and type-check**
 
-Run: `uv run ruff check api/routes/pages.py tests/api/test_game_detail_page.py tests/api/test_pages.py && uv run ruff format api/routes/pages.py tests/api/test_game_detail_page.py tests/api/test_pages.py && uv run pyright api/routes/pages.py tests/api/test_game_detail_page.py`
-Expected: no errors.
+Run: `uv run ruff check api/routes/pages.py tests/api/test_game_detail_page.py tests/api/test_pages.py && uv run ruff format api/routes/pages.py tests/api/test_game_detail_page.py tests/api/test_pages.py && uv run pyright api/routes/pages.py tests/api/test_game_detail_page.py tests/api/test_pages.py`
+Expected: no ruff error and 0 pyright errors in `api/routes/pages.py` and `tests/api/test_game_detail_page.py` (the band test reads the override map off `api.main.app`, not `test_client.app`, which TestClient types as a bare ASGI callable). In `test_pages.py`, no error on a line this task wrote; an older one predates the branch -- note it in the task report and leave it.
 
 - [ ] **Step 9: Commit**
 
@@ -6044,7 +6232,7 @@ EOF
 
 ## Contract notes (Part C)
 
-These are places where the real code forced a decision the contract did not spell out. Tasks 10-12 below rely on them. The parent should reconcile items 5 and 6 into Tasks 4, 5 and 15.
+These are places where the real code forced a decision the contract did not spell out. Tasks 10-12 below rely on them.
 
 1. **The /bets `<h1>` stays the static text "Weekly Bet List", not "Bets · Week N".** The page header sits OUTSIDE the `#bets-content` swap target. A week number in it would go stale on the first HTMX week change. The week is named by the selector beside it and by the "Live bets -- <season> Week <n>" tag, which IS inside the swap target. (The tests also pin that tag text.)
 2. **The live-bets header meta shows "ranked by expected value · N bets" and drops the mockup's "X.XXu total".** Summing the stakes in the template would be a request-path aggregate (UIAP-01). The count is a row count of what is on the page, the same kind of count the existing "Suppressed candidates (N)" already shows.
@@ -6089,7 +6277,7 @@ These are places where the real code forced a decision the contract did not spel
          "forward_realized": "evidence-chip",
      }
      ```
-     The badge must also keep `data-provenance` and `data-validation-type` on its outer `<span>`, and keep the nested `<span class="sr-only">`, so that `_badges()` (which matches `...</span></span>`) still finds it.
+     The badge must also keep `data-provenance` and `data-validation-type` on its outer `<span>`, and keep the nested `<span class="sr-only">`, so that `_badges()` (which matches `...</span></span>`) still finds it. The assertion that reads the table is tightened in the same step to the whole attribute, `class="{classes}" data-provenance="{provenance}"`, because a bare `"evidence-chip" in section` also matches inside the strong chip (Task 4 Step 9 gives the exact edit).
    - **5c. Task 5 (`_error_state.html` -> `bg-red-950 border border-red-800`).** In these three tests, replace the literal `"bg-red-50"` with `"bg-red-950"`. Nothing else in each assertion changes:
      - `test_state_four_a_week_with_no_list_for_its_locked_games_is_refused`
      - `test_the_failure_template_carries_the_message_and_a_retry`
@@ -6367,7 +6555,7 @@ New:
         with no count, rate or SQL aggregate (UIAP-01); the template draws one mark per row.
 
         Ordered by class and then by the bet list's four-key tie-break, so the strip reads in
-        schedule order and two requests render it identically.
+        week order (game id order within a week) and two requests render it identically.
         """
         key = ("graded_bet_outcomes",)
         cached = _cache_get(key)
@@ -6455,7 +6643,8 @@ New:
 
 Run:
 ```bash
-uv run pytest "tests/api/test_bets_page.py::test_the_graded_outcomes_are_the_live_graded_rows_in_a_fixed_order" "tests/api/test_bets_page.py::test_the_graded_outcomes_count_exactly_what_the_tracker_aggregates" "tests/api/test_bets_page.py::test_the_graded_outcomes_tolerate_a_cache_without_a_bet_list" "tests/api/test_bets_page.py::test_the_bets_context_partitions_the_outcomes_by_honesty_class" "tests/api/test_bets_page.py::test_bets_navigation_reads_the_schedule_getters_and_not_the_predictions_ones" "tests/api/test_bets_page.py::test_the_page_renders_the_stored_aggregate_and_computes_nothing" "tests/api/test_bets_page.py::test_the_refusal_branch_reads_the_schedule_locks_and_the_week_coverage" "tests/api/test_bets_page.py::test_the_structural_guard_is_not_vacuous" tests/api/test_import_guard_bets.py -v
+uv run pytest "tests/api/test_bets_page.py::test_the_graded_outcomes_are_the_live_graded_rows_in_a_fixed_order" "tests/api/test_bets_page.py::test_the_graded_outcomes_count_exactly_what_the_tracker_aggregates" "tests/api/test_bets_page.py::test_the_graded_outcomes_tolerate_a_cache_without_a_bet_list" "tests/api/test_bets_page.py::test_the_bets_context_partitions_the_outcomes_by_honesty_class" "tests/api/test_bets_page.py::test_bets_navigation_reads_the_schedule_getters_and_not_the_predictions_ones" "tests/api/test_bets_page.py::test_the_page_renders_the_stored_aggregate_and_computes_nothing" "tests/api/test_bets_page.py::test_the_refusal_branch_reads_the_schedule_locks_and_the_week_coverage" "tests/api/test_bets_page.py::test_the_structural_guard_is_not_vacuous" -v
+uv run pytest tests/api/test_import_guard_bets.py -v
 ```
 Expected: all PASS. The last four tests and the import guard prove that the new read adds no `backtest` import and does not touch the refusal branch's getter set.
 
@@ -6465,9 +6654,9 @@ Run:
 ```bash
 uv run ruff check api/services.py api/routes/pages.py tests/api/test_bets_page.py
 uv run ruff format api/services.py api/routes/pages.py tests/api/test_bets_page.py
-uv run pyright api/services.py api/routes/pages.py
+uv run pyright api/services.py api/routes/pages.py tests/api/test_bets_page.py
 ```
-Expected: `All checks passed!`, files left formatted, and `0 errors`.
+Expected: `All checks passed!`, files left formatted, and `0 errors` in `api/services.py` and `api/routes/pages.py`. In `tests/api/test_bets_page.py`, no pyright error on a line this task wrote; an older one predates the branch -- note it in the task report and leave it.
 
 - [ ] **Step 7: Commit**
 
@@ -6624,10 +6813,14 @@ def test_each_live_bet_renders_one_ranked_slip(
     from api.presentation import team_nickname
 
     body = bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    count = len(selected_records)
 
-    assert body.count('<li class="bet-slip') == len(selected_records)
+    assert body.count('<li class="bet-slip') == count
     assert f"Line as of {_SNAPSHOT_TS}" in body
-    assert "ranked by expected value" in body
+    # The header meta, with its row count -- not the <ol>'s aria-label, which also says
+    # "ranked by expected value" and would satisfy a bare substring check on its own.
+    noun = "bet" if count == 1 else "bets"
+    assert f"ranked by expected value &middot; {count} {noun}</span>" in body
     for record in selected_records:
         away, home = record["game_id"].split("_")[-1].split("@")
         assert team_nickname(away) in body
@@ -6721,9 +6914,10 @@ New:
 
 Run:
 ```bash
-uv run pytest "tests/api/test_bets_page.py::test_served_equals_selector_top_row" "tests/api/test_bets_page.py::test_raw_target_codes_are_never_rendered" "tests/api/test_bets_page.py::test_total_but_no_moneyline_yields_one_live_and_one_suppressed_row" "tests/api/test_bets_page.py::test_a_spread_pick_shows_the_picked_teams_own_line" "tests/api/test_bets_page.py::test_the_badge_renders_on_every_displayed_row" "tests/api/test_bets_page.py::test_each_live_bet_renders_one_ranked_slip" "tests/api/test_bets_page.py::test_the_suppressed_summary_counts_each_reason_while_collapsed" "tests/api/test_export.py::test_the_exported_row_set_equals_the_pages_live_and_suppressed_rows" "tests/api/test_export.py::test_exported_row_order_equals_the_pages_order_position_by_position" "tests/api/test_export.py::test_the_page_offers_both_exports_and_the_cross_link" -v
+uv run pytest "tests/api/test_bets_page.py::test_served_equals_selector_top_row" "tests/api/test_bets_page.py::test_raw_target_codes_are_never_rendered" "tests/api/test_bets_page.py::test_total_but_no_moneyline_yields_one_live_and_one_suppressed_row" "tests/api/test_bets_page.py::test_a_spread_pick_shows_the_picked_teams_own_line" "tests/api/test_bets_page.py::test_the_badge_renders_on_every_displayed_row" "tests/api/test_bets_page.py::test_each_live_bet_renders_one_ranked_slip" "tests/api/test_bets_page.py::test_the_suppressed_summary_counts_each_reason_while_collapsed" -v
+uv run pytest "tests/api/test_export.py::test_the_exported_row_set_equals_the_pages_live_and_suppressed_rows" "tests/api/test_export.py::test_exported_row_order_equals_the_pages_order_position_by_position" "tests/api/test_export.py::test_the_page_offers_both_exports_and_the_cross_link" -v
 ```
-Expected: FAIL. The new hooks (`data-slip-stake`, `data-bet-type`, `bet-slip`, `data-suppressed-reason-counts`, the new cross-link href) are not in the page yet; the export tests fail with "the page rendered no identifiable rows".
+Expected: FAIL. The new hooks (`data-slip-stake`, `data-bet-type`, `bet-slip`, `data-suppressed-reason-counts`, the new cross-link href) are not in the page yet. The export row-set and row-order tests fail too, though not necessarily with the same message: the row-set test can report that the page rendered no identifiable rows, while the order test fails its position-by-position comparison. Either failure is the expected red.
 
 - [ ] **Step 3: Rewrite `web/templates/pages/bets.html`**
 
@@ -6954,9 +7148,11 @@ Replace the entire file with the following. Everything from the tracker banner c
      R8 requires the two honesty labels on every DISPLAYED and exported row, so every slip carries
      its own evidence chip; a tracker-level label alone would leave an individual row unattributed.
 
-     LAYOUT: two columns on a phone (rank, then the slip's content stacked), seven on md+. The
-     figure group is display:contents on md+ so its three figures become grid columns there and a
-     three-up row on a phone. Tailwind utilities sit in the utilities layer, so they win over the
+     LAYOUT: two columns below lg (rank, then the slip's content stacked), seven on lg+. The seven
+     tracks and their gaps need ~820px, more than the 720px a 768px tablet leaves, so the stacked
+     layout holds until lg (Decision 14; spec 10: no sideways scroll). The figure group is
+     display:contents on lg+ so its three figures become grid columns there and a three-up row
+     below it. Tailwind utilities sit in the utilities layer, so they win over the
      .bet-slip component defaults from Task 1. #}
   <ol class="space-y-2" aria-label="Live bets, ranked by expected value">
     {% for bet in bets %}
@@ -6964,8 +7160,8 @@ Replace the entire file with the following. Everything from the tracker banner c
     {%- set away_team, home_team = matchup.split('@') if '@' in matchup else ("Away", "Home") -%}
     {%- set away_colors = team_colors(away_team) -%}
     {%- set home_colors = team_colors(home_team) -%}
-    <li class="bet-slip grid grid-cols-[2.5rem_minmax(0,1fr)] md:grid-cols-[3rem_12rem_minmax(0,1fr)_5rem_6rem_6rem_12rem] items-center gap-x-4 gap-y-2 py-3 pr-4">
-      <span class="display text-3xl text-dim text-center row-span-4 md:row-span-1">{{ loop.index }}</span>
+    <li class="bet-slip grid grid-cols-[2.5rem_minmax(0,1fr)] lg:grid-cols-[3rem_12rem_minmax(0,1fr)_5rem_6rem_6rem_12rem] items-center gap-x-4 gap-y-2 py-3 pr-4">
+      <span class="display text-3xl text-dim text-center row-span-4 lg:row-span-1">{{ loop.index }}</span>
       <div class="flex flex-col gap-1 min-w-0">
         <div class="flex items-center gap-2">{{ bc.team_block(away_team, away_colors.bg, away_colors.fg) }}<span class="label text-fg truncate">{{ team_nickname(away_team) }}</span></div>
         <div class="flex items-center gap-2">{{ bc.team_block(home_team, home_colors.bg, home_colors.fg) }}<span class="label text-fg truncate">{{ team_nickname(home_team) }}</span></div>
@@ -6977,8 +7173,8 @@ Replace the entire file with the following. Everything from the tracker banner c
            id's AWAY@HOME matchup; an id without one falls back to the words. #}
         <p class="display text-2xl md:text-3xl leading-none text-accent mt-1 whitespace-nowrap">{{ bp.pick_label(bet) }}</p>
       </div>
-      <div class="col-start-2 md:col-start-auto grid grid-cols-3 gap-3 md:contents">
-        <div class="md:text-right">
+      <div class="col-start-2 lg:col-start-auto grid grid-cols-3 gap-3 lg:contents">
+        <div class="lg:text-right">
           <span class="label block" title="A spread line is the picked team's own line, as a sportsbook quotes it">Line</span>
           <span class="num text-fg whitespace-nowrap" data-slip-line>
             {%- if bet.line is none -%}--
@@ -6990,16 +7186,16 @@ Replace the entire file with the following. Everything from the tracker banner c
         {# per_bet_ev is stored as a FRACTION of stake; the x100 below is a unit
            render (fraction -> percent) under an "EV %" label, not a derivation.
            No metric is recomputed on the request path (UIAP-01). #}
-        <div class="md:text-right">
+        <div class="lg:text-right">
           <span class="label block">EV %</span>
           <span class="num font-bold text-fg whitespace-nowrap">{{ "%+.2f"|format(bet.per_bet_ev * 100) }}%</span>
         </div>
-        <div class="md:text-right">
+        <div class="lg:text-right">
           <span class="label block" title="1 unit = 1% of a notional bankroll">Stake (units)</span>
           <span class="num font-bold text-fg whitespace-nowrap" data-slip-stake>{{ "%.2f"|format(bet.stake_units) }}</span>
         </div>
       </div>
-      <div class="col-start-2 md:col-start-auto flex flex-wrap md:flex-col items-start md:items-end gap-1.5">
+      <div class="col-start-2 lg:col-start-auto flex flex-wrap lg:flex-col items-start lg:items-end gap-1.5">
         {% with band=bet.ev_tier %}
           {% include "components/_ev_band_badge.html" %}
         {% endwith %}
@@ -7446,13 +7642,28 @@ Expected: `1` (the minified file is one line; any non-zero count means the class
 
 - [ ] **Step 5: Run every test file that reads /bets or its export**
 
-Run:
+Run one file per command:
 ```bash
-uv run pytest tests/api/test_bets_page.py tests/api/test_export.py tests/api/test_cold_start_bet_list_recovery.py tests/api/test_cache_swap_recovery.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py -v
+uv run pytest tests/api/test_bets_page.py -v
+uv run pytest tests/api/test_export.py -v
+uv run pytest tests/api/test_cold_start_bet_list_recovery.py -v
+uv run pytest tests/api/test_cache_swap_recovery.py -v
+uv run pytest tests/unit/test_page_labels.py -v
+uv run pytest tests/api/test_page_labels_routes.py -v
 ```
 Expected: all PASS, on condition that the Task 4/5 replacements in Contract notes 5a-5e are already applied. Pay particular attention to the tracker tests (unchanged markup), the four-state tests, the hard-block tests, `test_tie_break_is_four_key` (matchup anchors) and `test_a_partly_built_week_shows_its_rows_and_names_the_rest` (the missing-games box contains no inner `<div>`).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Lint and type-check the touched tests**
+
+```bash
+uv run ruff check tests/api/test_bets_page.py tests/api/test_export.py
+uv run ruff format tests/api/test_bets_page.py tests/api/test_export.py
+uv run pyright tests/api/test_bets_page.py tests/api/test_export.py
+```
+
+Expected: no ruff error. pyright reports no error on a line this task wrote; an older one predates the branch -- note it in the task report and leave it.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add web/templates/pages/bets.html web/static/css/tailwind-compiled.css tests/api/test_bets_page.py tests/api/test_export.py
@@ -7484,7 +7695,7 @@ EOF
 **Interfaces:**
 - Consumes:
   - Task 10's `graded_outcomes` context key.
-  - Task 1 classes: `stat-tile`, `label`, `display`, `tag`, `tag-ghost`, `section-head`, `unskew`, tokens `text-fg`, `text-muted`, `bg-line`.
+  - Task 1 classes: `stat-tile`, `stat-tile-value`, `label`, `display`, `tag`, `tag-ghost`, `section-head`, `unskew`, tokens `text-fg`, `text-muted`, `bg-line`.
   - Contract outcome classes: `text-green-400`, `text-red-400`, `bg-green-500`, `bg-red-500`.
 - Produces:
   - The macro `result_strip(outcomes: list[str], block) -> markup`, in `components/_result_strip.html`. It renders only when the counts agree with the block.
@@ -7546,8 +7757,9 @@ Old:
 ```
 New:
 ```python
-    assert "-0.053" in negative
-    assert "text-red-400" in negative
+    # The RETURN tile itself carries the loss red. The Losses tile is red in every section, so a
+    # bare "text-red-400" substring check would pass whatever colour the return took.
+    assert 'text-red-400" data-figure-value>-0.053<' in negative
 ```
 
 (d) In `test_an_unmeasured_return_never_renders_as_a_zero`.
@@ -7559,7 +7771,7 @@ Old:
 New:
 ```python
     values = re.findall(
-        r'<p class="stat-value[^"]*" data-figure-value>([^<]*)</p>', section
+        r'<p class="stat-tile-value[^"]*" data-figure-value>([^<]*)</p>', section
     )
 ```
 
@@ -7574,8 +7786,12 @@ Old:
 New:
 ```python
     sections = _tracker_sections(body)
-    assert any("text-green-400" in s for s in sections.values())
-    assert any("text-red-400" in s for s in sections.values())
+    replay = sections["backtest_replay:contaminated"]
+    # Each realized-outcome hue is pinned to the tile that carries it. The Wins tile is always
+    # green and the Losses tile always red, so a bare substring check anywhere in the section
+    # could not tell whether the RETURN (-0.01 here) took its colour from its sign.
+    assert 'text-green-400" data-figure-value>6<' in replay
+    assert 'text-red-400" data-figure-value>-0.010<' in replay
 ```
 Then replace the above-the-tracker guard at the end of the same test.
 
@@ -7748,7 +7964,8 @@ Expected: all FAIL. Either `data-figure-label`, `text-green-400` and `data-resul
 
    Usage: {% from "components/_result_strip.html" import result_strip %}
           {{ result_strip(outcomes, block) }}
-   outcomes: list of "win" / "loss" / "push" in schedule order; block: the stored tracker block. #}
+   outcomes: list of "win" / "loss" / "push" in week order (game id order within a week);
+   block: the stored tracker block. #}
 {% macro result_strip(outcomes, block) -%}
 {%- set _outcomes = outcomes or [] -%}
 {%- set _wins = _outcomes | select("equalto", "win") | list | length -%}
@@ -7759,7 +7976,9 @@ Expected: all FAIL. Either `data-figure-label`, `text-green-400` and `data-resul
       and _losses == block.losses
       and _pushes == block.pushes
       and (_outcomes | length) == block.bets_graded -%}
-<div class="flex flex-wrap items-center gap-0.5" role="img" data-result-strip aria-label="Graded results in schedule order: wins {{ _wins }}, losses {{ _losses }}, pushes {{ _pushes }}">
+{# The label prints the STORED block's counts: the strip only renders when its own marks agree
+   with them, and the stored block stays the one source of every published figure. #}
+<div class="flex flex-wrap items-center gap-0.5" role="img" data-result-strip aria-label="Graded results in week order: wins {{ block.wins }}, losses {{ block.losses }}, pushes {{ block.pushes }}">
   {%- for outcome in _outcomes %}
   <span data-result-mark class="block w-1.5 h-4 {% if outcome == 'win' %}bg-green-500{% elif outcome == 'loss' %}bg-red-500{% else %}bg-[#5B6478]{% endif %}"></span>
   {%- endfor %}
@@ -7884,7 +8103,7 @@ New (the whole replacement for that span):
 {% macro tracker_figure(label, value, tone) -%}
 <div class="stat-tile flex-1 min-w-[7.5rem]">
   <p class="label" data-figure-label>{{ label }}</p>
-  <p class="stat-value display text-3xl leading-tight tabular-nums whitespace-nowrap {{ tone }}" data-figure-value>{{ value }}</p>
+  <p class="stat-tile-value display text-3xl leading-tight tabular-nums whitespace-nowrap {{ tone }}" data-figure-value>{{ value }}</p>
 </div>
 {%- endmacro %}
 
@@ -8085,9 +8304,14 @@ Expected: four lines, each ending `ok`.
 
 - [ ] **Step 7: Run every /bets test file**
 
-Run:
+Run one file per command:
 ```bash
-uv run pytest tests/api/test_bets_page.py tests/api/test_export.py tests/api/test_cold_start_bet_list_recovery.py tests/api/test_cache_swap_recovery.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py -v
+uv run pytest tests/api/test_bets_page.py -v
+uv run pytest tests/api/test_export.py -v
+uv run pytest tests/api/test_cold_start_bet_list_recovery.py -v
+uv run pytest tests/api/test_cache_swap_recovery.py -v
+uv run pytest tests/unit/test_page_labels.py -v
+uv run pytest tests/api/test_page_labels_routes.py -v
 ```
 Expected: all PASS. These must pass unchanged:
 - `test_pushes_sits_outside_the_group_that_holds_the_hit_rate` (group regex; tiles hold no nested div)
@@ -8096,7 +8320,17 @@ Expected: all PASS. These must pass unchanged:
 - `test_the_page_renders_the_stored_aggregate_and_computes_nothing` (`>12.5%<` and `>-0.750<` from the stored block)
 - `test_the_forward_block_is_withheld_under_the_hard_block_while_replay_stays_readable`
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Lint and type-check the touched test file**
+
+```bash
+uv run ruff check tests/api/test_bets_page.py
+uv run ruff format tests/api/test_bets_page.py
+uv run pyright tests/api/test_bets_page.py
+```
+
+Expected: no ruff error. pyright reports no error on a line this task wrote; an older one predates the branch -- note it in the task report and leave it.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add web/templates/components/_result_strip.html web/templates/pages/bets.html web/static/css/tailwind-compiled.css tests/api/test_bets_page.py
@@ -8130,7 +8364,6 @@ These are places where the real code forced a choice the contract does not spell
 6. **New shared component `components/_chart_panel.html`** with macro `chart_panel(title, chart_html, empty_body, min_height=380, panel_id=none)`. It is created in Task 14 and reused by Task 15, so the "chart or 'Chart unavailable'" pattern lives in one place.
 7. **Page `<title>` blocks are kept** ("Season Tracking", and in other parts "This Week's Predictions", "Weekly Bet List"), because `tests/unit/test_page_labels.py::PAGE_MARKERS` and `tests/api/test_page_labels_routes.py::PAGE_ROUTES` find each page by a string that the `<title>` supplies. The new pages' markers are section headings unique to them: `track_record.html` -> "Season by season", `how_it_works.html` -> "What the models rely on".
 8. **HTMX requests to the retired `/performance` and `/betting` URLs are answered with the block itself, not a redirect.** htmx would otherwise swap a whole page into a table-sized target. So the two `FRAGMENT_REQUESTS` entries for those URLs in `test_page_labels_routes.py` stay valid and now pin the legacy branch.
-9. **For the parent:** `docs/superpowers/plans/parts/00-header.md` contains a second, stale copy of the File Structure table (from the row `---|---|---|` down to the closing `---`), left behind by the renumbering edit. Delete it when assembling the plan.
 
 ---
 
@@ -8444,8 +8677,8 @@ Expected: all PASS (the extra blob key is ignored by the current template).
 
 Run: `uv run ruff check api/season_metrics.py api/charts/season.py api/charts/prerender.py tests/test_season_metrics.py tests/test_charts.py tests/api/conftest.py`
 Run: `uv run ruff format api/season_metrics.py api/charts/season.py api/charts/prerender.py tests/test_season_metrics.py tests/test_charts.py tests/api/conftest.py`
-Run: `uv run pyright api/season_metrics.py api/charts/season.py api/charts/prerender.py`
-Expected: no errors.
+Run: `uv run pyright api/season_metrics.py api/charts/season.py api/charts/prerender.py tests/test_season_metrics.py tests/test_charts.py tests/api/conftest.py`
+Expected: no ruff error, and 0 pyright errors in the three `api/` files. In the three test files, no pyright error on a line this task wrote; an older one predates the branch -- note it in the task report and leave it.
 
 - [ ] **Step 10: Commit**
 
@@ -8471,7 +8704,7 @@ EOF
 - Create: `web/templates/components/_chart_panel.html`
 - Create: `web/templates/components/_week_strip.html`
 - Modify (full rewrite): `web/templates/pages/season.html`
-- Modify: `api/routes/pages.py` (`_build_season_context`, around lines 278-322)
+- Modify: `api/routes/pages.py` (the return statement of `_build_season_context`)
 - Modify: `tests/api/test_pages.py` (the `_Service` stub in `test_a_season_with_nothing_graded_renders_the_empty_state_not_zeroes`; the `"WP Hit Rate"` assertion in `test_season_error_state_wired_and_distinct_from_empty`)
 - Modify: `tests/api/test_fragments.py` (the `"WP Hit Rate"` assertion in `test_season_fragment_returns_block_only`)
 - Create: `tests/api/test_season_week_strip.py`
@@ -8724,9 +8957,10 @@ Create `web/templates/components/_chart_panel.html`:
 
    chart_html is the cached HTML itself (or none); empty_body is the empty state's explanation,
    which differs per chart family. The chart HTML is trusted: it was generated by api/charts at
-   population time, never taken from a request. #}
+   population time, never taken from a request. panel_id makes the panel an in-page anchor
+   (Track Record's #clv), with the same scroll margin the page's section anchors use. #}
 {% macro chart_panel(title, chart_html, empty_body, min_height=380, panel_id=none) -%}
-<div class="panel"{% if panel_id %} id="{{ panel_id }}"{% endif %}>
+<div class="panel{% if panel_id %} scroll-mt-6{% endif %}"{% if panel_id %} id="{{ panel_id }}"{% endif %}>
   {% if title %}<h3 class="panel-title mb-3">{{ title }}</h3>{% endif %}
   <div class="chart-container" style="min-height: {{ min_height }}px;">
     {% if chart_html %}
@@ -8849,8 +9083,9 @@ Replace the whole of `web/templates/pages/season.html` with:
 {% else %}
 
 {# Section 1: the season-to-date scoreboard (D-08). Every figure is read from the KPI blob as
-   stored; the strings below only format it. Tile accents are the bet-type colours every chart on
-   the site uses (Winner yellow, Spread cyan, Totals violet). The Record tile is the WINNER record
+   stored; the strings below only format it. Tile accents are the bet-type colour tokens every
+   chart on the site uses (Winner yellow, Spread cyan, Totals violet), read from the Task 1
+   variables as Task 5's week summary does, so a token change cannot leave a stale hex here. The Record tile is the WINNER record
    only, so its sub-line says so -- the week strip below combines all three bet types. #}
 {% set wp_rate = ("%.1f"|format(kpis.wp_hit_rate) ~ "%") if kpis.wp_hit_rate is not none else "--" %}
 {% set ats_rate = ("%.1f"|format(kpis.ats_hit_rate) ~ "%") if kpis.ats_hit_rate is not none else "--" %}
@@ -8860,10 +9095,10 @@ Replace the whole of `web/templates/pages/season.html` with:
 {% set ou_sub = (kpis.ou_hits|default(0)|string ~ " of " ~ kpis.ou_decided|default(0)|string) if kpis.ou_decided|default(0) else "no graded picks" %}
 <section class="mb-8" aria-label="Season-to-date scoreboard">
   <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
-    {{ bc.stat_tile("Winner hit rate", wp_rate, sub=wp_sub, accent="#FFD400") }}
-    {{ bc.stat_tile("Spread hit rate", ats_rate, sub=ats_sub, accent="#4CC9F0") }}
-    {{ bc.stat_tile("Totals hit rate", ou_rate, sub=ou_sub, accent="#C77DFF") }}
-    {{ bc.stat_tile("Record (W-L)", kpis.record if kpis.record else "--", sub="straight-up winner picks", accent="#F3F5F9") }}
+    {{ bc.stat_tile("Winner hit rate", wp_rate, sub=wp_sub, accent="var(--color-target-wp)") }}
+    {{ bc.stat_tile("Spread hit rate", ats_rate, sub=ats_sub, accent="var(--color-target-ats)") }}
+    {{ bc.stat_tile("Totals hit rate", ou_rate, sub=ou_sub, accent="var(--color-target-ou)") }}
+    {{ bc.stat_tile("Record (W-L)", kpis.record if kpis.record else "--", sub="straight-up winner picks", accent="var(--color-fg)") }}
   </div>
   <p class="text-xs text-muted mt-3 max-w-3xl">Pushes are excluded from the denominator.</p>
 </section>
@@ -8948,8 +9183,8 @@ with:
 
 Run: `./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify`
 Expected: exits 0. Then confirm the new utilities were emitted:
-Run: `grep -c "grid-cols-18\|outline-accent\|opacity-40" web/static/css/tailwind-compiled.css`
-Expected: a count of 1 (the minified file is one line) -- not 0.
+Run: `grep -oE "grid-cols-18|outline-accent|opacity-40" web/static/css/tailwind-compiled.css | sort -u`
+Expected: exactly three lines, `grid-cols-18`, `opacity-40` and `outline-accent`. (`grep -c` cannot prove this: the minified sheet is one line, so it prints 1 as soon as any ONE of the three exists.)
 
 - [ ] **Step 9: Run the tests to verify they pass**
 
@@ -8972,8 +9207,8 @@ Expected: all PASS.
 
 Run: `uv run ruff check api/routes/pages.py tests/api/test_season_week_strip.py tests/api/test_pages.py tests/api/test_fragments.py`
 Run: `uv run ruff format api/routes/pages.py tests/api/test_season_week_strip.py tests/api/test_pages.py tests/api/test_fragments.py`
-Run: `uv run pyright api/routes/pages.py`
-Expected: no errors.
+Run: `uv run pyright api/routes/pages.py tests/api/test_season_week_strip.py tests/api/test_pages.py tests/api/test_fragments.py`
+Expected: no ruff error; 0 pyright errors in `api/routes/pages.py` and `tests/api/test_season_week_strip.py`. In `test_pages.py` and `test_fragments.py`, no pyright error on a line this task wrote; an older one predates the branch -- note it in the task report and leave it.
 
 - [ ] **Step 11: Commit**
 
@@ -9005,11 +9240,13 @@ EOF
 - Modify: `api/routes/fragments.py` (docstring; imports; `performance_fragment`; `betting_fragment`)
 - Create: `tests/api/test_merged_pages.py`
 - Modify: `tests/unit/test_page_labels.py`, `tests/api/test_page_labels_routes.py`, `tests/api/test_pages.py`, `tests/api/test_cache_headers.py`, `tests/api/test_bets_page.py` (one route tuple)
+- Modify: `PIPELINE.md` (Stage 7 page list) and `tests/unit/test_pipeline_md.py` (its pin)
 - Regenerate: `web/static/css/tailwind-compiled.css`
 
 **Interfaces:**
 - Consumes: `components/_chart_panel.html` (Task 14); `components/_broadcast.html` macros `section_head` and `stat_tile`; classes `skew-control`, `unskew`, `panel`, `panel-title`, `label`, `num`, `display`; Task 3's nav, which already links `/track-record` and `/how-it-works` in both the desktop row and the mobile menu; Task 5's restyled `_season_selector.html`, `_betting_scope_toggle.html`, `_export_buttons.html`, `_empty_state.html` with unchanged include parameters and HTMX wiring; Task 11 already pointed the /bets cross-link at `/track-record#betting-sim`.
 - Produces (all in `api/routes/pages.py`):
+  - `_season_metrics_block(service: DataService, season: int | None) -> dict[str, Any]` (keys `season_metrics`, `season_metrics_old_rule_scope`; shared by the page builder and the season block responder)
   - `_build_track_record_context(service: DataService, season: int | None, scope: str, request: Request) -> dict[str, Any]`
   - `_build_how_it_works_context(service: DataService, request: Request) -> dict[str, Any]`
   - `_performance_block_response(request: Request, service: DataService, season: int | None) -> Response`
@@ -9029,7 +9266,8 @@ The four retired pages -- /performance, /backtest, /insights, /betting -- were m
 Track Record (how the model has done) and How It Works (why it predicts what it does). These
 tests pin where every chart landed and that each appears once, that every retired URL still works
 (a 301 carrying its query string to the right section, or the block itself for an HTMX request),
-and that both new pages keep the read-only cache contract and the page Cache-Control.
+and that both new pages keep the read-only cache contract. Their Cache-Control (pages and 301s) is
+pinned once, in tests/api/test_cache_headers.py, and the nav in tests/api/test_pages.py.
 """
 
 from __future__ import annotations
@@ -9055,8 +9293,9 @@ class TestTrackRecord:
         html = response.text
         for anchor in ("summary", "seasons", "vs-market", "clv", "betting-sim"):
             assert f'id="{anchor}"' in html, f"missing section anchor #{anchor}"
+        # The page's own <h1>: "Track Record" alone would also be found in the nav and <title>.
+        assert re.search(r"<h1[^>]*>Track Record</h1>", html), "the page heading is missing"
         for heading in (
-            "Track Record",
             "All-time summary",
             "Total Games",
             "Season by season",
@@ -9118,16 +9357,6 @@ class TestTrackRecord:
         assert response.status_code == 200
         assert re.search(r'<option value=""\s+selected', response.text)
 
-    def test_carries_the_page_cache_control(self, test_client: TestClient) -> None:
-        response = test_client.get("/track-record")
-        assert response.headers.get("cache-control") == "public, max-age=60"
-
-    def test_the_nav_links_to_both_merged_pages(self, test_client: TestClient) -> None:
-        html = test_client.get("/track-record").text
-        # Desktop nav + mobile menu, at least.
-        assert html.count('href="/track-record"') >= 2
-        assert html.count('href="/how-it-works"') >= 2
-
     def test_an_empty_cache_renders_empty_states_not_a_500(
         self, empty_test_client: TestClient
     ) -> None:
@@ -9142,7 +9371,9 @@ class TestHowItWorks:
         response = test_client.get("/how-it-works")
         assert response.status_code == 200
         html = response.text
-        for heading in ("How It Works", "Calibration", "What the models rely on", "Accuracy over time"):
+        # The page's own <h1>: "How It Works" alone would also be found in the nav and <title>.
+        assert re.search(r"<h1[^>]*>How It Works</h1>", html), "the page heading is missing"
+        for heading in ("Calibration", "What the models rely on", "Accuracy over time"):
             assert heading in html, heading
         for anchor in ("calibration", "features", "accuracy"):
             assert f'id="{anchor}"' in html, anchor
@@ -9156,10 +9387,6 @@ class TestHowItWorks:
             assert html.count(f'data-chart-id="{chart_id}"') == 1, chart_id
         for chart_id in _VS_MARKET:
             assert f'data-chart-id="{chart_id}"' not in html, chart_id
-
-    def test_carries_the_page_cache_control(self, test_client: TestClient) -> None:
-        response = test_client.get("/how-it-works")
-        assert response.headers.get("cache-control") == "public, max-age=60"
 
     def test_an_empty_cache_renders_empty_states_not_a_500(
         self, empty_test_client: TestClient
@@ -9187,8 +9414,6 @@ class TestRetiredUrls:
         response = test_client.get(url, follow_redirects=False)
         assert response.status_code == 301
         assert response.headers["location"] == location
-        # A minute, not forever: a permanently cached 301 could never be re-pointed.
-        assert response.headers.get("cache-control") == "public, max-age=60"
 
     def test_an_old_season_bookmark_opens_that_season(self, test_client: TestClient) -> None:
         response = test_client.get("/performance?season=2023")
@@ -9339,12 +9564,28 @@ In `api/routes/pages.py`, insert this code immediately ABOVE the three-line bann
 # ---------------------------------------------------------------------------
 ```
 
-(i.e. directly after the end of `_compute_summary`):
+(i.e. directly after the end of `_compute_summary`). `_season_metrics_block` is the one builder for the season table and its scope, used by both the page and the block responder. The `"summary"` line in `_build_track_record_context` carries a comment naming `_compute_summary` a known, pre-existing UIAP-01 exception (a request-path average carried over from the retired /performance page); this is a comment only, with no behaviour change:
 
 ```python
 # The insights chart family that moved to Track Record; the rest of INSIGHTS_CHART_IDS is
 # How It Works'. Matched by prefix so the split cannot drift from the id tuple itself.
 _MODEL_VS_MARKET_PREFIX = "insights_model_vs_market_"
+
+
+def _season_metrics_block(service: DataService, season: int | None) -> dict[str, Any]:
+    """The season-metrics table rows and their own old-rule scope (Track Record's season block).
+
+    ONE builder for the full Track Record page and ``_performance_block_response`` (the season
+    swap and the retired ``/performance`` URL's HTMX branch), so the table and its label are read
+    one way. The scope comes from the seasons the table shows (R16 / D33.2-07).
+    """
+    season_metrics = _pivot_season_metrics(service.get_backtest_metrics(season=season))
+    return {
+        "season_metrics": season_metrics,
+        "season_metrics_old_rule_scope": DataService.old_rule_scope(
+            _rows_seasons(season_metrics)
+        ),
+    }
 
 
 def _build_track_record_context(
@@ -9369,7 +9610,6 @@ def _build_track_record_context(
     selected, the season table spans the rows it shows, and the betting block spans the simulation
     ledger.
     """
-    season_metrics = _pivot_season_metrics(service.get_backtest_metrics(season=season))
     betting = _build_betting_context(service, scope, request)
     backtest_scope = service.cached_span_old_rule_scope(BACKTEST_SEASON_RANGE_KEY)
     charts: dict[str, str | None] = {
@@ -9385,14 +9625,14 @@ def _build_track_record_context(
         "charts": charts,
         "available_seasons": service.get_available_seasons(),
         "current_season": season,
-        "season_metrics": season_metrics,
+        **_season_metrics_block(service, season),
+        # Known, pre-existing UIAP-01 exception: _compute_summary averages the cached backtest
+        # metric rows in the request path. It is carried over unchanged from the retired
+        # /performance page; the redesign moves where it renders, not what it computes.
         "summary": _compute_summary(service),
         "aggregate_table": service.get_insights_aggregate_table(),
         "current_path": "/track-record",
         "summary_old_rule_scope": backtest_scope,
-        "season_metrics_old_rule_scope": DataService.old_rule_scope(
-            _rows_seasons(season_metrics)
-        ),
         "backtest_old_rule_scope": backtest_scope,
     }
 
@@ -9428,14 +9668,10 @@ def _performance_block_response(
     retired ``/performance`` URL, so the two cannot drift. The context is exactly what the block
     reads: the rows, the selected season, and the rows' own old-rule scope.
     """
-    season_metrics = _pivot_season_metrics(service.get_backtest_metrics(season=season))
     context = {
         "request": request,
-        "season_metrics": season_metrics,
         "current_season": season,
-        "season_metrics_old_rule_scope": DataService.old_rule_scope(
-            _rows_seasons(season_metrics)
-        ),
+        **_season_metrics_block(service, season),
     }
     template_response = templates.TemplateResponse(
         request, "pages/track_record.html", context, block_name="performance_content"
@@ -9766,13 +10002,15 @@ Create `web/templates/pages/track_record.html`:
             <td class="px-4 py-2.5 text-fg">{{ row.metric }}</td>
             <td class="px-4 py-2.5 text-right text-fg num">{{ row.model_fmt }}</td>
             <td class="px-4 py-2.5 text-right text-fg num">{{ row.market_fmt }}</td>
-            <td class="px-4 py-2.5 text-right font-semibold num {% if row.gap_favorable is sameas true %}text-green-400{% elif row.gap_favorable is sameas false %}text-red-400{% else %}text-muted{% endif %}">{{ row.gap_fmt }}</td>
+            {# MONOCHROME (Decision 13): a gap compares two metrics, it is not a realised result, so
+               it never takes green or red. The stored gap_favorable tri-state picks the word. #}
+            <td class="px-4 py-2.5 text-right font-semibold text-fg num whitespace-nowrap">{{ row.gap_fmt }}{% if row.gap_favorable is sameas true %} <span class="font-sans text-xs font-normal text-muted">favours model</span>{% elif row.gap_favorable is sameas false %} <span class="font-sans text-xs font-normal text-muted">favours market</span>{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-    <p class="text-xs text-muted px-4 py-3 border-t border-line">Gap = Model - Market. Green means the model is on the favorable side of the metric. Gray indicates a neutral gap or missing data.</p>
+    <p class="text-xs text-muted px-4 py-3 border-t border-line">Gap = Model - Market. "Favours model" means the model's number is on the better side of the metric (higher accuracy, lower error); "favours market" means the market's is. No word means a neutral gap or missing data. A gap compares two measurements, so it is not coloured as a win or a loss.</p>
     {% else %}
       <div class="px-4 pb-4">
         {% with heading="Chart unavailable", body="Aggregate metrics could not be computed. Backtest predictions or market data are missing.", action_text=none, action_url=none %}
@@ -9782,9 +10020,8 @@ Create `web/templates/pages/track_record.html`:
     {% endif %}
   </div>
 
-  <div class="scroll-mt-6" id="clv">
-    {{ cp.chart_panel("Cumulative CLV", charts.clv, "CLV chart data has not been generated.") }}
-  </div>
+  {# The panel carries the #clv anchor itself (chart_panel's panel_id). #}
+  {{ cp.chart_panel("Cumulative CLV", charts.clv, "CLV chart data has not been generated.", panel_id="clv") }}
 </section>
 
 {# ---------------------------------------------------------------------- #}
@@ -10234,7 +10471,7 @@ HTMX block rendering. The merged Track Record and How It Works pages and the ret
 redirects are covered in ``tests/api/test_merged_pages.py``.
 ```
 
-Delete these test functions entirely (each from its `def` line through its last line; they are replaced by `tests/api/test_merged_pages.py`): `test_performance_page`, `test_performance_season_filter`, `test_backtest_page`, `test_backtest_page_has_chart_containers`, `test_backtest_page_responsive_grid`, `test_insights_page_200`, `test_insights_page_cache_control`, `test_insights_page_has_nav_link`, `test_insights_page_renders_expected_chart_ids`, `test_insights_page_empty_db`, `test_betting_page_200`, `test_betting_page_renders_recommended_chart_ids`, `test_betting_empty_db`.
+Delete these test functions entirely (each from its `def` line through its last line; they are replaced by `tests/api/test_merged_pages.py`): `test_performance_page`, `test_performance_season_filter`, `test_backtest_page`, `test_backtest_page_has_chart_containers`, `test_backtest_page_responsive_grid`, `test_insights_page_200`, `test_insights_page_cache_control`, `test_insights_page_nav_links_to_how_it_works` (Task 3 renamed it from `test_insights_page_has_nav_link`), `test_insights_page_renders_expected_chart_ids`, `test_insights_page_empty_db`, `test_betting_page_200`, `test_betting_page_renders_recommended_chart_ids`, `test_betting_empty_db`.
 
 Keep `test_performance_fragment`, `test_performance_fragment_all_seasons`, `test_performance_page_htmx_returns_block` (it now exercises the retired URL's HTMX branch), `test_betting_fragment` and `test_betting_fragment_scope_whitelist` unchanged.
 
@@ -10330,38 +10567,123 @@ with:
         ):
 ```
 
-- [ ] **Step 15: Confirm nothing still links to a retired page**
+- [ ] **Step 15: Update PIPELINE.md's Stage 7 page list and its pin**
+
+`PIPELINE.md` (Stage 7, "Produces") still lists the seven pre-redesign pages, and `tests/unit/test_pipeline_md.py::TestPipelineMdAnchors::test_stage7_betting_and_season_pages_present` pins `/betting` in that list. Both change together. The em dash on the Stage 7 line is a pre-existing non-ASCII character the pin test's docstring says to keep: edit around it, do not normalise it.
+
+In `PIPELINE.md`, old:
+
+```
+- **Produces:** FastAPI at http://localhost:8000 — the seven top-nav pages `/`
+  (This Week), `/performance`, `/backtest`, `/insights`, `/betting`,
+  `/season` and `/bets`, plus the `/games/{id}` game-detail drill-down and a
+  `/health` endpoint.
+```
+
+New:
+
+```
+- **Produces:** FastAPI at http://localhost:8000 — the five top-nav pages `/`
+  (This Week), `/bets`, `/season`, `/track-record` and `/how-it-works`, plus the
+  `/games/{id}` game-detail drill-down and a `/health` endpoint. The retired URLs
+  `/performance`, `/backtest`, `/insights` and `/betting` answer with a 301 to the merged
+  page, query string kept.
+```
+
+In `tests/unit/test_pipeline_md.py`, replace the whole method `test_stage7_betting_and_season_pages_present` (inside `class TestPipelineMdAnchors`). Old:
+
+```python
+    def test_stage7_betting_and_season_pages_present(self):
+        """D-06.2 — Stage 7 page list includes /betting and /season.
+
+        These two pages were added in Phase 23 (WR-03); README and RUNBOOK were
+        corrected then but PIPELINE.md was missed.  Phase 23.1 closes the gap.
+        """
+        content = _read_pipeline_md()
+        assert "/betting" in content, "PIPELINE.md Stage 7 missing page: /betting"
+        assert "/season" in content, "PIPELINE.md Stage 7 missing page: /season"
+```
+
+New:
+
+```python
+    def test_stage7_lists_the_five_broadcast_pages(self):
+        """D-06.2, updated by the Broadcast redesign (2026-10): Stage 7 lists the five nav pages.
+
+        Phase 23.1 added /betting and /season to this list. The Broadcast redesign then merged
+        /performance, /backtest, /insights and /betting into /track-record and /how-it-works, so
+        the list names the five pages the nav serves; the retired URLs appear only as redirects.
+        """
+        content = _read_pipeline_md()
+        for page in ("/bets", "/season", "/track-record", "/how-it-works"):
+            assert f"`{page}`" in content, f"PIPELINE.md Stage 7 missing page: {page}"
+        assert "the five top-nav pages" in content, (
+            "PIPELINE.md Stage 7 does not say the nav has five pages"
+        )
+        assert "the seven top-nav pages" not in content, (
+            "PIPELINE.md Stage 7 still lists the seven pre-redesign pages"
+        )
+```
+
+The em dash shown in both Old blocks is the U+2014 character that is in both files today; keep it exactly as it is. Then run:
+
+```bash
+uv run pytest tests/unit/test_pipeline_md.py -v
+```
+
+Expected: all PASS, including `test_stage7_lists_the_five_broadcast_pages`. `CLAUDE.md`'s "SEVEN pages" sentence is the historical Phase-31 record and is left unchanged.
+
+- [ ] **Step 16: Confirm nothing still links to a retired page**
 
 Run: `grep -rn 'href="/performance\|href="/backtest\|href="/insights\|href="/betting' web/templates`
 Expected: no output. (Task 3 replaced the nav and Task 11 the /bets cross-link. If a line prints, point it at `/track-record` / `/how-it-works` with the matching anchor before continuing.)
 
-- [ ] **Step 16: Recompile the stylesheet**
+- [ ] **Step 17: Recompile the stylesheet**
 
 Run: `./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify`
 Expected: exits 0.
 
-- [ ] **Step 17: Lint and type-check**
+- [ ] **Step 18: Lint and type-check**
 
-Run: `uv run ruff check api/routes/pages.py api/routes/fragments.py tests/api/test_merged_pages.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py tests/api/test_pages.py tests/api/test_cache_headers.py tests/api/test_bets_page.py`
-Run: `uv run ruff format api/routes/pages.py api/routes/fragments.py tests/api/test_merged_pages.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py tests/api/test_pages.py tests/api/test_cache_headers.py tests/api/test_bets_page.py`
-Run: `uv run pyright api/routes/pages.py api/routes/fragments.py`
-Expected: no errors. If `ruff check` reports `I001` (import order) on `api/routes/fragments.py` or `api/routes/pages.py`, run `uv run ruff check --fix api/routes/fragments.py api/routes/pages.py` and re-run the check.
+Run: `uv run ruff check api/routes/pages.py api/routes/fragments.py tests/api/test_merged_pages.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py tests/api/test_pages.py tests/api/test_cache_headers.py tests/api/test_bets_page.py tests/unit/test_pipeline_md.py`
+Run: `uv run ruff format api/routes/pages.py api/routes/fragments.py tests/api/test_merged_pages.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py tests/api/test_pages.py tests/api/test_cache_headers.py tests/api/test_bets_page.py tests/unit/test_pipeline_md.py`
+Run: `uv run pyright api/routes/pages.py api/routes/fragments.py tests/api/test_merged_pages.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py tests/api/test_pages.py tests/api/test_cache_headers.py tests/api/test_bets_page.py tests/unit/test_pipeline_md.py`
+Expected: no ruff error; 0 pyright errors in the two route files and `tests/api/test_merged_pages.py`. In the existing test files, no pyright error on a line this task wrote; an older one predates the branch -- note it in the task report and leave it. If `ruff check` reports `I001` (import order) on `api/routes/fragments.py` or `api/routes/pages.py`, run `uv run ruff check --fix api/routes/fragments.py api/routes/pages.py` and re-run the check.
 
-- [ ] **Step 18: Run every affected test file**
+- [ ] **Step 19: Run every affected test file**
 
-Run: `uv run pytest tests/api/test_merged_pages.py tests/api/test_pages.py tests/api/test_fragments.py tests/api/test_cache_headers.py -v`
-Expected: all PASS.
-
-Run: `uv run pytest tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py -v`
-Expected: all PASS -- track_record.html renders 4 labels for a past season, 0 for 2026, 4 unwired; how_it_works.html 1 / 0 / 1; the route counts match on both corpora; the `/performance` and `/betting` HX entries in `FRAGMENT_REQUESTS` still return 1-label fragments.
-
-Run: `uv run pytest "tests/api/test_bets_page.py::test_the_same_cache_meta_does_not_500_any_other_page_either" tests/api/test_import_guard.py tests/api/test_import_guard_bets.py tests/api/test_caching.py -v`
-Expected: all PASS (no new `backtest` import under `api/`).
-
-- [ ] **Step 19: Commit**
+One file per command:
 
 ```bash
-git add api/routes/pages.py api/routes/fragments.py web/templates/pages/track_record.html web/templates/pages/how_it_works.html web/static/css/tailwind-compiled.css tests/api/test_merged_pages.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py tests/api/test_pages.py tests/api/test_cache_headers.py tests/api/test_bets_page.py
+uv run pytest tests/api/test_merged_pages.py -v
+uv run pytest tests/api/test_pages.py -v
+uv run pytest tests/api/test_fragments.py -v
+uv run pytest tests/api/test_cache_headers.py -v
+uv run pytest tests/unit/test_pipeline_md.py -v
+```
+
+Expected: all PASS.
+
+```bash
+uv run pytest tests/unit/test_page_labels.py -v
+uv run pytest tests/api/test_page_labels_routes.py -v
+```
+
+Expected: all PASS -- track_record.html renders 4 labels for a past season, 0 for 2026, 4 unwired; how_it_works.html 1 / 0 / 1; the route counts match on both corpora; the `/performance` and `/betting` HX entries in `FRAGMENT_REQUESTS` still return 1-label fragments.
+
+```bash
+uv run pytest "tests/api/test_bets_page.py::test_the_same_cache_meta_does_not_500_any_other_page_either" -v
+uv run pytest tests/api/test_import_guard.py -v
+uv run pytest tests/api/test_import_guard_bets.py -v
+uv run pytest tests/api/test_caching.py -v
+```
+
+Expected: all PASS (no new `backtest` import under `api/`).
+
+- [ ] **Step 20: Commit**
+
+```bash
+git add api/routes/pages.py api/routes/fragments.py web/templates/pages/track_record.html web/templates/pages/how_it_works.html web/static/css/tailwind-compiled.css tests/api/test_merged_pages.py tests/unit/test_page_labels.py tests/api/test_page_labels_routes.py tests/api/test_pages.py tests/api/test_cache_headers.py tests/api/test_bets_page.py PIPELINE.md tests/unit/test_pipeline_md.py
 git commit -m "$(cat <<'EOF'
 feat(redesign): merge four analysis pages into Track Record and How It Works
 
@@ -10372,6 +10694,8 @@ trend become How It Works. Duplicate charts are no longer displayed (their
 cache ids are untouched). The retired URLs answer 301 with the query string
 kept and a section anchor; an HTMX request to /performance or /betting still
 gets its block. Four old-rule labels on Track Record, one per scoped block.
+The model-vs-market gap is monochrome with a "favours model / market" word.
+PIPELINE.md's Stage 7 page list and its pin test name the five pages.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
@@ -10466,10 +10790,16 @@ Expected: exits 0.
 Run: `uv run pytest tests/api/test_merged_pages.py -v`
 Expected: all PASS.
 
-Run: `uv run pytest tests/unit/test_page_labels.py -k how_it_works tests/api/test_page_labels_routes.py -k how-it-works -v`
-Expected: all PASS (still exactly 1 label on How It Works; the methodology section adds none).
+Two commands, one per file, each with its own `-k` (pytest keeps only the LAST `-k` of one invocation, which would silently deselect every `test_page_labels.py` test, whose ids say `how_it_works.html`):
 
-Run: `uv run ruff check tests/api/test_merged_pages.py` and `uv run ruff format tests/api/test_merged_pages.py`
+```bash
+uv run pytest tests/unit/test_page_labels.py -k how_it_works -v
+uv run pytest tests/api/test_page_labels_routes.py -k how-it-works -v
+```
+
+Expected: all PASS (still exactly 1 label on How It Works; the methodology section adds none), and each command selects at least one test.
+
+Run: `uv run ruff check tests/api/test_merged_pages.py`, `uv run ruff format tests/api/test_merged_pages.py` and `uv run pyright tests/api/test_merged_pages.py`
 Expected: no errors.
 
 - [ ] **Step 5: BLOCKING owner review of the wording -- do not commit before this**
@@ -10515,8 +10845,8 @@ These extend the Shared Interface Contract (section 8, Chart theme) without chan
    - `STRATEGY_COLORS = {"flat_stake": "#E6E9F0", "kelly": "#FF8A3D"}`. Flat and Kelly are staking strategies, not outcomes, so they may not be green/red. They were indigo/pink before.
    - `HEATMAP_SCALE = [[0.0, "#1D2436"], [1.0, "#7C869C"]]`
    - `MARGINS = {"top": {...}, "bottom": {...}}`
-3. **The season heatmap leaves `RdYlGn`.** Green/red are reserved for realised win/loss (spec 4 and 8). A metric heatmap is neither, so it becomes the monochrome `HEATMAP_SCALE` ("brighter = better"). It keeps the existing direction rule: the scale is reversed for ATS/O-U error metrics, exactly where `RdYlGn_r` was used.
-4. **`web/static/input.css` gains `@source "../../api/charts";`** (Task 17). `_empty_chart_div` now emits dark-token classes (`text-muted`, `border-line`, `min-h-[220px]`). Those strings live in Python, and Tailwind only scanned `web/templates`.
+3. **The season heatmap leaves `RdYlGn`.** Green/red are reserved for realised win/loss (spec 4 and 8). A metric heatmap is neither, so it becomes the monochrome `HEATMAP_SCALE`, on which brighter means a higher value. Each heatmap trace keeps its pre-existing direction: the scale is reversed exactly where `RdYlGn_r` was used (the ATS and O/U error-metric traces) and nowhere else. That is not "brighter = better" everywhere -- three of WP's four columns are error metrics on the non-reversed trace -- so no comment, test or caption may claim it is.
+4. **`web/static/input.css` gains `@source "../../api/charts";`** (Task 17). `_empty_chart_div` now emits dark-token classes (`text-muted`, `border-line`, `min-h-[220px]`). Those strings live in Python, and Task 1's `@import "tailwindcss" source(none);` limits scanning to the folders named by `@source`, so the line is REQUIRED: without it `min-h-[220px]`, which no template uses, would not compile.
 5. **`tests/api/test_import_guard_bets.py`: the allow-list count for `api/charts/core.py` goes from 2 to 1.** The module-level `from backtest.report import SEASON_COLORS, TARGET_COLORS` is removed. The lazy `from backtest.metrics import _compute_ece` stays. The guard's exactness test forces this edit in the same commit, which is the intended behaviour of that guard.
 6. **What Task 19's audit expects from earlier tasks.** Tasks 7, 8, 9, 12 and 14 should build these up front so Task 19 finds nothing:
    - Text inside any skewed component sits in a `.unskew` descendant.
@@ -10527,6 +10857,7 @@ These extend the Shared Interface Contract (section 8, Chart theme) without chan
    - The headliner grid uses `grid-cols-1 lg:grid-cols-3`.
    - Nav links carry `aria-current="page"` on the active item, and game detail marks "This Week" (`/`) active.
    - The hamburger button carries `aria-controls="mobile-menu"`, `aria-expanded` and an `aria-label`.
+   - Every control keeps a 44px touch target, including the condensed honesty note's `<summary>`: Task 1 gives `.honesty-note > summary` `min-height: 44px` alongside `.skew-control`'s.
 
 ---
 
@@ -10535,7 +10866,8 @@ These extend the Shared Interface Contract (section 8, Chart theme) without chan
 **Files:**
 - Create: `api/charts/theme.py`
 - Create: `tests/unit/test_chart_theme.py`
-- Modify: `api/charts/core.py:1-86` (module docstring, the `backtest.report` import, `CHART_LAYOUT_DEFAULTS`, `DEFAULT_COLOR`, `_apply_layout_defaults`, `_empty_chart_div`)
+- Modify: `api/charts/core.py:1-86` (module docstring, the `typing.Any` import, the `backtest.report` import, `CHART_LAYOUT_DEFAULTS` (deleted), `DEFAULT_COLOR`, `_apply_layout_defaults`, `_empty_chart_div`)
+- Modify: `api/charts/__init__.py` (drop the `CHART_LAYOUT_DEFAULTS` re-export; nothing in `api/`, `tests/`, `scripts/` or `pipeline/` reads it)
 - Modify: `tests/api/test_import_guard_bets.py:11-15, 40-53, 117-123, 146-153, 168-171`
 - Modify: `web/static/input.css` (one `@source` line)
 - Regenerate: `web/static/css/tailwind-compiled.css`
@@ -10673,12 +11005,19 @@ def test_bet_type_colours_are_the_spec_keys() -> None:
     assert theme.TARGET_COLORS == {"wp": "#FFD400", "ats": "#4CC9F0", "ou": "#C77DFF"}
 
 
-def test_season_colours_cover_2018_to_2026_distinctly_and_avoid_outcome_hues() -> None:
+def test_season_colours_cover_2018_to_2026_distinctly_and_avoid_reserved_colours() -> None:
     assert set(range(2018, 2027)) <= set(theme.SEASON_COLORS)
-    colours = list(theme.SEASON_COLORS.values())
-    assert len(set(colours)) == len(colours)
-    assert theme.WIN_COLOR not in colours
-    assert theme.LOSS_COLOR not in colours
+    colours = {colour.upper() for colour in theme.SEASON_COLORS.values()}
+    assert len(colours) == len(theme.SEASON_COLORS)
+    # Green/red mean a realised result, and the bet-type colours and the accent mean
+    # Winner / Spread / Totals and emphasis on every chart (spec 7.4), so no season takes one.
+    reserved = {
+        theme.WIN_COLOR,
+        theme.LOSS_COLOR,
+        theme.ACCENT,
+        *theme.TARGET_COLORS.values(),
+    }
+    assert not colours & {colour.upper() for colour in reserved}
 
 
 def test_strategy_colours_are_not_outcome_colours() -> None:
@@ -10774,24 +11113,28 @@ FONT_MONO: Final = "JetBrains Mono, monospace"
 
 TARGET_COLORS: dict[str, str] = {"wp": "#FFD400", "ats": "#4CC9F0", "ou": "#C77DFF"}
 
-# Distinct on the dark panel and free of green/red, which are reserved for outcomes.
-# 2026, the live season, takes the accent.
+# Distinct on the dark panel and free of every reserved colour: green/red (realised
+# outcomes), the three bet-type colours and the accent (Winner / Spread / Totals and emphasis
+# on every chart, spec 7.4). 2026, the live season, is the brightest line (near-white; not
+# #FFFFFF, which the chart-layer literal checks treat as a leftover light-theme colour).
 SEASON_COLORS: dict[int, str] = {
     2018: "#94A3B8",
     2019: "#A78BFA",
     2020: "#F472B6",
-    2021: "#4CC9F0",
+    2021: "#60A5FA",
     2022: "#818CF8",
     2023: "#FDBA74",
     2024: "#E879F9",
-    2025: "#F5F5F4",
-    2026: "#FFD400",
+    2025: "#D6D3D1",
+    2026: "#F8FAFC",
 }
 
 # Flat and Kelly are staking strategies, not outcomes, so they never take green/red.
 STRATEGY_COLORS: dict[str, str] = {"flat_stake": "#E6E9F0", "kelly": "#FF8A3D"}
 
-# Monochrome metric heatmap, brighter = better. Callers reverse it for error metrics.
+# Monochrome metric heatmap: brighter = a higher value. Each heatmap trace keeps its
+# pre-existing direction (reversed exactly where the old red-yellow-green scale was), so
+# brighter is not "better" on every column.
 HEATMAP_SCALE: list[list[float | str]] = [[0.0, "#1D2436"], [1.0, "#7C869C"]]
 
 LegendPosition = Literal["top", "bottom"]
@@ -10910,17 +11253,13 @@ def _apply_layout_defaults(fig: go.Figure) -> None:
     fig.update_yaxes(gridcolor=defaults["gridcolor"])
 ```
 
-with
+with the block below. `CHART_LAYOUT_DEFAULTS` is deleted rather than kept: no figure reads it once `_apply_layout_defaults` delegates to the theme, and nothing in `api/`, `tests/`, `scripts/` or `pipeline/` imports it (only the `api/charts/__init__.py` re-export, removed in the next edit).
 
 ```python
 from api.charts.theme import (
-    FONT_DISPLAY,
-    GRID,
-    MARGINS,
     MUTED,
     SEASON_COLORS,
     TARGET_COLORS,
-    TRANSPARENT,
     LegendPosition,
     apply_dark_theme,
 )
@@ -10928,17 +11267,6 @@ from api.charts.theme import (
 # ---------------------------------------------------------------------------
 # Layout defaults
 # ---------------------------------------------------------------------------
-
-# Re-exported by api.charts for back-compat. The values are the dark theme's; nothing reads
-# this dict to style a figure -- _apply_layout_defaults goes through apply_dark_theme.
-CHART_LAYOUT_DEFAULTS: dict[str, Any] = {
-    "font_family": FONT_DISPLAY,
-    "font_size": 13,
-    "plot_bgcolor": TRANSPARENT,
-    "paper_bgcolor": TRANSPARENT,
-    "margin": MARGINS["top"],
-    "gridcolor": GRID,
-}
 
 PLOTLY_CONFIG = {"responsive": True, "displayModeBar": False}
 
@@ -10958,6 +11286,35 @@ def _apply_layout_defaults(
     top edge.
     """
     apply_dark_theme(fig, legend_position=legend_position)
+```
+
+`Any` was used only by the deleted dict, so drop its import. Replace
+
+```python
+from typing import Any
+
+import numpy as np
+```
+
+with
+
+```python
+import numpy as np
+```
+
+In `api/charts/__init__.py`, drop the dead re-export. Replace
+
+```python
+from api.charts.core import (  # noqa: F401
+    CHART_LAYOUT_DEFAULTS,
+    DEFAULT_COLOR,
+```
+
+with
+
+```python
+from api.charts.core import (  # noqa: F401
+    DEFAULT_COLOR,
 ```
 
 Replace
@@ -11091,6 +11448,8 @@ with
 
 - [ ] **Step 7: Let Tailwind see the chart classes, then recompile**
 
+This line is REQUIRED, not belt-and-braces: Task 1 imports Tailwind with `source(none)`, so only the folders named by `@source` are scanned, and `_empty_chart_div`'s classes live in a Python string under `api/charts/`.
+
 Edit `web/static/input.css`. Replace
 
 ```css
@@ -11109,7 +11468,7 @@ Run (Git Bash, from the worktree):
 ./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
 for cls in '.text-muted' '.border-line' '.border-dashed' '.min-h-\[220px\]'; do printf '%s ' "$cls"; grep -c -F "$cls" web/static/css/tailwind-compiled.css; done
 ```
-Expected: each class prints a count of 1 or more.
+Expected: each class prints a count of 1 or more. `.min-h-\[220px\]` is the one that proves the new line works: no template uses it, so before this edit it printed 0.
 
 - [ ] **Step 8: Run the theme, guard and chart tests**
 
@@ -11126,16 +11485,16 @@ Expected: all PASS. `tests/test_charts.py` passes unchanged because its assertio
 
 Run:
 ```bash
-uv run ruff check api/charts/theme.py api/charts/core.py tests/unit/test_chart_theme.py tests/api/test_import_guard_bets.py
-uv run ruff format api/charts/theme.py api/charts/core.py tests/unit/test_chart_theme.py tests/api/test_import_guard_bets.py
-uv run pyright api/charts/theme.py api/charts/core.py tests/unit/test_chart_theme.py
+uv run ruff check api/charts/theme.py api/charts/core.py api/charts/__init__.py tests/unit/test_chart_theme.py tests/api/test_import_guard_bets.py
+uv run ruff format api/charts/theme.py api/charts/core.py api/charts/__init__.py tests/unit/test_chart_theme.py tests/api/test_import_guard_bets.py
+uv run pyright api/charts/theme.py api/charts/core.py api/charts/__init__.py tests/unit/test_chart_theme.py tests/api/test_import_guard_bets.py
 ```
 Expected: `All checks passed!`, files formatted, `0 errors`.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add api/charts/theme.py api/charts/core.py tests/unit/test_chart_theme.py tests/api/test_import_guard_bets.py web/static/input.css web/static/css/tailwind-compiled.css
+git add api/charts/theme.py api/charts/core.py api/charts/__init__.py tests/unit/test_chart_theme.py tests/api/test_import_guard_bets.py web/static/input.css web/static/css/tailwind-compiled.css
 git commit -m "$(cat <<'EOF'
 feat(redesign): dark Broadcast chart theme shared by every dashboard chart
 
@@ -11157,7 +11516,7 @@ EOF
 - Create: `tests/unit/test_chart_colour_rules.py`
 - Modify: `api/charts/core.py` (calibration, CLV, heatmap, equity bodies; theme import list)
 - Modify: `api/charts/insights.py` (imports, docstring, both calibration charts, accuracy trend, the three model-vs-market charts)
-- Modify: `api/charts/betting.py` (docstrings, palette block, boundary/reference lines, legends)
+- Modify: `api/charts/betting.py` (docstrings; the local palette aliases deleted in favour of the theme names at their six call sites; boundary/reference lines; legends)
 - Modify: `api/charts/season.py` (docstrings, reference lines, legends)
 - Test (unchanged, must still pass): `tests/test_charts.py`
 
@@ -11459,11 +11818,14 @@ def test_titles_keep_their_meaning(charts: dict[str, str]) -> None:
     assert "ECE = " in _layout(charts["calibration"])["title"]["text"]
 
 
-def test_heatmap_is_monochrome_and_keeps_the_error_metric_direction(
+def test_heatmap_is_monochrome_and_keeps_each_traces_pre_existing_direction(
     charts: dict[str, str],
 ) -> None:
     heatmaps = [t for t in _data(charts["heatmap"]) if t.get("type") == "heatmap"]
-    # Targets render in sorted order: ats, ou, wp. Error metrics (ats/ou) reverse the scale.
+    # Targets render in sorted order: ats, ou, wp. The scale is reversed exactly where
+    # RdYlGn_r was (the ats and ou traces) -- the pre-existing per-trace direction. This does
+    # not make brighter "better" on every column: the wp trace's error columns (Brier, for
+    # one) are not reversed.
     assert [t.get("reversescale", False) for t in heatmaps] == [True, True, False]
     for trace in heatmaps:
         assert trace["colorscale"] == theme.HEATMAP_SCALE
@@ -11474,13 +11836,13 @@ def test_heatmap_is_monochrome_and_keeps_the_error_metric_direction(
 Run: `uv run pytest tests/unit/test_chart_colour_rules.py -v`
 Expected: these FAIL:
 - `test_no_light_theme_or_legacy_palette_literal_survives`, on `#999"`, `#667eea`, `#16a34a` and others;
-- `test_market_is_dashed_muted_beside_the_solid_bet_type_colour`, because the market line is `#95a5a6`;
+- `test_green_and_red_appear_only_on_realised_win_loss_charts`, because the ATS edge histogram still paints its won bets `#16a34a` rather than `theme.WIN_COLOR`;
 - `test_reference_lines_use_the_theme_reference_colour`;
 - `test_stacked_calibration_rows_have_room_for_titles`;
 - `test_legends_never_sit_on_a_title`, which fails for the bottom group only;
-- `test_heatmap_is_monochrome_and_keeps_the_error_metric_direction`.
+- `test_heatmap_is_monochrome_and_keeps_each_traces_pre_existing_direction`.
 
-`test_every_chart_is_transparent_on_the_panel` and `test_titles_keep_their_meaning` already PASS after Task 17.
+`test_every_chart_is_transparent_on_the_panel`, `test_titles_keep_their_meaning` and `test_market_is_dashed_muted_beside_the_solid_bet_type_colour` already PASS after Task 17: the market line falls back to `DEFAULT_COLOR`, which Task 17 made `theme.MUTED`.
 
 - [ ] **Step 3: Fix the four charts in `api/charts/core.py`**
 
@@ -11488,13 +11850,9 @@ Replace the theme import block written in Task 17
 
 ```python
 from api.charts.theme import (
-    FONT_DISPLAY,
-    GRID,
-    MARGINS,
     MUTED,
     SEASON_COLORS,
     TARGET_COLORS,
-    TRANSPARENT,
     LegendPosition,
     apply_dark_theme,
 )
@@ -11506,16 +11864,12 @@ with
 from api.charts.theme import (
     BOUNDARY_LINE,
     FG,
-    FONT_DISPLAY,
-    GRID,
     HEATMAP_SCALE,
-    MARGINS,
     MUTED,
     REFERENCE_LINE,
     SEASON_COLORS,
     STRATEGY_COLORS,
     TARGET_COLORS,
-    TRANSPARENT,
     LegendPosition,
     apply_dark_theme,
 )
@@ -11640,9 +11994,10 @@ Heatmap -- replace
 with
 
 ```python
-        # One monochrome scale, brighter = better. On this site green/red mean a realised
-        # win/loss, and a metric heatmap is neither. Error metrics (MAE/RMSE) reverse the
-        # scale, so a lower error still reads brighter, exactly where RdYlGn_r was used.
+        # One monochrome scale: brighter = a higher value. On this site green/red mean a
+        # realised win/loss, and a metric heatmap is neither. Each trace keeps the direction
+        # it already had: the ats and ou traces are reversed, exactly where the old
+        # red-yellow-green scale was reversed, and the wp trace is not.
         fig.add_trace(
             go.Heatmap(
                 z=z_values,
@@ -12051,6 +12406,9 @@ from api.charts.core import (
     _get_target_color,
     _to_html,
 )
+# Palette: the dark dashboard theme's names, used directly (no local alias to drift). Flat and
+# Kelly are staking strategies, not outcomes, so they take STRATEGY_COLORS; WIN_COLOR and
+# LOSS_COLOR appear only on the edge histograms' realised win/loss series.
 from api.charts.theme import (
     BOUNDARY_LINE,
     LOSS_COLOR,
@@ -12062,7 +12420,7 @@ from api.charts.theme import (
 logger = logging.getLogger(__name__)
 ```
 
-Replace
+Delete the local palette block. Replace
 
 ```python
 # ---------------------------------------------------------------------------
@@ -12073,22 +12431,99 @@ _FLAT_COLOR = "#667eea"  # flat-stake series (indigo)
 _KELLY_COLOR = "#f093fb"  # Kelly series (pink)
 _WIN_COLOR = "#16a34a"  # win / favorable (green-600)
 _LOSS_COLOR = "#dc2626"  # loss / unfavorable (red-600)
+
+# Empty-state copy shared by every generator (matches _safe_render fallback +
 ```
 
 with
 
 ```python
-# ---------------------------------------------------------------------------
-# Strategy palette (api.charts.theme -- the dark dashboard theme)
-# ---------------------------------------------------------------------------
-# Flat and Kelly are staking strategies, not outcomes, so they take the theme's neutral
-# strategy colours. Green/red are kept for the edge histograms' realised win/loss series.
-
-_FLAT_COLOR = STRATEGY_COLORS["flat_stake"]
-_KELLY_COLOR = STRATEGY_COLORS["kelly"]
-_WIN_COLOR = WIN_COLOR
-_LOSS_COLOR = LOSS_COLOR
+# Empty-state copy shared by every generator (matches _safe_render fallback +
 ```
+
+Then point the six call sites at the theme names. Replace
+
+```python
+            line={"color": _FLAT_COLOR, "width": 2},
+```
+
+with
+
+```python
+            line={"color": STRATEGY_COLORS["flat_stake"], "width": 2},
+```
+
+replace
+
+```python
+            line={"color": _KELLY_COLOR, "width": 2},
+```
+
+with
+
+```python
+            line={"color": STRATEGY_COLORS["kelly"], "width": 2},
+```
+
+replace
+
+```python
+        go.Bar(name="Flat", x=categories, y=flat_rois, marker_color=_FLAT_COLOR),
+```
+
+with
+
+```python
+        go.Bar(
+            name="Flat",
+            x=categories,
+            y=flat_rois,
+            marker_color=STRATEGY_COLORS["flat_stake"],
+        ),
+```
+
+replace
+
+```python
+        go.Bar(name="Kelly", x=categories, y=kelly_rois, marker_color=_KELLY_COLOR),
+```
+
+with
+
+```python
+        go.Bar(
+            name="Kelly",
+            x=categories,
+            y=kelly_rois,
+            marker_color=STRATEGY_COLORS["kelly"],
+        ),
+```
+
+replace
+
+```python
+            marker_color=_WIN_COLOR,
+```
+
+with
+
+```python
+            marker_color=WIN_COLOR,
+```
+
+and replace
+
+```python
+            marker_color=_LOSS_COLOR,
+```
+
+with
+
+```python
+            marker_color=LOSS_COLOR,
+```
+
+After these, `grep -n "_FLAT_COLOR\|_KELLY_COLOR\|_WIN_COLOR\|_LOSS_COLOR" api/charts/betting.py` prints nothing.
 
 Replace
 
@@ -12320,7 +12755,7 @@ Expected: only the `DEFAULT_COLOR` lines:
 - in `api/charts/core.py`: its definition, `_get_season_color`, `_get_target_color` and the equity fallback;
 - in `api/charts/__init__.py`: the back-compat re-export.
 
-No colour literal lines.
+No colour literal lines, and no `RdYlGn` line: the heatmap and theme comments describe the old scale in words for exactly this reason.
 
 - [ ] **Step 8: Run the new rules, the theme tests and the unchanged chart contract**
 
@@ -12329,7 +12764,8 @@ Run:
 uv run pytest tests/unit/test_chart_colour_rules.py -v
 uv run pytest tests/unit/test_chart_theme.py -q
 uv run pytest tests/test_charts.py -v
-uv run pytest tests/api/test_import_guard_bets.py tests/api/test_import_guard.py -q
+uv run pytest tests/api/test_import_guard_bets.py -q
+uv run pytest tests/api/test_import_guard.py -q
 ```
 Expected: all PASS. These `tests/test_charts.py` assertions in particular must stay green with no edit to that file:
 - `test_insights_ats_calibration_happy_path` ("Predicted margin")
@@ -12346,11 +12782,12 @@ Expected: all PASS. These `tests/test_charts.py` assertions in particular must s
 
 Run:
 ```bash
-uv run ruff check api/charts/ tests/unit/test_chart_colour_rules.py
-uv run ruff format api/charts/ tests/unit/test_chart_colour_rules.py
-uv run pyright api/charts/core.py api/charts/insights.py api/charts/betting.py api/charts/season.py api/charts/theme.py tests/unit/test_chart_colour_rules.py
+uv run ruff check api/charts/core.py api/charts/insights.py api/charts/betting.py api/charts/season.py tests/unit/test_chart_colour_rules.py
+uv run ruff format api/charts/core.py api/charts/insights.py api/charts/betting.py api/charts/season.py tests/unit/test_chart_colour_rules.py
+uv run pyright api/charts/core.py api/charts/insights.py api/charts/betting.py api/charts/season.py tests/unit/test_chart_colour_rules.py
+git status --short
 ```
-Expected: `All checks passed!`, `0 errors`.
+Expected: `All checks passed!`, `0 errors`. The files are named one by one, never `api/charts/`: this repo's ruff runs with `fix = true`, so a directory argument could rewrite a file this task does not commit. `git status --short` lists only the five files in the Step 10 `git add`.
 
 - [ ] **Step 10: Commit**
 
@@ -12361,8 +12798,8 @@ fix(redesign): every chart uses the dark theme's colours, lines and legend place
 
 Bet types use the target colours, the market is dashed muted, and reference and season
 lines use the theme's line colours. Flat/Kelly get neutral strategy colours, and green/red
-stay only on the realised win/loss histograms. The metric heatmap leaves RdYlGn for a
-monochrome scale with the same direction rule. The stacked ATS/O-U calibration charts get
+stay only on the realised win/loss histograms, named straight from the theme. The metric
+heatmap leaves RdYlGn for a monochrome scale that keeps each trace's existing direction. The stacked ATS/O-U calibration charts get
 room between rows, so "Predicted margin" no longer sits on "Residuals".
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -12390,7 +12827,8 @@ Expected: `re-rendered <N> charts into C:\Users\jackc\Code\nfl-predict-redesign\
 
 **Files:**
 - Create: `tests/api/test_broadcast_a11y.py`
-- Modify (only where the audit or the screenshots find a violation): `web/templates/base.html`, `web/templates/components/_broadcast.html`, `web/templates/components/*.html`, `web/templates/pages/*.html`, `web/static/input.css`, `web/static/css/custom.css`
+- Modify (only where the audit or the screenshots find a violation): `web/templates/base.html`, `web/templates/components/_broadcast.html`, `web/templates/components/*.html`, `web/templates/pages/*.html`, `web/static/input.css`, `web/static/css/custom.css`, and on the Python side `api/routes/pages.py` or an `api/charts/*.py` module when a fix belongs there
+- Re-record (only if `components/_week_selector.html` changes): `tests/api/snapshots/week_selector_this_week.html`, `tests/api/snapshots/week_selector_prev_next.html`, with Task 5 Step 6
 - Regenerate: `web/static/css/tailwind-compiled.css`
 
 **Interfaces:**
@@ -12404,8 +12842,11 @@ Create `tests/api/test_broadcast_a11y.py`:
 ```python
 """Responsive and accessibility audit for the Broadcast redesign (redesign Task 19).
 
-Rendered-HTML rules run against every page the test client serves; source rules read the
-templates and stylesheets directly. Each rule pins one line of spec section 10.
+Rendered-HTML rules run against every page the test client serves, AND against /bets and / built
+from caches that hold live, suppressed and graded bets -- the shared test_client cache has no bet
+tables, so without those the bet slips, tracker, result strip, suppressed disclosure and headliner
+cards would never be audited. Source rules read the templates and stylesheets directly. Each rule
+pins one line of spec section 10.
 """
 
 from __future__ import annotations
@@ -12533,13 +12974,21 @@ class PageAudit(HTMLParser):
             self.menu_buttons.append(attrs)
 
 
-def _audit(client: TestClient, path: str) -> PageAudit:
-    response = client.get(path)
-    assert response.status_code == 200, path
+def _audit_html(html: str) -> PageAudit:
     audit = PageAudit()
-    audit.feed(response.text)
+    audit.feed(html)
     audit.close()
     return audit
+
+
+def _get(client: TestClient, path: str) -> str:
+    response = client.get(path)
+    assert response.status_code == 200, path
+    return response.text
+
+
+def _audit(client: TestClient, path: str) -> PageAudit:
+    return _audit_html(_get(client, path))
 
 
 # ---------------------------------------------------------------------------
@@ -12590,6 +13039,113 @@ def test_this_week_slate_steps_4_3_2_1(test_client: TestClient) -> None:
         and bool({"sm:grid-cols-2", "md:grid-cols-2"} & classes)
         for classes in audit.class_sets
     )
+
+
+# ---------------------------------------------------------------------------
+# The same rendered-page rules on the markup only a cache WITH bets produces
+# ---------------------------------------------------------------------------
+
+# Audited page -> the nav href that must carry aria-current="page" on it.
+_BET_PAGES: dict[str, str] = {"/bets": "/bets", "/": "/"}
+_BETS_SEASON = 2023
+_BETS_WEEK = 1
+
+
+@pytest.fixture(scope="module")
+def bet_page_audits(tmp_path_factory: pytest.TempPathFactory) -> dict[str, PageAudit]:
+    """Audits of /bets and / rendered from caches holding live, suppressed and graded bets.
+
+    Built with the bets and headliner suites' own builders (the production materializers), so
+    the audit reads the same markup those suites pin. Each page is checked for the markup that
+    makes the audit meaningful before it is audited, so the rules can never pass vacuously.
+    """
+    from tests.api.test_bets_page import (
+        _CONTAMINATED,
+        _FORWARD_CLASS,
+        _block,
+        _client_with_tracker,
+        _graded_row,
+        _live_row,
+        _suppressed_row,
+    )
+    from tests.api.test_this_week_headliner import (
+        _WEEK_GAMES,
+        _build_state_cache,
+        _insert_predictions,
+        _serving,
+    )
+
+    tmp_path = tmp_path_factory.mktemp("a11y_bets")
+    # Five live slips -- one ungraded, three graded replay bets and one graded forward bet --
+    # and two suppressed candidates, one with no recorded reason, so the disclosure renders
+    # its tables.
+    rows = [
+        _live_row("2023_W01_BUF@MIA", "ou"),
+        _graded_row("2023_W01_DET@KC", "win"),
+        _graded_row("2023_W01_CAR@ATL", "loss"),
+        _graded_row("2023_W01_CIN@CLE", "push"),
+        _graded_row("2023_W01_DEN@LVR", "win", pair=_FORWARD_CLASS),
+        _suppressed_row("2023_W01_SEA@SFO", "ats", "ev_below_floor"),
+        _suppressed_row("2023_W01_NYJ@NE", "wp", None),
+    ]
+    # Stored blocks that AGREE with the graded rows, so each result strip renders.
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=3,
+            wins=1,
+            losses=1,
+            pushes=1,
+            hit_rate=0.5,
+            flat_return_units=-0.091,
+        ),
+        _block(
+            _FORWARD_CLASS,
+            bets_graded=1,
+            wins=1,
+            losses=0,
+            pushes=0,
+            hit_rate=1.0,
+            flat_return_units=0.909,
+        ),
+    ]
+    audits: dict[str, PageAudit] = {}
+    with _client_with_tracker(tmp_path, blocks, "a11y_bets", rows=rows) as client:
+        bets_html = _get(client, f"/bets?season={_BETS_SEASON}&week={_BETS_WEEK}")
+    for marker in (
+        '<li class="bet-slip',
+        "data-tracker-block=",
+        "data-result-strip",
+        '<details id="suppressed-candidates"',
+    ):
+        assert marker in bets_html, f"/bets rendered no {marker}; its audit would be vacuous"
+    audits["/bets"] = _audit_html(bets_html)
+
+    home_db = tmp_path / "a11y_home.duckdb"
+    _build_state_cache(home_db, "bets")
+    _insert_predictions(home_db, _WEEK_GAMES)
+    with _serving(home_db) as (client, _conn):
+        home_html = _get(client, f"/?season={_BETS_SEASON}&week={_BETS_WEEK}")
+    assert "data-headliner-bet=" in home_html, "/ rendered no headliner card; vacuous audit"
+    audits["/"] = _audit_html(home_html)
+    return audits
+
+
+@pytest.mark.parametrize("page", list(_BET_PAGES))
+def test_bet_carrying_pages_pass_every_rendered_rule(
+    bet_page_audits: dict[str, PageAudit], page: str
+) -> None:
+    """Slips and their team blocks, tracker tiles and result strips, the suppressed tables and
+    the headliner cards: upright text, labelled bars and strips, scrolling tables, the
+    announced nav item and the wired mobile menu."""
+    audit = bet_page_audits[page]
+    assert not audit.skewed_text
+    assert not audit.unlabelled_bars
+    assert not audit.unlabelled_images
+    assert audit.unscrollable_tables == 0
+    assert set(audit.current_nav_hrefs) == {_BET_PAGES[page]}
+    assert len(audit.menu_buttons) == 1
+    assert not audit.mobile_links_without_target
 
 
 # ---------------------------------------------------------------------------
@@ -12706,10 +13262,26 @@ def test_reduced_motion_stops_lifts_and_animations() -> None:
 
 
 def test_focus_ring_is_the_accent() -> None:
-    focus_bodies = [body for selector, body in _rules(_stylesheets()) if ":focus-visible" in selector]
+    """One visible ring everywhere: the universal :focus-visible rule draws an accent OUTLINE.
+
+    Keyed on the universal rule, not on any :focus-visible rule: select.skew-control's rule
+    colours its text accent and sets outline:none (its clip-path would cut a ring off), so a
+    check that accepted any rule mentioning the accent would pass with no ring at all.
+    """
+    ring_bodies = [
+        body
+        for selector, body in _rules(_stylesheets())
+        if selector.strip().endswith("*:focus-visible")
+    ]
+    assert ring_bodies, "no universal *:focus-visible rule"
     assert any(
-        "#ffd400" in body.lower() or "var(--color-accent)" in body for body in focus_bodies
-    )
+        re.search(
+            r"outline:\s*\d+px\s+solid\s+(?:#ffd400|var\(--color-accent\))",
+            body,
+            re.IGNORECASE,
+        )
+        for body in ring_bodies
+    ), "the universal :focus-visible rule does not draw an accent outline"
 
 
 def test_print_is_black_on_white() -> None:
@@ -12727,16 +13299,16 @@ Before fixing a `test_skewed_boxes_never_skew_their_text` failure, open `web/sta
 
 - [ ] **Step 3: Apply the fix recipe for each failing category**
 
-(a) **Skewed text.** Wrap the text in a counter-skewed span inside the skewed element. For the macros in `components/_broadcast.html`, the change looks like this:
+(a) **Skewed text.** Wrap the text in a counter-skewed span inside the skewed element. The macros in `components/_broadcast.html` and Task 3's nav already do this (`<h2 class="tag"><span class="unskew">{{ label }}</span></h2>`), so a failure points at hand-written markup in a page or component. The change looks like this:
 
 ```jinja
 {# before #}
-<span class="tag">{{ label }}</span>
+<h2 class="tag-ghost">{{ heading }}</h2>
 {# after #}
-<span class="tag"><span class="unskew">{{ label }}</span></span>
+<h2 class="tag-ghost"><span class="unskew">{{ heading }}</span></h2>
 ```
 
-Apply the same pattern to every `team-block`, `edge-chip`, `skew-control` link or button, and nav item the audit names.
+Apply the same pattern to every `team-block`, `edge-chip`, `skew-control` link or button the audit names.
 
 (b) **Unlabelled bar.** Put `role="img"` and an `aria-label` carrying the same numbers printed next to the bar on the bar's wrapper. Mark the decorative segments inside it `aria-hidden="true"`. Game card / game detail win-probability bar:
 
@@ -12748,9 +13320,9 @@ Apply the same pattern to every `team-block`, `edge-chip`, `skew-control` link o
 </div>
 ```
 
-The bar renders only inside the template's existing `{% if game.wp_prob is not none %}` branch. For the tale-of-the-tape Elo bar, use `aria-label="Elo rating: {{ game.away_team }} {{ '%.0f'|format(game.context.away_elo) }}, {{ game.home_team }} {{ '%.0f'|format(game.context.home_elo) }}"`.
+The bar renders only inside the template's existing `{% if game.wp_prob is not none %}` branch. If you rewrite the game-detail bar, keep its existing wrapper classes, including `grow-in` (spec 5's grow-in animation, Task 9). For the tale-of-the-tape Elo bar (sized by flex-grow, no width, since Task 9), use `aria-label="Elo rating: {{ game.away_team }} {{ '%.0f'|format(game.context.away_elo) }}, {{ game.home_team }} {{ '%.0f'|format(game.context.home_elo) }}"`.
 
-(c) **`role="img"` without numbers.** Add the counts to the `aria-label`. Result strip root: `aria-label="Results: {{ wins }} won, {{ losses }} lost, {{ pushes }} pushed"`, using the counts the partial already derives from its tick list. Week strip root: `aria-label="Week by week record: {% for w in weeks %}week {{ w.week }} {{ w.wins }}-{{ w.losses }}{% if not loop.last %}, {% endif %}{% endfor %}"`.
+(c) **`role="img"` without numbers.** Add the counts to the `aria-label`. Result strip root: print the STORED block's counts, as Task 12 does -- `aria-label="Graded results in week order: wins {{ block.wins }}, losses {{ block.losses }}, pushes {{ block.pushes }}"` -- never the counts the partial derives from its marks (those are a consistency check only). Week strip root: `aria-label="Week by week record: {% for w in weeks %}week {{ w.week }} {{ w.wins }}-{{ w.losses }}{% if not loop.last %}, {% endif %}{% endfor %}"`.
 
 (d) **Table without scroll.** Wrap it:
 
@@ -12762,13 +13334,7 @@ The bar renders only inside the template's existing `{% if game.wp_prob is not n
 
 and give its numeric cells `whitespace-nowrap`.
 
-(e) **Active nav item not announced.** In `web/templates/base.html`, on BOTH the desktop and the mobile link for every nav item, add the attribute under the same condition that applies `skew-control-active`:
-
-```jinja
-<a href="{{ item.href }}" class="skew-control {% if current_path == item.href %}skew-control-active{% endif %}"{% if current_path == item.href %} aria-current="page"{% endif %}><span class="unskew">{{ item.label }}</span></a>
-```
-
-If game detail fails this rule, check the `current_path` its route passes. It must be `"/"`, so "This Week" is the active item, matching the approved mockup. Fix it in `api/routes/pages.py` `game_detail_page`.
+(e) **Active nav item not announced.** Already met by Task 3: `base.html` computes `_active_href` once (a `/games/...` path counts as This Week, `"/"`), and both the desktop and the mobile link put `skew-control-active` and `aria-current="page"` on `href == _active_href`; Task 9's game-detail route passes `f"/games/{game_id}"`. If this rule fails, a later edit broke that markup: restore Task 3 Step 4's nav loops and Task 9 Step 3's `current_path` line rather than writing a second rule, then re-run Task 3's two nav tests in `tests/api/test_pages.py`.
 
 (f) **Mobile menu button.** Replace the hamburger button in `web/templates/base.html` with:
 
@@ -12794,7 +13360,7 @@ Every `<a>` inside `#mobile-menu` gets `skew-control` or `min-h-[44px]`.
 
 (h) **Display type under 12px.** Change the offending size to `text-xs` (12px) in the template, or to `font-size: 12px` in the `input.css` rule.
 
-(i) **Touch targets.** Inside the existing `.skew-control` rule and the existing `.honesty-note` `summary` rule in `web/static/input.css`, add the line
+(i) **Touch targets.** Task 1 already declares `min-height: 44px` in both the `.skew-control` rule and the `.honesty-note > summary` rule of `web/static/input.css`. If this fails, a later edit removed one: put the line back inside that rule.
 
 ```css
   min-height: 44px;
@@ -12864,9 +13430,11 @@ After each category's fixes, recompile and re-run (Git Bash):
 ./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
 uv run pytest tests/api/test_broadcast_a11y.py -v
 ```
+Any edit to `components/_week_selector.html` (a recipe (a) or (i) fix, say) must re-record BOTH selector snapshots with Task 5 Step 6, including its class-stripped wiring check, before the commit (Part A contract note 9); otherwise `test_the_this_week_selector_renders_byte_identically` fails. Stage the two snapshot files with the fix.
+
 Commit each category separately once its tests pass, e.g.:
 ```bash
-git add web/ tests/api/test_broadcast_a11y.py
+git add web/ api/ tests/api/test_broadcast_a11y.py tests/api/snapshots/
 git commit -m "$(cat <<'EOF'
 fix(redesign): counter-skew the text inside tags, chips and nav controls
 
@@ -12887,8 +13455,11 @@ uv run pytest tests/api/test_fragments.py -q
 uv run pytest tests/unit/test_page_labels.py -q
 uv run pytest tests/api/test_page_labels_routes.py -q
 uv run pytest tests/unit/test_current_week_rows_reach_the_site.py -q
+uv run ruff check tests/api/test_broadcast_a11y.py
+uv run ruff format tests/api/test_broadcast_a11y.py
+uv run pyright tests/api/test_broadcast_a11y.py
 ```
-Expected: all PASS. A fix that breaks one of these changed an honesty string, an id or a structure. Revert that fix and redo it without touching the contract (Global Constraints, "Structure kept").
+Expected: all PASS, ruff clean, pyright 0 errors (also run ruff and pyright on any `api/` file a fix touched). A fix that breaks one of these changed an honesty string, an id or a structure. Revert that fix and redo it without touching the contract (Global Constraints, "Structure kept").
 
 - [ ] **Step 5: Start the preview server against the worktree's copy**
 
@@ -12959,7 +13530,7 @@ Check this list on every screenshot:
 - Skewed blocks read upright.
 - The slate shows 4/3/2/1 columns at 1440/1024/768/390.
 - Headliners show 3 columns at 1440 and 1024, and 1 at 768 and 390.
-- Bet slips are two-line at 390.
+- Bet slips are stacked (two-line) at 768 and 390 and seven columns at 1440 and 1024 (Decision 14).
 - Tables scroll inside their panel at 390, and the page does not scroll sideways.
 - Green/red appear only on realised results.
 - Yellow appears only as accent/emphasis.
@@ -12967,9 +13538,9 @@ Check this list on every screenshot:
 For each problem, fix the owning template, CSS rule or chart module. Recompile CSS when templates or CSS changed. Re-run Step 4's test files. Re-capture only the affected NAME-WIDTH screenshots, then commit with a message naming the page, width and fix, e.g.:
 
 ```bash
-git add web/
+git add web/ api/
 git commit -m "$(cat <<'EOF'
-fix(redesign): bet slips stack to two lines under 768px on /bets
+fix(redesign): the Track Record ROI table scrolls inside its panel at 390px
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
@@ -13033,14 +13604,18 @@ module_tests=$(for f in $(git diff --name-only master...HEAD -- '*.py' | grep -v
 files=$(printf '%s\n' $changed_tests $web_tests $module_tests | grep -v -E '/(conftest|__init__)\.py$' | sort -u)
 echo "$files" | wc -l
 failed=""
+missing=""
 for f in $files; do
   if [ -f "$f" ]; then
     uv run pytest "$f" -q -p no:cacheprovider > /dev/null 2>&1 && echo "PASS $f" || { echo "FAIL $f"; failed="$failed $f"; }
+  else
+    echo "MISSING $f"; missing="$missing $f"
   fi
 done
 echo "FAILED FILES:${failed:- none}"
+echo "MISSING FILES:${missing:- none}"
 ```
-Expected: `FAILED FILES: none`.
+Expected: `FAILED FILES: none` and `MISSING FILES: none`. A MISSING line is never skipped silently: a file in the fixed list that does not exist means the list or the branch is wrong -- find out which (a renamed or deleted test file, or a typo in the list) and fix it before going on.
 
 For any FAIL, re-run that one file with `-v` to see the failing node ids. Then compare them with the five deliberate tripwires:
 ```bash
@@ -13104,11 +13679,14 @@ Expected: `compiled CSS is current`. If there is a diff, a template change was c
 Run each command (Git Bash). The expected result is stated for each.
 
 ```bash
-# 1. No old navy/red tokens remain anywhere in the web layer or chart code. Expected: no output.
-git grep -n -E 'nfl-(primary|secondary|accent|dark|light)' -- web/ api/
+# The compiled sheet is excluded from 1 and 2: it is generated, and Step 4 already proves it
+# matches its sources. Grep the sources, never the build output.
 
-# 2. No light-theme outcome classes remain outside tests. Expected: no output.
-git grep -n -E 'text-green-700|bg-green-100|bg-amber-100|bg-red-100|text-red-600|bg-red-50\b' -- web/ api/
+# 1. No old navy/red tokens remain anywhere in the web layer or chart code. Expected: no output.
+git grep -n -E 'nfl-(primary|secondary|accent|dark|light)' -- web/ api/ ':!web/static/css/tailwind-compiled.css'
+
+# 2. No light-theme outcome classes remain in the templates or the Python layer. Expected: no output.
+git grep -n -E 'text-green-700|bg-green-100|bg-amber-100|bg-red-100|text-red-600|bg-red-50\b' -- web/templates api/
 
 # 3. Exactly the six page templates remain. Expected:
 #    bets.html game_detail.html how_it_works.html season.html this_week.html track_record.html
@@ -13145,12 +13723,29 @@ No honest threshold for this bet type
 Win edge over the spread line below the threshold
 No honest edge threshold for this bet type
 No spread converter bound to the blend
+Evaluated and priced; the edge was not large enough to bet.
+This bet type only bets a pre-registered slice; this game is not in it.
+The stored line was captured after this game's lock, 6:00 PM Eastern the day before its kickoff, so the decision could not have had it.
+The game has odds for other bet types but not this one.
+The model produced no output for this game -- a pipeline gap, not a market gap.
+The stored price did not come from an accepted sportsbook source.
+Admitted on expected value but sized to zero after the caps.
+A non-finite value reached the expected-value calculation; the row is suppressed rather than tiered.
+The model's number sits inside the no-bet band around the market's, so there is no side to bet and nothing was priced.
+No betting threshold could be set honestly for this bet type, so it places no bets; its predictions are still published.
+The price cleared the floor, but the model's edge over the market's spread-based win chance did not clear the threshold; a win bet needs both.
+There was too little honest pre-lock data to set this bet type's edge threshold, so it places no bets; its predictions are still published.
+The deployed blend binds no spread-to-win-probability converter, so a win bet's second test cannot run. An artifact fault, not missing odds.
+Each game's line locks at 6:00 PM Eastern the day before its own kickoff -- a Thursday game locks on the Wednesday, that week's Sunday games on the Saturday.
 generate_bet_list.py
 populate_cache.py
 EOF
+
+# 7. No "$" anywhere /bets renders: stakes are units, never currency. Expected: no output.
+git grep -n -F '$' -- web/templates/base.html web/templates/pages/bets.html web/templates/components/_broadcast.html web/templates/components/_bet_pick.html web/templates/components/_result_strip.html web/templates/components/_not_advice_banner.html web/templates/components/_old_rule_label.html web/templates/components/_ev_band_badge.html web/templates/components/_provenance_badge.html web/templates/components/_week_selector.html web/templates/components/_empty_state.html web/templates/components/_error_state.html web/templates/components/_export_buttons.html web/templates/components/_loading_skeleton.html
 ```
 
-Any unexpected output is a defect. Fix it, commit, and re-run Steps 2 and 5.
+Item 6 now also covers the 13 suppression help lines and the per-game lock sentence (Global Constraints, honesty wording). Any unexpected output is a defect. Fix it, commit, and re-run Steps 2 and 5.
 
 - [ ] **Step 6: OWNER REVIEW CHECKPOINT (blocking)**
 
@@ -13186,28 +13781,36 @@ git merge --no-ff --no-commit master
 git diff --name-only --diff-filter=U
 ```
 
-Expected conflicts come only from 33-18 Task 9:
-- `tests/unit/test_old_rule_labels.py`, which registers `LIVE-COLD-START-READOUT.md` in its repo-root partition and `NO_PREFIX_NUMBERS_REASONS`;
-- possibly `tests/unit/test_page_labels.py` or `tests/api/test_page_labels_routes.py`.
+This is the ONLY point where master comes into the branch: never merge master mid-run (before this task), because an unfinished 33-18 would land half-applied under the redesign. One larger merge here, after 33-18 closes, is the accepted cost.
 
-Resolution rule for those three files: keep BOTH sides.
-- Every line 33-18 added stays verbatim (its readout registration, any new constant).
-- Every redesign change stays: the six-page template list, the new page markers, the new per-page `data-old-rule-label` counts, `/track-record` and `/how-it-works` in the route and fragment lists.
-- Never delete a 33-18 line, and never revert a redesign page change.
+Where conflicts can come from: master commits (Plan 33-18 and anything after the branch base) that touch a file this branch rewrote or deleted. Forecast -- check each against `git log --oneline HEAD..master -- <file>` before resolving:
+- rewritten templates: `web/templates/base.html`, `pages/this_week.html`, `pages/bets.html`, `pages/game_detail.html`, `pages/season.html`, and the components restyled in Tasks 3-14 (`_game_card.html`, `_provenance_badge.html`, `_old_rule_label.html`, `_not_advice_banner.html`, `_ev_band_badge.html`, `_confidence_badge.html`, `_status_badge.html`, `_week_selector.html`, `_prediction_values.html`, `_empty_state.html`, `_error_state.html`, `_export_buttons.html`, `_week_summary.html`, and the other Task 5 controls);
+- deleted templates: `pages/performance.html`, `pages/backtest.html`, `pages/betting.html`, `pages/insights.html`;
+- Python the branch changed: `api/routes/pages.py`, `api/routes/fragments.py`, `api/services.py`, `api/dependencies.py`, `api/main.py`, `api/season_metrics.py`, `api/charts/*.py`;
+- tests the branch changed: `tests/api/test_bets_page.py`, `tests/api/test_pages.py`, `tests/api/test_fragments.py`, `tests/api/test_export.py`, `tests/api/test_cache_headers.py`, `tests/unit/test_page_labels.py`, `tests/api/test_page_labels_routes.py`, `tests/api/test_import_guard_bets.py`, `tests/api/conftest.py`, `tests/unit/test_pipeline_md.py`;
+- `web/static/input.css`, `web/static/css/custom.css`, `web/static/css/tailwind-compiled.css` (never hand-merge the compiled sheet: take either side, then recompile), and `PIPELINE.md`.
 
-Any conflict in any other file: stop. Show the owner both sides in plain words, and ask which behaviour to keep.
+`tests/unit/test_old_rule_labels.py` is not on the list: the branch never edits it, so 33-18's changes to it merge without a conflict.
 
-After resolving:
+Resolution rule: re-apply master's BEHAVIOUR CHANGE onto the redesigned version, then re-run that file's tests.
+- A conflicted template or component: start from the branch's (redesigned) markup and re-apply master's change to it -- the new text, condition, attribute, id or include -- in the redesigned structure. Honesty wording master adds is kept word for word.
+- A template the branch deleted: keep the deletion and carry master's change into the merged page that replaced it (`pages/track_record.html` for performance / backtest / betting and the market half of insights, `pages/how_it_works.html` for the rest of insights).
+- A conflicted Python or test file: keep both sides. Every line master added stays verbatim (a readout registration, a new constant, a new assertion), and every redesign change stays (the six-page template list, the new markers and label counts, `/track-record` and `/how-it-works` in the route and fragment lists, the restyled markup the tests now read).
+- Never delete a master line and never revert a redesign change. If master's change cannot be expressed in the redesigned markup without changing its meaning, or the two sides disagree about behaviour: stop, show the owner both sides in plain words, and ask which to keep.
+
+After resolving, re-run the tests of every resolved file, one file per command, plus the page-label suites:
 ```bash
 git add <each resolved file>
+uv run pytest <each resolved test file, and the test file that renders each resolved template> -q
 uv run pytest tests/unit/test_old_rule_labels.py -q
 uv run pytest tests/unit/test_page_labels.py -q
 uv run pytest tests/api/test_page_labels_routes.py -q
 git commit -m "$(cat <<'EOF'
 merge(redesign): bring master (Plan 33-18 close) into redesign/broadcast-ui
 
-Kept both sides in the page-label tests: 33-18's readout registration and the
-redesign's six-page list, markers and label counts.
+Re-applied master's behaviour changes onto the redesigned markup and kept both
+sides in the conflicted Python and test files (33-18's additions verbatim; the
+redesign's six-page list, markers, label counts and restyled markup).
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
@@ -13224,8 +13827,9 @@ Clock check first (Task 17 Step 1). Then (Git Bash):
 git -C "C:/Users/jackc/Code/nfl-predict" status --short
 git -C "C:/Users/jackc/Code/nfl-predict" merge --ff-only redesign/broadcast-ui
 git -C "C:/Users/jackc/Code/nfl-predict" log --oneline -3
+git -C "C:/Users/jackc/Code/nfl-predict" rev-parse master redesign/broadcast-ui
 ```
-Expected: the merge fast-forwards, and the newest commit is the Step 8 merge commit. If git refuses because a local change would be overwritten, or because master moved since Step 8, stop and tell the owner. Do not force anything. Push to origin only if the owner asks.
+Expected: the merge fast-forwards, and master now points at the branch tip: `rev-parse` prints the same SHA twice. (The tip is the Step 8 merge commit, or a later fix commit if re-running Steps 2-5 after the merge produced one.) If git refuses because a local change would be overwritten, or because master moved since Step 8, stop and tell the owner. Do not force anything. Push to origin only if the owner asks.
 
 - [ ] **Step 10: Rebuild the live cache so the prerendered charts pick up the theme**
 
@@ -13245,7 +13849,11 @@ Expected: the script completes and reports the chart count. Then smoke-test the 
 ```bash
 uv run uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
-Check them (Git Bash):
+Wait for it, as in Task 19 Step 5 (Git Bash):
+```bash
+for i in $(seq 1 30); do code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://127.0.0.1:8000/); [ "$code" = "200" ] && break; sleep 1; done; echo "status $code"
+```
+Expected: `status 200`. Then check them (Git Bash):
 ```bash
 for p in / /bets /season /track-record /how-it-works; do echo "$p $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000$p)"; done
 curl -s -o /dev/null -w "/performance -> %{http_code} %{redirect_url}\n" "http://127.0.0.1:8000/performance?season=2023"
@@ -13263,7 +13871,13 @@ Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'uvicorn' -
 
 - [ ] **Step 11: Remove the worktree and the merged branch**
 
-Run (Git Bash):
+`git worktree remove` deletes git-ignored files with the folder, and the SDD ledger for this plan (`.superpowers/sdd/2026-10-01-broadcast-ui-redesign/`: `progress.md`, `preflight.md`, the amendment notes) lives in the worktree and is git-ignored. Copy it out first, so the record survives (Git Bash):
+```bash
+mkdir -p "C:/Users/jackc/Code/nfl-predict/.superpowers/sdd"
+cp -r "C:/Users/jackc/Code/nfl-predict-redesign/.superpowers/sdd/2026-10-01-broadcast-ui-redesign" "C:/Users/jackc/Code/nfl-predict/.superpowers/sdd/"
+ls "C:/Users/jackc/Code/nfl-predict/.superpowers/sdd/2026-10-01-broadcast-ui-redesign"
+```
+Expected: the ledger files are listed in the main folder's `.superpowers/sdd/` (ignored there too, via `.git/info/exclude`). Then run (Git Bash):
 ```bash
 rm -f "C:/Users/jackc/Code/nfl-predict-redesign/data/web_cache.duckdb"
 git -C "C:/Users/jackc/Code/nfl-predict" worktree remove "C:/Users/jackc/Code/nfl-predict-redesign"
