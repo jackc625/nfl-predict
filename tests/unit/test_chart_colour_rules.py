@@ -348,7 +348,6 @@ def test_stacked_calibration_rows_have_room_for_titles(charts: dict[str, str]) -
 
 def test_legends_never_sit_on_a_title(charts: dict[str, str]) -> None:
     for name in (
-        "clv",
         "equity",
         "betting_equity",
         "betting_roi_type",
@@ -356,7 +355,9 @@ def test_legends_never_sit_on_a_title(charts: dict[str, str]) -> None:
         "season_cumulative",
     ):
         assert _layout(charts[name])["legend"]["y"] >= 1.0, name
-    for name in ("calibration", "accuracy_trend", "mvm_wp", "season_weekly"):
+    # The CLV legend's three long entries wrap to three rows on a 390px phone, and a top legend
+    # grows upward into the title (redesign Task 19 screenshot review), so it sits underneath.
+    for name in ("calibration", "accuracy_trend", "mvm_wp", "season_weekly", "clv"):
         assert _layout(charts[name])["legend"]["y"] < 0, name
 
 

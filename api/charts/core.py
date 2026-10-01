@@ -297,7 +297,9 @@ def generate_dashboard_clv_chart(predictions: list[dict]) -> str:
         xaxis_title="Game Index (Chronological)",
         yaxis_title="Cumulative Mean CLV",
     )
-    _apply_layout_defaults(fig)
+    # Three long entries ("OU (Mean: +45.8104)") wrap to three rows on a phone, and a top legend
+    # grows upward into the title, so this one sits under the plot.
+    _apply_layout_defaults(fig, legend_position="bottom")
 
     return _to_html(fig)
 
