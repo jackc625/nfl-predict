@@ -682,8 +682,14 @@ def _build_headliner(
     state = _headliner_state(bets_context)
     if state != "not_built" and resolved != (season, week):
         state = "no_week"
+    # The /bets partial-week disclosures (missing games past their lock, pending games), read off
+    # the same context. A week /bets would not show, or has no list at all, discloses nothing.
+    partial = state not in ("not_built", "no_week") and bool(
+        bets_context["missing_games"] or bets_context["pending_games"]
+    )
     return {
         "state": state,
+        "partial": partial,
         "bets": bets_context["bets"] if state == "bets" else [],
         "season": season,
         "week": week,

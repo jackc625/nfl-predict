@@ -212,10 +212,13 @@ def test_the_headliner_names_the_render_bets_makes_for_the_same_week(
     _build_state_cache(db_path, state)
 
     with _serving(db_path) as (client, conn):
-        bets_html = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+        bets_response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+        bets_html = bets_response.text
         clear_cache()
         headliner = _build_headliner(DataService(conn), _SEASON, _WEEK, _REQUEST)
 
+    # A 500 page carries none of the markers and would otherwise be classified as "bets".
+    assert bets_response.status_code == 200
     assert _rendered_state(bets_html) == state, (
         f"the fixture for {state!r} did not make /bets render that state; the parity below "
         "would compare the wrong things"
@@ -275,6 +278,7 @@ def test_a_week_bets_would_not_show_has_no_list_of_its_own(tmp_path: Path) -> No
 
     assert headliner == {
         "state": "no_week",
+        "partial": False,
         "bets": [],
         "season": _SEASON,
         "week": _WEEK + 1,
@@ -324,3 +328,118 @@ def test_the_grid_context_decorates_marks_bets_and_groups_only_a_time_order(
 
     assert by_time["headliner"]["state"] == "bets"
     assert by_time["headliner"]["bets"][0]["game"]["game_id"] == _GAME
+
+
+# ---------------------------------------------------------------------------
+# Partial weeks and the HTMX fragment
+# ---------------------------------------------------------------------------
+
+
+def _rebuild_freeze(db_path: Path, locks: dict[str, datetime]) -> None:
+    """Replace the week's per-game locks, so a built game can sit beside a missing or pending one."""
+    conn = duckdb.connect(str(db_path))
+    try:
+        materialize_bet_week_freeze(
+            conn,
+            pd.DataFrame(
+                [
+                    {
+                        "game_id": gid,
+                        "season": _SEASON,
+                        "week": _WEEK,
+                        "game_freeze_ts": ts,
+                    }
+                    for gid, ts in locks.items()
+                ]
+            ),
+        )
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("second_lock", "expected_partial", "marker"),
+    [
+        (
+            _PAST_LOCK,
+            True,
+            "CAR @ ATL",
+        ),  # locked with no list: named as missing on /bets
+        (
+            _FUTURE_LOCK,
+            True,
+            "Not evaluated yet:",
+        ),  # lock still ahead: the pending line
+    ],
+)
+def test_a_partly_built_week_is_flagged_partial_as_bets_discloses_it(
+    tmp_path: Path, second_lock: datetime, expected_partial: bool, marker: str
+) -> None:
+    db_path = tmp_path / "partial.duckdb"
+    _build_state_cache(db_path, "bets")
+    _rebuild_freeze(db_path, {_GAME: _PAST_LOCK, _SECOND_GAME: second_lock})
+
+    with _serving(db_path) as (client, conn):
+        bets_response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+        clear_cache()
+        headliner = _build_headliner(DataService(conn), _SEASON, _WEEK, _REQUEST)
+
+    assert bets_response.status_code == 200
+    assert marker in bets_response.text, (
+        "the fixture did not make /bets disclose the partial week"
+    )
+    assert headliner["state"] == "bets"
+    assert headliner["partial"] is expected_partial
+
+
+def test_a_fully_built_week_is_not_partial(tmp_path: Path) -> None:
+    db_path = tmp_path / "whole.duckdb"
+    _build_state_cache(db_path, "bets")
+
+    with _serving(db_path) as (_client, conn):
+        headliner = _build_headliner(DataService(conn), _SEASON, _WEEK, _REQUEST)
+
+    assert headliner["partial"] is False
+
+
+def test_the_fragment_without_a_season_resolves_the_same_headliner_as_the_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single-season cache draws no season <select>, so HTMX sends a week with no season."""
+    from api.routes import fragments, pages
+
+    db_path = tmp_path / "single_season.duckdb"
+    _build_state_cache(db_path, "bets")
+    conn = duckdb.connect(str(db_path))
+    try:
+        columns = ", ".join(PREDICTIONS_TABLE_COLUMNS)
+        marks = ", ".join("?" for _ in PREDICTIONS_TABLE_COLUMNS)
+        row = _prediction(_GAME, datetime(2023, 9, 7, 20, 20))
+        conn.execute(
+            f"INSERT INTO predictions ({columns}) VALUES ({marks})",
+            [row[c] for c in PREDICTIONS_TABLE_COLUMNS],
+        )
+    finally:
+        conn.close()
+
+    seen: dict[str, dict[str, Any]] = {}
+
+    def _spy(module: Any, name: str) -> None:
+        original = module._this_week_grid_context
+
+        def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            seen[name] = original(*args, **kwargs)
+            return seen[name]
+
+        monkeypatch.setattr(module, "_this_week_grid_context", wrapper)
+
+    _spy(pages, "page")
+    _spy(fragments, "fragment")
+
+    with _serving(db_path) as (client, _conn):
+        assert client.get(f"/?week={_WEEK}").status_code == 200
+        assert client.get(f"/fragments/games?week={_WEEK}").status_code == 200
+
+    assert seen["page"]["headliner"]["state"] == "bets"
+    assert seen["fragment"]["headliner"] == seen["page"]["headliner"]
+    assert seen["fragment"]["games"][0]["bet_targets"] == ["ou"]

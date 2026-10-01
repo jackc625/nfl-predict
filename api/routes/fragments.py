@@ -57,6 +57,13 @@ def games_fragment(
     week_int = _parse_int_param(week)
     season_int = _parse_int_param(season)
 
+    # A missing season is the latest prediction season, exactly as this_week_page fills it; the
+    # week selector draws no season <select> for a single-season cache, so its requests omit it.
+    if season_int is None:
+        available_seasons = service.get_prediction_seasons()
+        if available_seasons:
+            season_int = available_seasons[0]
+
     # When season changes, default to latest week for that season
     if week_int is None and season_int is not None:
         available_weeks = service.get_available_weeks(season=season_int)
