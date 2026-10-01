@@ -19456,3 +19456,27 @@ DAILY_BRACKET_JSONL_APPENDS: tuple[tuple[str, str], ...] = (
         "per skipped game with a new natural key",
     ),
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33-18 fallback (2026-09-30) -- WHY THE DAILY BRACKET MOVES TO 2026-10-03.
+#
+# APPENDED 2026-10-01 (00:30 ET, the night of 2026-09-30). Nothing above this line was edited.
+# Fallback procedure step 1, recorded BEFORE any Saturday picture. MEASURED read-only on
+# 2026-09-30 at about 20:12-20:15 ET on commit 878116b, from the run's own records:
+# logs/friday_pipeline.json (start 2026-09-30T17:00:16.711976-04:00, end
+# 17:00:26.762355-04:00, status failed, season 2026 week 4, data_qa failed "Data QA failed: 1
+# checks failed"), the last line of logs/daily_lock_runs.jsonl (outcome run_failed, game_ids
+# ["2026_W04_PIT@CLE"]), schtasks Last Result 1, and a read-only re-run of
+# scripts.data_qa.DataQualityMonitor().generate_qa_report() (20 checks, 19 passed, 1 failed:
+# weather completeness, 2026 week 4, expected 16, actual 1). The owner's reply "That works"
+# (2026-09-30, about 20:35 ET) is the Task 4 resume signal "Saturday".
+# ---------------------------------------------------------------------------
+
+#: The dated reason, one sentence, carrying both triggers.
+DAILY_BRACKET_FALLBACK_REASON: str = (
+    "On 2026-09-30 the 17:00 ET scheduled daily run failed at data_qa (the weather "
+    "completeness check expected all 16 week-4 games but the slate-scoped ingest had fetched "
+    "1, so 2026_W04_PIT@CLE was not predicted and is never back-filled), and the session "
+    "resumed at about 20:11 ET, after Task 5's 16:30 ET start limit, so no before-picture was "
+    "taken and the bracket moves to the 2026-10-03 17:00 ET run."
+)
