@@ -46,6 +46,9 @@ from api.cache import (
     BET_STATUS_LIVE,
     BET_TRACKER_BLOCK_COLUMNS,
     CURRENT_SLATE_KEY,
+    GRADING_STATUS_LOSS,
+    GRADING_STATUS_PUSH,
+    GRADING_STATUS_WIN,
     PREDICTIONS_TABLE_COLUMNS,
     bet_list_populated_at_key,
     parse_current_slate,
@@ -1023,6 +1026,47 @@ class DataService:
             # The cache predates the tracker (no bet_tracker_blocks table). The page renders the
             # tracker-absent empty state rather than 500ing.
             logger.warning("bet_tracker_blocks table not available in cache")
+            return []
+        columns = [desc[0] for desc in result.description]
+        return [dict(zip(columns, row)) for row in result.fetchall()]
+
+    def get_graded_bet_outcomes(self) -> list[dict[str, Any]]:
+        """Return every GRADED live bet's stored outcome, for the /bets result strip.
+
+        The row set is exactly the one ``backtest.bet_tracker.aggregate_by_provenance`` counts
+        into ``bet_tracker_blocks``: ``status`` live and ``grading_status`` one of win / loss /
+        push. A pending bet is ungraded and a suppressed candidate was never bet, so neither is
+        here. A read, not a computation: each stored ``grading_status`` is returned as written,
+        with no count, rate or SQL aggregate (UIAP-01); the template draws one mark per row.
+
+        Ordered by class and then by the bet list's four-key tie-break, so the strip reads in
+        week order (game id order within a week) and two requests render it identically.
+        """
+        key = ("graded_bet_outcomes",)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_graded_bet_outcomes_uncached()
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_graded_bet_outcomes_uncached(self) -> list[dict[str, Any]]:
+        try:
+            result = self._conn.execute(
+                "SELECT provenance, validation_type, season, week, game_id, target, "
+                "grading_status FROM bet_list "
+                "WHERE status = ? AND grading_status IN (?, ?, ?) "
+                "ORDER BY provenance, validation_type, season, week, game_id, target",
+                [
+                    BET_STATUS_LIVE,
+                    GRADING_STATUS_WIN,
+                    GRADING_STATUS_LOSS,
+                    GRADING_STATUS_PUSH,
+                ],
+            )
+        except duckdb.Error:
+            # The cache predates Phase 31 (no bet_list table): no strip, never a 500.
+            logger.warning("bet_list table not available in cache")
             return []
         columns = [desc[0] for desc in result.description]
         return [dict(zip(columns, row)) for row in result.fetchall()]

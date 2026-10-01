@@ -545,6 +545,20 @@ def _bet_week_coverage(
     )
 
 
+def _graded_outcomes_by_class(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """Partition the stored graded outcomes by honesty class, for the /bets result strip.
+
+    A partition, not an aggregate: every row lands in exactly one list, in the getter's order,
+    and nothing is counted, summed or derived (UIAP-01). The key is the tracker section's own
+    ``data-tracker-block`` value, so the template finds a class by the string it already renders.
+    """
+    by_class: dict[str, list[str]] = {}
+    for row in rows:
+        key = f"{row['provenance']}:{row['validation_type']}"
+        by_class.setdefault(key, []).append(row["grading_status"])
+    return by_class
+
+
 def _build_bets_context(
     service: DataService,
     season: int | None,
@@ -606,6 +620,10 @@ def _build_bets_context(
         # its sections by matching the two stored labels; it never pools two classes into one
         # figure, because the pooled figure does not exist to render.
         "tracker_blocks": tracker_blocks,
+        # The graded rows behind those blocks, partitioned by the same class key the tracker
+        # sections render, for the result strip (redesign spec 7.3). A read and a partition, not
+        # a count: the template draws the strip only when it agrees with the stored block.
+        "graded_outcomes": _graded_outcomes_by_class(service.get_graded_bet_outcomes()),
         # Two blocks, two scopes. The selected week's list (a 2021-2025 week is a replay the old
         # models reconstructed), and the backtest-replay tracker sections. The forward tracker
         # section is 2026 by construction and carries no label.

@@ -64,7 +64,12 @@ from api.cache import (
 from api.dependencies import templates as app_templates
 from api.services import DataService, clear_cache
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
-from backtest.bet_tracker import EmptyTrackerBlock, TrackerBlock, to_tracker_frame
+from backtest.bet_tracker import (
+    EmptyTrackerBlock,
+    TrackerBlock,
+    aggregate_all_blocks,
+    to_tracker_frame,
+)
 from backtest.ev_chain_constants import assign_ev_tier
 from tests.api.week_selector_snapshot import (
     COMPONENTS_DIR,
@@ -2024,6 +2029,173 @@ def _tracker_sections(body: str) -> dict[str, str]:
         end = starts[index + 1][1] if index + 1 < len(starts) else len(body)
         sections[key] = body[start:end]
     return sections
+
+
+# ---------------------------------------------------------------------------
+# The result strip's source: the graded outcomes behind each tracker block (redesign Task 10)
+# ---------------------------------------------------------------------------
+#
+# The strip draws one mark per graded bet. It must be drawn from EXACTLY the rows
+# backtest.bet_tracker counts into a block -- status live, grading_status win/loss/push -- or it
+# would show a different record from the tiles beside it. These tests pin that row set against the
+# real aggregator rather than against a transcription of its filter.
+
+
+def _graded_row(
+    game_id: str,
+    grading_status: str,
+    *,
+    pair: tuple[str, str] = _CONTAMINATED,
+    week: int = _WEEK,
+    target: str = "ou",
+) -> dict[str, Any]:
+    """One LIVE bet_list row carrying a stored grade, in the shape the grader writes it."""
+    row = _live_row(game_id, target, week=week)
+    row.update(
+        {
+            "provenance": pair[0],
+            "validation_type": pair[1],
+            "grading_status": grading_status,
+            "outcome": {"win": True, "loss": False}.get(grading_status),
+            "payout_flat": {"win": 0.909, "loss": -1.0, "push": 0.0}.get(
+                grading_status
+            ),
+        }
+    )
+    return row
+
+
+def _graded_fixture_rows() -> list[dict[str, Any]]:
+    """Graded, ungraded and never-bet rows across two classes and two weeks."""
+    return [
+        _graded_row("2023_W01_DET@KC", "win"),
+        _graded_row("2023_W01_CAR@ATL", "loss"),
+        _graded_row("2023_W01_CIN@CLE", "push"),
+        # Ungraded: a live bet whose result is not known yet. Not part of any record.
+        _graded_row("2023_W01_JAX@IND", "pending"),
+        # Never bet: a suppressed candidate. Not part of any record.
+        _suppressed_row("2023_W01_SEA@SFO", "ats", "ev_below_floor"),
+        _graded_row("2023_W02_AAA@BBB", "win", week=_EMPTY_WEEK),
+        _graded_row("2023_W01_DEN@LVR", "win", pair=_FORWARD_CLASS),
+    ]
+
+
+def _graded_cache(tmp_path: Path, name: str) -> Path:
+    """A cache whose bet_list carries the graded fixture rows and their schedule."""
+    clear_cache()
+    rows = _graded_fixture_rows()
+    db_path = tmp_path / f"{name}.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_bet_list(conn, pd.DataFrame(rows))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [
+                    {"game_id": r["game_id"], "season": _SEASON, "week": r["week"]}
+                    for r in rows
+                ]
+            ),
+        )
+    finally:
+        conn.close()
+    return db_path
+
+
+def test_the_graded_outcomes_are_the_live_graded_rows_in_a_fixed_order(
+    tmp_path: Path,
+) -> None:
+    """Live AND graded only, ordered by class then the four-key tie-break, as stored."""
+    db_path = _graded_cache(tmp_path, "graded_order")
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        rows = DataService(probe).get_graded_bet_outcomes()
+    finally:
+        probe.close()
+
+    assert [
+        (r["provenance"], r["validation_type"], r["game_id"], r["grading_status"])
+        for r in rows
+    ] == [
+        ("backtest_replay", "contaminated", "2023_W01_CAR@ATL", "loss"),
+        ("backtest_replay", "contaminated", "2023_W01_CIN@CLE", "push"),
+        ("backtest_replay", "contaminated", "2023_W01_DET@KC", "win"),
+        ("backtest_replay", "contaminated", "2023_W02_AAA@BBB", "win"),
+        ("forward", "forward_realized", "2023_W01_DEN@LVR", "win"),
+    ]
+    assert set(rows[0]) == {
+        "provenance",
+        "validation_type",
+        "season",
+        "week",
+        "game_id",
+        "target",
+        "grading_status",
+    }
+
+
+def test_the_graded_outcomes_count_exactly_what_the_tracker_aggregates(
+    tmp_path: Path,
+) -> None:
+    """Per class, the outcome marks equal the REAL aggregator's wins, losses and pushes."""
+    db_path = _graded_cache(tmp_path, "graded_vs_tracker")
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        outcomes = DataService(probe).get_graded_bet_outcomes()
+    finally:
+        probe.close()
+
+    blocks = aggregate_all_blocks(pd.DataFrame(_graded_fixture_rows()))
+    assert blocks, "the fixture produced no tracker block, so this proves nothing"
+    for block in blocks:
+        assert isinstance(block, TrackerBlock)
+        statuses = [
+            r["grading_status"]
+            for r in outcomes
+            if (r["provenance"], r["validation_type"])
+            == (block.provenance, block.validation_type)
+        ]
+        assert statuses.count("win") == block.wins
+        assert statuses.count("loss") == block.losses
+        assert statuses.count("push") == block.pushes
+        assert len(statuses) == block.bets_graded
+
+
+def test_the_graded_outcomes_tolerate_a_cache_without_a_bet_list(
+    tmp_path: Path,
+) -> None:
+    """A cache that predates the bet list returns no outcomes rather than raising."""
+    clear_cache()
+    db_path = tmp_path / "graded_no_table.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        conn.execute("DROP TABLE bet_list")
+    finally:
+        conn.close()
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert DataService(probe).get_graded_bet_outcomes() == []
+    finally:
+        probe.close()
+
+
+def test_the_bets_context_partitions_the_outcomes_by_honesty_class(
+    tmp_path: Path,
+) -> None:
+    """The context keys each class by the same string its tracker section renders."""
+    from api.routes.pages import _build_bets_context
+
+    db_path = _graded_cache(tmp_path, "graded_context")
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        context = _build_bets_context(DataService(probe), _SEASON, _WEEK, None)  # pyright: ignore[reportArgumentType]
+    finally:
+        probe.close()
+
+    assert context["graded_outcomes"] == {
+        "backtest_replay:contaminated": ["loss", "push", "win", "win"],
+        "forward:forward_realized": ["win"],
+    }
 
 
 def test_the_tracker_renders_one_section_per_honesty_class_and_never_pools_them(
