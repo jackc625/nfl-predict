@@ -2319,18 +2319,14 @@ def test_the_tracker_renders_one_section_per_honesty_class_and_never_pools_them(
     assert ">54<" not in body, "a pooled bets-graded total reached the page"
     assert ">51<" not in body, "a pooled replay bets-graded total reached the page"
 
-    # Every rendered figure card lives inside exactly one section.
-    inside = sum(
-        section.count(
-            'class="text-xs font-semibold text-gray-500 uppercase tracking-wide"'
-        )
-        for section in sections.values()
-    )
+    # Every rendered figure tile lives inside exactly one section, located by its data hook.
+    inside = sum(section.count("data-figure-label") for section in sections.values())
     tracker_start = min(body.index(s) for s in sections.values())
     tracker_region = body[tracker_start:]
-    assert inside == tracker_region.count(
-        'class="text-xs font-semibold text-gray-500 uppercase tracking-wide"'
-    ), "a tracker figure rendered outside one of the sections"
+    assert inside == tracker_region.count("data-figure-label"), (
+        "a tracker figure rendered outside one of the sections"
+    )
+    assert inside == 18, "three sections of six figures each did not all render"
 
 
 def test_each_block_renders_exactly_the_six_named_figures(tmp_path: Path) -> None:
@@ -2350,10 +2346,7 @@ def test_each_block_renders_exactly_the_six_named_figures(tmp_path: Path) -> Non
         body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
 
     section = _tracker_sections(body)["backtest_replay:contaminated"]
-    labels = re.findall(
-        r'<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">([^<]+)</p>',
-        section,
-    )
+    labels = re.findall(r'<p class="label" data-figure-label>([^<]+)</p>', section)
     assert labels == list(_TRACKER_FIGURE_LABELS), (
         f"the block did not render exactly the six named figures in order: {labels}"
     )
@@ -2468,7 +2461,9 @@ def test_a_negative_return_states_the_measurement_and_a_positive_one_does_not(
         negative_body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
     negative = _tracker_sections(negative_body)["backtest_replay:contaminated"]
     assert "-0.053" in negative
-    assert "text-red-600" in negative
+    # The RETURN tile itself carries the loss red. The Losses tile is red in every section, so a
+    # bare "text-red-400" substring check would pass whatever colour the return took.
+    assert 'text-red-400" data-figure-value>-0.053<' in negative
     assert _ZERO_RESULT_LINE in negative
 
     winning = [
@@ -2535,7 +2530,9 @@ def test_an_unmeasured_return_never_renders_as_a_zero(tmp_path: Path) -> None:
     assert "+0.000" not in section, "an unmeasured return rendered as a measured zero"
     # Scoped to the rendered FIGURE VALUES: the word "provenance" contains the letters "nan", so
     # a whole-section substring search would be a false positive rather than a check.
-    values = re.findall(r'<p class="text-2xl[^"]*">([^<]*)</p>', section)
+    values = re.findall(
+        r'<p class="stat-tile-value[^"]*" data-figure-value>([^<]*)</p>', section
+    )
     assert values, "the block rendered no figures"
     assert not any("nan" in value.lower() for value in values), (
         f"a non-finite value reached a rendered figure: {values}"
@@ -2566,8 +2563,12 @@ def test_green_and_red_appear_only_inside_the_tracker_sections(tmp_path: Path) -
         body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
 
     sections = _tracker_sections(body)
-    assert any("text-green-700" in s for s in sections.values())
-    assert any("text-red-600" in s for s in sections.values())
+    replay = sections["backtest_replay:contaminated"]
+    # Each realized-outcome hue is pinned to the tile that carries it. The Wins tile is always
+    # green and the Losses tile always red, so a bare substring check anywhere in the section
+    # could not tell whether the RETURN (-0.01 here) took its colour from its sign.
+    assert 'text-green-400" data-figure-value>6<' in replay
+    assert 'text-red-400" data-figure-value>-0.010<' in replay
 
     # Every EV band badge on the page, located by its authored title prefix.
     badges = re.findall(
@@ -2581,19 +2582,20 @@ def test_green_and_red_appear_only_inside_the_tracker_sections(tmp_path: Path) -
                     f"an EV band badge carries the {forbidden} hue: {classes}"
                 )
 
-    # Outside the tracker region the realized-outcome colours do not appear at all. The ONE red
-    # above the tracker is the REFUSAL role, not the realized-outcome role: _error_state.html
-    # pairs exactly one bg-red-50 container with exactly one text-red-600 recovery line, and the
-    # UI-SPEC's colour table lists those as separate roles. Counting the pair is what keeps this
-    # assertion honest without pretending the shipped refusal partial is a tracker colour.
+    # Outside the tracker region the realized-outcome colours do not appear at all. The refusal
+    # role uses its own red family (the error state's red-950 / 800 / 200 / 100), so the OUTCOME
+    # shades -- green and red 400 text, 500 fill -- must be absent above the tracker outright.
     tracker_start = min(body.index(s) for s in sections.values())
     above = body[:tracker_start]
-    assert "text-green-700" not in above, (
-        "a realized-outcome green rendered above the tracker"
-    )
-    assert above.count("text-red-600") == above.count("bg-red-50"), (
-        "a red above the tracker is not accounted for by a refusal block"
-    )
+    for outcome_class in (
+        "text-green-400",
+        "bg-green-500",
+        "text-red-400",
+        "bg-red-500",
+    ):
+        assert outcome_class not in above, (
+            f"the realized-outcome colour {outcome_class} rendered above the tracker"
+        )
 
 
 def test_the_forward_block_is_withheld_under_the_hard_block_while_replay_stays_readable(
@@ -2740,6 +2742,113 @@ def test_the_tracker_shares_the_single_week_swap_indicator(tmp_path: Path) -> No
         "backtest_replay:contaminated",
         "forward:forward_realized",
     }, "the tracker sits outside the week swap target"
+
+
+def _render_strip(outcomes: list[str], block: dict[str, int]) -> str:
+    """Render the result-strip macro on its own, through the app's template environment."""
+    module = app_templates.env.get_template("components/_result_strip.html").module
+    return str(module.result_strip(outcomes, block))  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def test_the_result_strip_renders_only_when_it_agrees_with_its_block() -> None:
+    """Review Focus 4: a strip that disagrees with the stored block renders NOTHING.
+
+    The tiles read the precomputed block; the marks read the graded rows. A population run
+    interrupted between the two writes leaves them out of step, and two disagreeing records on one
+    page would each contradict the other. The stored tiles stay the authority.
+    """
+    block = {"bets_graded": 3, "wins": 2, "losses": 1, "pushes": 0}
+
+    assert _render_strip([], block).strip() == "", "an empty class drew a strip"
+    assert _render_strip(["win", "win", "win"], block).strip() == "", (
+        "a strip whose wins disagree with the stored block was drawn"
+    )
+    # Every named count agrees but the length does not: a value outside the grading vocabulary
+    # slipped in. Still a disagreement, still no strip.
+    assert _render_strip(["win", "win", "loss", "pending"], block).strip() == ""
+
+    agreeing = _render_strip(["win", "loss", "win"], block)
+    assert agreeing.count("data-result-mark") == 3
+    assert "wins 2, losses 1, pushes 0" in agreeing
+    assert agreeing.count("bg-green-500") == 2
+    assert agreeing.count("bg-red-500") == 1
+
+
+def test_the_result_strip_draws_one_mark_per_graded_bet_in_its_own_section(
+    tmp_path: Path,
+) -> None:
+    """Each class's strip draws that class's graded bets and no other class's."""
+    rows = [
+        _graded_row("2023_W01_DET@KC", "win"),
+        _graded_row("2023_W01_CAR@ATL", "loss"),
+        _graded_row("2023_W01_CIN@CLE", "win"),
+        _graded_row("2023_W01_JAX@IND", "push"),
+        _graded_row("2023_W01_DEN@LVR", "win", pair=_FORWARD_CLASS),
+    ]
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=4,
+            wins=2,
+            losses=1,
+            pushes=1,
+            hit_rate=2 / 3,
+            flat_return_units=0.1,
+        ),
+        _block(
+            _FORWARD_CLASS,
+            bets_graded=1,
+            wins=1,
+            losses=0,
+            pushes=0,
+            hit_rate=1.0,
+            flat_return_units=0.909,
+        ),
+    ]
+    with _client_with_tracker(tmp_path, blocks, "strip_agrees", rows=rows) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    sections = _tracker_sections(body)
+    replay = sections["backtest_replay:contaminated"]
+    forward = sections["forward:forward_realized"]
+    assert replay.count("data-result-mark") == 4
+    assert "wins 2, losses 1, pushes 1" in replay
+    assert ">2-1-1<" in replay, "the record line does not restate the stored counts"
+    assert forward.count("data-result-mark") == 1
+    assert "wins 1, losses 0, pushes 0" in forward
+
+
+def test_a_result_strip_that_disagrees_with_its_stored_block_is_omitted(
+    tmp_path: Path,
+) -> None:
+    """The page-level half of Review Focus 4: no strip, and the stored tiles still render."""
+    rows = [
+        _graded_row("2023_W01_DET@KC", "win"),
+        _graded_row("2023_W01_CAR@ATL", "win"),
+        _graded_row("2023_W01_CIN@CLE", "win"),
+        _graded_row("2023_W01_JAX@IND", "loss"),
+    ]
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=4,
+            wins=2,
+            losses=1,
+            pushes=1,
+            hit_rate=2 / 3,
+            flat_return_units=0.1,
+        )
+    ]
+    with _client_with_tracker(tmp_path, blocks, "strip_disagrees", rows=rows) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    replay = _tracker_sections(body)["backtest_replay:contaminated"]
+    assert "data-result-strip" not in replay
+    assert "data-result-mark" not in replay
+    # The STORED block stays the authority: its tiles and its record line still render.
+    assert "data-figure-value>4<" in replay
+    assert "Hit rate" in replay
+    assert ">2-1-1<" in replay
 
 
 # ---------------------------------------------------------------------------

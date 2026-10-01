@@ -1,0 +1,40 @@
+{# The /bets result strip: one mark per graded live bet of ONE honesty class (redesign spec 7.3).
+
+   A SECOND RENDERING OF FIGURES THE TILES ALREADY SHOW, so it is drawn only when it agrees with
+   them. The tiles read the PRECOMPUTED tracker block (backtest.bet_tracker, UIAP-01); the marks
+   read the graded rows that block was aggregated from (DataService.get_graded_bet_outcomes). The
+   two arrive through separate population writes -- a run interrupted between the bet-list write
+   and the tracker write leaves them out of step -- and two disagreeing records on one page would
+   each contradict the other. So the strip renders only when its win, loss and push marks number
+   exactly the block's stored wins, losses and pushes AND its length equals bets_graded; otherwise
+   it renders nothing and the stored tiles stand alone as the authority.
+
+   The counts below are a CONSISTENCY CHECK, never a published figure: nothing is displayed here
+   that the stored block does not already carry.
+
+   Colour is the tracker's outcome colour -- green won, red lost, grey push. This strip only ever
+   renders inside a tracker section, the one place on /bets where hue may mean a result.
+
+   Usage: {% from "components/_result_strip.html" import result_strip %}
+          {{ result_strip(outcomes, block) }}
+   outcomes: list of "win" / "loss" / "push" in week order (game id order within a week);
+   block: the stored tracker block. #}
+{% macro result_strip(outcomes, block) -%}
+{%- set _outcomes = outcomes or [] -%}
+{%- set _wins = _outcomes | select("equalto", "win") | list | length -%}
+{%- set _losses = _outcomes | select("equalto", "loss") | list | length -%}
+{%- set _pushes = _outcomes | select("equalto", "push") | list | length -%}
+{%- if _outcomes
+      and _wins == block.wins
+      and _losses == block.losses
+      and _pushes == block.pushes
+      and (_outcomes | length) == block.bets_graded -%}
+{# The label prints the STORED block's counts: the strip only renders when its own marks agree
+   with them, and the stored block stays the one source of every published figure. #}
+<div class="flex flex-wrap items-center gap-0.5" role="img" data-result-strip aria-label="Graded results in week order: wins {{ block.wins }}, losses {{ block.losses }}, pushes {{ block.pushes }}">
+  {%- for outcome in _outcomes %}
+  <span data-result-mark class="block w-1.5 h-4 {% if outcome == 'win' %}bg-green-500{% elif outcome == 'loss' %}bg-red-500{% else %}bg-[#5B6478]{% endif %}"></span>
+  {%- endfor %}
+</div>
+{%- endif -%}
+{%- endmacro %}

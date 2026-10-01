@@ -500,22 +500,34 @@
 {% set replay_blocks = _ordered_blocks | selectattr("provenance", "equalto", "backtest_replay") | list %}
 {% set forward_blocks = _ordered_blocks | selectattr("provenance", "equalto", "forward") | list %}
 
-{# One figure card. The geometry is the shipped betting.html KPI card, so the tracker looks like
-   the rest of the app; the tone class is the ONLY thing that varies. #}
+{# The graded outcomes behind the blocks, keyed by the section's own data-tracker-block string
+   (Task 10). A cache or a hand-built context without them gets an empty map: no strip, and the
+   stored tiles render exactly as before. #}
+{% from "components/_result_strip.html" import result_strip %}
+{% set _outcomes_by_class = graded_outcomes if graded_outcomes is defined and graded_outcomes else {} %}
+
+{# One figure tile. The tone class is the ONLY thing that varies. data-figure-label and
+   data-figure-value are the structural hooks the tests read, so a figure is attributed to the
+   tracker by markup rather than by a class string other regions of the page may share. #}
 {% macro tracker_figure(label, value, tone) -%}
-<div class="bg-white rounded-lg border border-gray-200 p-4 text-center flex-1">
-  <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">{{ label }}</p>
-  <p class="text-2xl font-semibold mt-1 stat-num whitespace-nowrap {{ tone }}">{{ value }}</p>
+<div class="stat-tile flex-1 min-w-[7.5rem]">
+  <p class="label" data-figure-label>{{ label }}</p>
+  <p class="stat-tile-value display text-3xl leading-tight tabular-nums whitespace-nowrap {{ tone }}" data-figure-value>{{ value }}</p>
 </div>
 {%- endmacro %}
 
-{# The six figures of ONE class, in three groups.
+{# The six figures of ONE class, in three groups, under the class's record line and result strip.
 
    PUSHES SITS OUTSIDE THE GROUP CONTAINING THE HIT RATE, structurally and not merely visually: a
    push settled without either side winning, so it is neither a win nor a loss and it is not in the
    hit-rate denominator. The three data-figure-group wrappers are what make that assertable.
 
-   COLOUR IS TRACKER-ONLY on this page: green for a won bet, red for a lost bet, gray for a push or
+   THE RECORD LINE AND THE STRIP ADD NO FIGURE. "W-L-P" restates the stored wins, losses and
+   pushes in the order a sports record is read; the strip draws the same graded bets one mark each
+   and only when they agree with the block (components/_result_strip.html). Neither is pooled
+   across classes and neither is computed from anything the block does not carry.
+
+   COLOUR IS TRACKER-ONLY on this page: green for a won bet, red for a lost bet, grey for a push or
    a zero. The EV band badge above stays monochrome for exactly this reason -- a green band on the
    same page as a green won-bet would read as a prediction of winning (UI-SPEC Deviation 1).
 
@@ -523,7 +535,7 @@
    when the graded rows carry no stake, mirroring BetSelector._clv_report defaulting clv to None:
    an unmeasured return published as zero reads as a break-even result, which is a claim nobody
    made. A blank and a zero must not render identically. #}
-{% macro tracker_figures(block) -%}
+{% macro tracker_figures(block, outcomes) -%}
 {% set _return = block.flat_return_units %}
 {# MEASURED versus NOT MEASURED, kept apart at the render. A stored NULL means the aggregator did
    not compute the figure; a stored NaN means something upstream produced a non-finite value. Both
@@ -532,48 +544,57 @@
    value not equal to itself. #}
 {% set _return_measured = _return is not none and _return == _return %}
 {% set _hit_rate_measured = block.hit_rate is not none and block.hit_rate == block.hit_rate %}
+<div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+  <span class="display text-2xl text-fg whitespace-nowrap" data-tracker-record>{{ block.wins }}-{{ block.losses }}-{{ block.pushes }}</span>
+  {{ result_strip(outcomes, block) }}
+</div>
 <div class="overflow-x-auto">
-  <div class="flex flex-wrap gap-4">
-    <div data-figure-group="counts" class="flex flex-wrap gap-4 flex-1">
-      {{ tracker_figure("Bets graded", block.bets_graded, "text-gray-900") }}
-      {{ tracker_figure("Wins", block.wins, "text-green-700") }}
-      {{ tracker_figure("Losses", block.losses, "text-red-600") }}
+  <div class="flex flex-wrap gap-2">
+    <div data-figure-group="counts" class="flex flex-wrap gap-2 flex-1">
+      {{ tracker_figure("Bets graded", block.bets_graded, "text-fg") }}
+      {{ tracker_figure("Wins", block.wins, "text-green-400") }}
+      {{ tracker_figure("Losses", block.losses, "text-red-400") }}
     </div>
-    <div data-figure-group="pushes" class="flex flex-wrap gap-4 flex-1">
-      {{ tracker_figure("Pushes", block.pushes, "text-gray-500") }}
+    <div data-figure-group="pushes" class="flex flex-wrap gap-2 flex-1">
+      {{ tracker_figure("Pushes", block.pushes, "text-muted") }}
     </div>
-    <div data-figure-group="rates" class="flex flex-wrap gap-4 flex-1">
+    <div data-figure-group="rates" class="flex flex-wrap gap-2 flex-1">
       {# hit_rate is stored as a FRACTION of the contested rows; the x100 is a unit render under a
          per-cent label, the same formatting transform the EV column applies (UIAP-01). #}
       {% if _hit_rate_measured %}
-        {{ tracker_figure("Hit rate", "%.1f"|format(block.hit_rate * 100) ~ "%", "text-gray-900") }}
+        {{ tracker_figure("Hit rate", "%.1f"|format(block.hit_rate * 100) ~ "%", "text-fg") }}
       {% else %}
-        {{ tracker_figure("Hit rate", "not measured", "text-gray-500") }}
+        {{ tracker_figure("Hit rate", "not measured", "text-muted") }}
       {% endif %}
       {% if not _return_measured %}
-        {{ tracker_figure("Return (flat, units)", "not measured", "text-gray-500") }}
+        {{ tracker_figure("Return (flat, units)", "not measured", "text-muted") }}
       {% elif _return > 0 %}
-        {{ tracker_figure("Return (flat, units)", "%+.3f"|format(_return), "text-green-700") }}
+        {{ tracker_figure("Return (flat, units)", "%+.3f"|format(_return), "text-green-400") }}
       {% elif _return < 0 %}
-        {{ tracker_figure("Return (flat, units)", "%+.3f"|format(_return), "text-red-600") }}
+        {{ tracker_figure("Return (flat, units)", "%+.3f"|format(_return), "text-red-400") }}
       {% else %}
-        {{ tracker_figure("Return (flat, units)", "%+.3f"|format(_return), "text-gray-500") }}
+        {{ tracker_figure("Return (flat, units)", "%+.3f"|format(_return), "text-muted") }}
       {% endif %}
     </div>
   </div>
 </div>
-<p class="text-xs text-gray-500 mt-3 max-w-2xl">{{ TRACKER_PUSH_FOOTNOTE }}</p>
+<p class="text-xs text-muted mt-3 max-w-2xl">{{ TRACKER_PUSH_FOOTNOTE }}</p>
 {% if _return_measured and _return <= 0 %}
-<p class="text-xs text-gray-500 mt-2 max-w-2xl">{{ TRACKER_ZERO_RESULT_LINE }}</p>
+<p class="text-xs text-muted mt-2 max-w-2xl">{{ TRACKER_ZERO_RESULT_LINE }}</p>
 {% endif %}
 {%- endmacro %}
 
-{# One SECTION per honesty class. Own heading, own caption, own totals, no shared row. #}
-{% macro tracker_section(provenance, validation_type, block) -%}
+{# One SECTION per honesty class. Own heading, own caption, own totals, no shared row.
+
+   The heading row is ONE div holding the tag, the evidence chip and the rule, in that order: a
+   test reads the section up to its FIRST closing div and requires the chip inside it. The live
+   forward record takes the solid yellow tag; the replay classes take the outlined one, so the one
+   block that is a track record is the one that looks like the headline. #}
+{% macro tracker_section(provenance, validation_type, block, outcomes) -%}
 <section class="mb-8" hx-indicator="#bets-loading" data-tracker-block="{{ provenance }}{% if validation_type %}:{{ validation_type }}{% endif %}">
   <div class="mb-4">
-    <div class="flex flex-wrap items-center gap-2">
-      <h2 class="text-base font-semibold text-gray-900">{{ TRACKER_HEADINGS[provenance] }}</h2>
+    <div class="section-head flex-wrap">
+      <h2 class="{{ 'tag' if provenance == 'forward' else 'tag-ghost' }}"><span class="unskew">{{ TRACKER_HEADINGS[provenance] }}</span></h2>
       {# The honesty label for THIS class, from the single vocabulary source. It is what tells the
          two replay sections apart: they share a heading and differ only in evidence class, so the
          badge is load-bearing here rather than decorative. #}
@@ -582,8 +603,9 @@
           {% include "components/_provenance_badge.html" %}
         {% endwith %}
       {% endif %}
+      <span class="flex-1 h-px bg-line min-w-[2rem]" aria-hidden="true"></span>
     </div>
-    <p class="text-sm text-gray-500 max-w-2xl mt-1">{{ TRACKER_CAPTIONS[provenance] }}</p>
+    <p class="text-sm text-muted max-w-2xl mt-2">{{ TRACKER_CAPTIONS[provenance] }}</p>
   </div>
   {% if block is none or not block.bets_graded %}
     {# Zero graded rows renders the empty state instead of a row of zeros. The hit rate is not
@@ -593,7 +615,7 @@
       {% include "components/_empty_state.html" %}
     {% endwith %}
   {% else %}
-    {{ tracker_figures(block) }}
+    {{ tracker_figures(block, outcomes) }}
   {% endif %}
 </section>
 {%- endmacro %}
@@ -607,10 +629,10 @@
    the block missing. #}
 {% if replay_blocks %}
   {% for block in replay_blocks %}
-    {{ tracker_section("backtest_replay", block.validation_type, block) }}
+    {{ tracker_section("backtest_replay", block.validation_type, block, _outcomes_by_class.get("backtest_replay:" ~ block.validation_type, [])) }}
   {% endfor %}
 {% else %}
-  {{ tracker_section("backtest_replay", none, none) }}
+  {{ tracker_section("backtest_replay", none, none, []) }}
 {% endif %}
 
 {# The forward section. Under the hard-block it is WITHHELD while the replay sections above stay
@@ -619,16 +641,17 @@
 {% if bets_blocked %}
 <section class="mb-8" hx-indicator="#bets-loading" data-tracker-block="forward">
   <div class="mb-4">
-    <div class="flex flex-wrap items-center gap-2">
-      <h2 class="text-base font-semibold text-gray-900">{{ TRACKER_HEADINGS["forward"] }}</h2>
+    <div class="section-head flex-wrap">
+      <h2 class="tag"><span class="unskew">{{ TRACKER_HEADINGS["forward"] }}</span></h2>
       {# The evidence class is known by construction for the forward provenance, and it describes
          the class rather than any figure -- so the label stays visible while the totals are
          withheld. #}
       {% with provenance="forward", validation_type="forward_realized" %}
         {% include "components/_provenance_badge.html" %}
       {% endwith %}
+      <span class="flex-1 h-px bg-line min-w-[2rem]" aria-hidden="true"></span>
     </div>
-    <p class="text-sm text-gray-500 max-w-2xl mt-1">{{ TRACKER_CAPTIONS["forward"] }}</p>
+    <p class="text-sm text-muted max-w-2xl mt-2">{{ TRACKER_CAPTIONS["forward"] }}</p>
   </div>
   {% with message="The forward record is withheld -- this week's locked games have no list in the cache",
           recovery_text='The forward record\'s totals are computed from the same cache the list above is missing from, so they would be incomplete. The backtest replay above is unaffected and remains readable, because a replay figure does not depend on the current week\'s locks. To restore this section, rebuild the list with "uv run python scripts/generate_bet_list.py" and then load it into the cache with "uv run python scripts/populate_cache.py". The second command only COPIES what the first produces, so running it on its own leaves this section withheld.' %}
@@ -637,10 +660,10 @@
 </section>
 {% elif forward_blocks %}
   {% for block in forward_blocks %}
-    {{ tracker_section("forward", block.validation_type, block) }}
+    {{ tracker_section("forward", block.validation_type, block, _outcomes_by_class.get("forward:" ~ block.validation_type, [])) }}
   {% endfor %}
 {% else %}
-  {{ tracker_section("forward", none, none) }}
+  {{ tracker_section("forward", none, none, []) }}
 {% endif %}
 {% endif %}
 
