@@ -1215,13 +1215,20 @@ class DataQualityMonitor:
                             "unknown",
                         ]
 
-                        if any(
+                        # The quality result carries NO top-level status, only its
+                        # sub-checks. Judged by that missing status ("unknown") it was
+                        # skipped here as not applicable, so until 2026-09-30 no
+                        # per-table quality sub-check ever counted.
+                        is_quality = (
+                            check_type == "quality" and "checks" in check_result
+                        )
+                        if not is_quality and any(
                             na_status in status for na_status in not_applicable_statuses
                         ):
                             continue  # Don't count these in total checks
 
                         # For quality checks, count individual sub-checks
-                        if check_type == "quality" and "checks" in check_result:
+                        if is_quality:
                             for _sub_check_name, sub_check_result in check_result[
                                 "checks"
                             ].items():

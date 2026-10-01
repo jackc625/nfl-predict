@@ -154,7 +154,9 @@ def _stale_odds(ids: list[str]) -> pd.DataFrame:
     )
 
 
-def _report_over(lake: Path, tables: tuple[str, ...], monkeypatch) -> dict:
+def _report_over(
+    lake: Path, tables: tuple[str, ...], monkeypatch, *, real_quality: bool = False
+) -> dict:
     """generate_qa_report over ONLY *tables*, with the whole-lake sections stubbed out."""
     monitor = DataQualityMonitor()
     monitor.monitored_tables = {t: monitor.monitored_tables[t] for t in tables}
@@ -166,7 +168,8 @@ def _report_over(lake: Path, tables: tuple[str, ...], monkeypatch) -> dict:
         "check_duckdb_parquet_consistency",
     ):
         monkeypatch.setattr(monitor, name, lambda *a, **k: empty)
-    monkeypatch.setattr(monitor, "check_data_quality", lambda t: {"checks": {}})
+    if not real_quality:
+        monkeypatch.setattr(monitor, "check_data_quality", lambda t: {"checks": {}})
     # Completeness is stubbed as NOT COUNTED so these tests measure freshness alone. The
     # odds completeness check has its own defect -- odds_snapshot carries no season/week
     # columns, so it counts EVERY row in the table -- which is recorded, not fixed here.
@@ -210,6 +213,21 @@ class TestOddsFreshnessIsNotDemandedBeforeTheOddsStep:
         _save_parquet(lake, _stale_odds(WEEK_2_IDS), "odds_snapshot")
         report = _report_over(lake, ("games", "odds_snapshot"), monkeypatch)
         assert report["summary"]["failed"] >= 1, "the exemption must not reach games"
+
+    def test_per_table_quality_checks_are_counted(self, lake, monkeypatch):
+        """2026-09-30: the quality result has no top-level status, so none ever counted.
+
+        28.5 is a real closing total (2023 W18 NYJ@NE); 20.0 is not and must fail.
+        """
+        odds = _stale_odds(WEEK_2_IDS).assign(total=[28.5] + [44.5] * 15)
+        _save_parquet(lake, odds, "odds_snapshot")
+        tables = ("odds_snapshot",)
+        report = _report_over(lake, tables, monkeypatch, real_quality=True)
+        summary = report["summary"]
+        assert (summary["total_checks"], summary["failed"]) == (3, 0), summary
+        _save_parquet(lake, odds.assign(total=[20.0] + [44.5] * 15), "odds_snapshot")
+        report = _report_over(lake, tables, monkeypatch, real_quality=True)
+        assert report["summary"]["failed"] == 1, report["summary"]
 
 
 # ---------------------------------------------------------------------------
