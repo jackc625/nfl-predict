@@ -208,3 +208,35 @@ class TestRetiredUrls:
     )
     def test_the_retired_templates_are_gone(self, name: str) -> None:
         assert not (PAGES_DIR / name).exists()
+
+
+def _methodology_section(html: str) -> str:
+    """The methodology section's own markup, ending at its closing tag -- so the old-rule label
+    that follows it can never satisfy an assertion about the methodology text."""
+    assert 'id="methodology"' in html, "How It Works has no methodology section"
+    return html.split('id="methodology"', 1)[1].split("</section>", 1)[0]
+
+
+class TestTheMethodologySection:
+    def test_sits_above_the_charts(self, test_client: TestClient) -> None:
+        html = test_client.get("/how-it-works").text
+        assert html.index('id="methodology"') < html.index('id="calibration"')
+
+    def test_states_the_lock_the_evidence_rule_and_the_advice_disclaimer(
+        self, test_client: TestClient
+    ) -> None:
+        section = _methodology_section(test_client.get("/how-it-works").text)
+        assert "6 PM Eastern on the day before kickoff" in section
+        assert "not evidence" in section
+        assert "not betting advice" in section
+        assert "walk-forward" in section
+
+    def test_makes_no_over_claim(self, test_client: TestClient) -> None:
+        from backtest.ev_chain_constants import READOUT_FORBIDDEN_WORDS
+
+        section = _methodology_section(test_client.get("/how-it-works").text).lower()
+        assert [word for word in READOUT_FORBIDDEN_WORDS if word in section] == []
+
+    def test_is_ascii(self, test_client: TestClient) -> None:
+        section = _methodology_section(test_client.get("/how-it-works").text)
+        assert section.isascii()

@@ -9,6 +9,25 @@
   <p class="text-sm text-muted mt-2 max-w-2xl">Why the model predicts what it does: how well its probabilities match what actually happened, and which inputs each model leans on most.</p>
 </header>
 
+{# How the model works -- plain-English methodology, approved by the owner on 2026-10-01. It reports
+   no result, so it carries no old-rule label; the label below covers the charts. Sources:
+   REFIT-READOUT.md and BLEND-TUNING-READOUT.md (the 2026-09-23 re-fit and its fixed-weight blend,
+   artifacts/blend_20260923_212418/blend_weights.json: wp 0.00, ats 0.00, ou 0.13) and the Phase 33.2
+   spec (day-before lock, no betting line is a model input). The blend sentence in the third
+   paragraph quotes those weights: re-word it whenever the blend is re-tuned. Words such as
+   "proven" or "validated" are banned here exactly as they are in the readouts. #}
+<section id="methodology" class="mb-12 scroll-mt-6">
+  {{ bc.section_head("How the model works") }}
+  <div class="panel max-w-3xl space-y-4 text-sm leading-relaxed text-fg">
+    <p><strong class="font-display font-bold uppercase tracking-wide text-accent">What it predicts.</strong> For every game the site publishes three numbers: each team's chance of winning, the expected winning margin (set against the point spread), and the expected total points (set against the over/under). Each one is shown next to the market's number for the same game -- the point spread, the over/under, and the win chance implied by the spread -- so you can see where the model and the market disagree.</p>
+    <p><strong class="font-display font-bold uppercase tracking-wide text-accent">What it knows, and when.</strong> Each game's information locks at 6 PM Eastern on the day before kickoff. Anything known by then can be used -- team strength ratings that update after every game (an Elo system running since 2002), recent form, rest, travel and schedule, the venue, and the weather forecast as it stood at the lock. Anything that arrives later cannot. Betting lines are not inputs: the models never see the market. The models are trained and tested walk-forward: a model is only ever tested on games played after everything it learned from.</p>
+    <p><strong class="font-display font-bold uppercase tracking-wide text-accent">Three models, then the market.</strong> Win probability comes from a logistic regression whose output is calibrated, which aims to make a 70% call come true about 70% of the time. The margin and the total each come from a gradient-boosted tree model (XGBoost). Each model's number is then blended with the latest market line from before the lock -- win probability in log-odds, the margin and total on the line itself -- using one fixed weight per prediction, tuned on recent past seasons. As of the September 2026 tuning, the model gets no weight for the win chance or the margin and about 13% for the total, because on those seasons the market on its own did at least as well as any mix. So the blended win chance and margin are the market's own numbers, and the model's own numbers are shown beside them.</p>
+    <p><strong class="font-display font-bold uppercase tracking-wide text-accent">How the current models got in.</strong> In September 2026 all three models were rebuilt from scratch on corrected inputs, and the rebuilt models replaced the old ones outright. Nothing built on the old inputs, models or comparison baselines, was kept to compare against. No model on this site has shown that it beats the betting market.</p>
+    <p><strong class="font-display font-bold uppercase tracking-wide text-accent">What the numbers on this site mean.</strong> In September 2026 the inputs behind every earlier result were found to be defective -- for example, closing lines known only at kickoff were used as inputs, and missing weather was filled in with a flat placeholder. Every past-season figure on this site is labelled as old rule, kept for the record, and is not evidence. Only 2026 games recorded live, each locked at 6 PM Eastern on the day before kickoff, count as evidence.</p>
+    <p><strong class="font-display font-bold uppercase tracking-wide text-accent">Not betting advice.</strong> This is a personal research tool and not betting advice. A bet on the Bets page cleared an expected-value threshold fixed before this season's first bet; that is not a forecast that it will win.</p>
+  </div>
+</section>
+
 {# One block: calibration, feature importance and the accuracy trend are all drawn from the same
    backtest corpus, so one label covers the three sections below (R16 / D33.2-07). #}
 {% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
