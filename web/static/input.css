@@ -333,6 +333,15 @@
     color: var(--color-fg);
   }
 
+  /* On a phone the week selector's season group takes a row of its own, so the "Week" label
+     wraps together with the week controls instead of being stranded at the end of the season
+     row. CSS only: components/_week_selector.html is pinned byte-for-byte by two snapshots. */
+  @media (max-width: 639.98px) {
+    .week-selector > div:has(> select[name="season"]) {
+      flex-basis: 100%;
+    }
+  }
+
   .nav-link {
     --skew-bg: transparent;
     font-family: var(--font-sans);
