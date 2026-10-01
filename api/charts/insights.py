@@ -645,10 +645,14 @@ def generate_insights_model_vs_market_wp(
     if not seasons:
         return _empty_chart_div("No per-season WP data available")
 
+    # Each subplot has its own y scale, so its tick labels ("0.225") sit in the gap to its left.
+    # Plotly's default gap (0.067 of the plot width) put them on top of the previous subplot's
+    # line on a one-third-width card.
     fig = make_subplots(
         rows=1,
         cols=3,
         subplot_titles=("Accuracy", "Brier Score", "Log-Loss"),
+        horizontal_spacing=0.16,
     )
 
     wp_color = _get_target_color("wp")
