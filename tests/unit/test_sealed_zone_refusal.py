@@ -259,6 +259,34 @@ class TestTheSealedLockBindsTheCommittedManifest:
                     assert field in entry, f"{dataset} {season} has no {field!r} slot"
                 assert entry["acknowledgement"] is None
 
+    def test_a_repin_and_its_lock_refresh_keep_every_untouched_top_level_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """2026-09-30: a two-season re-pin rewrote not_pinned / captured_at_utc, and the lock
+        refresh dropped the signature seeding record. Only the re-pinned entries may move."""
+        manifest_path, lock_path = _copy_committed_pair(tmp_path)
+        manifest_before, lock_before = _read(manifest_path), _read(lock_path)
+        monkeypatch.setattr(
+            pin, "fetch_live", lambda dataset, season: _pbp_frame(season)
+        )
+
+        pin.capture(
+            {"pbp": [2024]},
+            manifest_path=manifest_path,
+            data_root=tmp_path / "data",
+            allow_sealed_rewrite=True,
+            sealed_rewrite_reason="test: re-pin one sealed season",
+        )
+        refresh_sealed_lock(manifest_path, lock_path)
+
+        manifest_after, lock_after = _read(manifest_path), _read(lock_path)
+        for record in (manifest_before, manifest_after):
+            del record["datasets"]
+        for record in (lock_before, lock_after):
+            del record["datasets"], record["generated_at_utc"]
+        assert manifest_after == manifest_before
+        assert lock_after == lock_before
+
 
 def _tmp_pin(tmp_path: Path, dataset: str, seasons: list[int]) -> Path:
     """Write a manifest under *tmp_path* pinning *seasons*; return its path.

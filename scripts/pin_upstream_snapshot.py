@@ -460,14 +460,22 @@ def capture(
         sealed_rewrite_reason=sealed_rewrite_reason,
     )
     manifest = recorded or _empty_manifest()
-    manifest["schema_version"] = MANIFEST_SCHEMA_VERSION
-    manifest["source"] = "nflverse (github.com/nflverse) via nflreadpy"
-    manifest["not_pinned"] = NOT_PINNED
-    manifest["captured_at_utc"] = datetime.now(UTC).isoformat()
-    manifest["nflreadpy_version"] = _package_version("nflreadpy")
-    manifest["pandas_version"] = _package_version("pandas")
-    manifest["pyarrow_version"] = _package_version("pyarrow")
-    manifest["python_version"] = sys.version.split()[0]
+    # A capture changes the entries of the seasons it captures and NOTHING ELSE on the record.
+    # Every top-level field already recorded -- the original capture's time and versions, and
+    # the not_pinned list as it stood then -- is kept; only a field the record lacks is filled.
+    # Overwriting them made a two-season re-pin rewrite the whole pin's provenance (2026-09-30).
+    top_level = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "source": "nflverse (github.com/nflverse) via nflreadpy",
+        "not_pinned": NOT_PINNED,
+        "captured_at_utc": datetime.now(UTC).isoformat(),
+        "nflreadpy_version": _package_version("nflreadpy"),
+        "pandas_version": _package_version("pandas"),
+        "pyarrow_version": _package_version("pyarrow"),
+        "python_version": sys.version.split()[0],
+    }
+    for field, value in top_level.items():
+        manifest.setdefault(field, value)
 
     for dataset, seasons in datasets.items():
         record = manifest["datasets"].setdefault(
@@ -612,6 +620,11 @@ def refresh_sealed_lock(manifest_path: Path, lock_path: Path) -> dict:
             for field in _CARRIED_FORWARD_FIELDS:
                 if field in carried:
                     entry[field] = carried[field]
+    # A top-level field the rebuild does not derive -- the signature seeding record
+    # (``signatures_seeded_at_utc`` / ``signatures_seeded_by``, data.sealed_probe) -- is carried
+    # forward too, for the same reason: it records what was done, not what the manifest says.
+    for field, value in existing.items():
+        lock.setdefault(field, value)
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
