@@ -46,7 +46,7 @@ from data.storage import DuckDBConnection, ParquetManager, upsert_silver
 from pipeline.steps import build_step_registry
 from scripts import data_qa
 from scripts.data_qa import DataQualityMonitor
-from utils import validate_temporal_consistency
+from utils import validate_game_data, validate_temporal_consistency
 
 SEASON, WEEK = 2026, 2
 NOW = datetime.now(UTC)
@@ -109,6 +109,22 @@ class TestTheTemporalCheckComparesLikeWithLike:
         frame = _games(WEEK_2_IDS[:1], created_at=NOW)
         frame["kickoff_et"] = [pd.Timestamp("2026-09-20 13:00")]
         assert validate_temporal_consistency(frame) == []
+
+    def test_an_unplayed_game_passes_the_schema_and_a_partial_result_does_not(self):
+        """2026-09-30: every unplayed 2026 game (NaN scores) failed as 'not a finite number'."""
+        frame = _games(WEEK_2_IDS[:2], created_at=NOW).assign(
+            venue="Highmark Stadium",
+            venue_roof="outdoor",
+            home_score=[float("nan"), 24.0],
+            away_score=[float("nan"), 17.0],
+            result=[float("nan"), 1.0],
+        )
+        assert validate_game_data(frame) == []
+        frame.loc[1, "away_score"] = float("nan")
+        errors = validate_game_data(frame)
+        assert len(errors) == 1 and "partial result" in errors[0]
+        frame.loc[1, "away_score"] = float("inf")
+        assert "finite number" in validate_game_data(frame)[0]
 
     def test_the_games_quality_check_no_longer_errors(self, lake):
         _save_both(lake, _games(WEEK_2_IDS, created_at=NOW), "games")

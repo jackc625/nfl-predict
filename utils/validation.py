@@ -1,10 +1,11 @@
 """Data validation utilities for NFL prediction system."""
 
+import math
 from datetime import datetime
 from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel, ValidationError, validator
+from pydantic import BaseModel, ValidationError, model_validator, validator
 
 # The zone the NFL season calendar is published in. Season bounds are calendar DATES, so a
 # tz-aware kickoff is compared against those dates in this zone rather than against naive
@@ -52,11 +53,38 @@ class GameData(BaseModel):
             raise ValueError("Team names must be 2-5 characters")
         return v.upper()
 
+    @validator("home_score", "away_score", "result", pre=True)
+    def unplayed_is_none(cls, v):
+        """A game not yet played has no score or result; a frame stores that absence as NaN.
+
+        Without this every unplayed game of the live season failed as "Input should be a
+        finite number" (672 errors over 224 2026 games on 2026-09-30). An infinite value is
+        not NaN and still fails.
+        """
+        if isinstance(v, float) and math.isnan(v):
+            return None
+        return v
+
     @validator("result")
     def validate_result(cls, v):
         if v is not None and v not in [-1, 0, 1]:
             raise ValueError("Result must be -1 (away win), 0 (tie), or 1 (home win)")
         return v
+
+    @model_validator(mode="after")
+    def played_games_are_complete(self):
+        """A played game carries both scores and its result; an unplayed game carries none."""
+        present = [
+            name
+            for name in ("home_score", "away_score", "result")
+            if getattr(self, name) is not None
+        ]
+        if present and len(present) != 3:
+            raise ValueError(
+                f"Game {self.game_id}: partial result (only {present} present); a played "
+                "game must carry home_score, away_score and result"
+            )
+        return self
 
 
 class OddsData(BaseModel):
