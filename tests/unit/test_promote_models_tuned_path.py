@@ -761,17 +761,16 @@ def test_an_incumbent_recording_the_live_partition_reports_NOTHING(
 
 
 @pytest.mark.parametrize("target", ["wp", "ats", "ou"])
-def test_every_live_incumbent_DIFFERS_from_the_live_partition_and_says_so(
+def test_every_live_incumbent_RECORDS_the_live_partition_and_reports_nothing(
     target: str,
 ) -> None:
-    """UPDATED by Plan 33.1-09 Task 3. The latent condition became live.
+    """UPDATED by Plan 33-18 for the 2026-09-23 re-fit.
 
-    It asserted all three incumbents AGREED with the gate holdout, which was true while the
-    two were the same four seasons. They are not: all three record [2021..2024] and the live
-    partition is the two most recent completed seasons. Under D33.1-04 the correct outcome is
-    a reported DIFFERENCE -- agreement here would mean somebody EDITED a record of a past
-    training run rather than re-fitting, which is the defect class this milestone exists to
-    detect.
+    Until that re-fit the incumbents recorded [2021..2024] and this asserted a reported
+    DIFFERENCE. The re-fitted incumbents were trained ON the live partition, so the truth
+    is now agreement and an empty report (the synthetic control above still covers the
+    differing case). The D33.1-04 intent is kept: agreement must come from a RE-FIT, not
+    an edited record, so metadata.json must have been written with model.pkl.
 
     Measured against the LIVE artifacts tree, not a copy, so it asserts the real state.
     """
@@ -788,10 +787,23 @@ def test_every_live_incumbent_DIFFERS_from_the_live_partition_and_says_so(
         f"'{target}' window carries holdout {window['holdout']!r}, not the live partition "
         f"{live!r}."
     )
-    assert window["window_report"], (
-        f"'{target}' incumbent's recorded window matches the live partition, so nothing was "
-        "reported. All three incumbents record [2021..2024] and no re-fit has run; "
-        "agreement means a metadata.json was edited (D33.1-04 prohibits that)."
+    assert window["window_report"] == "", window["window_report"]
+
+    version = json.loads((LIVE_ARTIFACTS / "latest.json").read_text(encoding="utf-8"))[
+        target
+    ]
+    version_dir = LIVE_ARTIFACTS / version
+    recorded = json.loads((version_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert recorded["config"]["holdout_seasons"] == [
+        int(s) for s in deploy_gate.HOLDOUT_SEASONS
+    ]
+    written_apart = abs(
+        (version_dir / "metadata.json").stat().st_mtime
+        - (version_dir / "model.pkl").stat().st_mtime
+    )
+    assert written_apart < 5, (
+        f"'{target}' metadata.json was written {written_apart:.0f}s apart from model.pkl; "
+        "a record edited after training is prohibited (D33.1-04)."
     )
 
 
@@ -918,7 +930,7 @@ def test_models_train_main_passes_both_through_to_train_target() -> None:
 
     source = inspect.getsource(train_mod.main)
     assert "exclude_groups=exclude_groups" in source
-    assert "exclude_groups_provenance=args.exclude_groups_provenance" in source, (
+    assert "exclude_groups_provenance=exclude_groups_provenance" in source, (
         "models.train.main() does not thread the provenance into train_target, so the "
         "artifact would record the exclusion without saying whether it was ratified."
     )
