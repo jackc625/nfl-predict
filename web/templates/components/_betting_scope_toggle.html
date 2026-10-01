@@ -5,30 +5,29 @@
    the cache, so each click reads cached HTML/JSON only (zero recompute). The
    active segment is driven by current_scope; default selected is Recommended
    (D-17). Mirrors the _season_selector HTMX attribute set (hx-get, hx-target,
-   hx-swap, hx-indicator) per RESEARCH Pattern 3. #}
+   hx-swap, hx-indicator) per RESEARCH Pattern 3.
+
+   Broadcast restyle: two skew controls; the active one is the yellow skew-control-active, and
+   aria-pressed still says which is pressed for assistive technology. #}
 <div class="flex flex-wrap items-center gap-3">
-  <div class="inline-flex rounded-md border border-gray-300 overflow-hidden" role="group" aria-label="Bet scope">
+  <div class="inline-flex items-center gap-1" role="group" aria-label="Bet scope">
     <button type="button"
             hx-get="/fragments/betting?scope=recommended"
             hx-target="#betting-content"
             hx-swap="innerHTML"
             hx-indicator="#betting-loading"
             aria-pressed="{{ 'true' if current_scope == 'recommended' else 'false' }}"
-            class="px-4 py-2 text-sm font-medium min-h-[44px] flex items-center transition-colors {% if current_scope == 'recommended' %}bg-nfl-primary text-white{% else %}bg-white text-gray-700 hover:bg-gray-50{% endif %}">
-      Recommended
-    </button>
+            class="skew-control{% if current_scope == 'recommended' %} skew-control-active{% endif %}"><span class="unskew">Recommended</span></button>
     <button type="button"
             hx-get="/fragments/betting?scope=all"
             hx-target="#betting-content"
             hx-swap="innerHTML"
             hx-indicator="#betting-loading"
             aria-pressed="{{ 'true' if current_scope == 'all' else 'false' }}"
-            class="px-4 py-2 text-sm font-medium min-h-[44px] flex items-center border-l border-gray-300 transition-colors {% if current_scope == 'all' %}bg-nfl-primary text-white{% else %}bg-white text-gray-700 hover:bg-gray-50{% endif %}">
-      All bets
-    </button>
+            class="skew-control{% if current_scope == 'all' %} skew-control-active{% endif %}"><span class="unskew">All bets</span></button>
   </div>
   <div id="betting-loading" class="htmx-indicator">
     <div class="loading-spinner"></div>
   </div>
 </div>
-<p class="text-xs text-gray-500 mt-2 max-w-3xl">"Recommended" = bets the simulation sized with real money under Kelly (genuine model edge). "All bets" includes every directional bet the simulation placed.</p>
+<p class="text-xs text-muted mt-2 max-w-3xl">"Recommended" = bets the simulation sized with real money under Kelly (genuine model edge). "All bets" includes every directional bet the simulation placed.</p>

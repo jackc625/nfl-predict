@@ -16,16 +16,18 @@
    The `hx-on::` double-colon shorthand + kebab-case `response-error` is the
    correct htmx 2.0 form (DOM attributes are lowercased, so `responseError` would
    not bind). This error path (red) is DISTINCT from the gray "No completed games
-   yet" empty state, which is a no-data case, not a failure. #}
+   yet" empty state, which is a no-data case, not a failure.
+
+   Broadcast restyle: only the classes moved; every attribute above is unchanged. #}
 <div class="flex items-center gap-2">
-  <label for="season-track-select" class="text-sm font-semibold text-gray-700">Season</label>
+  <label for="season-track-select" class="label">Season</label>
   <select id="season-track-select" name="season"
           hx-get="/fragments/season"
           hx-target="#season-content"
           hx-swap="innerHTML"
           hx-indicator="#season-loading"
           hx-on::response-error="var t = document.getElementById('season-error-template'); var c = document.getElementById('season-content'); if (t && c) { c.innerHTML = t.innerHTML; }"
-          class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+          class="skew-control">
     {% for s in available_seasons %}
     <option value="{{ s }}" {% if s == current_season %}selected{% endif %}>{{ s }} Season</option>
     {% endfor %}

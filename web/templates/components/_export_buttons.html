@@ -1,19 +1,20 @@
 {# Export buttons for CSV and JSON downloads.
    When used on the predictions page, JS updates hrefs dynamically based on current dropdown values.
-   Pass: csv_url, json_url, season_csv_url (optional), season_json_url (optional) #}
+   Pass: csv_url, json_url, season_csv_url (optional), season_json_url (optional)
+
+   ONE partial for every page that offers exports (D31-32); tests/api/test_export.py asserts no
+   page builds export links without it. Broadcast restyle: skew controls with an accent download
+   icon. min-h-[44px] stays spelled out so the 44-pixel touch height is visible in the markup. #}
 <div id="export-buttons" class="flex flex-wrap items-center gap-2">
-  <a id="export-csv" href="{{ csv_url }}" data-base-url="/api/export/csv" class="inline-flex items-center px-3 py-1.5 border border-nfl-primary text-nfl-primary text-sm font-medium rounded-md hover:bg-nfl-primary hover:text-white transition-colors min-h-[44px]">
-    <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-    CSV
+  <a id="export-csv" href="{{ csv_url }}" data-base-url="/api/export/csv" class="skew-control min-h-[44px]">
+    <span class="unskew inline-flex items-center gap-1.5"><svg class="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>CSV</span>
   </a>
-  <a id="export-json" href="{{ json_url }}" data-base-url="/api/export/json" class="inline-flex items-center px-3 py-1.5 border border-gray-400 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-100 transition-colors min-h-[44px]">
-    <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-    JSON
+  <a id="export-json" href="{{ json_url }}" data-base-url="/api/export/json" class="skew-control min-h-[44px]">
+    <span class="unskew inline-flex items-center gap-1.5"><svg class="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>JSON</span>
   </a>
   {% if season_csv_url is defined and season_csv_url %}
-  <a id="export-season-csv" href="{{ season_csv_url }}" data-base-url="/api/export/csv" class="inline-flex items-center px-3 py-1.5 border border-gray-400 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-100 transition-colors min-h-[44px]">
-    <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-    Export Full Season
+  <a id="export-season-csv" href="{{ season_csv_url }}" data-base-url="/api/export/csv" class="skew-control min-h-[44px]">
+    <span class="unskew inline-flex items-center gap-1.5"><svg class="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>Export Full Season</span>
   </a>
   {% endif %}
 </div>

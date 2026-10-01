@@ -958,7 +958,7 @@ def test_state_four_a_week_with_no_list_for_its_locked_games_is_refused(
     assert response.status_code == 200
     body = response.text
     assert _HARD_BLOCK_MESSAGE in body
-    assert "bg-red-50" in body, "the refusal did not render through _error_state.html"
+    assert "bg-red-950" in body, "the refusal did not render through _error_state.html"
     assert "Past weeks below are unaffected and remain readable." in body
     assert "DET @ KC" in body, "the refusal does not name the game that has no list"
     # Both timestamps are repeated in the recovery text so the two claims can be compared.
@@ -1748,7 +1748,7 @@ def test_the_failure_template_carries_the_message_and_a_retry(
     start = body.index('<template id="bets-failure-template">')
     template = body[start : body.index("</template>", start)]
 
-    assert "bg-red-50" in template, (
+    assert "bg-red-950" in template, (
         "the failure state does not reuse the error-state geometry"
     )
     assert "could not be loaded" in template
@@ -2413,7 +2413,7 @@ def test_the_forward_block_is_withheld_under_the_hard_block_while_replay_stays_r
 
     forward = sections["forward"]
     assert _FORWARD_WITHHELD_MESSAGE in forward
-    assert "bg-red-50" in forward, (
+    assert "bg-red-950" in forward, (
         "the withheld forward block did not use the error state"
     )
     assert "Hit rate" not in forward

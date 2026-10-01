@@ -554,7 +554,7 @@ def test_season_error_state_wired_and_distinct_from_empty(test_client: TestClien
     # Distinction (must NOT be conflated): the error card uses the red _error_state
     # styling, while the empty state uses the gray styling. Assert the error path
     # carries the red error card class so it is not the gray "no data" state.
-    assert "bg-red-50" in html
+    assert "bg-red-950" in html
 
     # The populated fixture renders real season content, so the gray whole-season
     # empty copy must NOT appear here -- error (red) and empty (gray) are distinct
@@ -582,7 +582,7 @@ def test_season_error_copy_renders_via_error_component(empty_test_client: TestCl
     # Error state (red) is STILL wired and reachable (distinct concern, not shown
     # as the active content): the LOCKED error copy + the red card markup exist.
     assert "Could not load season data" in html
-    assert "bg-red-50" in html
+    assert "bg-red-950" in html
 
 
 # ---------------------------------------------------------------------------

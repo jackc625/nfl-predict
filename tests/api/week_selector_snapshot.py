@@ -22,7 +22,9 @@ COMPONENTS_DIR = (
 
 #: The selector's outermost element. Its class string is pinned by the snapshots too, so a change
 #: here is caught rather than silently retargeting the extraction.
-SELECTOR_OPEN = '<div class="flex flex-wrap items-center gap-3">'
+#: The ``week-selector`` class (Broadcast redesign, 2026-10) keeps the tag unique on every page that
+#: renders the selector.
+SELECTOR_OPEN = '<div class="week-selector flex flex-wrap items-center gap-2">'
 
 #: The three htmx failure events the bets selector wires. An HTTP error response, a timeout and a
 #: dropped connection are THREE different events; wiring only the first leaves the other two

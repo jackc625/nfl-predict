@@ -1,8 +1,13 @@
-{# Error state component. Pass: message, recovery_text #}
-<div class="rounded-lg bg-red-50 border border-red-200 p-6 text-center">
-  <svg class="mx-auto h-10 w-10 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+{# Error state. Pass: message, recovery_text.
+
+   A FAILURE, never a "no data" state. These reds -- bg-red-950 / border-red-800, a red-200
+   heading, a red-100 body, a red-300 icon -- are reserved for this partial and are deliberately
+   NOT the realised-loss red-400 the bets tracker uses, so "a request failed" can never read as
+   "a bet lost". The recovery text stays in a <p> (see _empty_state.html). #}
+<div class="rounded bg-red-950 border border-red-800 p-6 text-center">
+  <svg class="mx-auto h-9 w-9 text-red-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
   </svg>
-  <h3 class="mt-3 text-sm font-semibold text-red-800">{{ message }}</h3>
-  <p class="mt-1 text-sm text-red-600">{{ recovery_text }}</p>
+  <h3 class="mt-3 font-display text-lg font-bold tracking-wide text-red-200">{{ message }}</h3>
+  <p class="mt-1 text-sm text-red-100">{{ recovery_text }}</p>
 </div>

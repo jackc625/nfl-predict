@@ -1,15 +1,30 @@
 
-<div class="flex flex-wrap items-center gap-3">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="week-selector flex flex-wrap items-center gap-2">
   
   <div class="flex items-center gap-2 mr-2">
-    <label for="season-select" class="text-sm font-semibold text-gray-700">Season</label>
+    <label for="season-select" class="label">Season</label>
     <select id="season-select" name="season"
             hx-get="/fragments/games"
             hx-target="#game-grid"
             hx-swap="innerHTML"
             hx-include="[name='sort']"
             hx-vals='{"week": ""}'
-            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+            class="skew-control">
       
       <option value="2024" selected>2024</option>
       
@@ -18,7 +33,7 @@
     </select>
   </div>
   
-  <label for="week-select" class="text-sm font-semibold text-gray-700">Week</label>
+  <label for="week-select" class="label">Week</label>
   <div class="flex items-center gap-1">
     
     
@@ -44,9 +59,9 @@
 
     
     <button hx-get="/fragments/games?week=3&season=2024&sort=confidence" hx-target="#game-grid" hx-swap="innerHTML"
-            class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
+            class="skew-control"
             aria-label="Previous Week">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+      <span class="unskew"><svg class="w-4 h-4 text-accent" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg></span>
     </button>
 
     
@@ -55,7 +70,7 @@
             hx-target="#game-grid"
             hx-swap="innerHTML"
             hx-include="[name='sort'],[name='season']"
-            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+            class="skew-control">
       
       <option value="3" data-season="2024" >
         Week 3
@@ -73,9 +88,9 @@
 
     
     <button hx-get="/fragments/games?week=1&season=2024&sort=confidence" hx-target="#game-grid" hx-swap="innerHTML"
-            class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
+            class="skew-control"
             aria-label="Next Week">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+      <span class="unskew"><svg class="w-4 h-4 text-accent" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></span>
     </button>
   </div>
 </div>

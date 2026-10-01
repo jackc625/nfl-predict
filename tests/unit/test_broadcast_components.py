@@ -165,3 +165,156 @@ class TestMonochromeBadges:
         for classes in class_attributes(html):
             for hue in ("green", "red", "amber", "blue"):
                 assert hue not in classes
+
+
+class TestStates:
+    def test_empty_state_is_a_grey_box_with_a_heading_and_a_paragraph(self) -> None:
+        html = render(
+            "_empty_state.html",
+            heading="Nothing graded yet",
+            body="Grades appear after the games are played.",
+            action_text=None,
+            action_url=None,
+        )
+        assert "border-dashed" in html
+        assert '<h3 class="display text-xl text-fg">Nothing graded yet</h3>' in html
+        assert "<p " in html and "Grades appear after the games are played." in html
+        assert "<a " not in html
+        for classes in class_attributes(html):
+            assert "red" not in classes
+
+    def test_empty_state_action_is_the_accent_control(self) -> None:
+        html = render(
+            "_empty_state.html",
+            heading="Game not found",
+            body="This game does not exist in the prediction database.",
+            action_text="Back to This Week",
+            action_url="/",
+        )
+        assert (
+            '<a href="/" class="skew-control skew-control-active">'
+            '<span class="unskew">Back to This Week</span></a>'
+        ) in html
+
+    def test_error_state_uses_the_reserved_error_reds(self) -> None:
+        html = render(
+            "_error_state.html",
+            message="Could not load season data",
+            recovery_text="Refresh.",
+        )
+        assert (
+            'class="rounded bg-red-950 border border-red-800 p-6 text-center"' in html
+        )
+        assert "text-red-200" in html and "Could not load season data" in html
+        assert '<p class="mt-1 text-sm text-red-100">Refresh.</p>' in html
+        assert "text-red-400" not in html, (
+            "the realised-loss red is not an error colour"
+        )
+
+
+class TestControls:
+    def test_export_buttons_keep_ids_urls_and_touch_height(self) -> None:
+        html = render(
+            "_export_buttons.html",
+            csv_url="/api/export/csv?season=2026&week=3",
+            json_url="/api/export/json?season=2026&week=3",
+            season_csv_url="/api/export/csv?season=2026",
+        )
+        assert 'id="export-buttons"' in html
+        for element_id in ("export-csv", "export-json", "export-season-csv"):
+            assert f'id="{element_id}"' in html
+        assert html.count('data-base-url="/api/export/') == 3
+        assert html.count("min-h-[44px]") == 3
+        assert html.count('class="skew-control min-h-[44px]"') == 3
+        assert html.count('<span class="unskew inline-flex items-center gap-1.5">') == 3
+        assert "nfl-" not in html
+
+    def test_export_buttons_without_a_season_link(self) -> None:
+        html = render("_export_buttons.html", csv_url="/c", json_url="/j")
+        assert "export-season-csv" not in html
+
+    def test_scope_toggle_marks_the_current_scope_only(self) -> None:
+        html = render("_betting_scope_toggle.html", current_scope="all")
+        assert 'hx-get="/fragments/betting?scope=recommended"' in html
+        assert 'hx-get="/fragments/betting?scope=all"' in html
+        assert html.count('hx-target="#betting-content"') == 2
+        assert html.count('hx-indicator="#betting-loading"') == 2
+        assert html.count('aria-pressed="true"') == 1
+        assert html.count("skew-control-active") == 1
+        pressed = html[html.index('aria-pressed="true"') :]
+        assert "skew-control-active" in pressed[: pressed.index(">")]
+        assert '<span class="unskew">All bets</span></button>' in html
+
+    def test_sort_controls_keep_their_wiring(self) -> None:
+        html = render("_sort_controls.html", current_sort="edge")
+        assert 'id="sort-select"' in html and 'for="sort-select"' in html
+        assert 'hx-get="/fragments/games"' in html
+        assert 'hx-target="#game-grid"' in html
+        assert "hx-include=\"[name='week'],[name='season']\"" in html
+        assert '<option value="edge" selected>Edge</option>' in html
+        assert 'class="skew-control"' in html
+
+    def test_season_selector_keeps_its_wiring(self) -> None:
+        html = render(
+            "_season_selector.html", available_seasons=[2024, 2023], current_season=2024
+        )
+        assert 'id="season-select"' in html
+        assert 'hx-get="/fragments/performance"' in html
+        assert 'hx-target="#performance-content"' in html
+        assert 'id="perf-loading"' in html
+        assert ">All Seasons</option>" in html
+        assert '<option value="2024" selected>2024 Season</option>' in html
+
+    def test_season_tracking_selector_keeps_its_error_handler(self) -> None:
+        html = render(
+            "_season_tracking_selector.html",
+            available_seasons=[2026, 2025],
+            current_season=2026,
+        )
+        assert 'id="season-track-select"' in html
+        assert 'hx-get="/fragments/season"' in html
+        assert 'hx-target="#season-content"' in html
+        assert "hx-on::response-error=" in html
+        assert "season-error-template" in html
+        assert "All Seasons" not in html
+
+    @pytest.mark.parametrize("variant", ["cards", "chart", "table"])
+    def test_loading_skeleton_is_dark(self, variant: str) -> None:
+        html = render("_loading_skeleton.html", variant=variant)
+        assert "animate-pulse" in html
+        assert "bg-white" not in html and "bg-gray-" not in html
+
+
+class TestWeekSummary:
+    SUMMARY = {
+        "total_games": 13,
+        "wp_correct": 9,
+        "wp_total": 13,
+        "wp_pct": 69,
+        "ats_correct": 0,
+        "ats_total": 0,
+        "ats_pct": 0,
+        "ou_correct": 7,
+        "ou_total": 12,
+        "ou_pct": 58,
+    }
+
+    def test_three_tiles_keyed_to_the_bet_type_colours(self) -> None:
+        html = render("_week_summary.html", week_summary=self.SUMMARY)
+        assert 'aria-label="Weekly prediction accuracy summary"' in html
+        assert html.count('class="stat-tile"') == 3
+        for label in ("Win Prob", "Spread", "Total"):
+            assert f'<p class="label">{label}</p>' in html
+        assert "--tile-accent: var(--color-target-wp);" in html
+        assert "--tile-accent: var(--color-target-ats);" in html
+        assert "--tile-accent: var(--color-target-ou);" in html
+        assert ">9/13</p>" in html and "(69%)" in html
+        assert ">7/12</p>" in html and "(58%)" in html
+
+    def test_a_target_without_odds_reads_n_a(self) -> None:
+        html = render("_week_summary.html", week_summary=self.SUMMARY)
+        assert '<p class="stat-tile-value text-dim">N/A</p>' in html
+        assert "No odds data" in html
+
+    def test_nothing_renders_for_a_week_with_no_completed_game(self) -> None:
+        assert render("_week_summary.html", week_summary={}).strip() == ""

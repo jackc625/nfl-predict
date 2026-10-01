@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import threading
 from collections.abc import Iterator
 from datetime import datetime
@@ -421,26 +420,27 @@ def test_the_bets_export_adds_no_route(bets_export_client: TestClient) -> None:
     )
 
 
-def test_the_export_buttons_partial_is_reused_byte_for_byte() -> None:
-    """D31-32 reuses ``_export_buttons.html`` VERBATIM; no class inside it is edited."""
-    repo_root = Path(__file__).resolve().parents[2]
-    result = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--exit-code",
-            "HEAD",
-            "--",
-            "web/templates/components/_export_buttons.html",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
+def test_exactly_one_export_buttons_partial_serves_every_page() -> None:
+    """D31-32: ONE export partial, reused by every page that offers exports -- never a fork.
+
+    This used to compare the partial byte-for-byte against HEAD, which pinned its LOOK rather than
+    its reuse; the Broadcast redesign restyled it on purpose (spec section 11). What D31-32 needs
+    is that /bets builds its export links through the same partial as every other page, so that
+    is what is asserted: one partial on disk, included by every page that renders export links.
+    """
+    templates_dir = Path(__file__).resolve().parents[2] / "web" / "templates"
+    partials = sorted(
+        p.name for p in (templates_dir / "components").glob("*export*.html")
     )
-    assert result.returncode == 0, (
-        f"the export buttons partial was modified:\n{result.stdout}"
+    assert partials == ["_export_buttons.html"], (
+        f"a second export partial appeared: {partials}"
     )
+    for page in sorted((templates_dir / "pages").glob("*.html")):
+        source = page.read_text(encoding="utf-8")
+        if "/api/export/" in source:
+            assert "components/_export_buttons.html" in source, (
+                f"{page.name} builds export links without the shared partial"
+            )
 
 
 def test_the_page_offers_both_exports_and_the_cross_link(

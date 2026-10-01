@@ -1,13 +1,13 @@
 {# Sort controls dropdown. HTMX-powered.
    Pass: current_sort, current_week, current_season #}
 <div class="flex items-center gap-2">
-  <label for="sort-select" class="text-sm font-semibold text-gray-700">Sort</label>
+  <label for="sort-select" class="label">Sort</label>
   <select id="sort-select" name="sort"
           hx-get="/fragments/games"
           hx-target="#game-grid"
           hx-swap="innerHTML"
           hx-include="[name='week'],[name='season']"
-          class="rounded-md border-gray-300 text-sm py-2 px-3 min-h-[44px]">
+          class="skew-control">
     <option value="time" {% if current_sort == "time" %}selected{% endif %}>Game Time</option>
     <option value="confidence" {% if current_sort == "confidence" %}selected{% endif %}>Confidence</option>
     <option value="edge" {% if current_sort == "edge" %}selected{% endif %}>Edge</option>

@@ -5,9 +5,10 @@
    PARAMETERISED IN PLACE for D31-26 so ONE selector serves both / and /bets. It is deliberately
    NOT forked: a second selector file is a duplicated definition that drifts, and this repo has a
    documented incident of exactly that failure mode (29-06). Every parameter below DEFAULTS to the
-   value this component shipped with, so the This Week page renders BYTE-IDENTICALLY -- pinned by
-   two recorded snapshots in tests/api/test_bets_page.py. No layout class and no type class was
-   touched; the diff is the attribute values, the failure handlers and the id derivation.
+   value this component shipped with, so the This Week page renders exactly the recorded markup --
+   pinned by two snapshots in tests/api/snapshots/, compared in tests/api/test_pages.py. The
+   Broadcast redesign (2026-10) restyled the classes and RE-RECORDED both snapshots; every hx-*
+   attribute, id, label and option was left byte-identical, and the re-recording step checks that.
 
    The hard-wiring was in SIX places across FOUR elements, not three:
 
@@ -145,10 +146,10 @@
 {% set _ws_shown_week = current_week | int if current_week is not none else "" %}
 {% set _ws_shown_season = current_season | int if current_season is not none else "" %}
 {% set _ws_fail_js = "var t=document.getElementById('" ~ _ws_failure_template ~ "');var c=document.querySelector('" ~ _ws_target ~ "');if(t){if(c){c.innerHTML=t.innerHTML;}}var w=document.getElementById('" ~ _ws_week_id ~ "');if(w){w.value='" ~ _ws_shown_week ~ "';}var s=document.getElementById('" ~ _ws_season_id ~ "');if(s){s.value='" ~ _ws_shown_season ~ "';}" %}
-<div class="flex flex-wrap items-center gap-3">
+<div class="week-selector flex flex-wrap items-center gap-2">
   {% if available_seasons is defined and available_seasons and available_seasons|length > 1 %}
   <div class="flex items-center gap-2 mr-2">
-    <label for="{{ _ws_season_id }}" class="text-sm font-semibold text-gray-700">Season</label>
+    <label for="{{ _ws_season_id }}" class="label">Season</label>
     <select id="{{ _ws_season_id }}" name="season"
             hx-get="{{ _ws_endpoint }}"
             hx-target="{{ _ws_target }}"
@@ -162,14 +163,14 @@
 {% endif %}{% if _ws_sync %}            hx-sync="{{ _ws_target }}:replace"
             hx-disabled-elt="this"
 {% endif %}            hx-vals='{"week": ""}'
-            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+            class="skew-control">
       {% for s in available_seasons %}
       <option value="{{ s }}" {% if s == current_season %}selected{% endif %}>{{ s }}</option>
       {% endfor %}
     </select>
   </div>
   {% endif %}
-  <label for="{{ _ws_week_id }}" class="text-sm font-semibold text-gray-700">Week</label>
+  <label for="{{ _ws_week_id }}" class="label">Week</label>
   <div class="flex items-center gap-1">
     {# Determine previous and next weeks from the available_weeks list #}
     {% set prev_week = namespace(found=false, season=none, week=none) %}
@@ -191,9 +192,9 @@
 
     {# Previous week button #}
     <button {% if prev_week.found %}hx-get="{{ _ws_endpoint }}?week={{ prev_week.week }}&season={{ prev_week.season }}{% for _k, _v in _ws_extra_params.items() %}&{{ _k }}={{ _v }}{% endfor %}" hx-target="{{ _ws_target }}" hx-swap="innerHTML"{% if _ws_indicator %} hx-indicator="{{ _ws_indicator }}"{% endif %}{% if _ws_failure_template %} hx-on::response-error="{{ _ws_fail_js|safe }}" hx-on::timeout="{{ _ws_fail_js|safe }}" hx-on::send-error="{{ _ws_fail_js|safe }}"{% endif %}{% if _ws_timeout %} hx-request='{"timeout": {{ _ws_timeout|int }}}'{% endif %}{% if _ws_sync %} hx-sync="{{ _ws_target }}:replace" hx-disabled-elt="this"{% endif %}{% else %}disabled{% endif %}
-            class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
+            class="skew-control"
             aria-label="Previous Week">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+      <span class="unskew"><svg class="w-4 h-4 text-accent" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg></span>
     </button>
 
     {# Week dropdown #}
@@ -209,7 +210,7 @@
 {% endif %}{% if _ws_timeout %}            hx-request='{"timeout": {{ _ws_timeout|int }}}'
 {% endif %}{% if _ws_sync %}            hx-sync="{{ _ws_target }}:replace"
             hx-disabled-elt="this"
-{% endif %}            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+{% endif %}            class="skew-control">
       {% for w in available_weeks %}
       <option value="{{ w.week }}" data-season="{{ w.season }}" {% if w.week == current_week and w.season == current_season %}selected{% endif %}>
         Week {{ w.week }}
@@ -219,9 +220,9 @@
 
     {# Next week button #}
     <button {% if next_week.found %}hx-get="{{ _ws_endpoint }}?week={{ next_week.week }}&season={{ next_week.season }}{% for _k, _v in _ws_extra_params.items() %}&{{ _k }}={{ _v }}{% endfor %}" hx-target="{{ _ws_target }}" hx-swap="innerHTML"{% if _ws_indicator %} hx-indicator="{{ _ws_indicator }}"{% endif %}{% if _ws_failure_template %} hx-on::response-error="{{ _ws_fail_js|safe }}" hx-on::timeout="{{ _ws_fail_js|safe }}" hx-on::send-error="{{ _ws_fail_js|safe }}"{% endif %}{% if _ws_timeout %} hx-request='{"timeout": {{ _ws_timeout|int }}}'{% endif %}{% if _ws_sync %} hx-sync="{{ _ws_target }}:replace" hx-disabled-elt="this"{% endif %}{% else %}disabled{% endif %}
-            class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
+            class="skew-control"
             aria-label="Next Week">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+      <span class="unskew"><svg class="w-4 h-4 text-accent" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></span>
     </button>
   </div>
 </div>
