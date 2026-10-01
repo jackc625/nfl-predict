@@ -1,0 +1,183 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&display=swap" rel="stylesheet">
+
+<style>
+  .lay .card-image { aspect-ratio:auto; display:block; }
+  .bc { --y:#FFD400; --ink:#0B0F17; --panel:#151B29; --panel2:#1D2436; --mut:#8A93A8; --line:rgba(255,255,255,.08);
+        --win:#22C55E; --loss:#EF4444;
+        background:linear-gradient(180deg,#0B0F17 0%,#0E1320 100%); color:#F3F5F9; font-family:Inter,system-ui,sans-serif; padding-bottom:24px; border-radius:12px; overflow:hidden; }
+  .bc .nav { display:flex; align-items:center; gap:18px; padding:12px 22px; font-size:13px; color:var(--mut); border-bottom:1px solid rgba(255,255,255,.06); }
+  .bc .nav b { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:22px; color:#fff; margin-right:auto; }
+  .bc .nav b u { text-decoration:none; color:var(--y); }
+  .bc .nav .on { color:var(--ink); background:var(--y); font-weight:700; padding:3px 10px; transform:skewX(-12deg); display:inline-block; }
+  .bc .nav .on > span { display:inline-block; transform:skewX(12deg); }
+  .bc .hdr { display:flex; align-items:flex-end; gap:16px; padding:18px 22px 4px; flex-wrap:wrap; }
+  .bc .hdr h1 { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:46px; line-height:.9; text-transform:uppercase; margin:0; color:#fff; }
+  .bc .hdr .sub { color:var(--mut); font-size:13px; padding-bottom:4px; max-width:520px; }
+  .bc .sel { margin-left:auto; display:flex; gap:4px; align-items:center; }
+  .bc .sel span { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:15px; background:var(--panel2); padding:5px 12px; transform:skewX(-12deg); display:inline-block; }
+  .bc .sel span.arr { color:var(--y); }
+
+  /* condensed honesty note */
+  .note { margin:10px 22px 0; border:1px solid rgba(255,255,255,.16); border-radius:4px; font-size:12px; color:#C4CAD8; }
+  .note summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px; padding:7px 12px; }
+  .note summary::-webkit-details-marker { display:none; }
+  .note summary .k { font-family:'Barlow Condensed',sans-serif; font-weight:800; letter-spacing:.1em; text-transform:uppercase; font-size:12px; color:#fff; }
+  .note summary .why { margin-left:auto; color:var(--y); font-weight:600; }
+  .note summary .why::after { content:' \25BE'; }
+  .note[open] summary .why::after { content:' \25B4'; }
+  .note .body { padding:0 12px 10px; color:var(--mut); line-height:1.55; max-width:760px; }
+
+  .slot { display:flex; align-items:center; gap:12px; margin:24px 22px 10px; }
+  .slot .tag { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:15px; letter-spacing:.06em; text-transform:uppercase; background:var(--y); color:var(--ink); padding:2px 12px; transform:skewX(-12deg); }
+  .slot .tag.ghost { background:transparent; color:#fff; border:1.5px solid rgba(255,255,255,.5); }
+  .slot .ln { flex:1; height:1px; background:var(--line); }
+  .slot .ct { font-size:12px; color:var(--mut); }
+  .cap { margin:-2px 22px 10px; font-size:12px; color:var(--mut); max-width:720px; }
+
+  /* honesty chips: monochrome */
+  .hchip { display:inline-block; font-size:11px; font-weight:600; padding:1px 8px; border-radius:999px; border:1px solid rgba(255,255,255,.28); color:#D5DAE5; white-space:nowrap; }
+  .hchip.strong { background:rgba(255,255,255,.12); color:#fff; }
+  .band { display:inline-block; font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:12px; letter-spacing:.1em; text-transform:uppercase; padding:1px 8px; }
+  .band.high { background:#E6E9F0; color:#0B0F17; }
+  .band.medium { background:#5B6478; color:#fff; }
+  .band.low { border:1px solid #5B6478; color:#C4CAD8; }
+
+  /* live bet slips */
+  .slips { display:grid; gap:8px; padding:0 22px; }
+  .slip { display:grid; grid-template-columns:44px 220px 1fr 100px 100px 180px; align-items:center; background:var(--panel); border-left:4px solid var(--y); min-height:64px; transition:background .15s; }
+  .slip:hover { background:#1A2133; }
+  .slip .rk { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:30px; color:rgba(255,255,255,.25); text-align:center; }
+  .slip .mu { display:flex; flex-direction:column; gap:2px; padding:8px 0; }
+  .tr { display:grid; grid-template-columns:46px 1fr; height:22px; }
+  .tr .ab { background:var(--c); transform:skewX(-12deg); margin-left:5px; display:flex; align-items:center; justify-content:center; }
+  .tr .ab span { transform:skewX(12deg); font-family:'Barlow Condensed',sans-serif; font-weight:800; font-style:italic; font-size:14px; color:#fff; }
+  .tr .nm { display:flex; align-items:center; padding-left:8px; font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:#C4CAD8; }
+  .slip .pk { padding-left:14px; }
+  .slip .pk .ty { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--mut); }
+  .slip .pk .p { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:28px; line-height:1; color:var(--y); text-transform:uppercase; }
+  .slip .fig { text-align:right; padding-right:16px; }
+  .slip .fig .l { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--mut); }
+  .slip .fig .v { font-family:'JetBrains Mono',monospace; font-weight:700; font-size:16px; color:#fff; }
+  .slip .meta { padding-right:14px; text-align:right; display:flex; flex-direction:column; align-items:flex-end; gap:4px; font-size:11px; color:var(--mut); }
+  .fine { margin:8px 22px 0; font-size:11.5px; color:var(--mut); max-width:760px; }
+
+  /* suppressed */
+  .supp { margin:18px 22px 0; background:var(--panel); border-radius:4px; }
+  .supp summary { list-style:none; cursor:pointer; padding:12px 14px; display:flex; align-items:center; gap:12px; }
+  .supp summary::-webkit-details-marker { display:none; }
+  .supp summary b { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:17px; text-transform:uppercase; letter-spacing:.04em; }
+  .supp summary .c { font-size:12px; color:var(--mut); }
+  .supp summary .chev { margin-left:auto; color:var(--y); font-weight:700; }
+  .reasons { display:flex; gap:6px; flex-wrap:wrap; padding:0 14px 12px; }
+  .reasons span { font-size:11px; color:#C4CAD8; background:var(--panel2); padding:2px 8px; }
+  .reasons span b { color:#fff; font-family:'JetBrains Mono',monospace; margin-left:4px; }
+
+  /* tracker */
+  .trk { display:grid; grid-template-columns:1.25fr .55fr 1.2fr; gap:8px; padding:0 22px; }
+  .grp { display:flex; gap:8px; }
+  .tile { flex:1; background:var(--panel); padding:10px 12px; border-top:2px solid rgba(255,255,255,.1); }
+  .tile .l { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--mut); }
+  .tile .v { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:34px; line-height:1.05; font-variant-numeric:tabular-nums; }
+  .win { color:var(--win); } .loss { color:var(--loss); } .push { color:var(--mut); }
+  .record { margin:0 22px 8px; display:flex; align-items:center; gap:10px; }
+  .record .rec { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:22px; letter-spacing:.02em; }
+  .strip { display:flex; gap:2px; flex-wrap:nowrap; }
+  .strip i { width:5px; height:14px; display:block; }
+  .empty { margin:0 22px; border:1px dashed rgba(255,255,255,.18); padding:22px; text-align:center; }
+  .empty b { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:20px; text-transform:uppercase; letter-spacing:.04em; display:block; }
+  .empty span { font-size:12px; color:var(--mut); }
+  .foot { margin:22px 22px 0; padding-top:12px; border-top:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--mut); }
+  .btn { font-family:'Barlow Condensed',sans-serif; font-weight:800; letter-spacing:.06em; font-size:14px; padding:4px 12px; border:1.5px solid rgba(255,255,255,.4); color:#fff; transform:skewX(-12deg); display:inline-block; margin-right:6px; }
+  .foot a { color:var(--y); text-decoration:none; }
+</style>
+
+<h2>Bets page in the Broadcast style</h2>
+<p class="subtitle">One proposal, not three options -- tell me what to change. Uses the 3 example bets from the This Week mockup; the tracker figures are the real replay numbers currently in your cache (90 graded, 51-37-2). Click the "Why?" and "Suppressed" rows -- they really expand. Section order and every honesty rule from today's page are kept: labels stay grey, the EV band stays grey (weight = size), and green/red appear ONLY in the tracker where they mean won/lost.</p>
+
+<div class="cards lay" style="grid-template-columns:1fr">
+<div class="card" data-choice="bets-proposal" onclick="toggleSelect(this)">
+<div class="card-image"><div class="bc">
+
+  <div class="nav"><b>NFL<u>/</u>PREDICT</b><span>This Week</span><span class="on"><span>Bets</span></span><span>Season</span><span>Track Record</span><span>How It Works</span></div>
+
+  <div class="hdr">
+    <h1>Bets &middot; Week 3</h1>
+    <div class="sub">Every game is checked for all three bet types. What clears the pre-registered expected-value floor is listed here; everything else is in Suppressed, with its reason.</div>
+    <div class="sel"><span class="arr">&lsaquo;</span><span>2026 &middot; Week 3 &#9662;</span><span class="arr">&rsaquo;</span></div>
+  </div>
+
+  <details class="note" onclick="event.stopPropagation()">
+    <summary><span class="k">Not wagering advice</span><span>Research tool. Stakes are units (1u = 1% of a notional bankroll). No proven edge vs the closing market.</span><span class="why">Why?</span></summary>
+    <div class="body">This is a personal research tool. No wager is placed and no currency amount is shown -- stakes are expressed in units, where 1 unit = 1% of a notional bankroll. The deployed models have not demonstrated a positive edge against the closing market: the win-probability model's pooled closing-line value is negative, and the spread and totals models were retained after failing their most recent re-fit gate. A bet appearing on this list means it cleared a pre-registered expected-value floor, not that it is expected to win.</div>
+  </details>
+
+  <div class="slot"><span class="tag">Live bets</span><span class="ln"></span><span class="ct">ranked by expected value &middot; 3 bets &middot; 2.5u total</span></div>
+  <div class="slips">
+    <div class="slip">
+      <div class="rk">1</div>
+      <div class="mu"><div class="tr" style="--c:#E31837"><div class="ab"><span>KC</span></div><div class="nm">Chiefs</div></div><div class="tr" style="--c:#008E97"><div class="ab"><span>MIA</span></div><div class="nm">Dolphins</div></div></div>
+      <div class="pk"><div class="ty">Totals</div><div class="p">Under 44.5</div></div>
+      <div class="fig"><div class="l">EV</div><div class="v">+5.30%</div></div>
+      <div class="fig"><div class="l">Stake</div><div class="v">1.00u</div></div>
+      <div class="meta"><span class="band high">High</span><span class="hchip">Live forward record</span></div>
+    </div>
+    <div class="slip">
+      <div class="rk">2</div>
+      <div class="mu"><div class="tr" style="--c:#0080C6"><div class="ab"><span>LAC</span></div><div class="nm">Chargers</div></div><div class="tr" style="--c:#00338D"><div class="ab"><span>BUF</span></div><div class="nm">Bills</div></div></div>
+      <div class="pk"><div class="ty">Spread</div><div class="p">BUF -6.5</div></div>
+      <div class="fig"><div class="l">EV</div><div class="v">+4.80%</div></div>
+      <div class="fig"><div class="l">Stake</div><div class="v">1.00u</div></div>
+      <div class="meta"><span class="band medium">Medium</span><span class="hchip">Live forward record</span></div>
+    </div>
+    <div class="slip">
+      <div class="rk">3</div>
+      <div class="mu"><div class="tr" style="--c:#97233F"><div class="ab"><span>ARI</span></div><div class="nm">Cardinals</div></div><div class="tr" style="--c:#AA0000"><div class="ab"><span>SF</span></div><div class="nm">49ers</div></div></div>
+      <div class="pk"><div class="ty">Spread</div><div class="p">SF -7</div></div>
+      <div class="fig"><div class="l">EV</div><div class="v">+2.60%</div></div>
+      <div class="fig"><div class="l">Stake</div><div class="v">0.50u</div></div>
+      <div class="meta"><span class="band low">Low</span><span class="hchip">Live forward record</span></div>
+    </div>
+  </div>
+  <p class="fine">Line as of: each slip shows its capture time on hover/expand. Stakes are quarter-Kelly, capped at 5% per bet and 10% per week, de-weighted for correlated bets. Order is by expected value, not stake.</p>
+
+  <details class="supp" onclick="event.stopPropagation()">
+    <summary><b>Suppressed candidates (42)</b><span class="c">The complete record of what was not bet, and why.</span><span class="chev">Show &#9662;</span></summary>
+    <div class="reasons"><span>Expected value below the floor<b>17</b></span><span>Model agrees with the market<b>12</b></span><span>No market line for this bet type<b>8</b></span><span>Outside the eligible sub-population<b>5</b></span></div>
+    <div style="padding:0 14px 14px;font-size:12px;color:#8A93A8">(full per-reason tables, same as today, styled like the slips)</div>
+  </details>
+
+  <div class="slot"><span class="tag ghost">Backtest replay</span><span class="hchip">Contaminated split</span><span class="ln"></span><span class="ct">reconstructed after the fact</span></div>
+  <details class="note" style="margin:0 22px 10px" onclick="event.stopPropagation()">
+    <summary><span class="k">Old-rule numbers</span><span>Built on inputs later found defective -- not evidence. Labelled 2026-09-15.</span><span class="why">Why?</span></summary>
+    <div class="body">Built under the old rule on inputs later found defective; not evidence. These figures come from before the September 2026 fix to what the models were fed, and they stay here for the record only. Only the 2026 season, recorded live with each game locked at 6 PM Eastern the day before kickoff, counts as evidence.</div>
+  </details>
+  <div class="record"><span class="rec">51-37-2</span><div class="strip" id="strip"></div></div>
+  <div class="trk">
+    <div class="grp"><div class="tile"><div class="l">Bets graded</div><div class="v">90</div></div><div class="tile"><div class="l">Wins</div><div class="v win">51</div></div><div class="tile"><div class="l">Losses</div><div class="v loss">37</div></div></div>
+    <div class="grp"><div class="tile"><div class="l">Pushes</div><div class="v push">2</div></div></div>
+    <div class="grp"><div class="tile"><div class="l">Hit rate</div><div class="v">58.0%</div></div><div class="tile"><div class="l">Return (flat, units)</div><div class="v win">+0.054</div></div></div>
+  </div>
+  <p class="fine">A push returns the stake. Pushes are excluded from the hit-rate denominator and are never counted as a win or a loss.</p>
+
+  <div class="slot"><span class="tag">Forward record</span><span class="hchip strong">Live forward record</span><span class="ln"></span><span class="ct">recommended before kickoff -- the only real track record</span></div>
+  <div class="empty"><b>Nothing graded yet</b><span>No recommendation in this class has a final result yet. Grades appear after the games are played and the cache is rebuilt.</span></div>
+
+  <div class="foot"><div><span class="btn">CSV</span><span class="btn">JSON</span></div><span>List populated Sep 26, 5:15 PM ET &middot; each game locks 6 PM ET the day before kickoff</span><a href="#" onclick="return false">Backtest evidence behind these bets &rsaquo;</a></div>
+
+</div></div>
+<div class="card-body"><h3>Bets: proposal</h3><p>Live bets become ranked "bet slips" (rank, matchup, the pick in big yellow type, EV, stake, EV band, evidence label). Suppressed stays a native expandable section but shows a per-reason count summary while closed. The tracker becomes scoreboard tiles with a W-L-P record line and a tick strip (one tick per graded bet: green win, red loss, grey push). Disclaimers are one-liners that expand to the full original wording.</p></div>
+</div>
+</div>
+
+<script>
+(function () {
+  // Illustrative only: 51 W / 37 L / 2 P in an arbitrary order.
+  var s = 'WWLWLWWWLPWLWWLLWWLWWWLWLWWLWLLWWWLWWLWLWWLLWWWLWLWLWWLWPLWWLWLLWWLWWLLWLWWLWLWWLWLLWWLWL';
+  var el = document.getElementById('strip'), h = '';
+  for (var i = 0; i < s.length; i++) {
+    h += '<i style="background:' + (s[i] === 'W' ? '#22C55E' : s[i] === 'L' ? '#EF4444' : '#5B6478') + '"></i>';
+  }
+  el.innerHTML = h;
+})();
+</script>

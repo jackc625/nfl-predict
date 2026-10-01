@@ -1,0 +1,188 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Big+Shoulders+Display:wght@700;800;900&family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Saira+Condensed:wght@600;700;800&display=swap" rel="stylesheet">
+
+<style>
+  .vs-wrap { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:20px; }
+  .vs-frame.card-image { aspect-ratio:auto; display:block; }
+  .vs-frame { border-radius:12px; overflow:hidden; }
+  @keyframes grow { from { transform:scaleX(0); } to { transform:scaleX(1); } }
+  @keyframes pulse { 0%,100% { opacity:.55; } 50% { opacity:1; } }
+
+  /* =================== A1: PRIME TIME =================== */
+  .p1 { --bg:#090E1A; background:
+          radial-gradient(ellipse 80% 45% at 50% -10%, rgba(255,255,255,.10), transparent 70%),
+          var(--bg);
+        color:#EEF2FA; font-family:Inter,system-ui,sans-serif; padding-bottom:18px; }
+  .p1 .nav { display:flex; align-items:center; gap:14px; padding:12px 16px; font-size:12px; color:#7E8AA6; }
+  .p1 .nav b { font-family:'Big Shoulders Display',sans-serif; font-weight:900; font-size:18px; letter-spacing:.04em; color:#fff; margin-right:auto; display:flex; align-items:center; gap:7px; }
+  .p1 .nav b i { width:10px; height:10px; border-radius:50%; background:#3BF08F; box-shadow:0 0 10px #3BF08F; animation:pulse 2.4s infinite; }
+  .p1 .nav .on { color:#fff; }
+  .p1 .hdr { padding:6px 16px 0; display:flex; align-items:baseline; gap:10px; }
+  .p1 .wk { font-family:'Big Shoulders Display',sans-serif; font-weight:900; font-size:44px; line-height:1; letter-spacing:.01em; }
+  .p1 .sub { font-size:12px; color:#7E8AA6; }
+  .p1 .gc { margin:14px 16px 0; border-radius:14px; padding:14px; position:relative; overflow:hidden;
+            background:
+              linear-gradient(120deg, color-mix(in srgb, var(--away) 28%, transparent) 0%, transparent 38%, transparent 62%, color-mix(in srgb, var(--home) 30%, transparent) 100%),
+              #111828;
+            border:1px solid rgba(255,255,255,.08);
+            transition:transform .2s ease, box-shadow .2s ease; }
+  .p1 .gc:hover { transform:translateY(-3px); box-shadow:0 0 0 1px color-mix(in srgb, var(--away) 70%, white), 0 18px 40px -14px var(--away); }
+  .p1 .meta { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:#8D98B3; display:flex; justify-content:space-between; }
+  .p1 .team { display:flex; align-items:baseline; gap:8px; margin-top:6px; }
+  .p1 .ab { font-family:'Big Shoulders Display',sans-serif; font-weight:900; font-size:30px; line-height:1; width:58px; }
+  .p1 .nm { font-size:13px; color:#AAB4CC; }
+  .p1 .pct { margin-left:auto; font-family:'Big Shoulders Display',sans-serif; font-weight:800; font-size:30px; line-height:1; font-variant-numeric:tabular-nums; }
+  .p1 .pct small { font-size:16px; opacity:.6; }
+  .p1 .dog { opacity:.5; }
+  .p1 .bar { display:flex; height:5px; border-radius:3px; overflow:hidden; margin:12px 0 10px; transform-origin:left; animation:grow .9s cubic-bezier(.2,.8,.2,1); }
+  .p1 .row { display:grid; grid-template-columns:54px 1fr auto; gap:8px; align-items:center; font-size:12px; padding:8px 0; border-top:1px solid rgba(255,255,255,.07); }
+  .p1 .lbl { color:#8D98B3; text-transform:uppercase; font-size:10px; letter-spacing:.1em; }
+  .p1 .mono { font-family:'JetBrains Mono',monospace; color:#fff; }
+  .p1 .mut { color:#8D98B3; }
+  .p1 .edge { font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700; color:#3BF08F; text-shadow:0 0 12px rgba(59,240,143,.55); }
+  .p1 .bet { margin-top:8px; display:flex; justify-content:space-between; align-items:center; font-size:11px; font-weight:600; letter-spacing:.04em; color:#06140C; border-radius:8px; padding:7px 10px;
+             background:linear-gradient(90deg,#3BF08F,#22C1A1); box-shadow:0 6px 20px -8px rgba(59,240,143,.7); }
+
+  /* =================== A2: GRIDIRON =================== */
+  .p2 { background:#0A1310; color:#EAF3EE; font-family:Inter,system-ui,sans-serif; padding-bottom:18px;
+        background-image:repeating-linear-gradient(90deg, rgba(255,255,255,.018) 0 36px, transparent 36px 72px); }
+  .p2 .nav { display:flex; align-items:center; gap:14px; padding:12px 16px; font-size:12px; color:#86A096; border-bottom:2px solid rgba(255,255,255,.85); }
+  .p2 .nav b { font-family:'Saira Condensed',sans-serif; font-weight:800; font-size:18px; letter-spacing:.06em; color:#fff; margin-right:auto; }
+  .p2 .nav .on { color:#fff; font-weight:600; }
+  .p2 .hdr { padding:12px 16px 0; font-family:'Saira Condensed',sans-serif; font-weight:800; font-size:13px; letter-spacing:.2em; color:#86A096; }
+  .p2 .hdr span { color:#fff; font-size:24px; letter-spacing:.06em; margin-right:8px; }
+  .p2 .gc { margin:12px 16px 0; background:#101C17; border:1px solid rgba(255,255,255,.09); border-radius:10px; padding:14px; transition:border-color .2s, transform .2s; }
+  .p2 .gc:hover { border-color:rgba(255,255,255,.35); transform:translateY(-2px); }
+  .p2 .meta { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#86A096; display:flex; justify-content:space-between; }
+  .p2 .tops { display:flex; justify-content:space-between; align-items:baseline; margin:8px 0 6px; font-family:'Saira Condensed',sans-serif; }
+  .p2 .tops .t { font-size:24px; font-weight:800; letter-spacing:.03em; }
+  .p2 .tops .t em { font-style:normal; font-size:13px; color:#86A096; font-weight:600; margin-left:4px; letter-spacing:.02em; }
+  .p2 .tops .r { text-align:right; }
+  .p2 .field { display:flex; height:34px; border-radius:4px; overflow:hidden; border:1px solid rgba(255,255,255,.5); position:relative; }
+  .p2 .ez { width:26px; display:flex; align-items:center; justify-content:center; font-family:'Saira Condensed',sans-serif; font-weight:800; font-size:10px; letter-spacing:.05em; writing-mode:vertical-rl; transform:rotate(180deg); color:#fff; }
+  .p2 .ez.r { transform:none; }
+  .p2 .turf { flex:1; position:relative; display:flex; }
+  .p2 .turf .own { height:100%; opacity:.42; transform-origin:left; animation:grow .9s cubic-bezier(.2,.8,.2,1); }
+  .p2 .turf::after { content:''; position:absolute; inset:0; pointer-events:none;
+                      background:repeating-linear-gradient(90deg, rgba(255,255,255,.55) 0 1px, transparent 1px 10%); }
+  .p2 .los { position:absolute; top:-2px; bottom:-2px; width:3px; background:#FFD84A; box-shadow:0 0 10px #FFD84A; }
+  .p2 .row { display:grid; grid-template-columns:54px 1fr auto; gap:8px; align-items:center; font-size:12px; padding:8px 0; border-top:1px dashed rgba(255,255,255,.14); }
+  .p2 .row:first-of-type { margin-top:10px; }
+  .p2 .lbl { color:#86A096; text-transform:uppercase; font-size:10px; letter-spacing:.12em; }
+  .p2 .mono { font-family:'JetBrains Mono',monospace; color:#fff; }
+  .p2 .mut { color:#86A096; }
+  .p2 .edge { font-family:'Saira Condensed',sans-serif; font-weight:800; font-size:15px; color:#FFD84A; }
+  .p2 .bet { margin-top:8px; display:flex; justify-content:space-between; align-items:center; font-family:'Saira Condensed',sans-serif; font-weight:700; font-size:13px; letter-spacing:.08em; text-transform:uppercase;
+             border:1.5px solid #FFD84A; color:#FFD84A; border-radius:6px; padding:5px 10px; }
+
+  /* =================== A3: BROADCAST =================== */
+  .p3 { background:linear-gradient(180deg,#0B0F17 0%,#0E1320 100%); color:#F3F5F9; font-family:Inter,system-ui,sans-serif; padding-bottom:18px; }
+  .p3 .nav { display:flex; align-items:center; gap:14px; padding:12px 16px; font-size:12px; color:#8A93A8; }
+  .p3 .nav b { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:20px; letter-spacing:.02em; color:#fff; margin-right:auto; }
+  .p3 .nav b u { text-decoration:none; color:#FFD400; }
+  .p3 .nav .on { color:#0B0F17; background:#FFD400; font-weight:700; padding:3px 9px; transform:skewX(-12deg); display:inline-block; }
+  .p3 .nav .on > span { display:inline-block; transform:skewX(12deg); }
+  .p3 .hdr { padding:4px 16px 0; font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:34px; line-height:1; text-transform:uppercase; }
+  .p3 .hdr small { font-size:13px; font-style:normal; font-weight:600; color:#8A93A8; letter-spacing:.06em; margin-left:6px; }
+  .p3 .gc { margin:14px 16px 0; background:#151B29; border-radius:4px; padding:12px 14px 14px; border-top:3px solid #FFD400; transition:transform .2s, box-shadow .2s; }
+  .p3 .gc:hover { transform:translateY(-2px); box-shadow:0 14px 30px -12px rgba(255,212,0,.35); }
+  .p3 .meta { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:#8A93A8; display:flex; justify-content:space-between; }
+  .p3 .bug { margin-top:8px; display:grid; gap:3px; }
+  .p3 .tr { display:grid; grid-template-columns:64px 1fr 74px; height:34px; }
+  .p3 .tr .ab { background:var(--c); transform:skewX(-12deg); margin-left:6px; display:flex; align-items:center; justify-content:center; }
+  .p3 .tr .ab span { transform:skewX(12deg); font-family:'Barlow Condensed',sans-serif; font-weight:800; font-style:italic; font-size:22px; color:#fff; }
+  .p3 .tr .nm { display:flex; align-items:center; padding-left:12px; font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:18px; text-transform:uppercase; letter-spacing:.04em; background:#1D2436; }
+  .p3 .tr .pc { display:flex; align-items:center; justify-content:flex-end; padding-right:10px; font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:22px; background:#0B0F17; font-variant-numeric:tabular-nums; }
+  .p3 .tr.fav .pc { color:#FFD400; }
+  .p3 .tr.dog .nm, .p3 .tr.dog .pc { color:#8A93A8; }
+  .p3 .row { display:grid; grid-template-columns:54px 1fr auto; gap:8px; align-items:center; font-size:12px; padding:8px 0; border-top:1px solid rgba(255,255,255,.07); }
+  .p3 .row:first-of-type { margin-top:10px; }
+  .p3 .lbl { font-family:'Barlow Condensed',sans-serif; font-weight:700; color:#8A93A8; text-transform:uppercase; font-size:12px; letter-spacing:.1em; }
+  .p3 .mono { font-family:'JetBrains Mono',monospace; color:#fff; }
+  .p3 .mut { color:#8A93A8; }
+  .p3 .edge { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:16px; color:#0B0F17; background:#FFD400; padding:0 8px; transform:skewX(-12deg); }
+  .p3 .bet { margin-top:8px; display:flex; justify-content:space-between; align-items:center; font-family:'Barlow Condensed',sans-serif; font-weight:800; font-style:italic; font-size:15px; letter-spacing:.05em; text-transform:uppercase;
+             background:linear-gradient(90deg,#FFD400 0 6px, #1D2436 6px); padding:6px 12px 6px 16px; }
+  .p3 .bet b { color:#FFD400; }
+</style>
+
+<h2>Turning up the energy on the dark look</h2>
+<p class="subtitle">You clicked A, so all three keep the dark base. Same game in each: KC @ MIA with the model's real Week 3 numbers (KC 58.8%, KC by 2.5, total 41.3); the market lines are examples. Hover a card -- the hover effect is part of the design. They go from "tasteful" (A1) to "loud" (A3).</p>
+
+<div class="cards vs-wrap">
+
+  <!-- A1 -->
+  <div class="card" data-choice="a1-prime-time" onclick="toggleSelect(this)">
+    <div class="card-image vs-frame"><div class="p1">
+      <div class="nav"><b><i></i>NFL PREDICT</b><span class="on">This Week</span><span>Bets</span><span>Season</span><span>Model</span></div>
+      <div class="hdr"><div class="wk">WEEK 3</div><div class="sub">16 games &middot; 3 on the bet list</div></div>
+      <div class="gc" style="--away:#E31837;--home:#00A3AD">
+        <div class="meta"><span>Sun &middot; 1:00 PM ET</span><span>Hard Rock Stadium</span></div>
+        <div class="team"><span class="ab">KC</span><span class="nm">Chiefs</span><span class="pct">58.8<small>%</small></span></div>
+        <div class="team dog"><span class="ab">MIA</span><span class="nm">Dolphins</span><span class="pct">41.2<small>%</small></span></div>
+        <div class="bar"><span style="width:58.8%;background:#E31837"></span><span style="width:41.2%;background:#00A3AD"></span></div>
+        <div class="row"><span class="lbl">Spread</span><span><span class="mono">KC by 2.5</span> <span class="mut">vs line KC -1.5</span></span><span class="edge">+1.0</span></div>
+        <div class="row"><span class="lbl">Total</span><span><span class="mono">41.3</span> <span class="mut">vs line 44.5 &middot; Under</span></span><span class="edge">3.2</span></div>
+        <div class="bet"><span>ON THE BET LIST</span><span>UNDER 44.5 &middot; 1.0u</span></div>
+      </div>
+    </div></div>
+    <div class="card-body">
+      <h3>A1. Prime Time</h3>
+      <p>Stadium-light glow at the top, each card washed in both teams' colors, big athletic numerals, the favorite bright and the underdog dimmed. Edges glow green. Card lifts and lights up in team color on hover.</p>
+    </div>
+  </div>
+
+  <!-- A2 -->
+  <div class="card" data-choice="a2-gridiron" onclick="toggleSelect(this)">
+    <div class="card-image vs-frame"><div class="p2">
+      <div class="nav"><b>NFL PREDICT</b><span class="on">This Week</span><span>Bets</span><span>Season</span><span>Model</span></div>
+      <div class="hdr"><span>WEEK 3</span>16 GAMES &middot; 3 BETS</div>
+      <div class="gc">
+        <div class="meta"><span>Sun &middot; 1:00 PM ET</span><span>Hard Rock Stadium</span></div>
+        <div class="tops">
+          <div class="t">KC<em>58.8%</em></div>
+          <div class="t r"><em>41.2%</em> MIA</div>
+        </div>
+        <div class="field">
+          <div class="ez" style="background:#E31837">KC</div>
+          <div class="turf">
+            <div class="own" style="width:58.8%;background:#E31837"></div>
+            <div class="own" style="width:41.2%;background:#00A3AD"></div>
+            <div class="los" style="left:58.8%"></div>
+          </div>
+          <div class="ez r" style="background:#00A3AD">MIA</div>
+        </div>
+        <div class="row"><span class="lbl">Spread</span><span><span class="mono">KC by 2.5</span> <span class="mut">vs line KC -1.5</span></span><span class="edge">+1.0</span></div>
+        <div class="row"><span class="lbl">Total</span><span><span class="mono">41.3</span> <span class="mut">vs line 44.5 &middot; Under</span></span><span class="edge">3.2</span></div>
+        <div class="bet"><span>Bet list</span><span>Under 44.5 &middot; 1.0u</span></div>
+      </div>
+    </div></div>
+    <div class="card-body">
+      <h3>A2. Gridiron</h3>
+      <p>The win-probability bar is drawn as a football field: team-color end zones, yard lines, and a yellow line marking where the odds split. Faint turf stripes in the background, chalk-white lines. Football-themed without being cartoonish.</p>
+    </div>
+  </div>
+
+  <!-- A3 -->
+  <div class="card" data-choice="a3-broadcast" onclick="toggleSelect(this)">
+    <div class="card-image vs-frame"><div class="p3">
+      <div class="nav"><b>NFL<u>/</u>PREDICT</b><span class="on"><span>This Week</span></span><span>Bets</span><span>Season</span><span>Model</span></div>
+      <div class="hdr">Week 3<small>16 games &middot; 3 bets</small></div>
+      <div class="gc">
+        <div class="meta"><span>Sun &middot; 1:00 PM ET</span><span>Hard Rock Stadium</span></div>
+        <div class="bug">
+          <div class="tr fav" style="--c:#E31837"><div class="ab"><span>KC</span></div><div class="nm">Chiefs</div><div class="pc">58.8%</div></div>
+          <div class="tr dog" style="--c:#008E97"><div class="ab"><span>MIA</span></div><div class="nm">Dolphins</div><div class="pc">41.2%</div></div>
+        </div>
+        <div class="row"><span class="lbl">Spread</span><span><span class="mono">KC by 2.5</span> <span class="mut">vs line KC -1.5</span></span><span class="edge">+1.0</span></div>
+        <div class="row"><span class="lbl">Total</span><span><span class="mono">41.3</span> <span class="mut">vs line 44.5 &middot; Under</span></span><span class="edge">3.2</span></div>
+        <div class="bet"><span>Bet list</span><b>Under 44.5 &middot; 1.0u</b></div>
+      </div>
+    </div></div>
+    <div class="card-body">
+      <h3>A3. Broadcast</h3>
+      <p>Styled like a TV score bug: slanted team-color blocks, bold condensed italic type, and the yellow "first-down line" as the accent color for edges and the active tab. The most energetic of the three.</p>
+    </div>
+  </div>
+
+</div>

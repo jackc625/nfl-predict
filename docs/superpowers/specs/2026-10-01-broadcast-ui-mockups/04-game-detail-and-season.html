@@ -1,0 +1,217 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&display=swap" rel="stylesheet">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+<style>
+  .lay .card-image { aspect-ratio:auto; display:block; }
+  .bc { --y:#FFD400; --ink:#0B0F17; --panel:#151B29; --panel2:#1D2436; --mut:#8A93A8; --line:rgba(255,255,255,.08); --win:#22C55E; --loss:#EF4444;
+        background:linear-gradient(180deg,#0B0F17 0%,#0E1320 100%); color:#F3F5F9; font-family:Inter,system-ui,sans-serif; padding-bottom:24px; border-radius:12px; overflow:hidden; }
+  .bc .nav { display:flex; align-items:center; gap:18px; padding:12px 22px; font-size:13px; color:var(--mut); border-bottom:1px solid rgba(255,255,255,.06); }
+  .bc .nav b { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:22px; color:#fff; margin-right:auto; }
+  .bc .nav b u { text-decoration:none; color:var(--y); }
+  .bc .nav .on { color:var(--ink); background:var(--y); font-weight:700; padding:3px 10px; transform:skewX(-12deg); display:inline-block; }
+  .bc .nav .on > span { display:inline-block; transform:skewX(12deg); }
+  .cond { font-family:'Barlow Condensed',sans-serif; }
+  .lbl { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--mut); }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  .panel { background:var(--panel); border-radius:4px; padding:14px 16px; }
+  .ph { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:18px; text-transform:uppercase; letter-spacing:.03em; margin:0 0 10px; display:flex; align-items:center; gap:10px; }
+  .ph::before { content:''; width:4px; height:16px; background:var(--y); transform:skewX(-12deg); }
+  .edge { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:15px; color:#0B0F17; background:#FFD400; padding:0 7px; transform:skewX(-12deg); display:inline-block; }
+
+  /* ---- game detail ---- */
+  .back { padding:14px 22px 0; font-size:12px; color:var(--y); }
+  .match { margin:12px 22px 0; position:relative; overflow:hidden; border-radius:4px;
+           background:linear-gradient(90deg, color-mix(in srgb, #E31837 40%, #151B29) 0%, #151B29 42%, #151B29 58%, color-mix(in srgb, #008E97 45%, #151B29) 100%); padding:18px 22px 16px; }
+  .match .row1 { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; }
+  .side { display:flex; align-items:center; gap:14px; }
+  .side.r { justify-content:flex-end; text-align:right; }
+  .blk { width:86px; height:58px; background:var(--c); transform:skewX(-12deg); display:flex; align-items:center; justify-content:center; }
+  .blk span { transform:skewX(12deg); font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:34px; color:#fff; }
+  .side .nm { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:26px; text-transform:uppercase; line-height:1; }
+  .side .rec { font-size:12px; color:#C4CAD8; margin-top:3px; }
+  .side .wp { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:44px; line-height:1; font-variant-numeric:tabular-nums; }
+  .side .wp.fav { color:var(--y); }
+  .side .wp.dog { color:#C4CAD8; }
+  .mid { text-align:center; }
+  .mid .at { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:26px; color:rgba(255,255,255,.4); }
+  .mid .when { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:13px; letter-spacing:.1em; text-transform:uppercase; color:#C4CAD8; }
+  .wpbar { display:flex; height:6px; margin-top:14px; gap:3px; }
+  .wpbar span { transform:skewX(-20deg); }
+  .dgrid { display:grid; grid-template-columns:1.25fr 1fr; gap:14px; padding:14px 22px 0; }
+  table.mvm { width:100%; border-collapse:collapse; font-size:13px; }
+  table.mvm th { text-align:right; padding:0 0 6px; } table.mvm th:first-child { text-align:left; }
+  table.mvm td { padding:9px 0; border-top:1px solid var(--line); text-align:right; }
+  table.mvm td:first-child { text-align:left; }
+  table.mvm td .pick { display:block; font-size:11px; color:var(--y); font-weight:600; }
+  .tabs { display:flex; gap:4px; margin-bottom:10px; }
+  .tabs span { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:13px; padding:2px 12px; transform:skewX(-12deg); background:var(--panel2); color:var(--mut); letter-spacing:.06em; }
+  .tabs span.on { background:var(--y); color:var(--ink); }
+  .fi { display:grid; grid-template-columns:170px 1fr 40px; gap:8px; align-items:center; font-size:12px; margin:5px 0; }
+  .fi .n { color:#C4CAD8; font-family:'JetBrains Mono',monospace; font-size:11px; text-align:right; }
+  .fi .b { height:10px; background:linear-gradient(90deg,#FFD400,#FFB800); transform:skewX(-20deg); }
+  .fi .v { color:var(--mut); font-family:'JetBrains Mono',monospace; font-size:11px; }
+  .tape { display:grid; grid-template-columns:60px 1fr 60px; align-items:center; gap:10px; margin:6px 0 14px; }
+  .tape .v { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:24px; }
+  .tape .bar { display:flex; height:10px; gap:3px; }
+  .tape .bar span { transform:skewX(-20deg); }
+  .form { display:flex; gap:4px; }
+  .form i { font-style:normal; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:14px; transform:skewX(-12deg); }
+  .form i.w { background:rgba(34,197,94,.18); color:var(--win); } .form i.l { background:rgba(239,68,68,.18); color:var(--loss); } .form i.e { background:var(--panel2); color:#3A4258; }
+  .kv { display:grid; grid-template-columns:1fr auto; font-size:13px; row-gap:8px; }
+  .kv dt { color:var(--mut); } .kv dd { margin:0; text-align:right; font-weight:600; }
+
+  /* ---- season ---- */
+  .shdr { display:flex; align-items:flex-end; gap:16px; padding:18px 22px 4px; }
+  .shdr h1 { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:46px; line-height:.9; text-transform:uppercase; margin:0; }
+  .shdr .sub { color:var(--mut); font-size:13px; padding-bottom:4px; }
+  .sel { margin-left:auto; display:flex; gap:4px; }
+  .sel span { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:15px; background:var(--panel2); padding:5px 12px; transform:skewX(-12deg); display:inline-block; }
+  .sel span.arr { color:var(--y); }
+  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:12px 22px 0; }
+  .kpi { background:var(--panel); padding:10px 14px; border-top:3px solid var(--k); }
+  .kpi .v { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:40px; line-height:1.05; font-variant-numeric:tabular-nums; }
+  .kpi .s { font-size:11px; color:var(--mut); }
+  .weeks { display:grid; grid-template-columns:repeat(18,1fr); gap:4px; padding:0 22px; }
+  .wk { background:var(--panel); padding:6px 4px 5px; text-align:center; }
+  .wk .n { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:11px; color:var(--mut); letter-spacing:.08em; }
+  .wk .r { font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:15px; }
+  .wk .pb { display:flex; height:4px; margin-top:4px; }
+  .wk.future { opacity:.35; }
+  .wk.cur { outline:2px solid var(--y); }
+  .chartbox { margin:0 22px; background:var(--panel); border-radius:4px; padding:8px 8px 4px; }
+  .sec { display:flex; align-items:center; gap:12px; margin:22px 22px 10px; }
+  .sec .tag { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:15px; letter-spacing:.06em; text-transform:uppercase; background:var(--y); color:var(--ink); padding:2px 12px; transform:skewX(-12deg); }
+  .sec .ln { flex:1; height:1px; background:var(--line); }
+  .sec .ct { font-size:12px; color:var(--mut); }
+  .fine { margin:8px 22px 0; font-size:11.5px; color:var(--mut); }
+</style>
+
+<h2>Game detail + Season page (and what a restyled chart looks like)</h2>
+<p class="subtitle">Game detail uses the real KC @ MIA data in your cache (Elo 1558 vs 1367, form, head-to-head, venue); the market lines are examples. Season uses ILLUSTRATIVE numbers -- your cache has no graded 2026 game yet, so today that page shows its empty state. The Season chart is a real Plotly chart drawn with the proposed dark theme, to show what all the charts on Track Record / How It Works would look like.</p>
+
+<div class="cards lay" style="grid-template-columns:1fr">
+
+<!-- ================= GAME DETAIL ================= -->
+<div class="card" data-choice="game-detail" onclick="toggleSelect(this)">
+<div class="card-image"><div class="bc">
+  <div class="nav"><b>NFL<u>/</u>PREDICT</b><span class="on"><span>This Week</span></span><span>Bets</span><span>Season</span><span>Track Record</span><span>How It Works</span></div>
+  <div class="back">&lsaquo; Week 3</div>
+  <div class="match">
+    <div class="row1">
+      <div class="side"><div class="blk" style="--c:#E31837"><span>KC</span></div><div><div class="nm">Chiefs</div><div class="rec">Elo 1558 &middot; last 2: W W</div></div><div class="wp fav" style="margin-left:auto">58.8%</div></div>
+      <div class="mid"><div class="at">@</div><div class="when">Sun 1:00 PM ET</div><div class="when" style="color:#8A93A8">Hard Rock Stadium</div></div>
+      <div class="side r"><div class="wp dog" style="margin-right:auto">41.2%</div><div><div class="nm">Dolphins</div><div class="rec">Elo 1367 &middot; last 2: L L</div></div><div class="blk" style="--c:#008E97"><span>MIA</span></div></div>
+    </div>
+    <div class="wpbar"><span style="width:58.8%;background:#E31837"></span><span style="width:41.2%;background:#008E97"></span></div>
+  </div>
+
+  <div class="dgrid">
+    <div style="display:grid;gap:14px">
+      <div class="panel">
+        <div class="ph">Model vs market</div>
+        <table class="mvm">
+          <thead><tr><th class="lbl">&nbsp;</th><th class="lbl">Model</th><th class="lbl">Market</th><th class="lbl">Published</th><th class="lbl">Edge</th></tr></thead>
+          <tbody>
+            <tr><td>Win probability</td><td class="mono">KC 58.8%</td><td class="mono">KC 55.1%</td><td class="mono">KC 56.4%</td><td><span class="edge">+3.7%</span></td></tr>
+            <tr><td>Spread<span class="pick">KC covers</span></td><td class="mono">KC by 2.5</td><td class="mono">KC -1.5</td><td class="mono">KC by 2.0</td><td><span class="edge">+1.0 pts</span></td></tr>
+            <tr><td>Total<span class="pick">Under 44.5</span></td><td class="mono">41.3</td><td class="mono">44.5</td><td class="mono">42.6</td><td><span class="edge">-7.2%</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <div class="ph">What drives the prediction</div>
+        <div class="tabs"><span class="on">WIN</span><span>SPREAD</span><span>TOTAL</span></div>
+        <div class="fi"><span class="n">is_divisional</span><span class="b" style="width:100%"></span><span class="v">0.62</span></div>
+        <div class="fi"><span class="n">hfa_used</span><span class="b" style="width:92%"></span><span class="v">0.57</span></div>
+        <div class="fi"><span class="n">away_elo</span><span class="b" style="width:64%"></span><span class="v">0.40</span></div>
+        <div class="fi"><span class="n">home_elo</span><span class="b" style="width:60%"></span><span class="v">0.37</span></div>
+        <div class="fi"><span class="n">both_short_rest</span><span class="b" style="width:31%"></span><span class="v">0.19</span></div>
+        <div class="fi"><span class="n">home_short_rest</span><span class="b" style="width:27%"></span><span class="v">0.17</span></div>
+      </div>
+    </div>
+    <div style="display:grid;gap:14px;align-content:start">
+      <div class="panel">
+        <div class="ph">Tale of the tape</div>
+        <div class="lbl">Elo rating</div>
+        <div class="tape"><span class="v">1558</span><div class="bar"><span style="width:53%;background:#E31837"></span><span style="width:47%;background:#008E97"></span></div><span class="v" style="text-align:right;color:#C4CAD8">1367</span></div>
+        <div class="lbl" style="margin-bottom:6px">Recent form (last 5)</div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:14px">
+          <div class="form"><i class="w">W</i><i class="w">W</i><i class="e">&middot;</i><i class="e">&middot;</i><i class="e">&middot;</i></div>
+          <div class="form"><i class="l">L</i><i class="l">L</i><i class="e">&middot;</i><i class="e">&middot;</i><i class="e">&middot;</i></div>
+        </div>
+        <div class="lbl" style="margin-bottom:4px">Head-to-head (last 5 seasons)</div>
+        <div class="cond" style="font-weight:800;font-size:20px;font-style:italic">KC leads 2-0</div>
+      </div>
+      <div class="panel">
+        <div class="ph">Venue &amp; weather</div>
+        <dl class="kv"><dt>Stadium</dt><dd>Hard Rock Stadium</dd><dt>Surface</dt><dd>Grass</dd><dt>Roof</dt><dd>Outdoor</dd><dt>Weather</dt><dd>Clear</dd><dt>Wind</dt><dd class="mono">4 mph</dd></dl>
+      </div>
+    </div>
+  </div>
+</div></div>
+<div class="card-body"><h3>Game detail</h3><p>A broadcast-style matchup header (team blocks, big win probabilities, kickoff and stadium) replaces the plain title. Same four panels as today, restyled: Model vs Market (edges become neutral yellow chips, not green/red), feature importance with slanted tabs, a "tale of the tape" for Elo / form / head-to-head, and venue & weather. Green/red only for real results (W/L form, correct/incorrect after the game).</p></div>
+</div>
+
+<!-- ================= SEASON ================= -->
+<div class="card" data-choice="season" onclick="toggleSelect(this)">
+<div class="card-image"><div class="bc">
+  <div class="nav"><b>NFL<u>/</u>PREDICT</b><span>This Week</span><span>Bets</span><span class="on"><span>Season</span></span><span>Track Record</span><span>How It Works</span></div>
+  <div class="shdr"><h1>2026 Season</h1><div class="sub">How the picks are grading, week by week. Pushes are excluded from the denominator.</div><div class="sel"><span class="arr">&lsaquo;</span><span>2026 &#9662;</span><span class="arr">&rsaquo;</span></div></div>
+  <div class="kpis">
+    <div class="kpi" style="--k:#FFD400"><div class="lbl">Winner hit rate</div><div class="v">64.6%</div><div class="s">31 of 48</div></div>
+    <div class="kpi" style="--k:#4CC9F0"><div class="lbl">Spread hit rate</div><div class="v">52.1%</div><div class="s">25 of 48</div></div>
+    <div class="kpi" style="--k:#C77DFF"><div class="lbl">Totals hit rate</div><div class="v">47.9%</div><div class="s">23 of 48</div></div>
+    <div class="kpi" style="--k:#fff"><div class="lbl">Record (W-L)</div><div class="v">79-65</div><div class="s">all three bet types</div></div>
+  </div>
+
+  <div class="sec"><span class="tag">Week by week</span><span class="ln"></span><span class="ct">all three bet types combined</span></div>
+  <div class="weeks" id="weeks"></div>
+
+  <div class="sec"><span class="tag">Cumulative accuracy</span><span class="ln"></span><span class="ct">running season-to-date hit rate</span></div>
+  <div class="chartbox"><div id="cumchart" style="height:260px"></div></div>
+  <p class="fine">52.4% is the standard -110 break-even, exact for spread and totals. Winner odds vary, so treat it as a reference, not a per-game truth.</p>
+</div></div>
+<div class="card-body"><h3>Season</h3><p>Scoreboard KPI tiles colour-keyed to each bet type (yellow Winner, cyan Spread, violet Totals -- the same keys every chart uses). New custom visual: an 18-week strip, each week showing its record and a win/loss bar, current week outlined. Below it, the restyled Plotly chart: dark background, condensed type, bet-type colours, dashed break-even line.</p></div>
+</div>
+
+</div>
+
+<script>
+(function () {
+  var recs = [[27,21],[26,22],[26,22]];
+  var h = '';
+  for (var w = 1; w <= 18; w++) {
+    var r = recs[w - 1];
+    if (r) {
+      var p = r[0] / (r[0] + r[1]) * 100;
+      h += '<div class="wk' + (w === 3 ? ' cur' : '') + '"><div class="n">WK ' + w + '</div><div class="r">' + r[0] + '-' + r[1] + '</div><div class="pb"><span style="width:' + p + '%;background:#22C55E"></span><span style="width:' + (100 - p) + '%;background:#EF4444"></span></div></div>';
+    } else {
+      h += '<div class="wk future"><div class="n">WK ' + w + '</div><div class="r">&middot;</div><div class="pb" style="background:#1D2436"></div></div>';
+    }
+  }
+  document.getElementById('weeks').innerHTML = h;
+
+  function draw() {
+    if (!window.Plotly) { return setTimeout(draw, 150); }
+    var weeks = [1, 2, 3];
+    var font = { family: 'Barlow Condensed, sans-serif', size: 14, color: '#C4CAD8' };
+    var traces = [
+      { name: 'Winner', x: weeks, y: [62.5, 65.6, 64.6], line: { color: '#FFD400', width: 3 } },
+      { name: 'Spread', x: weeks, y: [56.3, 53.1, 52.1], line: { color: '#4CC9F0', width: 3 } },
+      { name: 'Totals', x: weeks, y: [50.0, 46.9, 47.9], line: { color: '#C77DFF', width: 3 } }
+    ].map(function (t) { t.mode = 'lines+markers'; t.marker = { size: 8, color: t.line.color }; t.hovertemplate = '%{y:.1f}%<extra>' + t.name + '</extra>'; return t; });
+    Plotly.newPlot('cumchart', traces, {
+      paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: font,
+      margin: { l: 44, r: 12, t: 10, b: 36 },
+      xaxis: { title: { text: 'WEEK' }, dtick: 1, range: [0.7, 18.3], gridcolor: 'rgba(255,255,255,.06)', zeroline: false, tickfont: font, color: '#8A93A8' },
+      yaxis: { ticksuffix: '%', range: [40, 72], gridcolor: 'rgba(255,255,255,.06)', zeroline: false, tickfont: font, color: '#8A93A8' },
+      shapes: [{ type: 'line', x0: 0.7, x1: 18.3, y0: 52.4, y1: 52.4, line: { color: 'rgba(255,255,255,.45)', width: 1.5, dash: 'dash' } }],
+      annotations: [{ x: 18.2, y: 52.4, xanchor: 'right', yanchor: 'bottom', text: 'BREAK-EVEN 52.4%', showarrow: false, font: { family: 'Barlow Condensed', size: 12, color: '#8A93A8' } }],
+      legend: { orientation: 'h', x: 0, y: 1.12, font: font },
+      hoverlabel: { bgcolor: '#0B0F17', bordercolor: '#FFD400', font: { family: 'JetBrains Mono', color: '#fff' } }
+    }, { displayModeBar: false, responsive: true });
+  }
+  draw();
+})();
+</script>

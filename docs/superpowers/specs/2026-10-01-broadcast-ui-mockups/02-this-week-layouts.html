@@ -1,0 +1,178 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&display=swap" rel="stylesheet">
+
+<style>
+  .lay .card-image { aspect-ratio:auto; display:block; }
+  .bc { --y:#FFD400; --ink:#0B0F17; --panel:#151B29; --panel2:#1D2436; --mut:#8A93A8;
+        background:linear-gradient(180deg,#0B0F17 0%,#0E1320 100%); color:#F3F5F9; font-family:Inter,system-ui,sans-serif; padding-bottom:22px; border-radius:12px; overflow:hidden; }
+  .bc .cond { font-family:'Barlow Condensed',sans-serif; }
+  .bc .nav { display:flex; align-items:center; gap:18px; padding:12px 22px; font-size:13px; color:var(--mut); border-bottom:1px solid rgba(255,255,255,.06); }
+  .bc .nav b { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:22px; color:#fff; margin-right:auto; }
+  .bc .nav b u { text-decoration:none; color:var(--y); }
+  .bc .nav .on { color:var(--ink); background:var(--y); font-weight:700; padding:3px 10px; transform:skewX(-12deg); display:inline-block; }
+  .bc .nav .on > span { display:inline-block; transform:skewX(12deg); }
+  .bc .hdr { display:flex; align-items:flex-end; gap:16px; padding:18px 22px 4px; flex-wrap:wrap; }
+  .bc .hdr h1 { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:46px; line-height:.9; text-transform:uppercase; margin:0; color:#fff; }
+  .bc .hdr .sub { color:var(--mut); font-size:13px; padding-bottom:4px; }
+  .bc .hdr .sub b { color:var(--y); }
+  .bc .sel { margin-left:auto; display:flex; gap:4px; align-items:center; }
+  .bc .sel span { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:15px; background:var(--panel2); padding:5px 12px; transform:skewX(-12deg); display:inline-block; }
+  .bc .sel span.arr { color:var(--y); }
+  .bc .disc { padding:6px 22px 0; font-size:12px; color:var(--mut); }
+  .bc .disc a { color:var(--y); text-decoration:none; border-bottom:1px dotted var(--y); margin-left:4px; }
+  .bc .slot { display:flex; align-items:center; gap:12px; margin:22px 22px 10px; }
+  .bc .slot .tag { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:15px; letter-spacing:.06em; text-transform:uppercase; background:var(--y); color:var(--ink); padding:2px 12px; transform:skewX(-12deg); }
+  .bc .slot .ln { flex:1; height:1px; background:rgba(255,255,255,.1); }
+  .bc .slot .ct { font-size:12px; color:var(--mut); }
+  .bc .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; padding:0 22px; }
+  .bc .grid4 { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; padding:0 22px; }
+
+  /* compact game card */
+  .gc { background:var(--panel); border-radius:4px; padding:11px 13px 12px; border-top:3px solid rgba(255,255,255,.12); transition:transform .2s, box-shadow .2s, border-color .2s; cursor:pointer; }
+  .gc.has-bet { border-top-color:var(--y); }
+  .gc:hover { transform:translateY(-2px); box-shadow:0 14px 30px -12px rgba(255,212,0,.35); border-top-color:var(--y); }
+  .gc .meta { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--mut); display:flex; justify-content:space-between; }
+  .gc .meta .flag { color:var(--ink); background:var(--y); padding:0 6px; letter-spacing:.06em; }
+  .bug { margin-top:7px; display:grid; gap:3px; }
+  .tr { display:grid; grid-template-columns:56px 1fr 64px; height:30px; }
+  .tr .ab { background:var(--c); transform:skewX(-12deg); margin-left:5px; display:flex; align-items:center; justify-content:center; }
+  .tr .ab span { transform:skewX(12deg); font-family:'Barlow Condensed',sans-serif; font-weight:800; font-style:italic; font-size:19px; color:var(--t,#fff); }
+  .tr .nm { display:flex; align-items:center; padding-left:10px; font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:16px; text-transform:uppercase; letter-spacing:.04em; background:#1D2436; }
+  .tr .pc { display:flex; align-items:center; justify-content:flex-end; padding-right:8px; font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:19px; background:#0B0F17; font-variant-numeric:tabular-nums; }
+  .tr.fav .pc { color:#FFD400; }
+  .tr.dog .nm, .tr.dog .pc { color:#8A93A8; }
+  .tr.mini { grid-template-columns:46px 1fr; height:24px; }
+  .tr.mini .ab span { font-size:15px; }
+  .tr.mini .pc { font-size:16px; }
+  .rw { display:grid; grid-template-columns:48px 1fr auto; gap:8px; align-items:center; font-size:12px; padding:7px 0 0; margin-top:7px; border-top:1px solid rgba(255,255,255,.07); }
+  .rw .l { font-family:'Barlow Condensed',sans-serif; font-weight:700; color:#8A93A8; text-transform:uppercase; font-size:12px; letter-spacing:.1em; }
+  .mono { font-family:'JetBrains Mono',monospace; color:#fff; font-size:12px; }
+  .mut { color:#8A93A8; }
+  .nol { color:#5D667C; font-style:italic; }
+  .edge { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:15px; color:#0B0F17; background:#FFD400; padding:0 7px; transform:skewX(-12deg); display:inline-block; }
+  .edge.soft { background:transparent; color:#FFD400; border:1px solid rgba(255,212,0,.45); }
+
+  /* board */
+  .board { margin:0 22px; border-collapse:separate; border-spacing:0 4px; width:calc(100% - 44px); }
+  .board th { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:#8A93A8; text-align:left; padding:0 12px 4px; }
+  .board td { background:var(--panel); padding:8px 12px; vertical-align:middle; font-size:12px; }
+  .board tr:hover td { background:#1A2133; }
+  .board td:first-child { width:230px; border-left:3px solid transparent; }
+  .board tr.has-bet td:first-child { border-left-color:var(--y); }
+  .board .slotrow td { background:transparent; padding:14px 0 2px; }
+  .board .cellv { display:flex; gap:10px; align-items:center; }
+  .board .time { font-family:'Barlow Condensed',sans-serif; font-weight:700; color:#8A93A8; font-size:13px; letter-spacing:.06em; }
+  .chip { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:14px; letter-spacing:.04em; text-transform:uppercase; background:linear-gradient(90deg,#FFD400 0 5px,#1D2436 5px); padding:3px 10px 3px 12px; white-space:nowrap; }
+  .chip b { color:#FFD400; }
+
+  /* hero bets */
+  .hero { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; padding:0 22px; }
+  .hb { background:linear-gradient(135deg, color-mix(in srgb, var(--c) 35%, #151B29) 0%, #151B29 55%); border-radius:4px; padding:14px 16px; border-top:3px solid #FFD400; position:relative; overflow:hidden; }
+  .hb .mt { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:13px; letter-spacing:.1em; color:#C4CAD8; text-transform:uppercase; }
+  .hb .pick { font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:40px; line-height:1; color:#FFD400; text-transform:uppercase; margin-top:6px; }
+  .hb .stk { display:flex; gap:14px; margin-top:8px; font-size:12px; color:#C4CAD8; }
+  .hb .stk b { color:#fff; font-family:'JetBrains Mono',monospace; }
+  .hb .wm { position:absolute; right:-8px; bottom:-18px; font-family:'Barlow Condensed',sans-serif; font-style:italic; font-weight:800; font-size:96px; color:rgba(255,255,255,.05); }
+</style>
+
+<h2>How should the This Week page be laid out?</h2>
+<p class="subtitle">All three use the Broadcast style and the model's real Week 3 numbers; market lines and the 3 bets are examples, and two games show the "no line yet" state. Note the one-line disclaimer with a "Why?" link under the header -- that's the condensed honesty-label pattern you picked. Hover cards/rows.</p>
+
+<div class="cards lay" style="grid-template-columns:1fr">
+
+  <div class="card" data-choice="L1-windows-grid" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="bc" id="L1"></div></div>
+    <div class="card-body"><h3>L1. Grouped by TV window</h3><p>Score-bug cards in a 3-column grid, grouped under broadcast-style tags (Sunday 1:00, Sunday 4:05/4:25, Sunday Night, Monday Night). Cards on the bet list get a yellow top edge and a BET flag. Closest to today's page, just reorganized.</p></div>
+  </div>
+
+  <div class="card" data-choice="L2-the-board" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="bc" id="L2"></div></div>
+    <div class="card-body"><h3>L2. The Board</h3><p>One row per game, like a sportsbook board: win probability, model spread vs line, model total vs line, and the bet chip, all in columns. The whole slate fits on one screen and is easy to scan down a column. Least visual, most information-dense.</p></div>
+  </div>
+
+  <div class="card" data-choice="L3-headliners" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="bc" id="L3"></div></div>
+    <div class="card-body"><h3>L3. Headliners + slate</h3><p>The week's bets get big featured cards at the top (the pick in large yellow type, stake, edge), then every game below as a smaller 4-column grid. Answers "what should I look at?" first. The /bets page would still hold the full detail.</p></div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var C = { CAR:'#0085CA', CLE:'#FF3C00', LAC:'#0080C6', BUF:'#00338D', KC:'#E31837', MIA:'#008E97', NYJ:'#125740', DET:'#0076B6',
+            TEN:'#4B92DB', NYG:'#0B2265', ARI:'#97233F', SF:'#AA0000', LV:'#5A5F63', NO:'#B3995D', LA:'#003594', DEN:'#FB4F14' };
+  var N = { CAR:'Panthers', CLE:'Browns', LAC:'Chargers', BUF:'Bills', KC:'Chiefs', MIA:'Dolphins', NYJ:'Jets', DET:'Lions',
+            TEN:'Titans', NYG:'Giants', ARI:'Cardinals', SF:'49ers', LV:'Raiders', NO:'Saints', LA:'Rams', DEN:'Broncos' };
+  var G = [
+    { s:'Sunday &middot; 1:00 PM ET', t:'1:00', a:'CAR', h:'CLE', ph:.542, sp:'CLE by 3.2', sl:'CLE -2.5', se:'+0.7', to:'45.2', tl:'43.5', tp:'Over', te:'1.7' },
+    { s:'Sunday &middot; 1:00 PM ET', t:'1:00', a:'LAC', h:'BUF', ph:.734, sp:'BUF by 8.6', sl:'BUF -6.5', se:'+2.1', to:'44.4', tl:'47.5', tp:'Under', te:'3.1', bet:'BUF -6.5', u:'1.0U', ev:'+4.8%' },
+    { s:'Sunday &middot; 1:00 PM ET', t:'1:00', a:'KC', h:'MIA', ph:.412, sp:'KC by 2.5', sl:'KC -1.5', se:'+1.0', to:'41.3', tl:'44.5', tp:'Under', te:'3.2', bet:'Under 44.5', u:'1.0U', ev:'+5.3%' },
+    { s:'Sunday &middot; 1:00 PM ET', t:'1:00', a:'NYJ', h:'DET', ph:.729, sp:'DET by 8.3', sl:'DET -9.5', se:'+1.2', to:'47.0', tl:'46.5', tp:'Over', te:'0.5' },
+    { s:'Sunday &middot; 1:00 PM ET', t:'1:00', a:'TEN', h:'NYG', ph:.679, sp:'NYG by 9.6', to:'33.0' },
+    { s:'Sunday &middot; 4:05 / 4:25 PM ET', t:'4:05', a:'ARI', h:'SF', ph:.752, sp:'SF by 8.3', sl:'SF -7', se:'+1.3', to:'47.2', tl:'45.5', tp:'Over', te:'1.7', bet:'SF -7', u:'0.5U', ev:'+2.6%' },
+    { s:'Sunday &middot; 4:05 / 4:25 PM ET', t:'4:25', a:'LV', h:'NO', ph:.615, sp:'NO by 5.3', to:'46.0' },
+    { s:'Sunday Night', t:'8:20', a:'LA', h:'DEN', ph:.564, sp:'DEN by 3.6', sl:'DEN -3', se:'+0.6', to:'39.1', tl:'41', tp:'Under', te:'1.9' }
+  ];
+  function pct(p) { return (p * 100).toFixed(1) + '%'; }
+  function tr(ab, p, mini) {
+    var fav = p >= .5 ? 'fav' : 'dog', t = (ab === 'NO') ? '#0B0F17' : '#fff';
+    return '<div class="tr ' + fav + (mini ? ' mini' : '') + '" style="--c:' + C[ab] + ';--t:' + t + '"><div class="ab"><span>' + ab + '</span></div>' +
+           (mini ? '' : '<div class="nm">' + N[ab] + '</div>') + '<div class="pc">' + pct(p) + '</div></div>';
+  }
+  function spreadRow(g) {
+    return '<div class="rw"><span class="l">Spread</span><span><span class="mono">' + g.sp + '</span> ' +
+      (g.sl ? '<span class="mut">line ' + g.sl + '</span>' : '<span class="nol">no line yet</span>') + '</span>' +
+      (g.se ? '<span class="edge' + (g.bet && g.bet.indexOf('Under') < 0 && g.bet.indexOf('Over') < 0 ? '' : ' soft') + '">' + g.se + '</span>' : '<span></span>') + '</div>';
+  }
+  function totalRow(g) {
+    return '<div class="rw"><span class="l">Total</span><span><span class="mono">' + g.to + '</span> ' +
+      (g.tl ? '<span class="mut">line ' + g.tl + ' &middot; ' + g.tp + '</span>' : '<span class="nol">no line yet</span>') + '</span>' +
+      (g.te ? '<span class="edge' + (g.bet && (g.bet.indexOf('Under') === 0 || g.bet.indexOf('Over') === 0) ? '' : ' soft') + '">' + g.te + '</span>' : '<span></span>') + '</div>';
+  }
+  function card(g) {
+    return '<div class="gc' + (g.bet ? ' has-bet' : '') + '"><div class="meta"><span>' + g.t + ' PM ET</span>' + (g.bet ? '<span class="flag">BET</span>' : '') + '</div>' +
+      '<div class="bug">' + tr(g.a, 1 - g.ph) + tr(g.h, g.ph) + '</div>' + spreadRow(g) + totalRow(g) + '</div>';
+  }
+  function chrome(extra) {
+    return '<div class="nav"><b>NFL<u>/</u>PREDICT</b><span class="on"><span>This Week</span></span><span>Bets</span><span>Season</span><span>Track Record</span><span>How It Works</span></div>' +
+      '<div class="hdr"><h1>Week 3</h1><div class="sub">16 games &middot; <b>3 bets</b> on the list &middot; lines lock 6 PM ET the day before kickoff</div>' +
+      '<div class="sel"><span class="arr">&lsaquo;</span><span>2026 &middot; Week 3 &#9662;</span><span class="arr">&rsaquo;</span></div></div>' +
+      '<div class="disc">Research tool, not betting advice.<a href="#" onclick="return false">Why?</a></div>' + (extra || '');
+  }
+  function slots() {
+    var out = [], seen = {};
+    G.forEach(function (g) { if (!seen[g.s]) { seen[g.s] = []; out.push(g.s); } seen[g.s].push(g); });
+    return out.map(function (s) { return { s: s, g: seen[s] }; });
+  }
+
+  // L1
+  var h = chrome();
+  slots().forEach(function (b) {
+    h += '<div class="slot"><span class="tag">' + b.s + '</span><span class="ln"></span><span class="ct">' + b.g.length + ' games</span></div><div class="grid">' + b.g.map(card).join('') + '</div>';
+  });
+  document.getElementById('L1').innerHTML = h;
+
+  // L2
+  h = chrome() + '<div style="height:14px"></div><table class="board"><thead><tr><th>Matchup / win prob</th><th>Spread (model &middot; line)</th><th>Total (model &middot; line)</th><th>Bet</th></tr></thead><tbody>';
+  slots().forEach(function (b) {
+    h += '<tr class="slotrow"><td colspan="4"><span class="slot" style="margin:0"><span class="tag">' + b.s + '</span></span></td></tr>';
+    b.g.forEach(function (g) {
+      h += '<tr class="' + (g.bet ? 'has-bet' : '') + '"><td><div class="bug" style="margin:0">' + tr(g.a, 1 - g.ph, true) + tr(g.h, g.ph, true) + '</div></td>' +
+        '<td><div class="cellv"><span class="mono">' + g.sp + '</span>' + (g.sl ? '<span class="mut">' + g.sl + '</span><span class="edge soft">' + g.se + '</span>' : '<span class="nol">no line yet</span>') + '</div></td>' +
+        '<td><div class="cellv"><span class="mono">' + g.to + '</span>' + (g.tl ? '<span class="mut">' + g.tl + ' &middot; ' + g.tp + '</span><span class="edge soft">' + g.te + '</span>' : '<span class="nol">no line yet</span>') + '</div></td>' +
+        '<td>' + (g.bet ? '<span class="chip"><b>' + g.bet + '</b> &middot; ' + g.u + '</span>' : '<span class="nol">--</span>') + '</td></tr>';
+    });
+  });
+  document.getElementById('L2').innerHTML = h + '</tbody></table>';
+
+  // L3
+  h = chrome('<div class="slot"><span class="tag">This week\'s bets</span><span class="ln"></span><span class="ct">full list on Bets &rsaquo;</span></div>');
+  h += '<div class="hero">' + G.filter(function (g) { return g.bet; }).map(function (g) {
+    var side = g.bet.indexOf('Under') === 0 || g.bet.indexOf('Over') === 0 ? g.h : g.bet.split(' ')[0];
+    return '<div class="hb" style="--c:' + C[side] + '"><div class="mt">' + g.a + ' @ ' + g.h + ' &middot; Sun ' + g.t + ' PM ET</div><div class="pick">' + g.bet + '</div>' +
+      '<div class="stk"><span>Stake <b>' + g.u + '</b></span><span>Edge <b>' + (g.bet.indexOf('Under') === 0 ? g.te : g.se) + '</b></span><span>Exp. value <b>' + g.ev + '</b></span></div><div class="wm">' + side + '</div></div>';
+  }).join('') + '</div>';
+  h += '<div class="slot"><span class="tag">Full slate</span><span class="ln"></span><span class="ct">16 games</span></div><div class="grid4">' + G.map(card).join('') + '</div>';
+  document.getElementById('L3').innerHTML = h;
+})();
+</script>
