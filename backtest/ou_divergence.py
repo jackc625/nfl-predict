@@ -444,6 +444,10 @@ def integrity_preamble(odds_df: pd.DataFrame | None = None) -> dict[str, Any]:
 
     # -- (i) PROVENANCE: no mock/synthetic ODDS (read raw silver provenance columns, read-only) --
     raw = pd.read_parquet(_RAW_SILVER_ODDS_PATH)
+    # The harness's own frozen window only: live captures (2026 on, every real book, several
+    # per game) are not this study's data and never reach its LOCKED allowlist (33-18).
+    raw_season = raw["game_id"].astype(str).str[:4].astype(int)
+    raw = raw[raw_season.between(HOLDOUT_FIRST_SEASON, HOLDOUT_LAST_SEASON)]
     sportsbooks = set(raw["sportsbook"].dropna().unique())
     bad_books = sportsbooks - _ALLOWED_SPORTSBOOKS
     live_rows = raw[raw["is_live"]] if "is_live" in raw.columns else raw.iloc[0:0]

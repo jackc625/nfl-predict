@@ -424,7 +424,13 @@ class BacktestEngine:
         return df
 
     def _load_closing_odds(self) -> pd.DataFrame:
-        """Load closing odds from Silver layer.
+        """Load closing odds from Silver layer, ONE row per game.
+
+        The live store accumulates multi-book captures (Plan 33.2-27), and every caller joins this
+        frame on ``game_id``, so the row is chosen by the project's one selector,
+        ``dedupe_odds_by_book_preference``. No locks: this is a historical reader whose own fence
+        runs elsewhere. Every 2002-2025 game has one stored row, so its row and the file order
+        are unchanged.
 
         Returns:
             DataFrame with game_id, ml_home, ml_away, spread, total columns.
@@ -454,7 +460,12 @@ class BacktestEngine:
             return gid
 
         df["game_id"] = df["game_id"].apply(_normalize_game_id)
-        return df
+
+        from backtest.ou_divergence import dedupe_odds_by_book_preference
+
+        df["_file_order"] = range(len(df))
+        one_per_game = dedupe_odds_by_book_preference(df).sort_values("_file_order")
+        return one_per_game.drop(columns="_file_order").reset_index(drop=True)
 
     def run(self) -> BacktestResults:
         """Execute the full walk-forward backtest.
