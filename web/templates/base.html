@@ -3,92 +3,102 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0B0F17">
   <title>{% block title %}NFL Predictions{% endblock %} | NFL Predict</title>
+  {# Inline SVG favicon -- the wordmark's yellow slash on ink. A data URI, so there is no file to
+     serve and no 404 in the console on every page load. #}
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230B0F17'/%3E%3Cpath d='M19 5h5L13 27H8z' fill='%23FFD400'/%3E%3C/svg%3E">
+  {# The two faces visible above the fold, preloaded so the header does not flash a fallback. #}
+  <link rel="preload" href="{{ url_for('static', path='fonts/barlow-condensed-latin-800-italic.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ url_for('static', path='fonts/inter-latin-wght-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="{{ url_for('static', path='css/tailwind-compiled.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', path='css/custom.css') }}">
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   {% block head_extra %}{% endblock %}
 </head>
-<body class="bg-nfl-light min-h-screen flex flex-col">
-  <nav class="bg-nfl-primary text-white shadow-lg">
+<body class="min-h-screen flex flex-col bg-ink text-fg font-sans antialiased">
+  <a href="#main" class="skip-link">Skip to content</a>
+  {# The five nav items (spec section 6). The active-item rule lives here once, for both lists: a
+     game-detail page (/games/...) counts as This Week. #}
+  {% set _path = current_path if current_path is defined and current_path else "" %}
+  {% set _active_href = "/" if _path.startswith("/games") else _path %}
+  {% set _nav_items = [
+       ("/", "This Week"),
+       ("/bets", "Bets"),
+       ("/season", "Season"),
+       ("/track-record", "Track Record"),
+       ("/how-it-works", "How It Works")
+     ] %}
+  <nav class="border-b border-line" aria-label="Primary">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between h-16">
-        <div class="flex items-center gap-2">
-          <span class="text-xl font-semibold">NFL Predict</span>
+        <a href="/" class="wordmark">NFL<span class="text-accent">/</span>Predict</a>
+        <div class="hidden md:flex items-center gap-1">
+          {% for href, label in _nav_items %}
+          {% set _on = href == _active_href %}
+          <a href="{{ href }}" class="nav-link skew-control{% if _on %} skew-control-active{% endif %}"{% if _on %} aria-current="page"{% endif %}><span class="unskew">{{ label }}</span></a>
+          {% endfor %}
         </div>
-        <!-- Desktop nav -->
-        <div class="hidden md:flex items-center gap-4">
-          <a href="/" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">This Week</a>
-          <a href="/performance" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/performance' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">Performance</a>
-          <a href="/backtest" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/backtest' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">Backtest</a>
-          <a href="/insights" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/insights' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">Insights</a>
-          <a href="/betting" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/betting' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">Betting</a>
-          <a href="/season" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/season' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">Season</a>
-          <a href="/bets" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/bets' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">Bets</a>
-        </div>
-        <!-- Mobile hamburger button -->
-        <button
-          class="md:hidden p-2 rounded-md hover:bg-white/10 min-h-[44px] min-w-[44px] flex items-center justify-center"
-          aria-label="Toggle navigation menu"
-          onclick="document.getElementById('mobile-menu').classList.toggle('hidden')"
-        >
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
-          </svg>
+        {# Part E's markup (Task 19 audits it): aria-controls, an aria-expanded the script keeps in
+           sync, and an aria-label. #}
+        <button type="button"
+                class="md:hidden skew-control min-h-[44px] min-w-[44px]"
+                aria-label="Open navigation menu"
+                aria-controls="mobile-menu"
+                aria-expanded="false"
+                onclick="var menu = document.getElementById('mobile-menu'); var nowHidden = menu.classList.toggle('hidden'); this.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');">
+          <span class="unskew" aria-hidden="true">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </span>
         </button>
       </div>
     </div>
-    <!-- Mobile menu (hidden by default) -->
-    <div id="mobile-menu" class="hidden md:hidden border-t border-white/20">
-      <div class="px-4 py-3 space-y-1">
-        <a href="/" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/' %}bg-white/20{% endif %}">This Week</a>
-        <a href="/performance" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/performance' %}bg-white/20{% endif %}">Performance</a>
-        <a href="/backtest" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/backtest' %}bg-white/20{% endif %}">Backtest</a>
-        <a href="/insights" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/insights' %}bg-white/20{% endif %}">Insights</a>
-        <a href="/betting" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/betting' %}bg-white/20{% endif %}">Betting</a>
-        <a href="/season" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/season' %}bg-white/20{% endif %}">Season</a>
-        <a href="/bets" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/bets' %}bg-white/20{% endif %}">Bets</a>
+    <div id="mobile-menu" class="hidden md:hidden border-t border-line">
+      <div class="px-4 py-3 flex flex-col items-stretch gap-1">
+        {% for href, label in _nav_items %}
+        {% set _on = href == _active_href %}
+        <a href="{{ href }}" class="nav-link skew-control justify-start{% if _on %} skew-control-active{% endif %}"{% if _on %} aria-current="page"{% endif %}><span class="unskew">{{ label }}</span></a>
+        {% endfor %}
       </div>
     </div>
   </nav>
 
-  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+  <main id="main" class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="bg-white border-t border-gray-200 mt-auto">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div class="text-center text-sm text-gray-500">
-        <p>NFL Prediction System -- Precomputed predictions served from DuckDB cache</p>
-        {# DEF-31-16: the guard is on the KEY, not on the dict.
-           ``{% if cache_meta %}`` tested whether the DICT was non-empty. An EMPTY cache_meta took
-           the else branch and rendered "Unknown", which is why this never fired -- but a
-           cache_meta carrying ROWS and no ``last_updated`` took the FIRST branch,
-           ``cache_meta.last_updated`` resolved to Jinja Undefined, and
-           ``api/dependencies.py::format_datetime`` called ``.strftime`` on it. That is an
-           UndefinedError, and because this footer lives in the SHARED base template it 500s
-           EVERY page on the site, not just the one being built.
+  <footer class="mt-auto border-t border-line">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      {# DEF-31-16: the guard is on the KEY, not on the dict.
+         ``{% if cache_meta %}`` tested whether the DICT was non-empty. An EMPTY cache_meta took
+         the else branch and rendered "Unknown", which is why this never fired -- but a
+         cache_meta carrying ROWS and no ``last_updated`` took the FIRST branch,
+         ``cache_meta.last_updated`` resolved to Jinja Undefined, and
+         ``api/dependencies.py::format_datetime`` called ``.strftime`` on it. That is an
+         UndefinedError, and because this footer lives in the SHARED base template it 500s
+         EVERY page on the site, not just the one being built.
 
-           It was unreachable while ONE writer stamped cache_meta and always wrote its three keys
-           together. Plan 31-18 adds a SECOND, INDEPENDENT writer -- the per-week bet-list marker
-           -- which is exactly what makes the shape reachable: a partial rebuild, a resumed run or
-           a hand-built cache can now carry marker rows without ``last_updated``.
+         It was unreachable while ONE writer stamped cache_meta and always wrote its three keys
+         together. Plan 31-18 adds a SECOND, INDEPENDENT writer -- the per-week bet-list marker
+         -- which is exactly what makes the shape reachable: a partial rebuild, a resumed run or
+         a hand-built cache can now carry marker rows without ``last_updated``.
 
-           ``.get`` yields None for a missing key; ``format_datetime`` already renders None as
-           "Unknown", so the fallback is unchanged for BOTH absences. The ``or ''`` keeps the data
-           attribute empty rather than the string "None", so the client-side localiser skips it. #}
-        <p class="mt-1">
-          Data updated:
-          <span id="cache-timestamp"
-                data-utc="{{ (cache_meta.get('last_updated') if cache_meta else None) or '' }}">
-            {{ (cache_meta.get('last_updated') if cache_meta else None)|format_datetime }}
-          </span>
-          {% if cache_meta and cache_meta.prediction_count %}
-            <span class="mx-1">--</span> {{ cache_meta.prediction_count }} predictions loaded
-          {% endif %}
-        </p>
-      </div>
+         ``.get`` yields None for a missing key; ``format_datetime`` already renders None as
+         "Unknown", so the fallback is unchanged for BOTH absences. The ``or ''`` keeps the data
+         attribute empty rather than the string "None", so the client-side localiser skips it. #}
+      <p class="text-center text-xs text-muted">
+        Data updated:
+        <span id="cache-timestamp"
+              data-utc="{{ (cache_meta.get('last_updated') if cache_meta else None) or '' }}">
+          {{ (cache_meta.get('last_updated') if cache_meta else None)|format_datetime }}
+        </span>
+        {% if cache_meta and cache_meta.prediction_count %}
+          <span class="mx-1">&middot;</span> {{ cache_meta.prediction_count }} predictions loaded
+        {% endif %}
+        <span class="mx-1">&middot;</span> Research tool, not betting advice
+      </p>
     </div>
     <script>
     (function() {

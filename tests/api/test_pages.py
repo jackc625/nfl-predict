@@ -48,6 +48,35 @@ def test_this_week_page_has_game_cards(test_client: TestClient):
     assert "View Details" in html
 
 
+_NAV_ITEMS = ["/", "/bets", "/season", "/track-record", "/how-it-works"]
+
+
+def test_the_nav_carries_the_five_broadcast_items_in_order(test_client: TestClient):
+    """Spec section 6: five items, in this order, in the desktop row AND the mobile panel."""
+    html = test_client.get("/").text
+    nav = html[html.index("<nav") : html.index("</nav>")]
+    hrefs = re.findall(r'<a href="([^"]+)" class="nav-link', nav)
+    assert hrefs == _NAV_ITEMS + _NAV_ITEMS
+    assert 'aria-controls="mobile-menu"' in nav
+    assert '<main id="main"' in html
+    assert 'href="#main" class="skip-link"' in html
+
+
+def test_the_nav_marks_only_the_current_page_active(test_client: TestClient):
+    html = test_client.get("/season").text
+    nav = html[html.index("<nav") : html.index("</nav>")]
+    # The mobile link carries `justify-start` between the base and the active class, so the active
+    # class is matched anywhere in the list rather than at a fixed position.
+    active = re.findall(
+        r'<a href="([^"]+)" class="nav-link skew-control[^"]*\bskew-control-active\b"',
+        nav,
+    )
+    assert active == ["/season", "/season"]
+    assert nav.count('aria-current="page"') == 2
+    # Skewed links keep their label upright in a .unskew child (spec 10).
+    assert '<span class="unskew">Season</span></a>' in nav
+
+
 def test_this_week_page_responsive_grid(test_client: TestClient):
     """D-07: Grid uses responsive column classes."""
     response = test_client.get("/")
@@ -287,11 +316,11 @@ def test_insights_page_cache_control(test_client: TestClient):
     assert "public" in cc and "max-age" in cc
 
 
-def test_insights_page_has_nav_link(test_client: TestClient):
-    """D-16: Insights link appears in rendered HTML (desktop + mobile menus)."""
+def test_insights_page_nav_links_to_how_it_works(test_client: TestClient):
+    """The insights content moves to How It Works (Task 15); the nav already links there."""
     response = test_client.get("/insights")
-    # Exactly two occurrences expected: desktop nav + mobile menu.
-    assert response.text.count('href="/insights"') >= 2
+    # Desktop nav + mobile menu.
+    assert response.text.count('href="/how-it-works"') >= 2
 
 
 def test_insights_page_renders_expected_chart_ids(test_client: TestClient):
@@ -339,8 +368,8 @@ def test_betting_page_200(test_client: TestClient):
     # Cache-Control set on the returned TemplateResponse (Phase 15 D-07).
     cc = response.headers.get("Cache-Control", "")
     assert "public" in cc and "max-age" in cc
-    # Nav link present in both desktop nav and mobile menu (D-02).
-    assert html.count('href="/betting"') >= 2
+    # The betting simulation moves to Track Record (Task 15); the nav already links there.
+    assert html.count('href="/track-record"') >= 2
 
 
 def test_betting_page_renders_recommended_chart_ids(test_client: TestClient):

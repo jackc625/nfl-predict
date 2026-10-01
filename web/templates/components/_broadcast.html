@@ -1,0 +1,50 @@
+{# Shared Broadcast macros (redesign spec section 5). Import with
+     {% import "components/_broadcast.html" as bc %}
+
+   Plain Jinja only -- no app globals and no custom filters -- because the game card imports this
+   file and must render in a bare jinja2.Environment (tests/unit/
+   test_current_week_rows_reach_the_site.py). Colours arrive as arguments; the caller looks them
+   up (decorate_game for a game dict, the team_colors global elsewhere).
+
+   Every skewed box (.tag, .tag-ghost, .edge-chip, .team-block) transforms the element, so its
+   text sits in an .unskew span that counter-skews it upright.
+
+   IMPORT INSIDE THE BLOCK. jinja2-fragments renders only the named block for an HX-Request, and a
+   child template's top-level {% import %} does not run in a block render. A page rendered with
+   block_name= imports this file inside that block (or inside the included component). #}
+
+{% macro section_head(label, meta=none, ghost=false, anchor=none) -%}
+<div class="section-head mb-3"{% if anchor %} id="{{ anchor }}"{% endif %}>
+  <h2 class="{{ 'tag-ghost' if ghost else 'tag' }}"><span class="unskew">{{ label }}</span></h2>
+  <span class="flex-1 h-px bg-line" aria-hidden="true"></span>
+  {%- if meta %}
+  <span class="text-xs text-muted whitespace-nowrap">{{ meta }}</span>
+  {%- endif %}
+</div>
+{%- endmacro %}
+
+{% macro team_block(abbr, bg="#1D2436", fg="#FFFFFF", large=false) -%}
+<span class="team-block{% if large %} team-block-lg{% endif %}" style="--team-bg: {{ bg }}; --team-fg: {{ fg }};"><span class="unskew">{{ abbr }}</span></span>
+{%- endmacro %}
+
+{% macro score_row(abbr, name, value, bg="#1D2436", fg="#FFFFFF", fav=false, dog=false) -%}
+<div class="score-row{% if fav %} is-fav{% endif %}{% if dog %} is-dog{% endif %}">
+  {{ team_block(abbr, bg, fg) }}
+  <span class="score-name">{{ name }}</span>
+  <span class="score-value">{{ value }}</span>
+</div>
+{%- endmacro %}
+
+{% macro edge_chip(text, soft=false) -%}
+<span class="edge-chip{% if soft %} edge-chip-soft{% endif %}"><span class="unskew">{{ text }}</span></span>
+{%- endmacro %}
+
+{% macro stat_tile(label, value, value_class="", sub=none, accent=none) -%}
+<div class="stat-tile"{% if accent %} style="--tile-accent: {{ accent }};"{% endif %}>
+  <p class="label">{{ label }}</p>
+  <p class="stat-tile-value{% if value_class %} {{ value_class }}{% endif %}">{{ value }}</p>
+  {%- if sub %}
+  <p class="stat-tile-sub">{{ sub }}</p>
+  {%- endif %}
+</div>
+{%- endmacro %}

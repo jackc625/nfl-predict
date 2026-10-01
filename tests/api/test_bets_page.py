@@ -426,11 +426,12 @@ def test_ev_band_badge_is_monochrome(bets_client: TestClient) -> None:
         )
 
 
-def test_nav_carries_the_seventh_item(bets_client: TestClient) -> None:
-    """The seventh nav item reaches /bets from both the desktop and the mobile list."""
+def test_nav_carries_the_bets_item(bets_client: TestClient) -> None:
+    """The Bets nav item reaches /bets from both the desktop row and the mobile panel."""
     body = bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
     assert body.count('href="/bets"') == 2
-    assert ">Bets</a>" in body
+    # The label sits in the skewed link's .unskew child (spec 10).
+    assert '<span class="unskew">Bets</span></a>' in body
 
 
 def test_raw_target_codes_are_never_rendered(bets_client: TestClient) -> None:
