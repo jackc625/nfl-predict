@@ -426,12 +426,16 @@ def validate_nfl_business_rules(df: pd.DataFrame, table_type: str) -> list[str]:
                     f"Found {len(extreme_spreads)} games with extreme spreads (>30 points)"
                 )
 
-        # Check total reasonableness
+        # Check total reasonableness. The floor is 25, not 30: totals below 30 are real in
+        # extreme-weather games -- FOX Sports, "2023-24 NFL Week 18 odds: Jets-Patriots drops
+        # to lowest total of..." (January 2024) reports NYJ@NE at 29.5 (the lowest since 1993,
+        # when games closed at 28.5); our closing line for it is 28.5. 25 still catches a
+        # spread or a garbage value stored as a total.
         if "total" in df.columns:
-            extreme_totals = df[(df["total"] < 30) | (df["total"] > 70)]
+            extreme_totals = df[(df["total"] < 25) | (df["total"] > 70)]
             if not extreme_totals.empty:
                 violations.append(
-                    f"Found {len(extreme_totals)} games with extreme totals (<30 or >70)"
+                    f"Found {len(extreme_totals)} games with extreme totals (<25 or >70)"
                 )
 
     elif table_type == "predictions":
