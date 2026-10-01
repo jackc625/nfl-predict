@@ -8,7 +8,7 @@
    zero. #}
 
 {% macro absent(text) -%}
-<span class="text-gray-400 italic">{{ text }}</span>
+<span class="text-dim italic">{{ text }}</span>
 {%- endmacro %}
 
 {# "KC 61.2%": the favoured team and its own chance of winning. The home team is named only
@@ -41,4 +41,14 @@
    spread but no converted probability is "-", and only a game with no spread has "No line". #}
 {% macro market_wp_missing(game) -%}
 {{- "No line" if game.market_spread is none else "-" -}}
+{%- endmacro %}
+
+{# "58.8%": ONE team's own chance of winning, for the score bug that lists both teams. The stored
+   probability is the HOME team's (DEF-31-01), so the away side's is its complement. A missing
+   probability is "-", never a zero. #}
+{% macro team_pct(prob, side) -%}
+{%- if prob is none -%}{{ absent("-") }}
+{%- elif side == "home" -%}{{ "%.1f"|format(prob * 100) }}%
+{%- else -%}{{ "%.1f"|format((1 - prob) * 100) }}%
+{%- endif -%}
 {%- endmacro %}

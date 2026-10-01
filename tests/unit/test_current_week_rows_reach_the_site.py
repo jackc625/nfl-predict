@@ -12,6 +12,7 @@ READ-ONLY: everything lives under ``tmp_path`` and an in-memory database.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import duckdb
@@ -212,7 +213,11 @@ def test_the_wp_edge_is_measured_against_the_market_wp_shown_beside_it(
         .render(game=game)
     )
     assert "KC 61.0%" in card and "KC 58.0%" in card
-    assert "Edge: +3.0%" in card
+    # The edge now renders as a chip beside the two numbers (Broadcast redesign); the claim is
+    # unchanged: the chip shows the +3.0 points of win probability between them.
+    assert re.search(r'data-edge="wp".*?\+3\.0%', card, re.DOTALL), (
+        "the WP edge chip does not show the +3.0% the model and market numbers beside it imply"
+    )
 
 
 def test_the_prediction_script_takes_the_wp_edge_against_market_wp() -> None:

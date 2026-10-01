@@ -1,107 +1,107 @@
-{# Single game card. Pass: game (dict with all prediction fields, wp_correct for completed games) #}
+{# One game card, drawn as a broadcast score bug (Broadcast redesign, spec 7.1). Pass: game.
+
+   The routes hand the row through api.presentation.decorate_game (team colours, nicknames, the
+   kickoff label) and add ``wp_correct`` (pages._annotate_wp_correct) and ``bet_targets`` (the
+   live bet types this game carries, pages._this_week_grid_context). EVERY one of those is read
+   with a default: the card must also render from a bare prediction row in a plain Jinja
+   environment with no app globals or filters, which is exactly how
+   tests/unit/test_current_week_rows_reach_the_site.py renders it.
+
+   Each row shows OUR MODEL'S own number with the market's beneath it, for every game -- a bet or
+   not, a market line or not (owner requirement, 2026-09-23). An edge chip appears only where an
+   edge exists: the edge is stored NULL where none exists (utils.edge_tier, 33.2 review C2
+   CR-04), so a game with no line shows no chip. Chips are yellow emphasis, never green or red:
+   an edge is a pre-game number, and on this site green and red mean a realised result only. The
+   edge band (confidence) is not on the card -- the chip already shows the edge the band
+   summarises; the band is on game detail, monochrome. #}
 {% import "components/_prediction_values.html" as pv %}
-<article class="game-card bg-white rounded-lg overflow-hidden {% if game.wp_correct == true %}border-l-4 border-green-400 border border-gray-200{% elif game.wp_correct == false %}border-l-4 border-red-400 border border-gray-200{% else %}border border-gray-200{% endif %}">
-  <a href="/games/{{ game.game_id }}" class="block p-4 md:p-6">
-    {# Header: teams + status #}
-    <div class="flex items-center justify-between mb-3">
-      <div>
-        <span class="text-base font-semibold text-gray-900">{{ game.away_team }}</span>
-        <span class="text-sm text-gray-400 mx-1">@</span>
-        <span class="text-base font-semibold text-gray-900">{{ game.home_team }}</span>
-      </div>
-      {% with status=game.status %}{% include "components/_status_badge.html" %}{% endwith %}
-      {% if game.wp_correct is not none %}
-        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold {% if game.wp_correct %}bg-green-100 text-green-800{% else %}bg-red-100 text-red-600{% endif %} ml-2">
-          {% if game.wp_correct %}
-            <svg class="w-3 h-3 mr-0.5" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-            Correct
-          {% else %}
-            <svg class="w-3 h-3 mr-0.5" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-            Incorrect
-          {% endif %}
-        </span>
-      {% endif %}
-    </div>
-
-    {# Game time and score (for completed games) #}
-    <p class="text-sm text-gray-500 mb-4">
-      {% if game.game_date %}{{ game.game_date }}{% endif %}
-      {% if game.status == "completed" and game.away_score is not none and game.home_score is not none %}
-        <span class="ml-2 font-semibold text-gray-700">{{ game.away_score }} - {{ game.home_score }}</span>
-      {% endif %}
-      {% if game.status == "completed" and game.wp_prob is not none and game.home_score is not none %}
-        <span class="block text-xs text-gray-400 mt-0.5">
-          Predicted: {{ game.home_team if game.wp_prob > 0.5 else game.away_team }} {{ "%.0f"|format((game.wp_prob if game.wp_prob > 0.5 else 1 - game.wp_prob) * 100) }}% WP
-        </span>
-      {% endif %}
-    </p>
-
-    {# Predictions grid: WP | ATS | O/U. Each shows OUR MODEL'S own number beside the market's,
-       for every game -- a bet or not, a market line or not. The edge band is stored NULL where no
-       edge exists (utils.edge_tier, 33.2 review C2 CR-04), so a game with no line shows none. #}
-    <div class="grid grid-cols-3 gap-3 mb-4">
-      {# Win Probability #}
-      <div class="text-center">
-        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Win Prob</p>
-        <dl class="text-sm stat-num space-y-0.5">
-          <div><dt class="inline text-xs text-gray-500">Model</dt> <dd class="inline font-semibold text-gray-900">{{ pv.win_prob(game.wp_prob, game.home_team, game.away_team, "-") }}</dd></div>
-          <div><dt class="inline text-xs text-gray-500">Market</dt> <dd class="inline text-gray-700">{{ pv.win_prob(game.market_wp, game.home_team, game.away_team, pv.market_wp_missing(game)) }}</dd></div>
-        </dl>
-        {% if game.wp_confidence %}
-          {% with level=game.wp_confidence, value=game.wp_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}
-        {% endif %}
-      </div>
-      {# Against the Spread #}
-      <div class="text-center">
-        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Spread</p>
-        <dl class="text-sm stat-num space-y-0.5">
-          <div><dt class="inline text-xs text-gray-500">Model</dt> <dd class="inline font-semibold text-gray-900">{{ pv.margin(game.ats_prediction, game.home_team, game.away_team, "-") }}</dd></div>
-          <div><dt class="inline text-xs text-gray-500">Market</dt> <dd class="inline text-gray-700">{{ pv.margin(game.market_spread, game.home_team, game.away_team) }}</dd></div>
-        </dl>
-        {% if game.ats_prediction is not none and game.market_spread is not none %}
-          <p class="text-xs text-gray-500 mt-0.5">
-            {# Both numbers are home margins, POSITIVE when the home team is favoured (DEF-31-01),
-               so a model margin ABOVE the line means the model expects the home team to cover --
-               the side backtest/ats_ev_chain.py prices. The label used to test ``<``, which named
-               the other team: with the two numbers now shown beside it, that read as a
-               contradiction on every card. #}
-            {# Equal numbers are NO PICK, exactly as season_metrics._ats_outcome grades them
-               (33.2 review C2 IN-05); this used to name the away team. #}
-            {% if game.ats_prediction > game.market_spread %}{{ game.home_team }} covers{% elif game.ats_prediction < game.market_spread %}{{ game.away_team }} covers{% else %}No pick{% endif %}
-          </p>
-        {% endif %}
-        {% if game.ats_confidence %}
-          {% with level=game.ats_confidence, value=game.ats_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}
-        {% endif %}
-      </div>
-      {# Over/Under #}
-      <div class="text-center">
-        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Total</p>
-        <dl class="text-sm stat-num space-y-0.5">
-          <div><dt class="inline text-xs text-gray-500">Model</dt> <dd class="inline font-semibold text-gray-900">{{ pv.total(game.ou_prediction, "-") }}</dd></div>
-          <div><dt class="inline text-xs text-gray-500">Market</dt> <dd class="inline text-gray-700">{{ pv.total(game.market_total) }}</dd></div>
-        </dl>
-        {% if game.ou_prediction is not none and game.market_total is not none %}
-          <p class="text-xs text-gray-500 mt-0.5">
-            {% if game.ou_prediction > game.market_total %}Over{% elif game.ou_prediction < game.market_total %}Under{% else %}No pick{% endif %}
-          </p>
-        {% endif %}
-        {% if game.ou_confidence %}
-          {% with level=game.ou_confidence, value=game.ou_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}
-        {% endif %}
-      </div>
-    </div>
-
-    {# Footer: edge indicator + drill-down link #}
-    <div class="flex items-center justify-between pt-3 border-t border-gray-100">
-      {% if game.wp_edge is not none %}
-      <span class="text-sm font-medium {% if game.wp_edge > 0.05 %}text-green-700{% elif game.wp_edge > 0.02 %}text-amber-700{% else %}text-gray-500{% endif %}">
-        Edge: {{ "%+.1f"|format(game.wp_edge * 100) }}%
+{% import "components/_broadcast.html" as bc %}
+{%- set home = game.home_team -%}
+{%- set away = game.away_team -%}
+{%- set bet_targets = game.bet_targets|default([]) -%}
+{%- set final = game.status == "completed" and game.home_score is not none and game.away_score is not none -%}
+<article class="game-card panel relative border-t-[3px] {{ 'border-accent' if bet_targets else 'border-white/10' }} transition duration-200 hover:-translate-y-0.5 hover:border-accent motion-reduce:transition-none motion-reduce:hover:translate-y-0"{% if bet_targets %} data-on-bet-list{% endif %}>
+  <a href="/games/{{ game.game_id }}" class="block">
+    {# Header: the kickoff (or FINAL with the graded result) and the flags. #}
+    <div class="flex items-center justify-between gap-2">
+      <span class="label">{% if final %}Final{% else %}{{ game.kickoff_label|default(game.game_date if game.game_date is not none else "Time TBD") }}{% endif %}</span>
+      <span class="flex items-center gap-1.5">
+        {%- if final and game.wp_correct is defined -%}
+          {# Graded by THE classifier the week banner and /season use (_wp_outcome through
+             _annotate_wp_correct): a tie or a game with no WP pick is neither correct nor
+             incorrect (33.2 review C2 WR-04). Shown only when the route annotated the grade. #}
+          {%- if game.wp_correct is sameas true -%}
+          <span class="label px-1.5 bg-green-500/15 text-green-400">Correct</span>
+          {%- elif game.wp_correct is sameas false -%}
+          <span class="label px-1.5 bg-red-500/15 text-red-400">Incorrect</span>
+          {%- else -%}
+          <span class="label px-1.5 bg-panel-2 text-fg">{{ "Tie" if game.home_score == game.away_score else "No pick" }}</span>
+          {%- endif -%}
+        {%- endif -%}
+        {%- if bet_targets -%}
+          <span class="label px-1.5 bg-accent text-ink">Bet</span>
+        {%- endif -%}
+        {%- if game.status not in ("scheduled", "completed") -%}
+          {% with status=game.status %}{% include "components/_status_badge.html" %}{% endwith %}
+        {%- endif -%}
       </span>
-      {% else %}
-      <span></span>
-      {% endif %}
-      <span class="text-sm font-medium text-nfl-primary">View Details &rarr;</span>
+    </div>
+
+    {# The score bug: away over home. Before kickoff each row shows that team's own win chance,
+       the favourite bright and the underdog dimmed; after the game, the final score with the
+       winner bright. An even 0.5 favours neither. #}
+    <div class="score-bug mt-2">
+      {%- if final -%}
+        {{ bc.score_row(away, game.away_name|default(away), game.away_score|string, game.away_color|default("#1D2436"), game.away_fg|default("#FFFFFF"), fav=game.away_score > game.home_score, dog=game.away_score < game.home_score) }}
+        {{ bc.score_row(home, game.home_name|default(home), game.home_score|string, game.home_color|default("#1D2436"), game.home_fg|default("#FFFFFF"), fav=game.home_score > game.away_score, dog=game.home_score < game.away_score) }}
+      {%- else -%}
+        {%- set wp = game.wp_prob -%}
+        {{ bc.score_row(away, game.away_name|default(away), pv.team_pct(wp, "away"), game.away_color|default("#1D2436"), game.away_fg|default("#FFFFFF"), fav=wp is not none and wp < 0.5, dog=wp is not none and wp > 0.5) }}
+        {{ bc.score_row(home, game.home_name|default(home), pv.team_pct(wp, "home"), game.home_color|default("#1D2436"), game.home_fg|default("#FFFFFF"), fav=wp is not none and wp > 0.5, dog=wp is not none and wp < 0.5) }}
+      {%- endif -%}
+    </div>
+
+    {# Win / Spread / Total. Both margins are home margins, POSITIVE when the home team is
+       favoured (DEF-31-01), so a model margin ABOVE the line means the home team covers -- the
+       side backtest/ats_ev_chain.py prices. Equal numbers are NO PICK, exactly as
+       season_metrics._ats_outcome / _ou_outcome grade them (33.2 review C2 IN-05). #}
+    <dl class="mt-3 divide-y divide-line text-xs">
+      <div class="grid grid-cols-[4.25rem_1fr_auto] items-center gap-2 py-1.5">
+        <dt class="label">Win Prob</dt>
+        <dd>
+          <span class="num text-fg">{{ pv.win_prob(game.wp_prob, home, away, "-") }}</span>
+          <span class="block text-muted">Market {{ pv.win_prob(game.market_wp, home, away, pv.market_wp_missing(game)) }}</span>
+        </dd>
+        <dd>{% if game.wp_edge is not none %}<span data-edge="wp">{{ bc.edge_chip("%+.1f"|format(game.wp_edge * 100) ~ "%", soft="wp" not in bet_targets) }}</span>{% endif %}</dd>
+      </div>
+      <div class="grid grid-cols-[4.25rem_1fr_auto] items-center gap-2 py-1.5">
+        <dt class="label">Spread</dt>
+        <dd>
+          <span class="num text-fg">{{ pv.margin(game.ats_prediction, home, away, "-") }}</span>
+          <span class="block text-muted">Market {{ pv.margin(game.market_spread, home, away) }}{% if game.ats_prediction is not none and game.market_spread is not none %} &middot; <span class="font-semibold text-accent">{% if game.ats_prediction > game.market_spread %}{{ home }} covers{% elif game.ats_prediction < game.market_spread %}{{ away }} covers{% else %}No pick{% endif %}</span>{% endif %}</span>
+        </dd>
+        <dd>{% if game.ats_edge is not none %}<span data-edge="ats">{{ bc.edge_chip("%+.1f"|format(game.ats_edge) ~ " pts", soft="ats" not in bet_targets) }}</span>{% endif %}</dd>
+      </div>
+      <div class="grid grid-cols-[4.25rem_1fr_auto] items-center gap-2 py-1.5">
+        <dt class="label">Total</dt>
+        <dd>
+          <span class="num text-fg">{{ pv.total(game.ou_prediction, "-") }}</span>
+          <span class="block text-muted">Market {{ pv.total(game.market_total) }}{% if game.ou_prediction is not none and game.market_total is not none %} &middot; <span class="font-semibold text-accent">{% if game.ou_prediction > game.market_total %}Over{% elif game.ou_prediction < game.market_total %}Under{% else %}No pick{% endif %}</span>{% endif %}</span>
+        </dd>
+        <dd>{% if game.ou_edge is not none %}<span data-edge="ou">{{ bc.edge_chip("%+.1f"|format(game.ou_edge * 100) ~ "%", soft="ou" not in bet_targets) }}</span>{% endif %}</dd>
+      </div>
+    </dl>
+
+    {# Footer: what the model picked (once the game is graded) and the drill-down affordance. The
+       "Predicted" team is named only ABOVE 0.5 for the home side -- the comparison pv.win_prob
+       and season_metrics._wp_outcome use, so an exact 0.5 names the same team everywhere. #}
+    <div class="mt-2 flex items-center justify-between gap-2 border-t border-line pt-2 text-xs">
+      <span class="text-muted">
+        {%- if final and game.wp_prob is not none -%}
+        Predicted: {{ home if game.wp_prob > 0.5 else away }} {{ "%.0f"|format((game.wp_prob if game.wp_prob > 0.5 else 1 - game.wp_prob) * 100) }}% WP
+        {%- endif -%}
+      </span>
+      <span class="font-display font-bold uppercase tracking-wide text-accent">View Details &rsaquo;</span>
     </div>
   </a>
 </article>

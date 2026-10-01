@@ -12,11 +12,10 @@ is a This Week regression -- the next person to change / needs to meet it.
 from __future__ import annotations
 
 import re
-from collections import Counter
 
 from fastapi.testclient import TestClient
 
-from api.dependencies import get_db, templates
+from api.dependencies import templates
 from tests.api.week_selector_snapshot import (
     FAILURE_EVENTS,
     PRE_PARAM_CONTEXT,
@@ -87,20 +86,18 @@ def test_this_week_page_responsive_grid(test_client: TestClient):
     assert "lg:grid-cols-3" in html
 
 
-def test_this_week_page_confidence_badges(test_client: TestClient):
-    """D-08: Confidence labels render one monochrome band each (Broadcast redesign)."""
+def test_this_week_cards_carry_no_confidence_pill(test_client: TestClient):
+    """Broadcast redesign: the card's edge chip already shows the edge the band summarises.
+
+    The band moved to game detail, monochrome. Its three old colour classes must not survive on
+    /, where green and red now mean a realised result only.
+    """
     response = test_client.get("/")
     assert response.status_code == 200
     html = response.text
-    # Sample data contains high, medium, and low confidence values. The labels are grey-scale:
-    # green and red now mean a realised result only, and a pre-game band is not one.
-    assert 'class="band band-high" data-confidence-band="high"' in html
-    assert 'class="band band-medium" data-confidence-band="medium"' in html
-    assert 'class="band band-low" data-confidence-band="low"' in html
-    # Only amber is checked here: until Task 7 replaces the card, its Correct/Incorrect result
-    # badge still (rightly) renders bg-green-100 / bg-red-100 for the fixture's completed games.
-    # Task 7 adds the green/red check once that badge is gone.
-    assert "bg-amber-100" not in html
+    for badge_class in ("bg-green-100", "bg-amber-100", "bg-red-100"):
+        assert badge_class not in html
+    assert "data-band" not in html
 
 
 def test_this_week_page_with_week_filter(test_client: TestClient):
@@ -664,90 +661,23 @@ def test_the_this_week_page_still_targets_the_games_grid(
 # it were not, the page would be re-banding, which is exactly what they exist to forbid.
 
 
-def test_the_landing_page_still_renders_all_three_edge_band_labels(
+def test_the_landing_page_renders_no_edge_band_and_so_cannot_rederive_one(
     test_client: TestClient,
 ) -> None:
-    """The three-label vocabulary on / is UNCHANGED by the collapse."""
+    """The band left the cards in the Broadcast redesign (31-17 / D31-23 history above).
+
+    The band now renders only on game detail, and the served-equals-rendered guard belongs there
+    with it. On / the claim is now the stronger one: no band label is rendered at all, so none can
+    be re-derived.
+    """
     from utils.edge_tier import EDGE_TIER_LABELS
 
     html = test_client.get("/").text
-    assert set(EDGE_TIER_LABELS) == {"low", "medium", "high"}
-    # One confidence label per band, located by the band it declares.
-    for band in sorted(EDGE_TIER_LABELS):
-        assert f'data-confidence-band="{band}"' in html, (
-            f"the {band} confidence label disappeared from /; an edge band label has moved"
+    grid = html[html.index('id="game-grid"') :]
+    for label in EDGE_TIER_LABELS:
+        assert f">{label.title()}<" not in grid, (
+            f"a {label!r} band label rendered on /, which no longer shows bands"
         )
-
-
-def test_the_landing_page_renders_the_band_it_was_served_and_never_rederives_one(
-    test_client: TestClient,
-) -> None:
-    """The page RENDERS the stored band verbatim; it does not recompute one (UIAP-01, D31-23).
-
-    This is the substantive half. The collapse moved WHERE the band is computed -- into
-    ``utils/edge_tier.py``, called at CACHE-BUILD time -- so the regression that matters on the
-    page is that the request path still just renders what it was handed. Asserted against the
-    SERVED rows rather than against a re-derivation, because the fixture cache is hand-authored
-    (its stored bands were never produced by either helper) and re-deriving would test the
-    fixture's internal consistency rather than the page's behaviour.
-
-    Every stored band must be a member of the closed vocabulary and must appear in the markup for
-    its own game, so a page that silently re-banded a row -- the exact thing the two duplicate
-    helpers made easy -- fails here.
-    """
-    from api.services import DataService
-    from utils.edge_tier import EDGE_TIER_LABELS
-
-    response = test_client.get("/")
-    assert response.status_code == 200
-    html = response.text
-
-    service = DataService(test_client.app.dependency_overrides[get_db]())
-    rows = service.get_predictions(season=2024, week=1)
-    assert rows, (
-        "the fixture served no predictions; this regression would prove nothing"
-    )
-
-    served: list[str] = []
-    for row in rows:
-        for target in ("wp", "ats", "ou"):
-            stored_band = row.get(f"{target}_confidence")
-            if stored_band is None:
-                continue
-            assert stored_band in EDGE_TIER_LABELS, (
-                f"{row.get('game_id')} {target}: stored band {stored_band!r} is outside the "
-                f"closed vocabulary {EDGE_TIER_LABELS}"
-            )
-            served.append(stored_band)
-    assert served, "no band was served; the check would pass vacuously"
-
-    # The badge partial renders each band as one monochrome class plus a data-confidence-band
-    # attribute, and the label title-cased. Comparing the MULTISET of rendered badges against the
-    # multiset of served bands is what makes this a re-banding check rather than a spelling check:
-    # a page that turned one served "low" into a "high" would leave the vocabulary intact and the
-    # counts different.
-    #
-    # The selector keys on data-confidence-band, not on the band-* class alone: the EV band label
-    # shares those classes, and keying on a bare class is how this assertion first failed (it
-    # matched the status badge when the two shared a colour).
-    rendered: list[str] = []
-    pattern = (
-        r'<span class="band band-(high|medium|low)" data-confidence-band="(high|medium|low)">'
-        r"([^<]+)</span>"
-    )
-    for match in re.finditer(pattern, html):
-        css_band, attr_band, label = match.groups()
-        assert css_band == attr_band == label.strip().lower(), (
-            f"a confidence badge renders {label!r} with class band-{css_band} and "
-            f"data-confidence-band={attr_band!r}; the three must name the same band"
-        )
-        rendered.append(attr_band)
-
-    assert Counter(rendered) == Counter(served), (
-        "the bands rendered on / are not the bands the page was served -- the request path "
-        f"re-banded a row.\n  served:   {sorted(Counter(served).items())}\n"
-        f"  rendered: {sorted(Counter(rendered).items())}"
-    )
 
 
 def test_the_landing_page_sort_by_band_is_unchanged(test_client: TestClient) -> None:
