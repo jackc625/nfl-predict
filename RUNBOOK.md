@@ -340,8 +340,10 @@ cache require `--workers 1`).
 uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-- **Succeeded when:** FastAPI is reachable at http://localhost:8000 with the seven nav pages
-  `/`, `/performance`, `/backtest`, `/insights`, `/betting`, `/season`, `/bets`, the
+- **Succeeded when:** FastAPI is reachable at http://localhost:8000 with the five nav pages
+  `/`, `/bets`, `/season`, `/track-record`, `/how-it-works` (the Broadcast redesign merged the
+  old seven nav pages' `/performance`, `/backtest`, `/insights` and `/betting` into
+  `/track-record` and `/how-it-works`; those four old URLs now 301-redirect), the
   `/games/{id}` detail drill-down, and a `/health` endpoint that
   returns HTTP 200. `/health` returns 200 for BOTH a healthy and a `degraded` status; in the
   offseason it is expected to report `status: "degraded"` (a data-freshness state) while
@@ -358,10 +360,11 @@ uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
   ```
 
   It is idempotent and takes about a second, so run it when in doubt. `PIPELINE.md` stage 8
-  owns the full explanation. **A known instance is OPEN right now:** `lg:grid-cols-7` is
-  absent from `web/static/css/tailwind-compiled.css`, so `/betting`'s KPI grid is unstyled at
-  the large breakpoint. It is pre-existing and recorded rather than fixed
-  (`PROFITABILITY-READOUT.md` section 7e).
+  owns the full explanation. **A known instance was recorded and is now closed:**
+  `lg:grid-cols-7` was absent from `web/static/css/tailwind-compiled.css`, so the betting
+  simulation KPI grid (then on `/betting`, now on `/track-record`) was unstyled at the large
+  breakpoint (`PROFITABILITY-READOUT.md` section 7e). The Broadcast redesign recompiled the
+  sheet and the class is now present.
 - **Verification basis:** verified live 2026-05-31 -- started uvicorn this session and reached
   http://localhost:8000/health: HTTP 200, `cache_ready: true`, `all_models_exist: true`,
   `status: "degraded"` (the expected offseason data-freshness state), then stopped it.

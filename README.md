@@ -269,9 +269,9 @@ partials, CSV + JSON exports, and a `/health` endpoint.
               v
    +---------------------------------------------------------------------------------------+
    | FastAPI  (api/main.py lifespan: shared read-only DuckDB; single-worker envelope)      |
-   |   Pages:     /, /performance, /backtest, /insights, /betting, /season, /bets,        |
-   |              /games/{id}                                                              |
-   |   HTMX:      /fragments/games, /fragments/performance                                 |
+   |   Pages:     /, /bets, /season, /track-record, /how-it-works, /games/{id}             |
+   |              (old /performance /backtest /insights /betting 301-redirect)             |
+   |   HTMX:      /fragments/{games,performance,betting,season}                            |
    |   Exports:   /api/export/csv, /api/export/json                                        |
    |   Health:    /health                                                                  |
    +---------------------------------------------------------------------------------------+
