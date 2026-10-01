@@ -1187,11 +1187,15 @@ def game_detail_page(
     venue/weather, and result overlay for completed games (D-13 to D-15).
     """
     game = service.get_game_detail(game_id)
+    if game is not None:
+        # Team colours, nicknames and the kickoff label for the matchup header (presentation
+        # only, api.presentation). A NEW dict; the service row is not mutated.
+        game = decorate_game(game)
     cache_meta = service.get_cache_meta()
     context = {
         "request": request,
         "game": game,
-        "current_path": "",
+        "current_path": f"/games/{game_id}",
         "cache_meta": cache_meta,
         # One block: the game's prediction, result badge and CLV, scoped to its own season.
         "old_rule_scope": DataService.old_rule_scope([game["season"]] if game else []),

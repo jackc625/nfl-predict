@@ -1,7 +1,8 @@
 {% extends "base.html" %}
-{% import "components/_prediction_values.html" as pv %}
 {% block title %}{% if game %}{{ game.away_team }} @ {{ game.home_team }}{% else %}Game Not Found{% endif %}{% endblock %}
 {% block content %}
+{% import "components/_prediction_values.html" as pv %}
+{% import "components/_broadcast.html" as bc %}
 
 {% if not game %}
   {% with heading="Game not found",
@@ -10,125 +11,164 @@
     {% include "components/_empty_state.html" %}
   {% endwith %}
 {% else %}
+{# Game detail (Broadcast redesign, spec 7.2, mockup 04). The route passes the row through
+   api.presentation.decorate_game; every decorated field is read with a default so a bare row
+   (tests render one) still draws. #}
+{%- set home = game.home_team -%}
+{%- set away = game.away_team -%}
+{%- set home_bg = game.home_color|default("#1D2436") -%}
+{%- set away_bg = game.away_color|default("#1D2436") -%}
+{%- set ctx = game.context -%}
 
-{# Back link #}
-<a href="/" class="inline-flex items-center text-sm text-nfl-primary hover:underline mb-4">
-  <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-  Back to predictions
-</a>
+<a href="/?season={{ game.season }}&amp;week={{ game.week }}" class="mb-3 inline-flex items-center gap-1 text-sm font-semibold text-accent hover:underline">&lsaquo; Week {{ game.week }}</a>
 
 {# Old-rule label for this game (R16 / D33.2-07): a 2021-2025 game's prediction, result badge
    and CLV are all pre-fix. The route scopes it to the game's own season. #}
 {% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
 
-{# Game header #}
-<div class="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-  <div class="flex items-center justify-between mb-2">
-    <h1 class="text-xl font-semibold text-gray-900">{{ game.away_team }} @ {{ game.home_team }}</h1>
-    {% with status=game.status %}{% include "components/_status_badge.html" %}{% endwith %}
+{# The matchup header: team blocks and win chances either side, kickoff and stadium between. #}
+<h1 class="sr-only">{{ away }} @ {{ home }}</h1>
+<section class="mb-4 overflow-hidden rounded-sm bg-panel p-5" style="background-image: linear-gradient(90deg, color-mix(in srgb, {{ away_bg }} 40%, transparent) 0%, transparent 42%, transparent 58%, color-mix(in srgb, {{ home_bg }} 45%, transparent) 100%);">
+  <div class="grid grid-cols-1 items-center gap-4 md:grid-cols-[1fr_auto_1fr]">
+    <div class="flex items-center gap-4">
+      {{ bc.team_block(away, away_bg, game.away_fg|default("#FFFFFF"), large=true) }}
+      <div>
+        <p class="display text-2xl leading-none">{{ game.away_name|default(away) }}</p>
+        {% if ctx and ctx.away_elo is not none %}<p class="mt-1 text-xs text-[#C4CAD8]">Elo {{ "%.0f"|format(ctx.away_elo) }}</p>{% endif %}
+      </div>
+      <p class="display ml-auto text-5xl tabular-nums {{ 'text-accent' if game.wp_prob is not none and game.wp_prob < 0.5 else 'text-[#C4CAD8]' }}">{{ pv.team_pct(game.wp_prob, "away") }}</p>
+    </div>
+    <div class="text-center">
+      <p class="display text-2xl text-white/40">@</p>
+      <p class="label text-[#C4CAD8]">{{ game.kickoff_label|default(game.game_date if game.game_date is not none else "Time TBD") }}</p>
+      {% if ctx and ctx.venue_name %}<p class="label">{{ ctx.venue_name }}</p>{% endif %}
+      <p class="mt-1">{% with status=game.status %}{% include "components/_status_badge.html" %}{% endwith %}</p>
+    </div>
+    <div class="flex items-center gap-4">
+      <p class="display mr-auto text-5xl tabular-nums {{ 'text-accent' if game.wp_prob is not none and game.wp_prob > 0.5 else 'text-[#C4CAD8]' }}">{{ pv.team_pct(game.wp_prob, "home") }}</p>
+      <div class="text-right">
+        <p class="display text-2xl leading-none">{{ game.home_name|default(home) }}</p>
+        {% if ctx and ctx.home_elo is not none %}<p class="mt-1 text-xs text-[#C4CAD8]">Elo {{ "%.0f"|format(ctx.home_elo) }}</p>{% endif %}
+      </div>
+      {{ bc.team_block(home, home_bg, game.home_fg|default("#FFFFFF"), large=true) }}
+    </div>
   </div>
-  <p class="text-sm text-gray-500">{{ game.game_date }} | Season {{ game.season }}, Week {{ game.week }}</p>
+  {% if game.wp_prob is not none %}
+  {# grow-in (Task 1): the bar sweeps in from the left once on load (spec 5); a reader who asks for
+     reduced motion sees it at its final width at once. #}
+  <div class="mt-4 flex h-1.5 gap-1 grow-in" role="img" aria-label="Win probability: {{ away }} {{ pv.team_pct(game.wp_prob, 'away') }}, {{ home }} {{ pv.team_pct(game.wp_prob, 'home') }}">
+    <span class="skew" style="width: {{ ((1 - game.wp_prob) * 100)|round(1) }}%; background: {{ away_bg }};"></span>
+    <span class="skew" style="width: {{ (game.wp_prob * 100)|round(1) }}%; background: {{ home_bg }};"></span>
+  </div>
+  {% endif %}
 
   {# Result overlay for completed games (D-15). Three states, matching the card's grading
      (33.2 review C2 WR-04): correct, incorrect, and NEITHER -- a tie or a game with no WP pick,
-     which used to render a red "Incorrect". #}
+     which used to render a red "Incorrect". The result and the CLV are REALISED numbers, so they
+     alone may be green or red. #}
   {% if game.status == "completed" and game.home_score is not none %}
-  <div class="mt-4 p-4 rounded-lg {% if game.wp_correct is sameas true %}bg-green-50 border border-green-200{% elif game.wp_correct is sameas false %}bg-red-50 border border-red-200{% else %}bg-gray-50 border border-gray-200{% endif %}">
-    <div class="flex items-center justify-between">
-      <div>
-        <span class="text-lg font-semibold stat-num">{{ game.away_score }} - {{ game.home_score }}</span>
-        <span class="ml-3 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold {% if game.wp_correct is sameas true %}bg-green-100 text-green-800{% elif game.wp_correct is sameas false %}bg-red-100 text-red-600{% else %}bg-gray-100 text-gray-700{% endif %}">
-          {% if game.wp_correct is sameas true %}Correct{% elif game.wp_correct is sameas false %}Incorrect{% elif game.home_score == game.away_score %}Tie{% else %}No pick{% endif %}
-        </span>
-      </div>
-      {% if game.wp_clv is not none %}
-      <span class="text-sm font-medium {% if game.wp_clv > 0 %}text-green-700{% else %}text-red-600{% endif %}">
-        CLV: {{ "%+.2f"|format(game.wp_clv) }}%
+  <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
+    <p class="flex items-center gap-3">
+      <span class="label">Final</span>
+      <span class="display text-2xl tabular-nums">{{ game.away_score }} - {{ game.home_score }}</span>
+      <span class="label px-2 py-0.5 {% if game.wp_correct is sameas true %}bg-green-500/15 text-green-400{% elif game.wp_correct is sameas false %}bg-red-500/15 text-red-400{% else %}bg-panel-2 text-fg{% endif %}">
+        {% if game.wp_correct is sameas true %}Correct{% elif game.wp_correct is sameas false %}Incorrect{% elif game.home_score == game.away_score %}Tie{% else %}No pick{% endif %}
       </span>
-      {% endif %}
-    </div>
+    </p>
+    {% if game.wp_clv is not none %}
+    <span class="num text-sm font-semibold {% if game.wp_clv > 0 %}text-green-400{% else %}text-red-400{% endif %}">CLV: {{ "%+.2f"|format(game.wp_clv) }}%</span>
+    {% endif %}
   </div>
   {% endif %}
-</div>
+</section>
 
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-  {# LEFT COLUMN: Predictions + Feature Importance #}
-  <div class="space-y-6">
+<div class="grid grid-cols-1 gap-4 lg:grid-cols-[1.25fr_1fr]">
+  <div class="space-y-4">
 
-    {# Prediction vs Market Comparison (D-14) #}
-    <div class="bg-white rounded-lg border border-gray-200 p-6">
-      <h2 class="text-base font-semibold text-gray-900 mb-4">Prediction vs Market</h2>
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="border-b border-gray-200">
-            <th scope="col" class="pb-2 text-left font-semibold text-gray-600">Metric</th>
-            <th scope="col" class="pb-2 text-right font-semibold text-gray-600">Model</th>
-            <th scope="col" class="pb-2 text-right font-semibold text-gray-600">Market</th>
-            <th scope="col" class="pb-2 text-right font-semibold text-gray-600">Blended</th>
-            <th scope="col" class="pb-2 text-right font-semibold text-gray-600">Edge</th>
-          </tr>
-        </thead>
-        {# Model = OUR MODEL'S own number; Market = the pre-lock line we own ("No line" where we own
-           none -- never a zero); Blended = the published number. An absent edge is "-". #}
-        <tbody class="divide-y divide-gray-100">
-          <tr>
-            <td class="py-2 text-gray-700">Win Probability</td>
-            <td class="py-2 text-right stat-num">{{ pv.win_prob(game.wp_prob, game.home_team, game.away_team, "-") }}</td>
-            <td class="py-2 text-right stat-num">{{ pv.win_prob(game.market_wp, game.home_team, game.away_team, pv.market_wp_missing(game)) }}</td>
-            <td class="py-2 text-right stat-num">{{ pv.win_prob(game.blended_wp, game.home_team, game.away_team, "-") }}</td>
-            {% if game.wp_edge is not none %}
-            <td class="py-2 text-right {% if game.wp_edge > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format(game.wp_edge * 100) }}%</td>
-            {% else %}
-            <td class="py-2 text-right stat-num">{{ pv.absent("-") }}</td>
-            {% endif %}
-          </tr>
-          <tr>
-            <td class="py-2 text-gray-700">Spread
-              {% if game.ats_prediction is not none and game.market_spread is not none %}
-                <span class="block text-xs text-gray-400">
+    {# Model vs Market (D-14). Model = OUR MODEL'S own number; Market = the pre-lock line we own
+       ("No line" where we own none -- never a zero); Published = the blended number the site
+       publishes. An edge is a neutral yellow chip, never green or red, with its stored band
+       beside it, monochrome (this is where the band lives since it left the cards). An absent
+       edge is "-". #}
+    <section class="panel">
+      <h2 class="panel-title">Model vs Market</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="label">
+              <th scope="col" class="pb-2 text-left"><span class="sr-only">Metric</span></th>
+              <th scope="col" class="pb-2 text-right">Model</th>
+              <th scope="col" class="pb-2 text-right">Market</th>
+              <th scope="col" class="pb-2 text-right">Published</th>
+              <th scope="col" class="pb-2 text-right">Edge</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-line">
+            <tr>
+              <td class="py-2.5">Win Probability</td>
+              <td class="num whitespace-nowrap py-2.5 text-right">{{ pv.win_prob(game.wp_prob, home, away, "-") }}</td>
+              <td class="num whitespace-nowrap py-2.5 text-right">{{ pv.win_prob(game.market_wp, home, away, pv.market_wp_missing(game)) }}</td>
+              <td class="num whitespace-nowrap py-2.5 text-right">{{ pv.win_prob(game.blended_wp, home, away, "-") }}</td>
+              <td class="whitespace-nowrap py-2.5 text-right">
+                {%- if game.wp_edge is not none -%}
+                <span data-edge="wp">{{ bc.edge_chip("%+.1f"|format(game.wp_edge * 100) ~ "%") }}</span>
+                {%- else -%}{{ pv.absent("-") }}{%- endif -%}
+                {%- if game.wp_confidence %} <span data-band="{{ game.wp_confidence }}">{% with level=game.wp_confidence, value=game.wp_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}</span>{% endif -%}
+              </td>
+            </tr>
+            <tr>
+              <td class="py-2.5">Spread
+                {% if game.ats_prediction is not none and game.market_spread is not none %}
+                <span class="block text-xs font-semibold text-accent">
                   {# Home margins, POSITIVE when the home team is favoured (DEF-31-01): a model
                      margin above the line = HOME covers, the side backtest/ats_ev_chain.py prices.
-                     See the same label in components/_game_card.html. #}
-                  {% if game.ats_prediction > game.market_spread %}{{ game.home_team }} covers{% elif game.ats_prediction < game.market_spread %}{{ game.away_team }} covers{% else %}No pick{% endif %}
+                     Equal numbers are NO PICK. The same label as components/_game_card.html. #}
+                  {% if game.ats_prediction > game.market_spread %}{{ home }} covers{% elif game.ats_prediction < game.market_spread %}{{ away }} covers{% else %}No pick{% endif %}
                 </span>
-              {% endif %}
-            </td>
-            <td class="py-2 text-right stat-num">{{ pv.margin(game.ats_prediction, game.home_team, game.away_team, "-") }}</td>
-            <td class="py-2 text-right stat-num">{{ pv.margin(game.market_spread, game.home_team, game.away_team) }}</td>
-            <td class="py-2 text-right stat-num">{{ pv.margin(game.blended_ats, game.home_team, game.away_team, "-") }}</td>
-            {# R13 / D33-05 (Plan 33-10): ats_edge is a POINT DIFFERENCE, not a ratio, so it renders
-               in points; wp_edge (a probability delta) and ou_edge (a fraction of the total) keep
-               their percentage rendering. #}
-            {% if game.ats_edge is not none %}
-            <td class="py-2 text-right {% if game.ats_edge > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format(game.ats_edge) }} pts</td>
-            {% else %}
-            <td class="py-2 text-right stat-num">{{ pv.absent("-") }}</td>
-            {% endif %}
-          </tr>
-          <tr>
-            <td class="py-2 text-gray-700">Total
-              {% if game.ou_prediction is not none and game.market_total is not none %}
-                <span class="block text-xs text-gray-400">
+                {% endif %}
+              </td>
+              <td class="num whitespace-nowrap py-2.5 text-right">{{ pv.margin(game.ats_prediction, home, away, "-") }}</td>
+              <td class="num whitespace-nowrap py-2.5 text-right">{{ pv.margin(game.market_spread, home, away) }}</td>
+              <td class="num whitespace-nowrap py-2.5 text-right">{{ pv.margin(game.blended_ats, home, away, "-") }}</td>
+              {# R13 / D33-05 (Plan 33-10): the ATS edge is a POINT DIFFERENCE, not a ratio, so it
+                 renders in points; the WP edge (a probability delta) and the O/U edge (a fraction
+                 of the total) keep their percentage rendering. #}
+              <td class="whitespace-nowrap py-2.5 text-right">
+                {%- if game.ats_edge is not none -%}
+                <span data-edge="ats">{{ bc.edge_chip("%+.1f"|format(game.ats_edge) ~ " pts") }}</span>
+                {%- else -%}{{ pv.absent("-") }}{%- endif -%}
+                {%- if game.ats_confidence %} <span data-band="{{ game.ats_confidence }}">{% with level=game.ats_confidence, value=game.ats_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}</span>{% endif -%}
+              </td>
+            </tr>
+            <tr>
+              <td class="py-2.5">Total
+                {% if game.ou_prediction is not none and game.market_total is not none %}
+                <span class="block text-xs font-semibold text-accent">
                   {% if game.ou_prediction > game.market_total %}Over {{ "%.1f"|format(game.market_total) }}{% elif game.ou_prediction < game.market_total %}Under {{ "%.1f"|format(game.market_total) }}{% else %}No pick{% endif %}
                 </span>
-              {% endif %}
-            </td>
-            <td class="py-2 text-right stat-num">{{ pv.total(game.ou_prediction, "-") }}</td>
-            <td class="py-2 text-right stat-num">{{ pv.total(game.market_total) }}</td>
-            <td class="py-2 text-right stat-num">{{ pv.total(game.blended_ou, "-") }}</td>
-            {% if game.ou_edge is not none %}
-            <td class="py-2 text-right {% if game.ou_edge > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format(game.ou_edge * 100) }}%</td>
-            {% else %}
-            <td class="py-2 text-right stat-num">{{ pv.absent("-") }}</td>
-            {% endif %}
-          </tr>
-        </tbody>
-      </table>
-    </div>
+                {% endif %}
+              </td>
+              <td class="num whitespace-nowrap py-2.5 text-right">{{ pv.total(game.ou_prediction, "-") }}</td>
+              <td class="num whitespace-nowrap py-2.5 text-right">{{ pv.total(game.market_total) }}</td>
+              <td class="num whitespace-nowrap py-2.5 text-right">{{ pv.total(game.blended_ou, "-") }}</td>
+              <td class="whitespace-nowrap py-2.5 text-right">
+                {%- if game.ou_edge is not none -%}
+                <span data-edge="ou">{{ bc.edge_chip("%+.1f"|format(game.ou_edge * 100) ~ "%") }}</span>
+                {%- else -%}{{ pv.absent("-") }}{%- endif -%}
+                {%- if game.ou_confidence %} <span data-band="{{ game.ou_confidence }}">{% with level=game.ou_confidence, value=game.ou_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}</span>{% endif -%}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
 
-    {# Feature Importance Chart (D-13 + UIAP-04: multi-target tabs) #}
-    <div class="bg-white rounded-lg border border-gray-200 p-6">
-      <h2 class="text-base font-semibold text-gray-900 mb-4">Feature Importance</h2>
+    {# What drives the prediction (D-13 + UIAP-04: multi-target tabs). Same ids, same client-side
+       Plotly call; dark styling mirrors api/charts/theme.py, as literals because it runs in the
+       browser. Positive importances are the accent yellow and negative ones neutral grey --
+       never red, which on this site means a realised loss. #}
+    <section class="panel">
+      <h2 class="panel-title">What drives the prediction</h2>
       {% if game.feature_importances %}
       {% set available_targets = [] %}
       {% for t in ["wp", "ats", "ou"] %}
@@ -136,17 +176,19 @@
           {% if available_targets.append(t) %}{% endif %}
         {% endif %}
       {% endfor %}
+      {% set TAB_LABELS = {"wp": "Win", "ats": "Spread", "ou": "Total"} %}
 
       {% if available_targets | length > 1 %}
-      <div class="flex border-b border-gray-200 mb-4" role="tablist">
+      <div class="mb-3 flex gap-1.5" role="tablist" aria-label="Model">
         {% for target in available_targets %}
-        <button onclick="showFeatureChart('{{ target }}')"
+        <button type="button"
+                onclick="showFeatureChart('{{ target }}')"
                 id="tab-{{ target }}"
                 role="tab"
                 aria-selected="{{ 'true' if loop.first else 'false' }}"
                 aria-controls="feature-chart"
-                class="px-4 py-2 text-sm font-medium min-h-[44px] {% if loop.first %}text-nfl-primary border-b-2 border-nfl-primary{% else %}text-gray-500 hover:text-gray-700{% endif %}">
-          {{ target | upper }}
+                class="skew-control min-h-[44px] px-3{% if loop.first %} skew-control-active{% endif %}">
+          <span class="unskew inline-block">{{ TAB_LABELS[target] }}</span>
         </button>
         {% endfor %}
       </div>
@@ -157,43 +199,43 @@
         (function() {
           var allFeatures = {{ game.feature_importances | tojson }};
           var availableTargets = {{ available_targets | tojson }};
+          var POSITIVE = "#FFD400";
+          var NEGATIVE = "#5B6478";
 
           function showFeatureChart(target) {
-            // Update tab active/inactive styles
+            // Move the active state to the chosen tab.
             availableTargets.forEach(function(t) {
               var tab = document.getElementById("tab-" + t);
               if (!tab) return;
-              if (t === target) {
-                tab.className = "px-4 py-2 text-sm font-medium min-h-[44px] text-nfl-primary border-b-2 border-nfl-primary";
-                tab.setAttribute("aria-selected", "true");
-              } else {
-                tab.className = "px-4 py-2 text-sm font-medium min-h-[44px] text-gray-500 hover:text-gray-700";
-                tab.setAttribute("aria-selected", "false");
-              }
+              var active = t === target;
+              tab.classList.toggle("skew-control-active", active);
+              tab.setAttribute("aria-selected", active ? "true" : "false");
             });
 
-            // Render Plotly chart for selected target
+            // Top ten features by absolute importance, largest at the top.
             var data = allFeatures[target] || {};
             var sorted = Object.entries(data)
               .sort(function(a, b) { return Math.abs(b[1]) - Math.abs(a[1]); })
               .slice(0, 10);
             var names = sorted.map(function(d) { return d[0]; }).reverse();
             var values = sorted.map(function(d) { return d[1]; }).reverse();
-            var colors = values.map(function(v) { return v >= 0 ? "#013369" : "#D50A0A"; });
+            var colors = values.map(function(v) { return v >= 0 ? POSITIVE : NEGATIVE; });
 
             Plotly.newPlot("feature-chart", [{
               type: "bar",
               orientation: "h",
               x: values,
               y: names,
-              marker: { color: colors }
+              marker: { color: colors },
+              hovertemplate: "%{y}: %{x:.3f}<extra></extra>"
             }], {
-              font: { family: "system-ui, -apple-system, sans-serif", size: 13 },
-              plot_bgcolor: "#FFFFFF",
-              paper_bgcolor: "#FFFFFF",
-              margin: { l: 120, r: 16, t: 16, b: 40 },
-              xaxis: { title: "Importance", gridcolor: "#E5E7EB" },
-              yaxis: { gridcolor: "#E5E7EB" }
+              font: { family: "Barlow Condensed, Inter, sans-serif", size: 13, color: "#C4CAD8" },
+              plot_bgcolor: "rgba(0,0,0,0)",
+              paper_bgcolor: "rgba(0,0,0,0)",
+              margin: { l: 160, r: 16, t: 8, b: 40 },
+              xaxis: { title: { text: "IMPORTANCE" }, gridcolor: "rgba(255,255,255,0.06)", zeroline: false, color: "#8A93A8" },
+              yaxis: { color: "#C4CAD8", tickfont: { family: "JetBrains Mono, monospace", size: 11 } },
+              hoverlabel: { bgcolor: "#0B0F17", bordercolor: "#FFD400", font: { family: "JetBrains Mono, monospace", color: "#FFFFFF" } }
             }, { responsive: true, displayModeBar: false });
           }
 
@@ -205,120 +247,94 @@
         })();
       </script>
       {% else %}
-        <p class="text-sm text-gray-500">Feature importance data not available for this game.</p>
+        <p class="text-sm text-muted">Feature importance data not available for this game.</p>
       {% endif %}
-    </div>
+    </section>
   </div>
 
-  {# RIGHT COLUMN: Context Cards #}
-  <div class="space-y-6">
-
-    {# Team Context Card (D-14: Elo, last 5, H2H) #}
-    <div class="bg-white rounded-lg border border-gray-200 p-6">
-      <h2 class="text-base font-semibold text-gray-900 mb-4">Team Context</h2>
-
-      {# Elo Ratings #}
-      {% if game.context and (game.context.home_elo or game.context.away_elo) %}
-      <div class="mb-4">
-        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Elo Ratings</h3>
-        <div class="grid grid-cols-2 gap-4">
-          <div class="text-center p-3 bg-gray-50 rounded">
-            <p class="text-xs text-gray-500">{{ game.home_team }}</p>
-            <p class="text-lg font-semibold text-gray-900 stat-num">{% if game.context.home_elo is not none %}{{ "%.0f"|format(game.context.home_elo) }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}</p>
+  <div class="space-y-4">
+    {# Tale of the tape (D-14: Elo, last 5, H2H), away on the left as in the header. Recent form
+       is a set of REALISED results, so W and L alone are green and red. #}
+    <section class="panel">
+      <h2 class="panel-title">Tale of the tape</h2>
+      {% if ctx %}
+        {% if ctx.home_elo is not none or ctx.away_elo is not none %}
+        <p class="label">Elo rating</p>
+        <div class="mb-4 mt-1 grid grid-cols-[4rem_1fr_4rem] items-center gap-3">
+          <p><span class="label block">{{ away }}</span><span class="display text-2xl">{% if ctx.away_elo is not none %}{{ "%.0f"|format(ctx.away_elo) }}{% else %}<span class="text-dim">N/A</span>{% endif %}</span></p>
+          {% if ctx.away_elo is not none and ctx.home_elo is not none %}
+          {# NOTHING IS COMPUTED HERE (UIAP-01): each half's CSS flex-grow is that team's stored
+             Elo, so the browser sizes the split -- the same technique as the Season week strip. #}
+          <div class="flex h-2.5 gap-1" role="img" aria-label="Elo rating: {{ away }} {{ "%.0f"|format(ctx.away_elo) }}, {{ home }} {{ "%.0f"|format(ctx.home_elo) }}">
+            <span class="skew" aria-hidden="true" style="flex: {{ "%.0f"|format(ctx.away_elo) }} 1 0%; background: {{ away_bg }};"></span>
+            <span class="skew" aria-hidden="true" style="flex: {{ "%.0f"|format(ctx.home_elo) }} 1 0%; background: {{ home_bg }};"></span>
           </div>
-          <div class="text-center p-3 bg-gray-50 rounded">
-            <p class="text-xs text-gray-500">{{ game.away_team }}</p>
-            <p class="text-lg font-semibold text-gray-900 stat-num">{% if game.context.away_elo is not none %}{{ "%.0f"|format(game.context.away_elo) }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}</p>
-          </div>
+          {% else %}
+          <span></span>
+          {% endif %}
+          <p class="text-right"><span class="label block">{{ home }}</span><span class="display text-2xl">{% if ctx.home_elo is not none %}{{ "%.0f"|format(ctx.home_elo) }}{% else %}<span class="text-dim">N/A</span>{% endif %}</span></p>
         </div>
-      </div>
-      {% endif %}
+        {% endif %}
 
-      {# Last 5 Games #}
-      {% if game.context and (game.context.home_last5_list or game.context.away_last5_list) %}
-      <div class="mb-4">
-        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Recent Form (Last 5)</h3>
-        <div class="grid grid-cols-2 gap-4">
+        {% if ctx.home_last5_list or ctx.away_last5_list %}
+        <p class="label mb-1.5">Recent form (last 5)</p>
+        <div class="mb-4 flex justify-between gap-4">
+          {% for team, results in [(away, ctx.away_last5_list), (home, ctx.home_last5_list)] %}
           <div>
-            <p class="text-xs text-gray-500 mb-1">{{ game.home_team }}</p>
+            <p class="label mb-1">{{ team }}</p>
             <div class="flex gap-1">
-              {% for result in game.context.home_last5_list %}
-              <span class="w-7 h-7 rounded flex items-center justify-center text-xs font-bold {% if result == 'W' %}bg-green-100 text-green-800{% else %}bg-red-100 text-red-600{% endif %}">{{ result }}</span>
+              {% for result in results %}
+              <span class="skew inline-flex h-6 w-6 items-center justify-center font-display text-sm font-extrabold {% if result == 'W' %}bg-green-500/15 text-green-400{% elif result == 'L' %}bg-red-500/15 text-red-400{% else %}bg-panel-2 text-muted{% endif %}"><span class="unskew">{{ result }}</span></span>
               {% endfor %}
+              {% for _ in range(5 - results|length) %}<span class="skew h-6 w-6 bg-panel-2" aria-hidden="true"></span>{% endfor %}
             </div>
           </div>
-          <div>
-            <p class="text-xs text-gray-500 mb-1">{{ game.away_team }}</p>
-            <div class="flex gap-1">
-              {% for result in game.context.away_last5_list %}
-              <span class="w-7 h-7 rounded flex items-center justify-center text-xs font-bold {% if result == 'W' %}bg-green-100 text-green-800{% else %}bg-red-100 text-red-600{% endif %}">{{ result }}</span>
-              {% endfor %}
-            </div>
-          </div>
+          {% endfor %}
         </div>
-      </div>
-      {% endif %}
+        {% endif %}
 
-      {# Head-to-Head #}
-      {% if game.context and game.context.h2h_record %}
-      <div>
-        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Head-to-Head (Last 5 Seasons)</h3>
-        <p class="text-sm text-gray-700">{{ game.home_team }} {{ game.context.h2h_home_wins }}-{{ game.context.h2h_away_wins }} {{ game.away_team }}</p>
-      </div>
+        {% if ctx.h2h_record %}
+        <p class="label mb-1">Head-to-head (last 5 seasons)</p>
+        <p class="display text-xl">
+          {%- if ctx.h2h_home_wins > ctx.h2h_away_wins -%}{{ home }} leads {{ ctx.h2h_home_wins }}-{{ ctx.h2h_away_wins }}
+          {%- elif ctx.h2h_away_wins > ctx.h2h_home_wins -%}{{ away }} leads {{ ctx.h2h_away_wins }}-{{ ctx.h2h_home_wins }}
+          {%- else -%}Series even {{ ctx.h2h_home_wins }}-{{ ctx.h2h_away_wins }}
+          {%- endif -%}
+        </p>
+        {% endif %}
+      {% else %}
+        <p class="text-sm text-muted">Team context data not available for this game.</p>
       {% endif %}
+    </section>
 
-      {# Empty context state #}
-      {% if not game.context %}
-      <p class="text-sm text-gray-500">Team context data not available for this game.</p>
-      {% endif %}
-    </div>
-
-    {# Venue and Weather Card (D-14) #}
-    <div class="bg-white rounded-lg border border-gray-200 p-6">
-      <h2 class="text-base font-semibold text-gray-900 mb-4">Venue & Weather</h2>
-      {% if game.context %}
-      <dl class="space-y-3 text-sm">
-        {% if game.context.venue_name %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Stadium</dt>
-          <dd class="text-gray-900 font-medium">{{ game.context.venue_name }}</dd>
-        </div>
+    {# Venue and Weather (D-14) #}
+    <section class="panel">
+      <h2 class="panel-title">Venue &amp; Weather</h2>
+      {% if ctx %}
+      <dl class="space-y-2.5 text-sm">
+        {% if ctx.venue_name %}
+        <div class="flex justify-between gap-4"><dt class="text-muted">Stadium</dt><dd class="text-right font-semibold text-fg">{{ ctx.venue_name }}</dd></div>
         {% endif %}
-        {% if game.context.surface %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Surface</dt>
-          <dd class="text-gray-900 font-medium">{{ game.context.surface }}</dd>
-        </div>
+        {% if ctx.surface %}
+        <div class="flex justify-between gap-4"><dt class="text-muted">Surface</dt><dd class="text-right font-semibold text-fg">{{ ctx.surface }}</dd></div>
         {% endif %}
-        {% if game.context.roof_type %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Roof</dt>
-          <dd class="text-gray-900 font-medium">{{ game.context.roof_type|title }}</dd>
-        </div>
+        {% if ctx.roof_type %}
+        <div class="flex justify-between gap-4"><dt class="text-muted">Roof</dt><dd class="text-right font-semibold text-fg">{{ ctx.roof_type|title }}</dd></div>
         {% endif %}
-        {% if game.context.is_outdoor and game.context.weather_severity is not none %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Weather Severity</dt>
-          <dd class="text-gray-900 font-medium" title="severity {{ "%.2f"|format(game.context.weather_severity) }}">{{ game.context.weather_severity_band }}</dd>
-        </div>
+        {% if ctx.is_outdoor and ctx.weather_severity is not none %}
+        <div class="flex justify-between gap-4"><dt class="text-muted">Weather Severity</dt><dd class="text-right font-semibold text-fg" title="severity {{ "%.2f"|format(ctx.weather_severity) }}">{{ ctx.weather_severity_band }}</dd></div>
         {% endif %}
-        {% if game.context.is_outdoor and game.context.wind_mph is not none %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Wind</dt>
-          <dd class="text-gray-900 font-medium stat-num">{{ "%.0f"|format(game.context.wind_mph) }} mph</dd>
-        </div>
+        {% if ctx.is_outdoor and ctx.wind_mph is not none %}
+        <div class="flex justify-between gap-4"><dt class="text-muted">Wind</dt><dd class="num text-right font-semibold text-fg">{{ "%.0f"|format(ctx.wind_mph) }} mph</dd></div>
         {% endif %}
-        {% if game.context.is_divisional %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Type</dt>
-          <dd class="text-gray-900 font-medium">Divisional Game</dd>
-        </div>
+        {% if ctx.is_divisional %}
+        <div class="flex justify-between gap-4"><dt class="text-muted">Type</dt><dd class="text-right font-semibold text-fg">Divisional Game</dd></div>
         {% endif %}
       </dl>
       {% else %}
-      <p class="text-sm text-gray-500">Venue and weather data not available.</p>
+      <p class="text-sm text-muted">Venue and weather data not available.</p>
       {% endif %}
-    </div>
+    </section>
 
     {# Export for this game #}
     <div class="flex justify-end">

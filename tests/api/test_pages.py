@@ -208,20 +208,21 @@ def test_game_detail_page(test_client: TestClient):
     response = test_client.get("/games/2024_W01_BUF@KC")
     assert response.status_code == 200
     html = response.text
-    assert "Feature Importance" in html
-    assert "Prediction vs Market" in html
+    # Panel titles renamed in the Broadcast redesign (spec 7.2).
+    assert "What drives the prediction" in html
+    assert "Model vs Market" in html
     # Team header
     assert "BUF" in html
     assert "KC" in html
 
 
 def test_game_detail_team_context(test_client: TestClient):
-    """Game detail shows team context (Elo, form, H2H)."""
+    """Game detail shows team context (Elo, form, H2H) in the Tale of the tape panel."""
     response = test_client.get("/games/2024_W01_BUF@KC")
     assert response.status_code == 200
     html = response.text
-    assert "Team Context" in html
-    assert "Elo Ratings" in html
+    assert "Tale of the tape" in html
+    assert "Elo rating" in html
     assert "1550" in html  # home Elo
 
 
