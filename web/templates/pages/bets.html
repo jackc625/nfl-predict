@@ -405,8 +405,11 @@
       <p class="text-xs text-muted max-w-2xl mt-1">{{ SUPPRESSION_HELP.get(reason, "This reason code is not in the displayed vocabulary; the raw code from the selector is shown above.") }}</p>
       <div class="border border-line overflow-hidden mt-2">
         {# overflow-x-auto + whitespace-nowrap: horizontal scroll on narrow viewports, never a
-           squeezed or clipped column (UI-SPEC E3 overflow). #}
-        <div class="overflow-x-auto">
+           squeezed or clipped column (UI-SPEC E3 overflow). `relative` makes the scroller the
+           containing block of the provenance badge's absolutely positioned sr-only text, so that
+           text is clipped with its row; without it, at 390px an opened disclosure let it widen
+           the whole page by ~340px. #}
+        <div class="relative overflow-x-auto">
           <table class="w-full text-sm">
             <thead class="bg-panel-2">
               <tr>
