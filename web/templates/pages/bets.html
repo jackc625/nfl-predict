@@ -141,7 +141,7 @@
     <span class="flex-1 h-px bg-line" aria-hidden="true"></span>
     {# A count of the rows on this page, like "Suppressed candidates (N)". No stake total: summing
        the stakes here would be a request-path aggregate (UIAP-01). #}
-    {% if bet_list_available and not bets_blocked and bets %}
+    {% if bet_list_available and not bets_blocked and not week_not_evaluated and current_week is not none and bets %}
     <span class="text-xs text-muted whitespace-nowrap">ranked by expected value &middot; {{ bets|length }} {{ "bet" if bets|length == 1 else "bets" }}</span>
     {% endif %}
   </div>
@@ -245,7 +245,7 @@
         <span class="label block" data-bet-type>{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</span>
         {# The pick names the TEAM, never the raw side code. The two teams come from the game
            id's AWAY@HOME matchup; an id without one falls back to the words. #}
-        <p class="display text-2xl md:text-3xl leading-none text-accent mt-1 whitespace-nowrap">{{ bp.pick_label(bet) }}</p>
+        <p class="display text-2xl md:text-3xl lg:text-xl xl:text-3xl leading-none text-accent mt-1 whitespace-nowrap">{{ bp.pick_label(bet) }}</p>
       </div>
       <div class="col-start-2 lg:col-start-auto grid grid-cols-3 gap-3 lg:contents">
         <div class="lg:text-right">
@@ -280,7 +280,9 @@
         </span>
         {# The per-row capture time, visible, so the per-game lock rule stated at the foot of the
            page can be checked row by row rather than taken. #}
-        <span class="num text-xs text-muted whitespace-nowrap" title="Line as of {{ bet.snapshot_ts or '--' }}">Line as of {{ bet.snapshot_ts or "--" }}</span>
+        {# Label and value on separate lines: the stored timestamp (~36 mono characters) is wider than the
+           lg meta track, so the value wraps instead of spilling into the Stake column. #}
+        <span class="block max-w-full min-w-0 text-xs lg:text-right"><span class="label block">Line as of</span><span class="num text-muted break-all" data-slip-asof>{{ bet.snapshot_ts or "--" }}</span></span>
       </div>
     </li>
     {% endfor %}

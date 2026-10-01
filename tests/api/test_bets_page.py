@@ -589,6 +589,9 @@ def test_every_live_taxonomy_reason_has_a_label(tmp_path: Path) -> None:
             f"reason {reason} rendered its raw code even though it has a label"
         )
     assert f"Suppressed candidates ({len(REJECTION_REASONS)})" in body
+    assert "data-reason-cell>" in body, (
+        "no reason cell rendered, so the blank check is vacuous"
+    )
     assert _BLANK_REASON_CELL not in body
 
 
@@ -600,6 +603,9 @@ def test_unrecognised_reason_code_renders_the_raw_code(tmp_path: Path) -> None:
 
     assert f">{_UNRECOGNISED_REASON}</td>" in body
     assert f"{_UNRECOGNISED_REASON} (1)" in body
+    assert "data-reason-cell>" in body, (
+        "no reason cell rendered, so the blank check is vacuous"
+    )
     assert _BLANK_REASON_CELL not in body
 
 
@@ -747,7 +753,8 @@ def test_each_live_bet_renders_one_ranked_slip(
     count = len(selected_records)
 
     assert body.count('<li class="bet-slip') == count
-    assert f"Line as of {_SNAPSHOT_TS}" in body
+    assert f"data-slip-asof>{_SNAPSHOT_TS}<" in body
+    assert "Line as of</span>" in body
     # The header meta, with its row count -- not the <ol>'s aria-label, which also says
     # "ranked by expected value" and would satisfy a bare substring check on its own.
     noun = "bet" if count == 1 else "bets"
@@ -3755,3 +3762,19 @@ def test_every_tracker_section_closes_every_div_it_opens(tmp_path: Path) -> None
         assert section.count("<div") == section.count("</div>"), (
             f"the {key} tracker section leaves a <div> unclosed"
         )
+
+
+def test_no_ranked_count_header_without_a_current_week(tmp_path: Path) -> None:
+    """A populated bet list with no current week shows only the no-current-week state.
+
+    With season and week both None the getter carries no week filter, so a count in the header
+    would tally rows across the whole cache above the "No current week" heading.
+    """
+    clear_cache()
+    db_path = tmp_path / "no_week_populated.duckdb"
+    _build_cache(db_path, [_live_row("2023_W01_DET@KC", "ou")], week_rows=[])
+    with contextmanager(_client)(db_path) as client:
+        body = client.get("/bets").text
+
+    assert _NO_CURRENT_WEEK_HEADING in body
+    assert "ranked by expected value &middot;" not in body
