@@ -419,7 +419,9 @@ def test_ev_band_badge_is_monochrome(bets_client: TestClient) -> None:
     """The EV band badge renders with the monochrome ramp, never the green/amber/red one."""
     body = bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
     assert "EV band" in body
-    assert "bg-gray-200 text-gray-900 border border-gray-300" in body
+    assert re.search(
+        r'<span class="[^"]*\bband-high\b[^"]*"[^>]*title="EV band high', body
+    ), "the high EV band did not render with the monochrome band-high style"
     for forbidden in ("bg-green-100", "bg-amber-100", "bg-red-100"):
         assert forbidden not in body, (
             f"/bets rendered the confidence-badge colour {forbidden}"
@@ -619,7 +621,8 @@ def test_zero_suppressed_rows_renders_the_line_and_no_disclosure(
     body = bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
     assert "Suppressed candidates (0)" in body
     assert "No candidate was suppressed this week." in body
-    assert "<details" not in body
+    # The condensed honesty notes are <details> too; only the suppressed disclosure is absent.
+    assert '<details id="suppressed-candidates"' not in body
 
 
 def test_the_disclosure_is_collapsed_by_default(tmp_path: Path) -> None:
@@ -662,7 +665,8 @@ def test_the_caption_is_present_whether_or_not_the_disclosure_is_expanded(
     with _client_for(tmp_path, rows, "caption") as client:
         body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
     assert caption in body
-    summary = body[body.index("<summary") : body.index("</summary>")]
+    start = body.index('<details id="suppressed-candidates"')
+    summary = body[body.index("<summary", start) : body.index("</summary>", start)]
     assert caption in summary, "the caption is hidden while the disclosure is collapsed"
 
 
@@ -2523,9 +2527,9 @@ _VALIDATION_LABELS: dict[str, str] = {
     "forward_realized": "Live forward record",
 }
 _VALIDATION_CLASSES: dict[str, str] = {
-    "contaminated": "bg-gray-100 text-gray-700 border border-gray-300",
-    "clean_holdout": "bg-gray-200 text-gray-900 border border-gray-300",
-    "forward_realized": "bg-white text-gray-700 border border-gray-300",
+    "contaminated": "evidence-chip",
+    "clean_holdout": "evidence-chip evidence-chip-strong",
+    "forward_realized": "evidence-chip",
 }
 _UNKNOWN_VALIDATION_TYPE = "validation_type_invented_by_a_future_plan"
 
@@ -2588,9 +2592,12 @@ def test_every_validation_type_renders_its_declared_label_and_classes(
         assert _VALIDATION_LABELS[validation_type] in section, (
             f"{validation_type} rendered no label on its block header"
         )
-        assert _VALIDATION_CLASSES[validation_type] in section, (
-            f"{validation_type} rendered without its declared class set"
-        )
+        # The WHOLE class attribute, anchored on the data-provenance that follows it: a bare
+        # "evidence-chip" would also match inside "evidence-chip evidence-chip-strong".
+        assert (
+            f'class="{_VALIDATION_CLASSES[validation_type]}" data-provenance="{pair[0]}"'
+            in section
+        ), f"{validation_type} rendered without its declared class set"
         assert f'data-validation-type="{validation_type}"' in section
         assert f'data-provenance="{pair[0]}"' in section
 

@@ -1,8 +1,10 @@
-{# Confidence badge pill. Pass: level ("high"/"medium"/"low"), value (display text) #}
-{% if level == "high" %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800 border border-green-200">{{ value }}</span>
-{% elif level == "medium" %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-200">{{ value }}</span>
-{% else %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-600 border border-red-200">{{ value }}</span>
-{% endif %}
+{# Confidence (edge band) label. Pass: level ("high"/"medium"/"low"), value (display text).
+
+   MONOCHROME since the Broadcast redesign (2026-10-01). It used to map high/medium/low to
+   green/amber/red, but on this site green and red mean a realised result -- a won or lost bet, a
+   correct or incorrect pick -- and a pre-game band is neither. Fill weight now encodes the band,
+   exactly as _ev_band_badge.html does. data-confidence-band names the band, so a test can tell
+   this label from the EV band label that shares the band-* classes. Anything other than "high" or
+   "medium" renders as "low", as before. #}
+{% set _band = level if level in ("high", "medium") else "low" %}
+<span class="band band-{{ _band }}" data-confidence-band="{{ _band }}">{{ value }}</span>

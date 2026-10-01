@@ -88,14 +88,19 @@ def test_this_week_page_responsive_grid(test_client: TestClient):
 
 
 def test_this_week_page_confidence_badges(test_client: TestClient):
-    """D-08: Confidence badges with color-coded levels."""
+    """D-08: Confidence labels render one monochrome band each (Broadcast redesign)."""
     response = test_client.get("/")
     assert response.status_code == 200
     html = response.text
-    # Sample data contains high, medium, and low confidence values
-    assert "bg-green-100" in html  # high
-    assert "bg-amber-100" in html  # medium
-    assert "bg-red-100" in html  # low
+    # Sample data contains high, medium, and low confidence values. The labels are grey-scale:
+    # green and red now mean a realised result only, and a pre-game band is not one.
+    assert 'class="band band-high" data-confidence-band="high"' in html
+    assert 'class="band band-medium" data-confidence-band="medium"' in html
+    assert 'class="band band-low" data-confidence-band="low"' in html
+    # Only amber is checked here: until Task 7 replaces the card, its Correct/Incorrect result
+    # badge still (rightly) renders bg-green-100 / bg-red-100 for the fixture's completed games.
+    # Task 7 adds the green/red check once that badge is gone.
+    assert "bg-amber-100" not in html
 
 
 def test_this_week_page_with_week_filter(test_client: TestClient):
@@ -667,10 +672,10 @@ def test_the_landing_page_still_renders_all_three_edge_band_labels(
 
     html = test_client.get("/").text
     assert set(EDGE_TIER_LABELS) == {"low", "medium", "high"}
-    # The three colour classes the confidence badge maps the three labels onto, one per band.
-    for badge_class in ("bg-green-100", "bg-amber-100", "bg-red-100"):
-        assert badge_class in html, (
-            f"the {badge_class} badge disappeared from /; an edge band label has moved"
+    # One confidence label per band, located by the band it declares.
+    for band in sorted(EDGE_TIER_LABELS):
+        assert f'data-confidence-band="{band}"' in html, (
+            f"the {band} confidence label disappeared from /; an edge band label has moved"
         )
 
 
@@ -716,29 +721,27 @@ def test_the_landing_page_renders_the_band_it_was_served_and_never_rederives_one
             served.append(stored_band)
     assert served, "no band was served; the check would pass vacuously"
 
-    # The badge partial maps each band onto ONE colour class and renders the label title-cased.
-    # Comparing the MULTISET of rendered badges against the multiset of served bands is what makes
-    # this a re-banding check rather than a spelling check: a page that turned one served "low"
-    # into a "high" would leave the vocabulary intact and the counts different.
+    # The badge partial renders each band as one monochrome class plus a data-confidence-band
+    # attribute, and the label title-cased. Comparing the MULTISET of rendered badges against the
+    # multiset of served bands is what makes this a re-banding check rather than a spelling check:
+    # a page that turned one served "low" into a "high" would leave the vocabulary intact and the
+    # counts different.
     #
-    # The class triple below is the CONFIDENCE badge's, not the STATUS badge's. Both live on game
-    # cards and both use ``bg-green-100``; only the confidence badge carries the matching
-    # ``border border-<colour>-200``. Keying on the bare background colour matches the status
-    # badge's "Completed" pill and reports it as a mis-banded row -- which is how this assertion
-    # first failed, and why the selector is the full triple.
-    band_by_class = {"green": "high", "amber": "medium", "red": "low"}
+    # The selector keys on data-confidence-band, not on the band-* class alone: the EV band label
+    # shares those classes, and keying on a bare class is how this assertion first failed (it
+    # matched the status badge when the two shared a colour).
     rendered: list[str] = []
-    for colour, band in band_by_class.items():
-        pattern = (
-            rf"bg-{colour}-100 text-{colour}-\d+ border border-{colour}-200[^>]*>"
-            r"([^<]+)</span>"
+    pattern = (
+        r'<span class="band band-(high|medium|low)" data-confidence-band="(high|medium|low)">'
+        r"([^<]+)</span>"
+    )
+    for match in re.finditer(pattern, html):
+        css_band, attr_band, label = match.groups()
+        assert css_band == attr_band == label.strip().lower(), (
+            f"a confidence badge renders {label!r} with class band-{css_band} and "
+            f"data-confidence-band={attr_band!r}; the three must name the same band"
         )
-        for match in re.finditer(pattern, html):
-            assert match.group(1).strip().lower() == band, (
-                f"a bg-{colour}-100 confidence badge renders {match.group(1)!r}, which is not "
-                f"the {band!r} band that colour is reserved for"
-            )
-            rendered.append(band)
+        rendered.append(attr_band)
 
     assert Counter(rendered) == Counter(served), (
         "the bands rendered on / are not the bands the page was served -- the request path "

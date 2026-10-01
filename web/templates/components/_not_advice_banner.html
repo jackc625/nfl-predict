@@ -5,9 +5,16 @@
    replaces, so it is present in the first byte of every response and survives every empty state,
    the stale-cache hard-block, and every HTMX swap (UI-SPEC E1 loading/error).
 
-   Gray, not red and not amber: a red banner reads as an error and gets dismissed mentally after
+   CONDENSED, NOT HIDDEN (Broadcast redesign, owner decision O4, 2026-10-01). A native <details>:
+   the <summary> is always on screen and cannot be dismissed -- it names the banner and gives the
+   one-line version -- and "Why?" opens the full original paragraph, which is in the HTML whether
+   or not the reader opens it. Expanding is the only interaction; nothing takes it off the page.
+
+   Grey, not red and not amber: a red banner reads as an error and gets dismissed mentally after
    two visits; this statement is permanent, not an alert. #}
-<aside role="note" class="bg-gray-50 border-l-4 border-gray-500 p-4 mb-6">
-  <p class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Not wagering advice</p>
-  <p class="text-sm text-gray-700 max-w-2xl mt-2">This is a personal research tool. No wager is placed and no currency amount is shown -- stakes are expressed in units, where 1 unit = 1% of a notional bankroll. The deployed models have not demonstrated a positive edge against the closing market: the win-probability model's pooled closing-line value is negative, and the spread and totals models were retained after failing their most recent re-fit gate. A bet appearing on this list means it cleared a pre-registered expected-value floor, not that it is expected to win.</p>
+<aside role="note" class="mb-4">
+  <details class="honesty-note">
+    <summary><span class="honesty-note-key">Not wagering advice</span><span class="honesty-note-line">Research tool: no wager is placed, stakes are units, and no edge over the closing market has been demonstrated.</span><span class="honesty-note-why">Why?</span></summary>
+    <p class="honesty-note-body">This is a personal research tool. No wager is placed and no currency amount is shown -- stakes are expressed in units, where 1 unit = 1% of a notional bankroll. The deployed models have not demonstrated a positive edge against the closing market: the win-probability model's pooled closing-line value is negative, and the spread and totals models were retained after failing their most recent re-fit gate. A bet appearing on this list means it cleared a pre-registered expected-value floor, not that it is expected to win.</p>
+  </details>
 </aside>

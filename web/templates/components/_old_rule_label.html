@@ -13,19 +13,25 @@
    mistake invisible, which is exactly the failure R16 exists to prevent. A block that renders no
    numbers passes a KNOWN-EMPTY scope, which does not label.
 
-   MONOCHROME, for the reason the evidence-class badge and _ev_band_badge.html are: on this site hue
-   carries outcome meaning (green a won bet, red a lost one, amber the confidence badge), and a
-   coloured label would borrow that meaning for a statement about evidence. A white card with a
-   full gray outline sets it apart from the not-advice banner (gray fill, heavy left rule), so the
-   two read as different notes. Every class here must already exist in tailwind-compiled.css;
-   tests/unit/test_page_labels.py checks that.
+   CONDENSED, NOT HIDDEN (Broadcast redesign, owner decision O4, 2026-10-01). The label is a native
+   <details>: its <summary> -- always on screen, never dismissable -- calls these old-rule numbers,
+   says they are not evidence and carries the 2026-09-15 date; the full sentence is the body, in
+   the HTML whether or not the reader opens it. The data-old-rule-label marker stays on the outer
+   <aside>, once per label, because that is what the label tests count.
+
+   MONOCHROME, for the reason the evidence-class badge and _ev_band_badge.html are: on this site
+   hue carries outcome meaning (green a won bet, red a lost one), and a coloured label would borrow
+   that meaning for a statement about evidence. Every class here must already exist in
+   tailwind-compiled.css as a plain, non-variant class; tests/unit/test_page_labels.py checks that.
 
    The sentence "Built under the old rule on inputs later found defective; not evidence." is the
    same sentence the repo-root readouts carry in their dated addendum. Keep the two identical. #}
 {% set _old_rule_scope_unknown = scope is not defined or scope is none or scope.contains_old_rule_results is not defined %}
 {% if _old_rule_scope_unknown or scope.contains_old_rule_results %}
-<aside role="note" data-old-rule-label class="bg-white border border-gray-300 rounded-md px-4 py-3 mb-6">
-  <p class="text-xs font-semibold text-gray-900 uppercase tracking-wide">Old-rule numbers -- labelled 2026-09-15</p>
-  <p class="text-sm text-gray-700 max-w-3xl mt-1">Built under the old rule on inputs later found defective; not evidence. These figures come from before the September 2026 fix to what the models were fed, and they stay here for the record only. Only the 2026 season, recorded live with each game locked at 6 PM Eastern the day before kickoff, counts as evidence.</p>
+<aside role="note" data-old-rule-label class="mb-4">
+  <details class="honesty-note">
+    <summary><span class="honesty-note-key">Old-rule numbers</span><span class="honesty-note-line">Labelled 2026-09-15: built on inputs later found defective -- not evidence.</span><span class="honesty-note-why">Why?</span></summary>
+    <p class="honesty-note-body">Built under the old rule on inputs later found defective; not evidence. These figures come from before the September 2026 fix to what the models were fed, and they stay here for the record only. Only the 2026 season, recorded live with each game locked at 6 PM Eastern the day before kickoff, counts as evidence.</p>
+  </details>
 </aside>
 {% endif %}

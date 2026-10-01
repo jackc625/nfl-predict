@@ -13,7 +13,9 @@
 
    MONOCHROME, for the reason _ev_band_badge.html is monochrome: hue on /bets carries meaning only
    inside the tracker's realized outcomes, where green means a bet WON and red means it LOST. A
-   coloured honesty label would borrow that meaning for a statement about evidence class.
+   coloured honesty label would borrow that meaning for a statement about evidence class. Fill
+   WEIGHT carries the distinction instead: the clean-holdout class keeps the strong chip it had
+   before the Broadcast redesign (it was the heaviest grey), and the other two are the plain chip.
 
    NO whitespace-nowrap: the longest label is 30 characters and the badge sits on a block header
    where it must WRAP rather than clip (UI-SPEC E10 overflow). Inside a table cell the cell's own
@@ -35,9 +37,9 @@
      }
    } %}
 {% set _VALIDATION_CLASSES = {
-     "contaminated": "bg-gray-100 text-gray-700 border border-gray-300",
-     "clean_holdout": "bg-gray-200 text-gray-900 border border-gray-300",
-     "forward_realized": "bg-white text-gray-700 border border-gray-300"
+     "contaminated": "evidence-chip",
+     "clean_holdout": "evidence-chip evidence-chip-strong",
+     "forward_realized": "evidence-chip"
    } %}
 {% set _VALIDATION_DESCRIPTIONS = {
      "contaminated": "measured on seasons already used to build and tune the models, so the figure is optimistic by construction",
@@ -46,6 +48,6 @@
    } %}
 {% set _provenance_label = _PROVENANCE_LABELS.get(provenance, provenance) %}
 {% set _validation_label = _VALIDATION_LABELS.get(provenance, {}).get(validation_type, validation_type) %}
-{% set _validation_classes = _VALIDATION_CLASSES.get(validation_type, "bg-white text-gray-700 border border-gray-300") %}
+{% set _validation_classes = _VALIDATION_CLASSES.get(validation_type, "evidence-chip") %}
 {% set _validation_description = _VALIDATION_DESCRIPTIONS.get(validation_type, "an evidence class with no description in the displayed vocabulary; the raw code is shown") %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold {{ _validation_classes }}" data-provenance="{{ provenance }}" data-validation-type="{{ validation_type }}" title="{{ _provenance_label }}: {{ _validation_description }}">{{ _validation_label }}<span class="sr-only"> -- {{ _provenance_label }}, {{ _validation_description }}</span></span>
+<span class="{{ _validation_classes }}" data-provenance="{{ provenance }}" data-validation-type="{{ validation_type }}" title="{{ _provenance_label }}: {{ _validation_description }}">{{ _validation_label }}<span class="sr-only"> -- {{ _provenance_label }}, {{ _validation_description }}</span></span>

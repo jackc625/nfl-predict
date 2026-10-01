@@ -1,14 +1,18 @@
-{# Game status badge. Pass: status ("scheduled"/"completed"/"postponed"/etc.) #}
+{# Game status badge. Pass: status ("scheduled"/"completed"/"postponed"/etc.)
+
+   Neutral on purpose (Broadcast redesign): a game's status is not a result, so it never borrows
+   the green/red outcome hues. Only a game in progress gets the accent, because it is live. #}
+{% set _status_base = "inline-flex items-center px-2 py-0.5 font-display text-xs font-bold uppercase tracking-wider" %}
 {% if status == "completed" %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800">Completed</span>
+<span class="{{ _status_base }} bg-panel-2 text-fg">Completed</span>
 {% elif status == "scheduled" %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">Scheduled</span>
+<span class="{{ _status_base }} border border-line text-muted">Scheduled</span>
 {% elif status == "in_progress" %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800">In Progress</span>
+<span class="{{ _status_base }} bg-accent text-ink">In Progress</span>
 {% elif status == "postponed" %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-600">Postponed</span>
+<span class="{{ _status_base }} border border-line text-muted">Postponed</span>
 {% elif status == "cancelled" %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">Cancelled</span>
+<span class="{{ _status_base }} border border-line text-dim">Cancelled</span>
 {% else %}
-<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">{{ status|title }}</span>
+<span class="{{ _status_base }} border border-line text-muted">{{ status|title }}</span>
 {% endif %}
