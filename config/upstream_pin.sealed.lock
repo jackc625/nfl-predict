@@ -3,7 +3,7 @@
   "format_note": "JSON, not TOML, and deliberately so. json.dumps(indent=2) is a standard-library writer that already produces this repository's committed-record style -- it is exactly how scripts/pin_upstream_snapshot.py writes config/upstream_pin.json. The config/*.toml verdict records exist only because the standard library has NO TOML writer, so the hand-pasted block IS the discipline there (backtest/group_gate.py::render_verdict_toml). The .lock extension names the CONTRACT -- this file locks the sealed zone -- not the serialisation.",
   "sealed_through_season": 2025,
   "generated_from": "config/upstream_pin.json",
-  "generated_at_utc": "2026-09-11T04:03:11.283848+00:00",
+  "generated_at_utc": "2026-10-01T00:40:28.171740+00:00",
   "datasets": {
     "depth_charts": {
       "2002": {
@@ -603,17 +603,17 @@
         "acknowledgement": null
       },
       "2024": {
-        "sha256": "9c5279ba4c762b37f423597c8eb4eb0ca77791dc49fcaaebc213eadf2e9704e6",
+        "sha256": "245867dce43d759a471351e34d9aeaf2cdf146cfce4f2c45ccbf79ae19f7ccec",
         "rows": 285,
-        "bytes": 50172,
+        "bytes": 50195,
         "upstream_updated_at": null,
         "upstream_size": null,
         "acknowledgement": null
       },
       "2025": {
-        "sha256": "b15e2ecffcd34a161d5337b549eaea2d91bad989890a981e7ed3dac9de0b5f00",
+        "sha256": "07de247b9b07713e5064d6510bb70dcb03bb8d2d87182f3cfdccbcc5e83345e2",
         "rows": 285,
-        "bytes": 51624,
+        "bytes": 51614,
         "upstream_updated_at": null,
         "upstream_size": null,
         "acknowledgement": null
