@@ -86,8 +86,9 @@ GOLD_GENERATION_METADATA_KEY = "trained_on_real_weather_generation"
 #   * the trainer opts into `use_phase332_tuning()`: the pre-registered budget, a
 #     RandomSampler baseline over the same objective and budget, and adoption only on a
 #     margin cleared on a season neither arm saw;
-#   * the feature-group exclusion is DERIVED from the ratified verdict rather than typed,
-#     and the verdict's own digest is recorded beside it;
+#   * the verdict's own digest is recorded beside the exclusion even when the list was
+#     typed (the exclusion itself is DERIVED from the verdict on EVERY path when
+#     --exclude-groups is omitted -- see resolve_exclusion);
 #   * `--gold-generation` becomes REQUIRED. A re-fit whose artifact cannot name the gold it
 #     was trained on is a re-fit nobody can reproduce, and this module must not import the
 #     tests package to measure it for itself (see GOLD_GENERATION_METADATA_KEY).
@@ -95,8 +96,11 @@ GOLD_GENERATION_METADATA_KEY = "trained_on_real_weather_generation"
 
 #: The ratified Stage-1 feature-group verdict, read verbatim -- the same file and the same
 #: key `scripts/promote_models.py` reads, so what the rule decided and what gets trained
-#: cannot diverge by a typo.
-GROUP_GATE_VERDICT_PATH = Path("config/group_gate_verdict.toml")
+#: cannot diverge by a typo. Anchored to the REPOSITORY, exactly as promote_models anchors
+#: it, so what gets trained never depends on the directory the operator stood in.
+GROUP_GATE_VERDICT_PATH = (
+    Path(__file__).resolve().parent.parent / "config" / "group_gate_verdict.toml"
+)
 
 #: Metadata keys the pre-registered re-fit writes into `metadata.json`. They live there and
 #: NOT in the tuning sidecar because they describe the TRAINING RUN -- what data, which
@@ -135,16 +139,19 @@ def verdict_exclusion() -> tuple[tuple[str, ...], str]:
     """
     if not GROUP_GATE_VERDICT_PATH.exists():
         msg = (
-            f"no ratified Stage-1 verdict at '{GROUP_GATE_VERDICT_PATH}'. The "
-            "pre-registered re-fit refuses to train on EVERY feature group, including any "
-            "the frozen rule dropped: that would silently reverse a ratified decision. "
-            "Restore the verdict, or pass --exclude-groups explicitly to state the "
-            "exclusion deliberately."
+            f"no ratified Stage-1 verdict at '{GROUP_GATE_VERDICT_PATH}'. Training "
+            "refuses to run on EVERY feature group, including any the frozen rule "
+            "dropped: that would silently reverse a ratified decision. Restore the "
+            "verdict, or pass --exclude-groups explicitly (with a provenance other than "
+            "'verdict') to state the exclusion deliberately."
         )
         raise FileNotFoundError(msg)
     with GROUP_GATE_VERDICT_PATH.open("rb") as handle:
         verdict = tomllib.load(handle)
-    groups = tuple(str(group) for group in verdict.get("excluded_groups", []))
+    if "excluded_groups" not in verdict:
+        msg = f"'{GROUP_GATE_VERDICT_PATH}' has no 'excluded_groups' key; refusing."
+        raise KeyError(msg)
+    groups = tuple(str(group) for group in verdict["excluded_groups"])
     return groups, _normalized_sha256(GROUP_GATE_VERDICT_PATH)
 
 
@@ -202,6 +209,50 @@ def parse_exclude_groups(raw: str) -> tuple[str, ...]:
         The parsed group names, empty when nothing was requested.
     """
     return tuple(g.strip() for g in raw.split(",") if g.strip())
+
+
+def resolve_exclusion(
+    raw: str | None, provenance: str
+) -> tuple[tuple[str, ...], str, str | None]:
+    """Resolve the feature-group exclusion, its provenance and the verdict digest.
+
+    The ONE resolution every training run goes through, tuned or not:
+
+      * ``--exclude-groups`` omitted (``raw is None``): the owner's ratified verdict,
+        provenance ``"verdict"``. A missing or unreadable verdict REFUSES (see
+        :func:`verdict_exclusion`) rather than training on every group.
+      * an explicit list with provenance ``"verdict"``: it must equal the verdict file's
+        list, otherwise REFUSE -- a typed list may not claim the verdict's authority.
+      * an explicit list with any other provenance: taken as typed (``""`` states
+        "exclude nothing" deliberately), no digest.
+
+    Args:
+        raw: The raw ``--exclude-groups`` value, or None when the flag was not given.
+        provenance: The ``--exclude-groups-provenance`` value.
+
+    Returns:
+        ``(groups, provenance, verdict_digest_or_None)``.
+
+    Raises:
+        FileNotFoundError: The verdict is needed and absent.
+        ValueError: A typed list claims provenance ``"verdict"`` but differs from it.
+    """
+    if raw is None:
+        groups, digest = verdict_exclusion()
+        return groups, "verdict", digest
+    groups = parse_exclude_groups(raw)
+    if provenance != "verdict":
+        return groups, provenance, None
+    verdict_groups, digest = verdict_exclusion()
+    if sorted(groups) != sorted(verdict_groups):
+        msg = (
+            f"--exclude-groups {list(groups)} is labelled provenance 'verdict' but the "
+            f"ratified verdict at '{GROUP_GATE_VERDICT_PATH}' excludes "
+            f"{list(verdict_groups)}. Refusing: omit --exclude-groups to use the verdict, "
+            "or label a different list 'override'."
+        )
+        raise ValueError(msg)
+    return groups, provenance, digest
 
 
 def compute_market_baseline(
@@ -816,11 +867,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--exclude-groups",
         type=str,
-        default="",
+        default=None,
         help=(
             "Comma-separated feature GROUPS to drop from the frame before training "
             f"(D30-01). Registered vocabulary: {', '.join(ALL_REGISTERED_GROUPS)}. "
-            "The default excludes nothing and reproduces today's behaviour exactly. "
+            "OMITTED, the groups the owner's ratified verdict "
+            "(config/group_gate_verdict.toml) rules out are excluded, and a missing "
+            "verdict refuses; pass '' to state 'exclude nothing' deliberately. "
             "An unregistered name is a hard failure, never a silent no-op. A registered "
             "group with zero columns present IS a legal no-op. A single scalar token, "
             "matching the --config-*-seasons convention (deliberately not nargs='+', "
@@ -880,10 +933,20 @@ def main() -> None:
         )
 
     # D30-01: the Stage-2 feature-group exclusion, applied IN MEMORY between the parquet read
-    # and train_target. Empty by default, which is a true no-op (see parse_exclude_groups).
-    exclude_groups = parse_exclude_groups(args.exclude_groups)
-    exclude_groups_provenance = args.exclude_groups_provenance
-    group_verdict_digest: str | None = None
+    # and train_target. One resolution for every path (see resolve_exclusion).
+    exclude_groups, exclude_groups_provenance, group_verdict_digest = resolve_exclusion(
+        args.exclude_groups, args.exclude_groups_provenance
+    )
+    if args.exclude_groups is None:
+        print(
+            f"  Exclusion list DERIVED from the ratified Stage-1 verdict "
+            f"({GROUP_GATE_VERDICT_PATH}): {list(exclude_groups)}"
+        )
+    elif exclude_groups_provenance != "verdict":
+        print(
+            "  [OVERRIDE] --exclude-groups was supplied on the COMMAND LINE; this "
+            "list is NOT the ratified Stage-1 verdict."
+        )
     thread_limit: int | None = args.thread_limit
 
     if args.tune:
@@ -897,21 +960,9 @@ def main() -> None:
                 "() and pass it; this module deliberately does not import the tests "
                 "package to measure it for itself."
             )
-        if not exclude_groups:
-            # DERIVED from the ratified verdict, never typed. An explicit
-            # --exclude-groups still wins and keeps its 'override' provenance.
-            exclude_groups, group_verdict_digest = verdict_exclusion()
-            exclude_groups_provenance = "verdict"
-            print(
-                f"  Exclusion list DERIVED from the ratified Stage-1 verdict "
-                f"({GROUP_GATE_VERDICT_PATH}): {list(exclude_groups)}"
-            )
-        else:
+        if group_verdict_digest is None:
+            # A typed list still records WHICH verdict was current beside it.
             _, group_verdict_digest = verdict_exclusion()
-            print(
-                "  [OVERRIDE] --exclude-groups was supplied on the COMMAND LINE; this "
-                "list is NOT the ratified Stage-1 verdict."
-            )
         if thread_limit is None:
             thread_limit = PINNED_THREAD_COUNT
 

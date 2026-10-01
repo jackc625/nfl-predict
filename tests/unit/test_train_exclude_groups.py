@@ -41,7 +41,7 @@ from backtest.signal_lift import (
     group_columns,
     select_group_columns,
 )
-from models.train import build_parser, parse_exclude_groups
+from models.train import build_parser, parse_exclude_groups, resolve_exclusion
 
 GOLD_DIR = Path(__file__).resolve().parents[2] / "data" / "gold"
 
@@ -143,21 +143,41 @@ def test_empty_default_parses_to_empty_tuple() -> None:
     )
 
 
-def test_default_parser_value_is_the_empty_string() -> None:
-    """``--exclude-groups`` defaults to the empty string, so omitting it excludes nothing.
+def test_omitting_the_flag_excludes_the_owners_verdict_groups() -> None:
+    """Omitting ``--exclude-groups`` trains WITHOUT the groups the ratified verdict rules out.
 
-    Remediation if this goes red: the argparse default was changed; set it back to "" so a
-    bare ``python -m models.train`` reproduces today's feature set exactly (D30-01).
+    It used to default to "" and so trained on every ruled-out column unless someone typed
+    the list. Remediation if this goes red: keep the parser default None and route it
+    through models.train.resolve_exclusion.
     """
+    import tomllib
+
+    from models.train import GROUP_GATE_VERDICT_PATH
+
     args = build_parser().parse_args([])
-    assert args.exclude_groups == "", (
-        f"--exclude-groups default is {args.exclude_groups!r}, expected ''. A non-empty "
-        "default silently changes what every existing caller trains on."
+    assert args.exclude_groups is None
+    groups, provenance, digest = resolve_exclusion(
+        args.exclude_groups, args.exclude_groups_provenance
     )
-    assert parse_exclude_groups(args.exclude_groups) == (), (
-        "The parser default does not round-trip to an empty exclusion tuple; the default "
-        "invocation would no longer reproduce today's behaviour."
+    with GROUP_GATE_VERDICT_PATH.open("rb") as handle:
+        expected = tuple(tomllib.load(handle)["excluded_groups"])
+    assert (groups, provenance) == (expected, "verdict")
+    assert digest
+
+
+def test_a_typed_verdict_must_match_and_a_missing_verdict_refuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A typed list labelled 'verdict' must equal the file; no file refuses, never trains all."""
+    import models.train as train_module
+
+    with pytest.raises(ValueError, match="provenance 'verdict'"):
+        resolve_exclusion("injury", "verdict")
+    monkeypatch.setattr(
+        train_module, "GROUP_GATE_VERDICT_PATH", tmp_path / "absent.toml"
     )
+    with pytest.raises(FileNotFoundError):
+        resolve_exclusion(None, "none")
 
 
 def test_comma_separated_names_parse_in_order() -> None:
