@@ -1,0 +1,37 @@
+{# The pick a bet names, in the words and the sign a sportsbook would use. ONE source, shared by
+   pages/bets.html and the This Week headliners (components/_bet_headliners.html), so the two
+   pages cannot word -- or sign -- the same bet differently. Moved here VERBATIM from
+   pages/bets.html (Broadcast redesign, Task 8); nothing about the rule changed.
+
+   A spread bet's line FROM THE PICKED SIDE, the way a sportsbook quotes it (33.2 review C2
+   CR-03). The stored ``line`` is the HOME MARGIN, positive when the home team is favoured
+   (DEF-31-01), so the home side's own line is its negation and the away side's is the margin as
+   stored: 2025_W01_CIN@CLE home_cover at -5.5 is CLE +5.5, and 2025_W01_MIA@IND home_cover at
+   +1.5 is IND -1.5. Printing the margin raw put the opposite sign on every home pick.
+
+   Every macro here is whitespace-trimmed so a call inside a table cell renders exactly the text
+   the inline code it replaced rendered. #}
+
+{% macro side_line(bet, fmt) -%}
+  {%- set value = -bet.line if bet.bet_side == "home_cover" else bet.line -%}
+  {%- if value == 0 -%}PK{%- else -%}{{ fmt|format(value) }}{%- endif -%}
+{%- endmacro %}
+
+{# The team a bet backs, never the raw side code. The two teams come from the game id's
+   AWAY@HOME matchup; an id without one falls back to the words. #}
+{% macro picked_team(bet) -%}
+  {%- set matchup = bet.game_id.split('_')[-1] -%}
+  {%- set away_team, home_team = matchup.split('@') if '@' in matchup else ("Away", "Home") -%}
+  {{- home_team if bet.bet_side in ("home", "home_cover") else away_team -}}
+{%- endmacro %}
+
+{# "Under 47.5", "CLE +5.5", "KC": the whole pick as one phrase. #}
+{% macro pick_label(bet) -%}
+  {%- if bet.target == "ou" -%}
+    {{ bet.bet_side|capitalize }} {{ "%g"|format(bet.line) if bet.line is not none else "" }}
+  {%- elif bet.target == "ats" and bet.line is not none -%}
+    {{ picked_team(bet) }} {{ side_line(bet, "%+g") }}
+  {%- else -%}
+    {{ picked_team(bet) }}
+  {%- endif -%}
+{%- endmacro %}

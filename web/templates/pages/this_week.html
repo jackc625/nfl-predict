@@ -1,38 +1,78 @@
 {% extends "base.html" %}
 {% block title %}This Week's Predictions{% endblock %}
 {% block content %}
-<div class="mb-6">
-  <h1 class="text-xl font-semibold text-gray-900 mb-1">This Week's Predictions</h1>
-  <p class="text-sm text-gray-500">NFL game predictions with win probability, spread, and total forecasts</p>
-</div>
+{# This Week (Broadcast redesign, spec 7.1, mockup 02: layout L3 with L1's TV-window tags): the
+   week's bets first, then every game grouped by TV window.
 
-{# Controls toolbar: week selector, sort, export #}
-<div class="flex flex-wrap items-center justify-between gap-4 mb-6">
-  <div class="flex flex-wrap items-center gap-4">
+   The CONTROLS sit outside #game-grid, so a week, season or sort change swaps only the content
+   below them. The HEADING sits inside it, so it can never name a week other than the one the
+   grid shows -- a "WEEK 3" heading outside the swap target would go stale on the first change. #}
+<div class="mb-4 flex flex-wrap items-end justify-between gap-4">
+  <p class="label">This Week</p>
+  <div class="flex flex-wrap items-center gap-3">
     {% include "components/_week_selector.html" %}
     {% include "components/_sort_controls.html" %}
+    {% with csv_url="/api/export/csv?season=" ~ (current_season or '') ~ "&week=" ~ (current_week or ''),
+            json_url="/api/export/json?season=" ~ (current_season or '') ~ "&week=" ~ (current_week or ''),
+            season_csv_url="/api/export/csv?season=" ~ (current_season or ''),
+            season_json_url="/api/export/json?season=" ~ (current_season or '') %}
+      {% include "components/_export_buttons.html" %}
+    {% endwith %}
   </div>
-  {% with csv_url="/api/export/csv?season=" ~ (current_season or '') ~ "&week=" ~ (current_week or ''),
-          json_url="/api/export/json?season=" ~ (current_season or '') ~ "&week=" ~ (current_week or ''),
-          season_csv_url="/api/export/csv?season=" ~ (current_season or ''),
-          season_json_url="/api/export/json?season=" ~ (current_season or '') %}
-    {% include "components/_export_buttons.html" %}
-  {% endwith %}
 </div>
+
+{# The page now leads with bets, so it carries the same condensed not-advice note /bets does:
+   one line, with the full original text behind "Why?". #}
+{% include "components/_not_advice_banner.html" %}
 
 {# Game grid -- HTMX swap target #}
 <div id="game-grid">
   {% block game_grid %}
+  {# Imported INSIDE the block: jinja2-fragments renders this block alone for /fragments/games and
+     for an HX-Request to /, and a block rendered alone never runs the template's top-level
+     statements, so a top-level import would be undefined in every fragment. #}
+  {% import "components/_broadcast.html" as bc %}
+  {% set SORTED_BY = {"confidence": "sorted by confidence", "edge": "sorted by edge"} %}
+  <div class="mb-5">
+    <h1 class="display text-5xl leading-none text-fg">{% if current_week %}Week {{ current_week }}{% else %}This Week{% endif %}</h1>
+    <p class="mt-2 text-sm text-muted">{% if current_season %}{{ current_season }} season &middot; {% endif %}{{ games|length }} game{{ "" if games|length == 1 else "s" }}{% if headliner is defined and headliner.state == "bets" %} &middot; <span class="font-semibold text-accent">{{ headliner.bets|length }} bet{{ "" if headliner.bets|length == 1 else "s" }}</span> on the list{% endif %} &middot; each game locks at 6 PM ET the day before its kickoff</p>
+  </div>
+
   {# Old-rule label for the selected week (R16 / D33.2-07). Inside game_grid so an HTMX swap
-     re-renders it for the newly selected season rather than leaving a stale one behind. #}
+     re-renders it for the newly selected season rather than leaving a stale one behind. Its scope
+     covers the headliner bets too (pages.this_week_page), which sit in this same block. #}
   {% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
   {% include "components/_week_summary.html" %}
+
+  {% if headliner is defined and headliner %}
+    {% include "components/_bet_headliners.html" %}
+  {% endif %}
+
   {% if games %}
-  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
-    {% for game in games %}
-      {% include "components/_game_card.html" %}
-    {% endfor %}
-  </div>
+    {% if slate_groups %}
+      {# A time order, cut into TV windows (api.presentation.group_games_by_window). #}
+      {% for group in slate_groups %}
+      <section class="mb-6" data-window="{{ group.label }}">
+        {{ bc.section_head(group.label, meta=(group.games|length) ~ (" game" if group.games|length == 1 else " games")) }}
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {% for game in group.games %}
+            {% include "components/_game_card.html" %}
+          {% endfor %}
+        </div>
+      </section>
+      {% endfor %}
+    {% else %}
+      {# A confidence or edge order: one grid in that order, because time groups would
+         contradict the order the reader asked for. #}
+      <section class="mb-6">
+        {{ bc.section_head("Full slate", meta=SORTED_BY.get(current_sort)) }}
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {% for game in games %}
+            {% include "components/_game_card.html" %}
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
   {% else %}
     {% with heading="No predictions available",
             body="Predictions for this week have not been generated yet. Run the prediction pipeline to see this week's games.",

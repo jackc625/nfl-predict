@@ -443,3 +443,157 @@ def test_the_fragment_without_a_season_resolves_the_same_headliner_as_the_page(
     assert seen["page"]["headliner"]["state"] == "bets"
     assert seen["fragment"]["headliner"] == seen["page"]["headliner"]
     assert seen["fragment"]["games"][0]["bet_targets"] == ["ou"]
+
+
+# ---------------------------------------------------------------------------
+# The rendered page: headliners first, then the slate by TV window (Task 8)
+# ---------------------------------------------------------------------------
+
+_WEEK_GAMES = [
+    _prediction(_GAME, datetime(2023, 9, 7, 20, 20)),  # Thursday night
+    _prediction(_SECOND_GAME, datetime(2023, 9, 10, 13, 0)),  # Sunday 1:00
+]
+
+
+def _insert_predictions(db_path: Path, rows: list[dict[str, Any]]) -> None:
+    """Add prediction rows to a cache built by _build_state_cache, so / has games to show."""
+    conn = duckdb.connect(str(db_path))
+    try:
+        columns = ", ".join(PREDICTIONS_TABLE_COLUMNS)
+        placeholders = ", ".join("?" for _ in PREDICTIONS_TABLE_COLUMNS)
+        conn.executemany(
+            f"INSERT INTO predictions ({columns}) VALUES ({placeholders})",
+            [[row[c] for c in PREDICTIONS_TABLE_COLUMNS] for row in rows],
+        )
+    finally:
+        conn.close()
+
+
+def _page(tmp_path: Path, state: str, path: str, *, name: str = "page") -> str:
+    """Build a fresh cache for *state*, serve it, and return the body of GET *path*.
+
+    A test that renders twice passes a distinct *name*: building onto a file that already holds
+    the week's predictions would insert the same game ids again and hit the predictions table's
+    primary key.
+    """
+    db_path = tmp_path / f"{name}_{state}.duckdb"
+    _build_state_cache(db_path, state)
+    _insert_predictions(db_path, _WEEK_GAMES)
+    with _serving(db_path) as (client, _conn):
+        response = client.get(path)
+    assert response.status_code == 200
+    return response.text
+
+
+def test_this_week_leads_with_the_weeks_bets(tmp_path: Path) -> None:
+    html = _page(tmp_path, "bets", f"/?season={_SEASON}&week={_WEEK}")
+
+    assert 'data-headliner-state="bets"' in html
+    headliners = html[html.index('id="headliners"') : html.index("data-window=")]
+    assert f'data-headliner-bet="{_GAME}:ou"' in headliners
+    assert "Under 47.5" in headliners, "the pick is not worded the way /bets words it"
+    assert "+6.25%" in headliners and "1.50u" in headliners
+    assert html.index('id="headliners"') < html.index("game-card"), (
+        "the bets must come before the slate"
+    )
+    assert html.count("data-on-bet-list") == 1, (
+        "only the bet's own game carries the flag"
+    )
+
+
+@pytest.mark.parametrize("state", [s for s in HEADLINER_STATES if s != "bets"])
+def test_every_other_state_is_one_line_pointing_to_bets(
+    tmp_path: Path, state: str
+) -> None:
+    html = _page(tmp_path, state, f"/?season={_SEASON}&week={_WEEK}")
+
+    assert f'data-headliner-state="{state}"' in html
+    assert "data-headliner-note" in html
+    assert "data-headliner-bet" not in html
+    assert 'href="/bets' in html[html.index('id="headliners"') :]
+
+
+def test_a_week_change_re_renders_the_headliners_with_the_slate(tmp_path: Path) -> None:
+    html = _page(tmp_path, "bets", f"/fragments/games?season={_SEASON}&week={_WEEK}")
+
+    assert 'data-headliner-state="bets"' in html
+    assert "<nav" not in html and "<html" not in html
+
+
+def test_the_default_sort_groups_by_tv_window_and_a_non_time_sort_does_not(
+    tmp_path: Path,
+) -> None:
+    grouped = _page(
+        tmp_path, "bets", f"/?season={_SEASON}&week={_WEEK}", name="grouped"
+    )
+    assert grouped.count("data-window=") == 2, (
+        "Thursday night and Sunday 1:00 are two windows"
+    )
+
+    by_edge = _page(
+        tmp_path, "bets", f"/?season={_SEASON}&week={_WEEK}&sort=edge", name="by_edge"
+    )
+    assert "data-window=" not in by_edge
+    assert by_edge.count("game-card") == grouped.count("game-card")
+
+
+def test_the_page_keeps_one_old_rule_label_and_the_not_advice_note(
+    tmp_path: Path,
+) -> None:
+    """2023 is an old-rule season: the headliners sit in the game_grid block's ONE label."""
+    html = _page(tmp_path, "bets", f"/?season={_SEASON}&week={_WEEK}")
+
+    assert html.count("data-old-rule-label") == 1
+    assert "Not wagering advice" in html
+
+
+def test_a_game_with_no_kickoff_time_renders_under_its_own_tag() -> None:
+    """Review Focus 3: a game whose kickoff is unknown still renders, under "Time TBD"."""
+    from api.dependencies import templates
+    from api.presentation import decorate_game, group_games_by_window
+
+    game = {**decorate_game(_prediction(_GAME, None)), "bet_targets": []}
+    context = {
+        "request": _StubRequest(),
+        "cache_meta": {},
+        "games": [game],
+        "slate_groups": group_games_by_window([game]),
+        "available_weeks": [{"season": _SEASON, "week": _WEEK}],
+        "available_seasons": [_SEASON],
+        "current_week": _WEEK,
+        "current_season": _SEASON,
+        "current_sort": "time",
+        "current_path": "/",
+        "week_summary": {},
+        "old_rule_scope": DataService.old_rule_scope([]),
+    }
+    html = templates.env.get_template("pages/this_week.html").render(context)
+
+    assert 'data-window="Time TBD"' in html
+    assert html.count("game-card") == 1
+    assert "Time TBD" in html.split('data-window="Time TBD"', 1)[1]
+
+
+@pytest.mark.parametrize(
+    ("second_lock", "partial"),
+    [(_PAST_LOCK, True), (_FUTURE_LOCK, True), (None, False)],
+)
+def test_a_partly_built_week_says_so_and_points_to_bets(
+    tmp_path: Path, second_lock: datetime | None, partial: bool
+) -> None:
+    db_path = tmp_path / "partial_page.duckdb"
+    _build_state_cache(db_path, "bets")
+    if second_lock is not None:
+        _rebuild_freeze(db_path, {_GAME: _PAST_LOCK, _SECOND_GAME: second_lock})
+    _insert_predictions(db_path, _WEEK_GAMES)
+    with _serving(db_path) as (client, _conn):
+        html = client.get(f"/?season={_SEASON}&week={_WEEK}").text
+
+    headliners = html[html.index('id="headliners"') : html.index("data-window=")]
+    assert ("data-headliner-partial" in headliners) is partial
+    if partial:
+        line = headliners[headliners.index("data-headliner-partial") :]
+        assert (
+            "only partly built" in line
+            and 'href="/bets?season=2023&amp;week=1"' in line
+        )

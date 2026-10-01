@@ -77,13 +77,11 @@ def test_the_nav_marks_only_the_current_page_active(test_client: TestClient):
 
 
 def test_this_week_page_responsive_grid(test_client: TestClient):
-    """D-07: Grid uses responsive column classes."""
+    """D-07: Grid uses responsive column classes (Broadcast slate: 1, 2, 3, then 4 columns)."""
     response = test_client.get("/")
     assert response.status_code == 200
     html = response.text
-    assert "grid-cols-1" in html
-    assert "md:grid-cols-2" in html
-    assert "lg:grid-cols-3" in html
+    assert "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" in html
 
 
 def test_this_week_cards_carry_no_confidence_pill(test_client: TestClient):

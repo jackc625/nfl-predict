@@ -1,0 +1,65 @@
+{# The week's bets, first on This Week (Broadcast redesign, spec 7.1, mockup 02 layout L3).
+
+   Pass: headliner -- {"state", "bets", "season", "week", "partial"} from pages._build_headliner.
+   The state is NOT decided here: it is the render /bets makes for the same season and week, read
+   off the same context in pages/bets.html's own precedence, so the two pages cannot describe one
+   week two ways. Only the "bets" state draws cards; every other state is one line pointing to
+   /bets, where the full explanation lives. A "bets" week for which /bets itself shows a
+   missing-games notice or a pending line adds one line saying the list is only partly built.
+
+   Each card shows the bet's OWN stored numbers -- the pick, the stake in units, the EV and its
+   pre-registered EV band -- and nothing derived. No "edge": the only stored edge is the
+   prediction row's, measured against a different line than the bet's, so it would be a second
+   number that need not agree with the first. No hue: the EV band stays monochrome
+   (_ev_band_badge.html) for the reason it is monochrome on /bets, and the team-colour wash is
+   identity, not a signal. Rendered only through the app's environment (it reads the team_colors
+   global), never by the plain-Jinja card tests. #}
+{% import "components/_broadcast.html" as bc %}
+{% import "components/_bet_pick.html" as bp %}
+{% set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} %}
+{% set HEADLINER_NOTES = {
+  "none_cleared": "No bets cleared the floor this week. Every candidate that was evaluated, and why each was declined, is on Bets.",
+  "not_evaluated": "Not evaluated yet. Each game's list is built by the daily run the day before its kickoff, before its 6:00 PM Eastern lock.",
+  "blocked": "This week's list is missing for games past their lock. Bets names them and says how to rebuild it.",
+  "not_built": "The bet list has not been built in this cache yet. Bets says how to build it.",
+  "no_week": "There is no bet list for this week."
+} %}
+{% set bets_url = "/bets?season=" ~ (headliner.season if headliner.season is not none else "") ~ "&week=" ~ (headliner.week if headliner.week is not none else "") %}
+<section id="headliners" class="mb-8" data-headliner-state="{{ headliner.state }}">
+  {{ bc.section_head("This week's bets") }}
+  {% if headliner.state == "bets" %}
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+    {% for bet in headliner.bets %}
+    {%- set picked = bp.picked_team(bet)|trim -%}
+    {%- set drawn = (bet.game.home_team if bet.game else picked) if bet.target == "ou" else picked -%}
+    {%- set colors = team_colors(drawn) -%}
+    <article class="panel relative overflow-hidden border-t-[3px] border-accent" style="background-image: linear-gradient(135deg, color-mix(in srgb, {{ colors.bg }} 35%, transparent) 0%, transparent 55%);" data-headliner-bet="{{ bet.game_id }}:{{ bet.target }}">
+      <a href="/games/{{ bet.game_id }}" class="block">
+        <p class="label text-[#C4CAD8]">{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }}{% if bet.game %} &middot; {{ bet.game.kickoff_label }}{% endif %}</p>
+        <p class="label mt-1">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</p>
+        <p class="display text-4xl leading-none text-accent">{{ bp.pick_label(bet) }}</p>
+        {# stake_units and per_bet_ev are stored by the selector; the x100 is a unit render
+           (fraction -> percent), the same one /bets applies under its "EV %" header (UIAP-01). #}
+        <p class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+          <span>Stake <span class="num text-fg">{{ "%.2f"|format(bet.stake_units) }}u</span></span>
+          <span>EV <span class="num text-fg">{{ "%+.2f"|format(bet.per_bet_ev * 100) }}%</span></span>
+          {% with band=bet.ev_tier %}{% include "components/_ev_band_badge.html" %}{% endwith %}
+        </p>
+        <span aria-hidden="true" class="display pointer-events-none absolute -right-2 -bottom-6 text-8xl text-white/5">{{ drawn }}</span>
+      </a>
+    </article>
+    {% endfor %}
+  </div>
+  {% if headliner.partial %}
+  <p class="mt-2 text-xs text-muted" data-headliner-partial>This week's list is only partly built: some games have no list yet or are still pending. <a href="{{ bets_url }}" class="font-semibold text-accent hover:underline">See Bets for which.</a></p>
+  {% endif %}
+  <p class="mt-2 text-right text-xs">
+    <a href="{{ bets_url }}" class="font-semibold text-accent hover:underline">Full list, every declined candidate and the record on Bets &rsaquo;</a>
+  </p>
+  {% else %}
+  <p class="panel text-sm text-fg" data-headliner-note>
+    {{ HEADLINER_NOTES.get(headliner.state, headliner.state) }}
+    <a href="{{ bets_url if headliner.state != 'no_week' else '/bets' }}" class="ml-1 whitespace-nowrap font-semibold text-accent hover:underline">Open Bets &rsaquo;</a>
+  </p>
+  {% endif %}
+</section>
