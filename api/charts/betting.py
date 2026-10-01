@@ -434,7 +434,7 @@ def generate_betting_roi_bucket(rows: Sequence[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 4. Per-type edge histograms (D-13 / D-14) — overlaid win/loss, pushes excluded
+# 4. Per-type edge histograms (D-13 / D-14) — side-by-side win/loss, pushes excluded
 # ---------------------------------------------------------------------------
 
 # Per-type honest x-axis titles (D-13: never share an axis across types).
@@ -446,12 +446,13 @@ _EDGE_AXIS_TITLE: dict[str, str] = {
 
 
 def _generate_edge_hist(rows: Sequence[dict], target: str) -> str:
-    """Render a per-type edge histogram, overlaid win (green) / loss (red).
+    """Render a per-type edge histogram, win (green) and loss (red) bars side by side.
 
     Two ``go.Histogram`` traces using identity checks (``outcome is True`` /
     ``is False``); pushes (``outcome is None``) are excluded (D-14). Rendered
-    with ``barmode="overlay"`` + ``opacity=0.7`` and an honest per-type x-axis
-    title (D-13 — no shared axis).
+    with ``barmode="group"`` (overlaid translucent green and red blend into an orange
+    that reads as a third outcome) and an honest per-type x-axis title (D-13 — no
+    shared axis).
     """
     type_rows = _bets_for(rows, target)
     if not type_rows:
@@ -466,7 +467,6 @@ def _generate_edge_hist(rows: Sequence[dict], target: str) -> str:
             x=won,
             name="Win",
             marker_color=WIN_COLOR,
-            opacity=0.7,
         ),
     )
     fig.add_trace(
@@ -474,12 +474,11 @@ def _generate_edge_hist(rows: Sequence[dict], target: str) -> str:
             x=lost,
             name="Loss",
             marker_color=LOSS_COLOR,
-            opacity=0.7,
         ),
     )
     fig.update_layout(
         title={"text": f"{target.upper()} Edge Distribution", "x": 0.5},
-        barmode="overlay",
+        barmode="group",
         xaxis_title=_EDGE_AXIS_TITLE.get(target, "Edge"),
         yaxis_title="Count",
         height=320,

@@ -379,3 +379,14 @@ def test_heatmap_is_monochrome_and_keeps_each_traces_pre_existing_direction(
     assert [t.get("reversescale", False) for t in heatmaps] == [True, True, False]
     for trace in heatmaps:
         assert trace["colorscale"] == theme.HEATMAP_SCALE
+
+
+def test_edge_histogram_bars_sit_side_by_side_and_keep_their_outcome_colours(
+    charts: dict[str, str],
+) -> None:
+    html = charts["betting_edge_hist_ats"]
+    # Overlaid translucent green and red blend into an orange that reads as a third outcome.
+    assert _layout(html)["barmode"] == "group"
+    by_name = {t["name"]: t for t in _data(html)}
+    assert by_name["Win"]["marker"]["color"] == theme.WIN_COLOR
+    assert by_name["Loss"]["marker"]["color"] == theme.LOSS_COLOR
