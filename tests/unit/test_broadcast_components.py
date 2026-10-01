@@ -19,9 +19,9 @@ from api.dependencies import templates
 NOT_ADVICE_FULL_TEXT = (
     "This is a personal research tool. No wager is placed and no currency amount is shown -- "
     "stakes are expressed in units, where 1 unit = 1% of a notional bankroll. The deployed "
-    "models have not demonstrated a positive edge against the closing market: the "
-    "win-probability model's pooled closing-line value is negative, and the spread and totals "
-    "models were retained after failing their most recent re-fit gate. A bet appearing on this "
+    "models have not demonstrated a positive edge against the betting market: when they were "
+    "rebuilt in September 2026, the market on its own did at least as well as the "
+    "win-probability and spread models on recent past seasons. A bet appearing on this "
     "list means it cleared a pre-registered expected-value floor, not that it is expected to win."
 )
 OLD_RULE_FULL_TEXT = (
