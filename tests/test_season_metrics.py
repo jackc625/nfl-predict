@@ -515,3 +515,67 @@ def test_breakeven_win_rate_constant_is_copied_value() -> None:
 
     assert pytest.approx(0.524) == BREAKEVEN_WIN_RATE
     assert pytest.approx(0.5) == SLIPPAGE_POINTS
+
+
+# ---------------------------------------------------------------------------
+# compute_weekly_records -- the Season page's week-by-week strip
+# ---------------------------------------------------------------------------
+
+
+def test_weekly_records_combine_all_three_targets_per_week() -> None:
+    """One week's record is the decided picks of all three bet types together.
+
+    Week 1 (home wins 24-20, margin +4, total 44): WP 0.60 picks home -> HIT. ATS -2.0 vs -3.0 is
+    above the line -> home_cover, slipped -2.5, margin 4 > -2.5 -> HIT. OU 45 vs 44 -> over,
+    slipped 44.5, total 44 -> MISS. Week 2 (home loses 14-28, total 42): all three MISS.
+    """
+    from api.season_metrics import compute_weekly_records
+
+    rows = [
+        _game(week=1),
+        _game(week=2, wp_prob=0.70, home_score=14, away_score=28),
+    ]
+    assert compute_weekly_records(rows) == [
+        {"week": 1, "wins": 2, "losses": 1},
+        {"week": 2, "wins": 0, "losses": 3},
+    ]
+
+
+def test_weekly_records_exclude_pushes_ties_and_unplayed_games() -> None:
+    """Excluded picks are neither wins nor losses, and a week with none decided is omitted.
+
+    Week 3 is a 21-21 tie: WP is excluded (tie); ATS home_cover slipped -2.5, margin 0 > -2.5 ->
+    HIT; OU over slipped 44.5, total 42 -> MISS. Week 4 is not completed. Week 5 has no WP and no
+    lines, so every target is excluded. Weeks 4 and 5 must not appear as 0-0.
+    """
+    from api.season_metrics import compute_weekly_records
+
+    rows = [
+        _game(week=3, home_score=21, away_score=21),
+        _game(week=4, status="scheduled", home_score=None, away_score=None),
+        _game(week=5, wp_prob=None, market_spread=None, market_total=None),
+    ]
+    assert compute_weekly_records(rows) == [{"week": 3, "wins": 1, "losses": 1}]
+
+
+def test_weekly_records_empty_rows_returns_empty() -> None:
+    from api.season_metrics import compute_weekly_records
+
+    assert compute_weekly_records([]) == []
+
+
+def test_weekly_records_sum_to_the_season_kpi_counts() -> None:
+    """The strip and the KPI tiles read the same classifiers, so their totals agree."""
+    from api.season_metrics import compute_season_kpis, compute_weekly_records
+
+    rows = [
+        _game(week=1),
+        _game(week=2, wp_prob=0.70, home_score=14, away_score=28),
+        _game(week=3, home_score=21, away_score=21),
+    ]
+    weeks = compute_weekly_records(rows)
+    kpis = compute_season_kpis(rows)
+    hits = sum(kpis[f"{t}_hits"] for t in ("wp", "ats", "ou"))
+    decided = sum(kpis[f"{t}_decided"] for t in ("wp", "ats", "ou"))
+    assert sum(w["wins"] for w in weeks) == hits
+    assert sum(w["wins"] + w["losses"] for w in weeks) == decided

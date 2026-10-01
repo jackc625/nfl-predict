@@ -1108,6 +1108,35 @@ def test_season_prerender_covers_every_fixture_season() -> None:
     )
 
 
+def test_season_kpi_blob_carries_the_weekly_records() -> None:
+    """season_kpis_<s> carries a ``weeks`` list equal to compute_weekly_records over that season.
+
+    The strip and the KPI tiles are written into ONE blob by ONE population run, so they cannot
+    describe two different caches.
+    """
+    import json
+
+    from api.charts.prerender import prerender_charts_for_cache
+    from api.season_metrics import compute_weekly_records
+
+    preds, expected_seasons = _season_prediction_bundle()
+    result = prerender_charts_for_cache({"predictions": preds})
+
+    non_empty = 0
+    for season in expected_seasons:
+        decoded = json.loads(result[f"season_kpis_{season}"])
+        season_rows = [
+            r
+            for r in preds
+            if r.get("season") is not None and int(r["season"]) == season
+        ]
+        assert decoded["weeks"] == compute_weekly_records(season_rows)
+        non_empty += bool(decoded["weeks"])
+    assert non_empty, (
+        "no fixture season produced a weekly record; the check proves nothing"
+    )
+
+
 def test_season_prerender_failure_isolation(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

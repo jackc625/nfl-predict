@@ -17,6 +17,8 @@ Contents
   hit-rate per target, count-based denominator so a push/tie never advances it).
 * Weekly series — :func:`compute_weekly_series` (per-week hit-rate + a
   rolling-average overlay).
+* Weekly records — :func:`compute_weekly_records` (per-week combined W-L across
+  all three targets, for the Season page's week strip).
 
 LOCKED HIT-RATE CONVENTION (CONTEXT D-05, post-research)
 --------------------------------------------------------
@@ -474,3 +476,35 @@ def compute_weekly_series(
         rolling = _rolling_average(values, ROLLING_WINDOW)
         series[target] = {"weeks": weeks, "values": values, "rolling": rolling}
     return series
+
+
+# ---------------------------------------------------------------------------
+# Week-by-week combined record (the Season page's week strip)
+# ---------------------------------------------------------------------------
+
+
+def compute_weekly_records(rows: Sequence[dict]) -> list[dict[str, int]]:
+    """Per-week combined W-L across all three targets, for the Season page's week strip.
+
+    A week's ``wins`` and ``losses`` count every DECIDED pick of that week -- Winner, Spread and
+    Totals together -- through the same classifiers and the same completed-row filter as every
+    other figure in this module, so the strip's totals equal the KPI tiles' hit and decided counts
+    by construction. Pushes, ties and rows with no line or no prediction are excluded and never
+    counted as a loss. A week with no decided pick is omitted rather than reported as 0-0, which
+    would read as a measured record.
+
+    Returns ``[{"week": int, "wins": int, "losses": int}, ...]`` in ascending week order.
+    """
+    per_week: dict[int, list[int]] = {}
+    for r in _completed_sorted(rows):
+        week = int(_num(r.get("week")))
+        for target in _TARGETS:
+            outcome = _OUTCOME_FNS[target](r)
+            if outcome is None:
+                continue  # push / tie / no line -> neither a win nor a loss
+            bucket = per_week.setdefault(week, [0, 0])
+            bucket[0 if outcome else 1] += 1
+    return [
+        {"week": week, "wins": per_week[week][0], "losses": per_week[week][1]}
+        for week in sorted(per_week)
+    ]

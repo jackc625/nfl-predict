@@ -1192,7 +1192,8 @@ def test_db(tmp_path: Path) -> Path:
         chart_entries.append((chart_id, payload, chart_now))
     # Phase 18: marker rows for every season chart_id (one set per fixture
     # season). The season_kpis_<s> family carries a decodable JSON DICT (the
-    # per-target hit-rate + W-L record shape compute_season_kpis returns);
+    # per-target hit-rate + W-L record shape compute_season_kpis returns, plus
+    # the per-week "weeks" list population adds for the Season week strip);
     # season_cumulative_<s> / season_weekly_<s> get a marker div (the else
     # branch) so Plan 18-03 route tests can assert the /season route consumes
     # exactly this set.
@@ -1212,6 +1213,11 @@ def test_db(tmp_path: Path) -> Path:
                     "record_wins": 11,
                     "record_losses": 5,
                     "record": "11-5",
+                    # 26 wins / 20 losses in total = the 26 hits and 46 decided picks above.
+                    "weeks": [
+                        {"week": 1, "wins": 14, "losses": 9},
+                        {"week": 2, "wins": 12, "losses": 11},
+                    ],
                 },
             )
         else:

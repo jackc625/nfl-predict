@@ -384,9 +384,11 @@ def _render_all(bundle: dict[str, list[dict]]) -> dict[str, str]:
         # try/except mirroring the betting KPI isolation: a build failure falls
         # back to an empty dict, never raising.
         try:
-            charts[f"season_kpis_{season}"] = json.dumps(
-                _season_charts.compute_season_kpis(rows_s),
-            )
+            kpis = _season_charts.compute_season_kpis(rows_s)
+            # The week strip's per-week combined record rides inside the SAME blob, so the strip
+            # and the KPI tiles are always written by one population run and cannot disagree.
+            kpis["weeks"] = _season_charts.compute_weekly_records(rows_s)
+            charts[f"season_kpis_{season}"] = json.dumps(kpis)
         except Exception:  # noqa: BLE001 — match per-chart isolation contract
             logger.warning("Season KPI build failed for %s", season, exc_info=True)
             charts[f"season_kpis_{season}"] = json.dumps({})

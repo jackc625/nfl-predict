@@ -16,7 +16,7 @@ Exported symbols (re-exported from the package root ``api.charts``):
 * :func:`generate_season_weekly` — per-week hit-rate markers per target PLUS a
   rolling-average overlay line in the same target color (DASH-08).
 * :func:`compute_season_kpis`, :func:`compute_cumulative_series`,
-  :func:`compute_weekly_series` — thin re-exports of the
+  :func:`compute_weekly_series`, :func:`compute_weekly_records` — thin re-exports of the
   :mod:`api.season_metrics` functions so the prerender loop can reach all
   season math through this one module (the single import surface
   ``unittest.mock.patch`` targets and calls).
@@ -63,6 +63,7 @@ from api.season_metrics import (
     BREAKEVEN_WIN_RATE,
     compute_cumulative_series,
     compute_season_kpis,
+    compute_weekly_records,
     compute_weekly_series,
 )
 
@@ -76,6 +77,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "compute_cumulative_series",
     "compute_season_kpis",
+    "compute_weekly_records",
     "compute_weekly_series",
     "generate_season_cumulative",
     "generate_season_weekly",
