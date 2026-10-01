@@ -331,11 +331,14 @@ def generate_dashboard_heatmap(metrics: list[dict]) -> str:
 
     n_targets = len(targets)
 
+    # Every target shares the same season rows, so only the first heatmap labels them: on a
+    # narrow card a second and third copy of the season labels sat on top of the cells beside them.
     fig = make_subplots(
         rows=1,
         cols=n_targets,
         subplot_titles=[t.upper() for t in targets],
         horizontal_spacing=0.08,
+        shared_yaxes=True,
     )
 
     for col_idx, target in enumerate(targets, 1):
@@ -415,6 +418,9 @@ def generate_dashboard_heatmap(metrics: list[dict]) -> str:
     fig.update_layout(
         title={"text": "Season Comparison Heatmap", "x": 0.5},
     )
+    # The season labels are numeric strings, so Plotly would otherwise draw a linear axis with
+    # half-season ticks ("2,024.5"). A season is a category here, never a quantity.
+    fig.update_yaxes(type="category")
     _apply_layout_defaults(fig)
 
     return _to_html(fig)
