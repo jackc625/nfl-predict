@@ -24,8 +24,13 @@ from plotly.subplots import make_subplots
 from sklearn.calibration import calibration_curve
 
 from api.charts.theme import (
+    BOUNDARY_LINE,
+    FG,
+    HEATMAP_SCALE,
     MUTED,
+    REFERENCE_LINE,
     SEASON_COLORS,
+    STRATEGY_COLORS,
     TARGET_COLORS,
     LegendPosition,
     apply_dark_theme,
@@ -119,7 +124,7 @@ def generate_dashboard_calibration_chart(predictions: list[dict]) -> str:
             x=[0, 1],
             y=[0, 1],
             mode="lines",
-            line={"dash": "dash", "color": "#999", "width": 1},
+            line={"dash": "dash", "color": REFERENCE_LINE, "width": 1},
             name="Perfect Calibration",
             showlegend=True,
         )
@@ -176,7 +181,7 @@ def generate_dashboard_calibration_chart(predictions: list[dict]) -> str:
                 y=fraction_pos,
                 mode="lines+markers",
                 name="Overall",
-                line={"color": "#333", "width": 3},
+                line={"color": FG, "width": 3},
                 marker={"size": 8},
             )
         )
@@ -196,9 +201,9 @@ def generate_dashboard_calibration_chart(predictions: list[dict]) -> str:
         yaxis_title="Observed Frequency",
         xaxis={"range": [0, 1]},
         yaxis={"range": [0, 1]},
-        legend={"x": 0.02, "y": 0.98},
     )
-    _apply_layout_defaults(fig)
+    # Up to seven entries (reference, seasons, overall) would wrap into the title on top.
+    _apply_layout_defaults(fig, legend_position="bottom")
 
     return _to_html(fig)
 
@@ -272,7 +277,7 @@ def generate_dashboard_clv_chart(predictions: list[dict]) -> str:
                 fig.add_vline(
                     x=i,
                     line_dash="dot",
-                    line_color="#ccc",
+                    line_color=BOUNDARY_LINE,
                     line_width=1,
                 )
 
@@ -282,13 +287,12 @@ def generate_dashboard_clv_chart(predictions: list[dict]) -> str:
         return _empty_chart_div("No CLV data available")
 
     # Zero line
-    fig.add_hline(y=0, line_dash="dash", line_color="#999", line_width=1)
+    fig.add_hline(y=0, line_dash="dash", line_color=REFERENCE_LINE, line_width=1)
 
     fig.update_layout(
         title={"text": "Cumulative CLV Over Time", "x": 0.5},
         xaxis_title="Game Index (Chronological)",
         yaxis_title="Cumulative Mean CLV",
-        legend={"x": 0.02, "y": 0.98},
     )
     _apply_layout_defaults(fig)
 
@@ -382,11 +386,10 @@ def generate_dashboard_heatmap(metrics: list[dict]) -> str:
             z_values.append(row_z)
             text_values.append(row_text)
 
-        # Color scale: for error metrics, reverse (green = low)
-        colorscale = "RdYlGn"
-        if target in ("ats", "ou"):
-            colorscale = "RdYlGn_r"
-
+        # One monochrome scale: brighter = a higher value. On this site green/red mean a
+        # realised win/loss, and a metric heatmap is neither. Each trace keeps the direction
+        # it already had: the ats and ou traces are reversed, exactly where the old
+        # red-yellow-green scale was reversed, and the wp trace is not.
         fig.add_trace(
             go.Heatmap(
                 z=z_values,
@@ -394,7 +397,12 @@ def generate_dashboard_heatmap(metrics: list[dict]) -> str:
                 y=[str(s) for s in all_seasons],
                 text=text_values,
                 texttemplate="%{text}",
-                colorscale=colorscale,
+                textfont={"color": FG},
+                colorscale=HEATMAP_SCALE,
+                reversescale=target in ("ats", "ou"),
+                xgap=2,
+                ygap=2,
+                colorbar={"outlinewidth": 0},
                 showscale=(col_idx == n_targets),
                 hovertemplate=(
                     "Season: %{y}<br>Metric: %{x}<br>Value: %{text}<extra></extra>"
@@ -438,17 +446,12 @@ def generate_dashboard_equity_chart(equity_data: list[dict]) -> str:
         s = row.get("strategy", "unknown")
         strategies.setdefault(s, []).append(row)
 
-    strategy_colors = {
-        "flat_stake": "#667eea",
-        "kelly": "#f093fb",
-    }
-
     for strategy in sorted(strategies):
         rows = sorted(strategies[strategy], key=lambda r: r.get("bet_index", 0))
         x_vals = [r.get("bet_index", i) for i, r in enumerate(rows)]
         y_vals = [float(r.get("bankroll", 0)) for r in rows]
 
-        color = strategy_colors.get(strategy, DEFAULT_COLOR)
+        color = STRATEGY_COLORS.get(strategy, DEFAULT_COLOR)
         display_name = strategy.replace("_", " ").title()
 
         fig.add_trace(
@@ -467,7 +470,7 @@ def generate_dashboard_equity_chart(equity_data: list[dict]) -> str:
         fig.add_hline(
             y=first_bankroll,
             line_dash="dash",
-            line_color="#999",
+            line_color=REFERENCE_LINE,
             line_width=1,
             annotation_text="Starting Bankroll",
             annotation_position="bottom right",
@@ -477,7 +480,6 @@ def generate_dashboard_equity_chart(equity_data: list[dict]) -> str:
         title={"text": "Betting Simulation: Flat-Stake vs Kelly", "x": 0.5},
         xaxis_title="Bet Number",
         yaxis_title="Bankroll ($)",
-        legend={"x": 0.02, "y": 0.98},
         yaxis_tickformat="$,.0f",
     )
     _apply_layout_defaults(fig)

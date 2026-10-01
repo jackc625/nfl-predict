@@ -16,7 +16,8 @@ Exported symbols (re-exported from the package root ``api.charts``):
 
 UIAP-01 COMPLIANCE
 ------------------
-Imports only from :mod:`api.charts.core`, :mod:`api.insights_metrics`, stdlib,
+Imports only from :mod:`api.charts.core`, :mod:`api.charts.theme`,
+:mod:`api.insights_metrics`, stdlib,
 ``numpy``, and ``plotly``. No imports from ``models``, ``features``, or
 ``ratings``.
 """
@@ -30,12 +31,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from api.charts.core import (
-    DEFAULT_COLOR,
     _apply_layout_defaults,
     _empty_chart_div,
     _get_target_color,
     _to_html,
 )
+from api.charts.theme import MUTED, REFERENCE_LINE
 from api.insights_metrics import (
     ATS_BIN_EDGES,
     ATS_BIN_WIDTH,
@@ -75,6 +76,13 @@ assert len(INSIGHTS_CHART_IDS) == 9  # Codex HIGH #7
 
 
 _MIN_WP_ROWS_PER_SEASON = 10
+
+# The two stacked calibration rows need room between them for row 1's tick labels and axis
+# title AND row 2's subplot title. At 0.15 of a ~380px chart, the "Predicted margin" axis
+# title sat on top of "Residuals". A fixed height keeps the pixel gap the same at every
+# card width.
+_CALIBRATION_ROW_GAP = 0.26
+_CALIBRATION_HEIGHT = 480
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +167,7 @@ def generate_insights_ats_calibration(predictions: list[dict]) -> str:
         rows=2,
         cols=1,
         row_heights=[0.7, 0.3],
-        vertical_spacing=0.15,
+        vertical_spacing=_CALIBRATION_ROW_GAP,
         subplot_titles=("Predicted margin vs actual", "Residuals"),
     )
 
@@ -169,7 +177,7 @@ def generate_insights_ats_calibration(predictions: list[dict]) -> str:
             x=[-24, 24],
             y=[-24, 24],
             mode="lines",
-            line={"dash": "dash", "color": "#999", "width": 1},
+            line={"dash": "dash", "color": REFERENCE_LINE, "width": 1},
             name="Identity",
             showlegend=False,
         ),
@@ -230,7 +238,6 @@ def generate_insights_ats_calibration(predictions: list[dict]) -> str:
             "yref": "y",
             "text": ATS_UNDERFLOW_LABEL,
             "showarrow": False,
-            "font": {"size": 10, "color": "#666"},
         },
         {
             "x": 22,
@@ -239,18 +246,18 @@ def generate_insights_ats_calibration(predictions: list[dict]) -> str:
             "yref": "y",
             "text": ATS_OVERFLOW_LABEL,
             "showarrow": False,
-            "font": {"size": 10, "color": "#666"},
         },
     ]
     fig.update_layout(
         title={"text": "ATS — Predicted margin vs actual", "x": 0.5},
         showlegend=False,
+        height=_CALIBRATION_HEIGHT,
         annotations=[
             *list(fig.layout.annotations),  # pyright: ignore[reportAttributeAccessIssue]
             *overflow_annotations,
         ],
     )
-    fig.update_xaxes(title_text="Predicted margin", row=1, col=1)
+    fig.update_xaxes(title_text="Predicted margin", title_standoff=6, row=1, col=1)
     fig.update_yaxes(title_text="Actual margin", row=1, col=1)
     fig.update_xaxes(title_text="Residual (predicted - actual)", row=2, col=1)
     fig.update_yaxes(title_text="Count", row=2, col=1)
@@ -319,7 +326,7 @@ def generate_insights_ou_calibration(predictions: list[dict]) -> str:
         rows=2,
         cols=1,
         row_heights=[0.7, 0.3],
-        vertical_spacing=0.15,
+        vertical_spacing=_CALIBRATION_ROW_GAP,
         subplot_titles=("Predicted total vs actual", "Residuals"),
     )
 
@@ -328,7 +335,7 @@ def generate_insights_ou_calibration(predictions: list[dict]) -> str:
             x=[30, 72],
             y=[30, 72],
             mode="lines",
-            line={"dash": "dash", "color": "#999", "width": 1},
+            line={"dash": "dash", "color": REFERENCE_LINE, "width": 1},
             name="Identity",
             showlegend=False,
         ),
@@ -383,8 +390,9 @@ def generate_insights_ou_calibration(predictions: list[dict]) -> str:
     fig.update_layout(
         title={"text": "OU — Predicted total vs actual", "x": 0.5},
         showlegend=False,
+        height=_CALIBRATION_HEIGHT,
     )
-    fig.update_xaxes(title_text="Predicted total", row=1, col=1)
+    fig.update_xaxes(title_text="Predicted total", title_standoff=6, row=1, col=1)
     fig.update_yaxes(title_text="Actual total", row=1, col=1)
     fig.update_xaxes(title_text="Residual (predicted - actual)", row=2, col=1)
     fig.update_yaxes(title_text="Count", row=2, col=1)
@@ -545,9 +553,9 @@ def generate_insights_accuracy_trend(metrics: list[dict]) -> str:
     fig.update_yaxes(title_text="MAE", row=1, col=2)
     fig.update_layout(
         title={"text": "Per-season accuracy and MAE", "x": 0.5},
-        legend={"orientation": "h", "yanchor": "bottom", "y": -0.2},
     )
-    _apply_layout_defaults(fig)
+    # Subplot titles occupy the top edge, so the legend goes underneath.
+    _apply_layout_defaults(fig, legend_position="bottom")
     return _to_html(fig)
 
 
@@ -671,7 +679,7 @@ def generate_insights_model_vs_market_wp(
                 y=market_series,
                 mode="lines+markers",
                 name="Market",
-                line={"color": DEFAULT_COLOR, "width": 2, "dash": "dash"},
+                line={"color": MUTED, "width": 2, "dash": "dash"},
                 marker={"size": 8},
                 connectgaps=False,
                 showlegend=(col == 1),
@@ -688,9 +696,9 @@ def generate_insights_model_vs_market_wp(
     fig.update_xaxes(dtick=1)
     fig.update_layout(
         title={"text": "WP — Model vs Market", "x": 0.5},
-        legend={"orientation": "h", "yanchor": "bottom", "y": -0.25},
     )
-    _apply_layout_defaults(fig)
+    # Three subplot titles occupy the top edge, so the legend goes underneath.
+    _apply_layout_defaults(fig, legend_position="bottom")
     return _to_html(fig)
 
 
@@ -749,7 +757,7 @@ def generate_insights_model_vs_market_ats(
             y=market_mae,
             mode="lines+markers",
             name="Market",
-            line={"color": DEFAULT_COLOR, "width": 2, "dash": "dash"},
+            line={"color": MUTED, "width": 2, "dash": "dash"},
             marker={"size": 8},
             connectgaps=False,
         ),
@@ -758,7 +766,6 @@ def generate_insights_model_vs_market_ats(
         title={"text": "ATS — Model vs Market MAE", "x": 0.5},
         xaxis_title="Season",
         yaxis_title="Mean Absolute Error",
-        legend={"orientation": "h", "yanchor": "bottom", "y": -0.2},
     )
     fig.update_xaxes(dtick=1)
     _apply_layout_defaults(fig)
@@ -820,7 +827,7 @@ def generate_insights_model_vs_market_ou(
             y=market_mae,
             mode="lines+markers",
             name="Market",
-            line={"color": DEFAULT_COLOR, "width": 2, "dash": "dash"},
+            line={"color": MUTED, "width": 2, "dash": "dash"},
             marker={"size": 8},
             connectgaps=False,
         ),
@@ -829,7 +836,6 @@ def generate_insights_model_vs_market_ou(
         title={"text": "OU — Model vs Market MAE", "x": 0.5},
         xaxis_title="Season",
         yaxis_title="Mean Absolute Error",
-        legend={"orientation": "h", "yanchor": "bottom", "y": -0.2},
     )
     fig.update_xaxes(dtick=1)
     _apply_layout_defaults(fig)

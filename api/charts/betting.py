@@ -25,8 +25,8 @@ UIAP-01 COMPLIANCE
 Imports only from :mod:`api.charts.core`, :mod:`api.betting_metrics`, stdlib,
 ``numpy``, and ``plotly``. No imports from ``models``, ``features``, or
 ``ratings``, and the ``BettingSimulator`` class is never named. Palettes come
-through :mod:`api.charts.core` (which sources ``backtest.report`` — the only
-permitted ``backtest.*`` import in the chart layer).
+from :mod:`api.charts.theme` (the dark dashboard theme), so no ``backtest.*``
+module is imported here.
 
 PLOTLY CDN COMPATIBILITY (RESEARCH Pitfall 5)
 ---------------------------------------------
@@ -57,6 +57,17 @@ from api.charts.core import (
     _empty_chart_div,
     _get_target_color,
     _to_html,
+)
+
+# Palette: the dark dashboard theme's names, used directly (no local alias to drift). Flat and
+# Kelly are staking strategies, not outcomes, so they take STRATEGY_COLORS; WIN_COLOR and
+# LOSS_COLOR appear only on the edge histograms' realised win/loss series.
+from api.charts.theme import (
+    BOUNDARY_LINE,
+    LOSS_COLOR,
+    REFERENCE_LINE,
+    STRATEGY_COLORS,
+    WIN_COLOR,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,15 +125,6 @@ BETTING_CHART_IDS: tuple[str, ...] = tuple(
 )
 assert len(BETTING_CHART_IDS) == 24  # 12 chart bases x 2 scopes
 
-
-# ---------------------------------------------------------------------------
-# Strategy palette (UI-SPEC Chart series palette; core.py:441-442)
-# ---------------------------------------------------------------------------
-
-_FLAT_COLOR = "#667eea"  # flat-stake series (indigo)
-_KELLY_COLOR = "#f093fb"  # Kelly series (pink)
-_WIN_COLOR = "#16a34a"  # win / favorable (green-600)
-_LOSS_COLOR = "#dc2626"  # loss / unfavorable (red-600)
 
 # Empty-state copy shared by every generator (matches _safe_render fallback +
 # the test contract: "Chart unavailable" OR "No betting").
@@ -183,7 +185,7 @@ def _add_season_boundary_vlines(fig: go.Figure, ordered_rows: Sequence[dict]) ->
     """
     for i in range(1, len(ordered_rows)):
         if ordered_rows[i].get("season") != ordered_rows[i - 1].get("season"):
-            fig.add_vline(x=i, line_dash="dot", line_color="#ccc", line_width=1)
+            fig.add_vline(x=i, line_dash="dot", line_color=BOUNDARY_LINE, line_width=1)
 
 
 def _add_starting_bankroll_hline(fig: go.Figure) -> None:
@@ -191,7 +193,7 @@ def _add_starting_bankroll_hline(fig: go.Figure) -> None:
     fig.add_hline(
         y=STARTING_BANKROLL,
         line_dash="dash",
-        line_color="#999",
+        line_color=REFERENCE_LINE,
         line_width=1,
         annotation_text="Starting Bankroll",
         annotation_position="bottom right",
@@ -206,7 +208,7 @@ def _add_starting_bankroll_hline(fig: go.Figure) -> None:
 def generate_betting_equity_chart(rows: Sequence[dict]) -> str:
     """Render the main cumulative-bankroll equity chart (flat-stake vs Kelly).
 
-    Two ``go.Scatter`` lines (Flat #667eea / Kelly #f093fb) over a chronological
+    Two ``go.Scatter`` lines (Flat / Kelly in the theme's strategy colours) over a chronological
     season->week index, with dotted season-boundary vlines and a dashed $10,000
     "Starting Bankroll" reference line. X-axis ordering follows
     :func:`_sorted_chronologically` (within-week order is not true chronology;
@@ -227,7 +229,7 @@ def generate_betting_equity_chart(rows: Sequence[dict]) -> str:
             y=flat_equity,
             mode="lines",
             name="Flat",
-            line={"color": _FLAT_COLOR, "width": 2},
+            line={"color": STRATEGY_COLORS["flat_stake"], "width": 2},
         ),
     )
     fig.add_trace(
@@ -236,7 +238,7 @@ def generate_betting_equity_chart(rows: Sequence[dict]) -> str:
             y=kelly_equity,
             mode="lines",
             name="Kelly",
-            line={"color": _KELLY_COLOR, "width": 2},
+            line={"color": STRATEGY_COLORS["kelly"], "width": 2},
         ),
     )
 
@@ -248,7 +250,6 @@ def generate_betting_equity_chart(rows: Sequence[dict]) -> str:
         xaxis_title="Bet Index (chronological by season then week)",
         yaxis_title="Bankroll ($)",
         yaxis_tickformat="$,.0f",
-        legend={"x": 0.02, "y": 0.98},
     )
     _apply_layout_defaults(fig)
     return _to_html(fig)
@@ -326,24 +327,34 @@ def _roi_grouped_bar(
 ) -> str:
     """Build a grouped flat-vs-Kelly ROI bar chart with a 0% baseline.
 
-    Two ``go.Bar`` traces (Flat #667eea / Kelly #f093fb), ``barmode="group"``,
-    and a dashed #999 ``add_hline`` at y=0 (the 0% ROI baseline, D-18).
+    Two ``go.Bar`` traces (Flat / Kelly in the theme's strategy colours),
+    ``barmode="group"``, and a dashed ``REFERENCE_LINE`` ``add_hline`` at y=0 (the 0%
+    ROI baseline, D-18).
     """
     fig = go.Figure()
     fig.add_trace(
-        go.Bar(name="Flat", x=categories, y=flat_rois, marker_color=_FLAT_COLOR),
+        go.Bar(
+            name="Flat",
+            x=categories,
+            y=flat_rois,
+            marker_color=STRATEGY_COLORS["flat_stake"],
+        ),
     )
     fig.add_trace(
-        go.Bar(name="Kelly", x=categories, y=kelly_rois, marker_color=_KELLY_COLOR),
+        go.Bar(
+            name="Kelly",
+            x=categories,
+            y=kelly_rois,
+            marker_color=STRATEGY_COLORS["kelly"],
+        ),
     )
     # 0% ROI baseline (profit above, loss below) — D-18 honesty reference.
-    fig.add_hline(y=0, line_dash="dash", line_color="#999", line_width=1)
+    fig.add_hline(y=0, line_dash="dash", line_color=REFERENCE_LINE, line_width=1)
     fig.update_layout(
         title={"text": title, "x": 0.5},
         barmode="group",
         xaxis_title=xaxis_title,
         yaxis_title="ROI (%)",
-        legend={"orientation": "h", "yanchor": "bottom", "y": -0.2},
     )
     _apply_layout_defaults(fig)
     return _to_html(fig)
@@ -454,7 +465,7 @@ def _generate_edge_hist(rows: Sequence[dict], target: str) -> str:
         go.Histogram(
             x=won,
             name="Win",
-            marker_color=_WIN_COLOR,
+            marker_color=WIN_COLOR,
             opacity=0.7,
         ),
     )
@@ -462,7 +473,7 @@ def _generate_edge_hist(rows: Sequence[dict], target: str) -> str:
         go.Histogram(
             x=lost,
             name="Loss",
-            marker_color=_LOSS_COLOR,
+            marker_color=LOSS_COLOR,
             opacity=0.7,
         ),
     )
@@ -471,7 +482,6 @@ def _generate_edge_hist(rows: Sequence[dict], target: str) -> str:
         barmode="overlay",
         xaxis_title=_EDGE_AXIS_TITLE.get(target, "Edge"),
         yaxis_title="Count",
-        legend={"orientation": "h", "yanchor": "bottom", "y": -0.2},
         height=320,
     )
     _apply_layout_defaults(fig)

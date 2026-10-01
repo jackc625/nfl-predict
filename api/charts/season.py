@@ -33,11 +33,12 @@ produces ``season_*_2025`` automatically with zero code change (D-01).
 
 UIAP-01 COMPLIANCE
 ------------------
-Imports only from :mod:`api.charts.core`, :mod:`api.season_metrics`, stdlib, and
-``plotly``. No imports from ``models``, ``features``, or ``ratings``. Palettes
-come through :mod:`api.charts.core` (which sources ``backtest.report`` — the
-only permitted ``backtest.*`` import in the chart layer), so the three target
-lines use ``_get_target_color`` rather than fresh hex literals (D-13).
+Imports only from :mod:`api.charts.core`, :mod:`api.charts.theme`,
+:mod:`api.season_metrics`, stdlib, and ``plotly``. No imports from ``models``,
+``features``, or ``ratings``. Palettes come from :mod:`api.charts.theme`
+(through ``_get_target_color`` and the reference-line constant), so the three
+target lines use the dashboard's bet-type colours rather than fresh hex literals
+(D-13).
 
 PLOTLY CDN COMPATIBILITY (RESEARCH Pitfall: 6.6.0 server / 2.35.2 client)
 -------------------------------------------------------------------------
@@ -59,6 +60,7 @@ from api.charts.core import (
     _get_target_color,
     _to_html,
 )
+from api.charts.theme import REFERENCE_LINE
 from api.season_metrics import (
     BREAKEVEN_WIN_RATE,
     compute_cumulative_series,
@@ -125,15 +127,15 @@ def _add_reference_lines(fig: go.Figure) -> None:
     """Add the 50% coin-flip and 52.4% -110-breakeven dashed reference lines.
 
     The idiom is copied from ``api/charts/core.py`` /
-    ``api/charts/betting.py`` (dashed ``#999`` ``add_hline`` with an annotation);
-    ``#999`` is the only inline color literal, matching the core reference-line
-    contract (D-06). The 52.4% line is exact for spread/totals; moneyline (WP)
+    ``api/charts/betting.py``: a dashed ``REFERENCE_LINE`` ``add_hline`` with an
+    annotation, the theme's one reference-line colour (D-06). The 52.4% line is
+    exact for spread/totals; moneyline (WP)
     odds vary, so the caption near the chart frames it as a reference.
     """
     fig.add_hline(
         y=50,
         line_dash="dash",
-        line_color="#999",
+        line_color=REFERENCE_LINE,
         line_width=1,
         annotation_text="50% coin flip",
         annotation_position="bottom right",
@@ -141,7 +143,7 @@ def _add_reference_lines(fig: go.Figure) -> None:
     fig.add_hline(
         y=_BREAKEVEN_PCT,
         line_dash="dash",
-        line_color="#999",
+        line_color=REFERENCE_LINE,
         line_width=1,
         annotation_text="-110 breakeven (~52.4%)",
         annotation_position="top right",
@@ -211,7 +213,6 @@ def generate_season_cumulative(rows: Sequence[dict]) -> str:
         xaxis_title="Games Played (chronological by week)",
         yaxis_title="Hit Rate (%)",
         yaxis={"range": [0, 100]},
-        legend={"x": 0.02, "y": 0.98},
     )
     _apply_layout_defaults(fig)
     return _to_html(fig)
@@ -294,7 +295,8 @@ def generate_season_weekly(rows: Sequence[dict]) -> str:
         xaxis_title="Week",
         yaxis_title="Hit Rate (%)",
         yaxis={"range": [0, 100]},
-        legend={"orientation": "h", "yanchor": "bottom", "y": -0.25},
     )
-    _apply_layout_defaults(fig)
+    # Six entries (three targets plus their rolling averages) wrap; below the plot they
+    # never meet the title.
+    _apply_layout_defaults(fig, legend_position="bottom")
     return _to_html(fig)
