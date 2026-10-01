@@ -20,6 +20,16 @@
 {%- set away_bg = game.away_color|default("#1D2436") -%}
 {%- set ctx = game.context -%}
 
+{# Elo and recent-form line under a team name (spec 7.2). Each part is dropped when its data is
+   missing; nothing at all when both are. Plain text: the green/red form chips live in the Tale
+   of the tape panel. #}
+{% macro elo_form_line(elo, form) -%}
+  {%- set parts = [] -%}
+  {%- if elo is not none %}{% set _ = parts.append("Elo " ~ "%.0f"|format(elo)) %}{% endif -%}
+  {%- if form %}{% set _ = parts.append("last " ~ form|length ~ ": " ~ form|join(" ")) %}{% endif -%}
+  {%- if parts %}<p class="mt-1 text-xs text-muted" data-elo-form>{{ parts|join(" &middot; ")|safe }}</p>{% endif -%}
+{%- endmacro %}
+
 <a href="/?season={{ game.season }}&amp;week={{ game.week }}" class="mb-3 inline-flex items-center gap-1 text-sm font-semibold text-accent hover:underline">&lsaquo; Week {{ game.week }}</a>
 
 {# Old-rule label for this game (R16 / D33.2-07): a 2021-2025 game's prediction, result badge
@@ -34,7 +44,7 @@
       {{ bc.team_block(away, away_bg, game.away_fg|default("#FFFFFF"), large=true) }}
       <div>
         <p class="display text-2xl leading-none">{{ game.away_name|default(away) }}</p>
-        {% if ctx and ctx.away_elo is not none %}<p class="mt-1 text-xs text-[#C4CAD8]">Elo {{ "%.0f"|format(ctx.away_elo) }}</p>{% endif %}
+        {{ elo_form_line(ctx.away_elo if ctx else none, ctx.away_last5_list if ctx else none) }}
       </div>
       <p class="display ml-auto text-5xl tabular-nums {{ 'text-accent' if game.wp_prob is not none and game.wp_prob < 0.5 else 'text-[#C4CAD8]' }}">{{ pv.team_pct(game.wp_prob, "away") }}</p>
     </div>
@@ -48,7 +58,7 @@
       <p class="display mr-auto text-5xl tabular-nums {{ 'text-accent' if game.wp_prob is not none and game.wp_prob > 0.5 else 'text-[#C4CAD8]' }}">{{ pv.team_pct(game.wp_prob, "home") }}</p>
       <div class="text-right">
         <p class="display text-2xl leading-none">{{ game.home_name|default(home) }}</p>
-        {% if ctx and ctx.home_elo is not none %}<p class="mt-1 text-xs text-[#C4CAD8]">Elo {{ "%.0f"|format(ctx.home_elo) }}</p>{% endif %}
+        {{ elo_form_line(ctx.home_elo if ctx else none, ctx.home_last5_list if ctx else none) }}
       </div>
       {{ bc.team_block(home, home_bg, game.home_fg|default("#FFFFFF"), large=true) }}
     </div>
@@ -76,7 +86,7 @@
       </span>
     </p>
     {% if game.wp_clv is not none %}
-    <span class="num text-sm font-semibold {% if game.wp_clv > 0 %}text-green-400{% else %}text-red-400{% endif %}">CLV: {{ "%+.2f"|format(game.wp_clv) }}%</span>
+    <span class="num text-sm font-semibold {% if game.wp_clv > 0 %}text-green-400{% elif game.wp_clv < 0 %}text-red-400{% else %}text-muted{% endif %}">CLV: {{ "%+.2f"|format(game.wp_clv) }}%</span>
     {% endif %}
   </div>
   {% endif %}

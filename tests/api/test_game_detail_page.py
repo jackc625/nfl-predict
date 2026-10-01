@@ -51,7 +51,7 @@ def _hues(html: str) -> list[str]:
     ]
 
 
-def _detail_html(**overrides: Any) -> str:
+def _detail_html(game_patch: dict[str, Any] | None = None, **overrides: Any) -> str:
     """Render the detail page for KC at MIA stored in an in-memory cache, decorated as the route does."""
     clear_cache()
     conn = duckdb.connect(":memory:")
@@ -83,7 +83,7 @@ def _detail_html(**overrides: Any) -> str:
     assert game is not None
     return templates.env.get_template("pages/game_detail.html").render(
         request=_StubRequest(),
-        game=decorate_game(game),
+        game={**decorate_game(game), **(game_patch or {})},
         current_path="",
         cache_meta={},
         old_rule_scope=DataService.old_rule_scope([]),
@@ -201,3 +201,44 @@ def test_the_detail_page_marks_this_week_active_in_the_nav(
         'href="/"' in link and 'aria-current="page"' in link for link in active
     ), active
     assert sum('aria-current="page"' in link for link in links) == len(active)
+
+
+def test_the_header_shows_elo_and_form_under_each_team(test_client: TestClient) -> None:
+    lines = re.findall(
+        r"<p[^>]*data-elo-form>([^<]*)</p>",
+        test_client.get("/games/2024_W01_BUF@KC").text,
+    )
+    assert len(lines) == 2, lines
+    for line in lines:
+        assert re.fullmatch(
+            r"(Elo \d+)?( &middot; )?(last \d: [WLT]( [WLT])*)?", line
+        ), line
+        assert (
+            line.strip()
+            and not line.startswith(" &middot;")
+            and not line.endswith("&middot; ")
+        )
+    assert any(line.startswith("Elo ") for line in lines)
+
+
+def test_the_header_form_line_is_absent_without_context() -> None:
+    main = _main(_detail_html())
+    assert "data-elo-form" not in main
+    assert "&middot;" not in main
+
+
+def test_a_realised_clv_of_zero_is_neutral() -> None:
+    def clv_class(clv: float) -> str:
+        html = _main(
+            _detail_html(
+                {"wp_clv": clv}, status="completed", away_score=20, home_score=27
+            )
+        )
+        match = re.search(r'<span class="([^"]*)">CLV:', html)
+        assert match, "no CLV line"
+        return match.group(1)
+
+    assert "text-green-400" in clv_class(0.5)
+    assert "text-red-400" in clv_class(-0.5)
+    zero = clv_class(0.0)
+    assert "text-muted" in zero and "green" not in zero and "red" not in zero
