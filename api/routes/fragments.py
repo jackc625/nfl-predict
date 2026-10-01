@@ -27,6 +27,7 @@ from api.routes.pages import (
     _parse_int_param,
     _pivot_season_metrics,
     _rows_seasons,
+    _this_week_grid_context,
 )
 from api.services import DataService
 
@@ -67,15 +68,22 @@ def games_fragment(
     # Compute wp_correct on a fresh list so the DataService TTLCache source
     # is never mutated (plan 15-02 review item #4).
     games = _annotate_wp_correct(games)
+    # The SAME games / groups / headliner this_week_page builds, so a week change through HTMX
+    # renders exactly what a full navigation renders.
+    grid = _this_week_grid_context(service, games, season_int, week_int, sort, request)
 
     context = {
-        "games": games,
+        "games": grid["games"],
+        "slate_groups": grid["slate_groups"],
+        "headliner": grid["headliner"],
         "current_week": week_int,
         "current_season": season_int,
         "current_sort": sort,
         "week_summary": _compute_week_summary(games),
         # The same scope this_week_page builds for the game_grid block (R16 / D33.2-07).
-        "old_rule_scope": DataService.old_rule_scope(_rows_seasons(games)),
+        "old_rule_scope": DataService.old_rule_scope(
+            _rows_seasons(games) + _rows_seasons(grid["headliner"]["bets"])
+        ),
     }
     template_response = templates.TemplateResponse(
         request, "pages/this_week.html", context, block_name="game_grid"

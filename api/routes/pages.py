@@ -28,6 +28,7 @@ from api.cache import (
 )
 from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
+from api.presentation import decorate_game, group_games_by_window
 from api.season_metrics import (
     _ats_outcome,
     _ou_outcome,
@@ -617,6 +618,120 @@ def _build_bets_context(
     }
 
 
+# ---------------------------------------------------------------------------
+# This Week: the headliner bets and the decorated slate (Broadcast redesign)
+# ---------------------------------------------------------------------------
+
+# The renders /bets chooses between for one week, in the order pages/bets.html tests them. The
+# This Week headliner area names one of them, so the two pages can be checked to agree on a week.
+HEADLINER_STATES: tuple[str, ...] = (
+    "not_built",
+    "blocked",
+    "not_evaluated",
+    "no_week",
+    "none_cleared",
+    "bets",
+)
+
+# get_predictions orders by kickoff for every sort it does not recognise, so these two are the
+# only NON-time orders -- and only a time order may be cut into TV windows without the groups
+# contradicting the order the reader asked for.
+_NON_TIME_SORTS: frozenset[str] = frozenset({"confidence", "edge"})
+
+
+def _headliner_state(bets_context: dict[str, Any]) -> str:
+    """Which render /bets makes for a week, decided in pages/bets.html's own precedence.
+
+    The order is the template's: a missing TABLE first (the only state that names an action the
+    reader can take), then the per-game refusal, then a week whose locks are all ahead, then no
+    current week, then a week that admitted nothing. Deciding it here in any other order would let
+    / and /bets describe the same week two ways; tests/api/test_this_week_headliner.py renders
+    /bets for each state and checks the two agree.
+    """
+    if not bets_context["bet_list_available"]:
+        return "not_built"
+    if bets_context["bets_blocked"]:
+        return "blocked"
+    if bets_context["week_not_evaluated"]:
+        return "not_evaluated"
+    if bets_context["current_week"] is None:
+        return "no_week"
+    if not bets_context["bets"]:
+        return "none_cleared"
+    return "bets"
+
+
+def _build_headliner(
+    service: DataService,
+    season: int | None,
+    week: int | None,
+    request: Request,
+) -> dict[str, Any]:
+    """The week's live bets and their /bets state, for the This Week headliner area.
+
+    Built from THE /bets context (``_build_bets_context``) for the week /bets itself would serve
+    for this season and week, so no state is re-derived. When /bets would resolve the request to
+    a DIFFERENT week -- This Week can show a predictions week with no schedule-derived bet week --
+    the list it would show is not this week's, so the state is "no_week" and no bet is borrowed.
+    A missing bet-list table does not depend on the week and keeps its own state.
+
+    Reads cached rows only; nothing here is a metric (UIAP-01).
+    """
+    resolved = _normalize_week(service, season, week)
+    bets_context = _build_bets_context(service, resolved[0], resolved[1], request)
+    state = _headliner_state(bets_context)
+    if state != "not_built" and resolved != (season, week):
+        state = "no_week"
+    return {
+        "state": state,
+        "bets": bets_context["bets"] if state == "bets" else [],
+        "season": season,
+        "week": week,
+    }
+
+
+def _this_week_grid_context(
+    service: DataService,
+    games: list[dict[str, Any]],
+    season: int | None,
+    week: int | None,
+    sort: str,
+    request: Request,
+) -> dict[str, Any]:
+    """The three ``game_grid`` keys both This Week routes add: games, slate_groups, headliner.
+
+    Shared by ``this_week_page`` and ``fragments.games_fragment`` so a week change through HTMX
+    renders exactly what a full navigation renders. Every game is passed through
+    ``api.presentation.decorate_game`` (team colours, nicknames, kickoff and window labels) as a
+    NEW dict -- the source rows may be the DataService TTLCache's own -- and carries
+    ``bet_targets``, the bet types it has a live bet for this week, so its card can say so. Each
+    headliner bet carries ``game``, its decorated game row (or None when the week's predictions
+    do not include it), for the kickoff label and team colours.
+    """
+    headliner = _build_headliner(service, season, week, request)
+    targets_by_game: dict[str, list[str]] = {}
+    for bet in headliner["bets"]:
+        targets_by_game.setdefault(bet["game_id"], []).append(bet["target"])
+
+    decorated: list[dict[str, Any]] = []
+    for game in games:
+        new_game = decorate_game(game)
+        new_game["bet_targets"] = targets_by_game.get(new_game["game_id"], [])
+        decorated.append(new_game)
+
+    games_by_id = {game["game_id"]: game for game in decorated}
+    headliner["bets"] = [
+        {**bet, "game": games_by_id.get(bet["game_id"])} for bet in headliner["bets"]
+    ]
+    return {
+        "games": decorated,
+        "slate_groups": None
+        if sort in _NON_TIME_SORTS
+        else group_games_by_window(decorated),
+        "headliner": headliner,
+    }
+
+
 def _annotate_wp_correct(games: list[dict]) -> list[dict]:
     """Return a new list of games with wp_correct annotated.
 
@@ -769,10 +884,13 @@ def this_week_page(
     # Compute wp_correct on a fresh list so the DataService TTLCache source
     # is never mutated (plan 15-02 review item #4).
     games = _annotate_wp_correct(games)
+    grid = _this_week_grid_context(service, games, season, week, sort, request)
 
     context = {
         "request": request,
-        "games": games,
+        "games": grid["games"],
+        "slate_groups": grid["slate_groups"],
+        "headliner": grid["headliner"],
         "available_weeks": available_weeks,
         "available_seasons": available_seasons,
         "current_week": week,
@@ -781,8 +899,11 @@ def this_week_page(
         "current_path": "/",
         "cache_meta": cache_meta,
         "week_summary": _compute_week_summary(games),
-        # One block: the week summary and the game grid, scoped to the games actually shown.
-        "old_rule_scope": DataService.old_rule_scope(_rows_seasons(games)),
+        # One block: the week summary, the headliner bets and the game grid, scoped to the games
+        # and the bets actually shown -- a week whose predictions are absent can still show bets.
+        "old_rule_scope": DataService.old_rule_scope(
+            _rows_seasons(games) + _rows_seasons(grid["headliner"]["bets"])
+        ),
     }
 
     block_name = "game_grid" if request.headers.get("HX-Request") else None
