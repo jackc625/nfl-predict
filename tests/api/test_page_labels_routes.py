@@ -60,16 +60,15 @@ _GAME_ID = "2024_W01_BUF@KC"
 PAGE_ROUTES: dict[str, tuple[str, str]] = {
     "/": ("this_week.html", "This Week's Predictions"),
     "/bets": ("bets.html", "Weekly Bet List"),
-    "/betting": ("betting.html", "Betting Dashboard"),
-    "/backtest": ("backtest.html", "Backtest Results"),
-    "/insights": ("insights.html", "Model Insights"),
-    "/performance": ("performance.html", "Historical Performance"),
+    "/how-it-works": ("how_it_works.html", "What the models rely on"),
     "/season": ("season.html", "Season Tracking"),
+    "/track-record": ("track_record.html", "Season by season"),
     f"/games/{_GAME_ID}": ("game_detail.html", "BUF @ KC"),
 }
 
-# HTMX fragment requests and the labelled blocks each swaps in. The performance and betting page
-# handlers branch on the HX-Request header; the /fragments/* routes are the dedicated swap paths.
+# HTMX fragment requests and the labelled blocks each swaps in. The retired /performance and
+# /betting URLs answer an HX request with their Track Record block instead of a redirect; the
+# /fragments/* routes are the dedicated swap paths.
 FRAGMENT_REQUESTS: dict[str, tuple[dict[str, str], int]] = {
     "/performance": ({"HX-Request": "true"}, 1),
     "/betting": ({"HX-Request": "true"}, 1),
@@ -264,48 +263,51 @@ class TestEveryRouteOverBothCorpora:
 # ---------------------------------------------------------------------------
 
 
-class TestTheSeasonlessHandlersLabel:
-    """The /backtest, /insights and /betting handlers pass no season yet label pre-fix data."""
+class TestTheSeasonlessPagesLabel:
+    """The merged pages pass no season, yet label the pre-fix corpus each block draws from."""
 
-    @pytest.mark.parametrize("url", ["/backtest", "/insights", "/betting"])
-    def test_a_seasonless_handler_labels_its_pre_fix_corpus(
-        self, pre_2026_client: TestClient, url: str
+    @pytest.mark.parametrize(
+        ("url", "expected"), [("/how-it-works", 1), ("/track-record", 4)]
+    )
+    def test_a_seasonless_page_labels_its_pre_fix_corpus(
+        self, pre_2026_client: TestClient, url: str, expected: int
     ) -> None:
         response = pre_2026_client.get(url)
         assert response.status_code == 200
-        assert _labels(response.text) == 1
+        assert _labels(response.text) == expected
 
-    def test_the_betting_fragment_carries_the_scope_its_page_does(
+    def test_the_betting_fragment_carries_the_scope_its_section_does(
         self, pre_2026_client: TestClient
     ) -> None:
-        """_build_betting_context feeds both the page and the fragment from one place."""
-        page = pre_2026_client.get("/betting")
+        """_build_betting_context feeds both the page's betting section and the fragment."""
+        page = pre_2026_client.get("/track-record")
         fragment = pre_2026_client.get("/fragments/betting")
         assert page.status_code == 200
         assert fragment.status_code == 200
-        assert _labels(page.text) == _labels(fragment.text) == 1
+        betting_section = page.text.split('id="betting-content"', 1)[1]
+        assert _labels(betting_section) == _labels(fragment.text) == 1
 
 
-class TestThePerformanceSummaryIgnoresTheSelectedSeason:
+class TestTheSummaryIgnoresTheSelectedSeason:
     """The all-history summary aggregates every season, so selecting 2026 does not unlabel it."""
 
     def test_selecting_2026_still_labels_the_all_history_summary(
         self, pre_2026_client: TestClient
     ) -> None:
-        response = pre_2026_client.get("/performance?season=2026")
+        response = pre_2026_client.get("/track-record?season=2026")
         assert response.status_code == 200
         body = response.text
         # The season-scoped table has no 2026 rows, so it shows its empty state and no label; the
-        # summary still aggregates 2021-2024 and must keep its label.
-        assert _labels(body) == 1
+        # summary, the model-vs-market section and the betting simulation keep theirs.
+        assert _labels(body) == 3
         assert "No backtest data" in body
         assert body.index(LABEL_MARKER) < body.index("Total Games"), (
-            "the remaining label is not the one above the all-history summary"
+            "the first label is not the one above the all-history summary"
         )
 
-    def test_a_past_season_labels_both_blocks(
+    def test_a_past_season_labels_every_block(
         self, pre_2026_client: TestClient
     ) -> None:
-        response = pre_2026_client.get("/performance?season=2023")
+        response = pre_2026_client.get("/track-record?season=2023")
         assert response.status_code == 200
-        assert _labels(response.text) == 2
+        assert _labels(response.text) == 4

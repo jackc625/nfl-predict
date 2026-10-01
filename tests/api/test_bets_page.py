@@ -3562,11 +3562,9 @@ def test_the_same_cache_meta_does_not_500_any_other_page_either(
     with contextmanager(_client)(db_path) as client:
         for route in (
             "/",
-            "/performance",
-            "/backtest",
-            "/insights",
-            "/betting",
             "/season",
+            "/track-record",
+            "/how-it-works",
         ):
             response = client.get(route)
             assert response.status_code == 200, (

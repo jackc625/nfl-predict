@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% import "components/_broadcast.html" as bc %}
+{% import "components/_chart_panel.html" as cp %}
+{% block title %}How It Works{% endblock %}
+{% block content %}
+
+<header class="mb-8">
+  <h1 class="display text-4xl md:text-5xl leading-none text-fg">How It Works</h1>
+  <p class="text-sm text-muted mt-2 max-w-2xl">Why the model predicts what it does: how well its probabilities match what actually happened, and which inputs each model leans on most.</p>
+</header>
+
+{# One block: calibration, feature importance and the accuracy trend are all drawn from the same
+   backtest corpus, so one label covers the three sections below (R16 / D33.2-07). #}
+{% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+
+<section id="calibration" class="mb-12 scroll-mt-6">
+  {{ bc.section_head("Calibration", meta="are the predictions honest?") }}
+  <p class="text-sm text-muted mb-4 max-w-3xl">Are predicted probabilities and predicted spreads honest? Each chart compares predictions against actual outcomes across the backtest.</p>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    {{ cp.chart_panel("Win Probability -- Reliability", charts.calibration, "Calibration data has not been generated. Run the cache rebuild to populate.") }}
+    {{ cp.chart_panel("Against the Spread -- Predicted vs Actual Margin", charts.insights_calibration_ats, "Calibration data has not been generated. Run the cache rebuild to populate.") }}
+    {{ cp.chart_panel("Over / Under -- Predicted vs Actual Total", charts.insights_calibration_ou, "Calibration data has not been generated. Run the cache rebuild to populate.") }}
+  </div>
+</section>
+
+<section id="features" class="mb-12 scroll-mt-6">
+  {{ bc.section_head("What the models rely on", meta="top features of the current models") }}
+  <p class="text-sm text-muted mb-4 max-w-3xl">The inputs each production model leans on most.</p>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    {{ cp.chart_panel("Top Features -- Win Probability", charts.insights_feature_importance_wp, "No feature importance snapshot was found for this target. Train the model and rebuild the cache.") }}
+    {{ cp.chart_panel("Top Features -- Against the Spread", charts.insights_feature_importance_ats, "No feature importance snapshot was found for this target. Train the model and rebuild the cache.") }}
+    {{ cp.chart_panel("Top Features -- Over / Under", charts.insights_feature_importance_ou, "No feature importance snapshot was found for this target. Train the model and rebuild the cache.") }}
+  </div>
+</section>
+
+<section id="accuracy" class="mb-12 scroll-mt-6">
+  {{ bc.section_head("Accuracy over time", meta="per backtest season") }}
+  {{ cp.chart_panel("Per-Season Accuracy & Error Trend", charts.insights_accuracy_trend, "No per-season metrics found. Run the backtest pipeline.", min_height=320) }}
+</section>
+
+{% endblock %}

@@ -4,13 +4,17 @@ Serves full HTML pages using Jinja2Blocks templates. When an HX-Request
 header is present, only the relevant block is returned (HTMX fragment).
 
 Routes:
-    GET /            -- This Week's predictions dashboard (landing page)
-    GET /performance -- Historical performance view
-    GET /backtest    -- Backtest analysis with Plotly charts
-    GET /insights    -- Model insights (calibration, feature importance, vs market)
-    GET /betting     -- Betting dashboard (KPI strip, equity, ROI, edge; scope toggle)
-    GET /bets        -- Weekly bet list (ranked +EV bets, units, EV band; week selector)
-    GET /games/{id}  -- Game detail drill-down (feature importance, market comparison)
+    GET /             -- This Week's predictions dashboard (landing page)
+    GET /bets         -- Weekly bet list (ranked +EV bets, units, EV band; week selector)
+    GET /season       -- Season tracking (KPI strip, week strip, cumulative + weekly charts)
+    GET /track-record -- Track Record: all-time summary, season metrics, model vs market,
+                         closing-line value and the betting simulation (the merged /performance,
+                         /backtest and /betting pages plus the market half of /insights)
+    GET /how-it-works -- How It Works: methodology, calibration, feature importance, accuracy
+    GET /games/{id}   -- Game detail drill-down (feature importance, market comparison)
+
+Retired URLs answer with a 301 to the merged page, query string kept: /performance, /backtest,
+/insights, /betting. An HTMX request to /performance or /betting gets the block it asked for.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import RedirectResponse, Response
 
 from api.cache import (
     BACKTEST_SEASON_RANGE_KEY,
@@ -231,8 +236,10 @@ def _build_betting_context(
     so the template references each slot via ``current_scope`` and the fragment
     swap re-renders exactly the active scope's set.
 
-    Shared by both ``betting_page`` and ``betting_fragment`` so the cached-read
-    contract lives in one place and cannot drift between the two handlers.
+    Shared by the Track Record page (``_build_track_record_context``) and
+    ``_betting_block_response`` (the betting fragment and the retired ``/betting``
+    URL's HTMX branch), so the cached-read contract lives in one place and cannot
+    drift between them.
     """
     charts: dict[str, str | None] = {
         chart_id: service.get_chart_html(chart_id)
@@ -245,11 +252,13 @@ def _build_betting_context(
         "kpis": service.get_betting_kpis(scope),
         "roi_table": service.get_betting_roi_table(scope),
         "current_scope": scope,
-        "current_path": "/betting",
+        "current_path": "/track-record",
         "cache_meta": service.get_cache_meta(),
         # One block: every KPI, chart and ROI row is drawn from the betting simulation ledger.
-        # Built here so betting_page and betting_fragment receive it from one place.
-        "old_rule_scope": service.cached_span_old_rule_scope(BETTING_SEASON_RANGE_KEY),
+        # Named for its block because Track Record carries four scopes side by side.
+        "betting_old_rule_scope": service.cached_span_old_rule_scope(
+            BETTING_SEASON_RANGE_KEY
+        ),
     }
 
 
@@ -874,6 +883,157 @@ def _compute_summary(service: Any) -> dict[str, Any]:
     return summary
 
 
+# The insights chart family that moved to Track Record; the rest of INSIGHTS_CHART_IDS is
+# How It Works'. Matched by prefix so the split cannot drift from the id tuple itself.
+_MODEL_VS_MARKET_PREFIX = "insights_model_vs_market_"
+
+
+def _season_metrics_block(service: DataService, season: int | None) -> dict[str, Any]:
+    """The season-metrics table rows and their own old-rule scope (Track Record's season block).
+
+    ONE builder for the full Track Record page and ``_performance_block_response`` (the season
+    swap and the retired ``/performance`` URL's HTMX branch), so the table and its label are read
+    one way. The scope comes from the seasons the table shows (R16 / D33.2-07).
+    """
+    season_metrics = _pivot_season_metrics(service.get_backtest_metrics(season=season))
+    return {
+        "season_metrics": season_metrics,
+        "season_metrics_old_rule_scope": DataService.old_rule_scope(
+            _rows_seasons(season_metrics)
+        ),
+    }
+
+
+def _build_track_record_context(
+    service: DataService,
+    season: int | None,
+    scope: str,
+    request: Request,
+) -> dict[str, Any]:
+    """Assemble the Track Record page context from cached data only.
+
+    Track Record merges the retired /performance, /backtest and /betting pages and the market half
+    of /insights, so it reuses each one's cached reads instead of re-deriving any of them: the
+    betting block comes whole from ``_build_betting_context`` (the builder the betting fragment
+    uses), and the summary, season table and chart reads are the ones the retired handlers made.
+    The backtest ``equity`` chart and the WP ``calibration`` chart are deliberately NOT read: the
+    first repeats the betting equity curve, the second lives on How It Works. Their ids stay in the
+    cache untouched.
+
+    Four blocks show numbers, so four old-rule scopes, each from its block's own data (R16 /
+    D33.2-07): the all-history summary (tiles + season heatmap) and the model-vs-market section
+    (charts, aggregate table, cumulative CLV) span the whole backtest corpus whatever season is
+    selected, the season table spans the rows it shows, and the betting block spans the simulation
+    ledger.
+    """
+    betting = _build_betting_context(service, scope, request)
+    backtest_scope = service.cached_span_old_rule_scope(BACKTEST_SEASON_RANGE_KEY)
+    charts: dict[str, str | None] = {
+        **betting["charts"],
+        "clv": service.get_chart_html("clv"),
+        "heatmap": service.get_chart_html("heatmap"),
+    }
+    for chart_id in INSIGHTS_CHART_IDS:
+        if chart_id.startswith(_MODEL_VS_MARKET_PREFIX):
+            charts[chart_id] = service.get_chart_html(chart_id)
+    return {
+        **betting,
+        "charts": charts,
+        "available_seasons": service.get_available_seasons(),
+        "current_season": season,
+        **_season_metrics_block(service, season),
+        # Known, pre-existing UIAP-01 exception: _compute_summary averages the cached backtest
+        # metric rows in the request path. It is carried over unchanged from the retired
+        # /performance page; the redesign moves where it renders, not what it computes.
+        "summary": _compute_summary(service),
+        "aggregate_table": service.get_insights_aggregate_table(),
+        "current_path": "/track-record",
+        "summary_old_rule_scope": backtest_scope,
+        "backtest_old_rule_scope": backtest_scope,
+    }
+
+
+def _build_how_it_works_context(
+    service: DataService, request: Request
+) -> dict[str, Any]:
+    """Assemble the How It Works page context from cached data only.
+
+    The calibration, feature-importance and accuracy-trend half of the retired /insights page,
+    plus the WP reliability chart (``calibration``) that /backtest and /insights both used to
+    show. One block -- every chart is drawn from the backtest corpus -- so one old-rule scope.
+    """
+    charts: dict[str, str | None] = {
+        chart_id: service.get_chart_html(chart_id)
+        for chart_id in INSIGHTS_CHART_IDS
+        if not chart_id.startswith(_MODEL_VS_MARKET_PREFIX)
+    }
+    charts["calibration"] = service.get_chart_html("calibration")
+    return {
+        "request": request,
+        "charts": charts,
+        "current_path": "/how-it-works",
+        "cache_meta": service.get_cache_meta(),
+        "old_rule_scope": service.cached_span_old_rule_scope(BACKTEST_SEASON_RANGE_KEY),
+    }
+
+
+def _performance_block_response(
+    request: Request, service: DataService, season: int | None
+) -> Response:
+    """Render Track Record's ``performance_content`` block: the season-metrics table alone.
+
+    Shared by ``/fragments/performance`` (the season selector's swap) and an HTMX request to the
+    retired ``/performance`` URL, so the two cannot drift. The context is exactly what the block
+    reads: the rows, the selected season, and the rows' own old-rule scope.
+    """
+    context = {
+        "request": request,
+        "current_season": season,
+        **_season_metrics_block(service, season),
+    }
+    template_response = templates.TemplateResponse(
+        request, "pages/track_record.html", context, block_name="performance_content"
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
+
+
+def _betting_block_response(
+    request: Request, service: DataService, scope: str
+) -> Response:
+    """Render Track Record's ``betting_content`` block for an already-whitelisted *scope*.
+
+    Shared by ``/fragments/betting`` (the scope toggle's swap) and an HTMX request to the retired
+    ``/betting`` URL. Reads cached HTML/JSON only -- zero metric logic on the request path (D-20).
+    """
+    context = _build_betting_context(service, scope, request)
+    template_response = templates.TemplateResponse(
+        request, "pages/track_record.html", context, block_name="betting_content"
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
+
+
+def _legacy_redirect(
+    request: Request, path: str, anchor: str | None = None
+) -> RedirectResponse:
+    """301 a retired page URL to its merged page, keeping the query string and adding the anchor.
+
+    The query string is carried across verbatim, so an old bookmark such as
+    ``/performance?season=2023`` opens the same season on Track Record. *path* is always a fixed
+    literal from this module, never built from the request, so the redirect cannot be pointed
+    off-site. The response carries the page Cache-Control: a browser caches the move for a minute
+    instead of permanently, so the target can still be changed later.
+    """
+    query = request.url.query
+    target = f"{path}?{query}" if query else path
+    if anchor:
+        target = f"{target}#{anchor}"
+    response = RedirectResponse(target, status_code=301)
+    response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -950,163 +1110,93 @@ def this_week_page(
     return template_response
 
 
-@router.get("/performance")
-def performance_page(
+@router.get("/track-record")
+def track_record_page(
     request: Request,
-    season: int | None = Query(None),
+    season: str | None = Query(None),
+    scope: str = Query(_DEFAULT_BETTING_SCOPE),
     service: DataService = Depends(get_data_service),
 ):
-    """Serve the historical performance page.
+    """Serve the Track Record page (the merged /performance, /backtest and /betting pages).
 
-    Shows all-time summary metrics with a season selector that swaps
-    season-specific metrics via HTMX.
+    ``season`` selects the season-metrics table and is parsed defensively (an unparseable value
+    means "all seasons", never a 422); ``scope`` selects the betting block and is whitelisted to
+    all / recommended. They are the parameters the retired pages took, so a redirected bookmark
+    keeps its meaning. Always a full page: the two swappable blocks are served by
+    ``/fragments/performance`` and ``/fragments/betting``.
     """
-    available_seasons = service.get_available_seasons()
-    raw_metrics = service.get_backtest_metrics(season=season)
-    season_metrics = _pivot_season_metrics(raw_metrics)
-    summary = _compute_summary(service)
-    cache_meta = service.get_cache_meta()
-
-    context = {
-        "request": request,
-        "available_seasons": available_seasons,
-        "current_season": season,
-        "season_metrics": season_metrics,
-        "summary": summary,
-        "current_path": "/performance",
-        "cache_meta": cache_meta,
-        # Two blocks, two scopes. The summary aggregates the WHOLE backtest corpus whatever season
-        # is selected (_compute_summary reads every metric), so its scope is that corpus's span and
-        # never the season query parameter. The table is scoped to the rows it shows.
-        "summary_old_rule_scope": service.cached_span_old_rule_scope(
-            BACKTEST_SEASON_RANGE_KEY
-        ),
-        "season_metrics_old_rule_scope": DataService.old_rule_scope(
-            _rows_seasons(season_metrics)
-        ),
-    }
-
-    # If HTMX request, return only the performance_content block
-    block = "performance_content" if request.headers.get("HX-Request") else None
+    context = _build_track_record_context(
+        service, _parse_int_param(season), _normalize_betting_scope(scope), request
+    )
     template_response = templates.TemplateResponse(
-        request, "pages/performance.html", context, block_name=block
+        request, "pages/track_record.html", context
     )
     template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
     return template_response
+
+
+@router.get("/how-it-works")
+def how_it_works_page(
+    request: Request,
+    service: DataService = Depends(get_data_service),
+):
+    """Serve the How It Works page: methodology, calibration, feature importance, accuracy.
+
+    Static, with no filters. Every chart is pre-rendered during cache population and read here
+    as cached HTML (no statistical logic on the request path).
+    """
+    context = _build_how_it_works_context(service, request)
+    template_response = templates.TemplateResponse(
+        request, "pages/how_it_works.html", context
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
+
+
+@router.get("/performance")
+def performance_retired(
+    request: Request,
+    season: str | None = Query(None),
+    service: DataService = Depends(get_data_service),
+):
+    """Retired: a full navigation is sent to Track Record's season section, query kept.
+
+    An HTMX request (a page still holding the old selector markup) gets the season block it
+    asked for instead, because htmx would otherwise swap a whole page into a table-sized target.
+    """
+    if request.headers.get("HX-Request"):
+        return _performance_block_response(request, service, _parse_int_param(season))
+    return _legacy_redirect(request, "/track-record", anchor="seasons")
 
 
 @router.get("/backtest")
-def backtest_page(
-    request: Request,
-    service: DataService = Depends(get_data_service),
-):
-    """Serve the backtest results page with 4 Plotly charts.
-
-    Charts are pre-rendered in the DuckDB chart_cache for fast serving.
-    Falls back to empty state components if charts are not available.
-    """
-    charts = {
-        "calibration": service.get_chart_html("calibration"),
-        "clv": service.get_chart_html("clv"),
-        "heatmap": service.get_chart_html("heatmap"),
-        "equity": service.get_chart_html("equity"),
-    }
-    cache_meta = service.get_cache_meta()
-
-    context = {
-        "request": request,
-        "charts": charts,
-        "current_path": "/backtest",
-        "cache_meta": cache_meta,
-        # One block: the four charts, pre-rendered over the whole backtest corpus.
-        "old_rule_scope": service.cached_span_old_rule_scope(BACKTEST_SEASON_RANGE_KEY),
-    }
-    template_response = templates.TemplateResponse(
-        request, "pages/backtest.html", context
-    )
-    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
-    return template_response
+def backtest_retired(request: Request):
+    """Retired: its four charts now live on Track Record (and WP calibration on How It Works)."""
+    return _legacy_redirect(request, "/track-record")
 
 
 @router.get("/insights")
-def insights_page(
-    request: Request,
-    service: DataService = Depends(get_data_service),
-):
-    """Serve the Model Insights page.
-
-    All charts are pre-rendered during cache population (Plan 16-02) and
-    stored in the DuckDB chart_cache. The aggregate Model-vs-Market table
-    is also precomputed during pre-render and stored under chart_id
-    ``insights_aggregate_table``. This handler contains NO statistical
-    logic -- Plan 16-02 is the single source of truth for metric formulas
-    (REVIEWS Codex HIGH #1).
-
-    Page is static with no filters (D-19). Cache-Control header matches
-    the other static-artifact pages (Phase 15 D-07 / REVIEWS Codex MEDIUM
-    #12).
-    """
-    # Fetch the 9 new insights chart HTML blobs.
-    charts: dict[str, str | None] = {
-        chart_id: service.get_chart_html(chart_id) for chart_id in INSIGHTS_CHART_IDS
-    }
-    # Reuse the existing WP reliability chart (not part of INSIGHTS_CHART_IDS per D-22).
-    charts["calibration"] = service.get_chart_html("calibration")
-
-    # Precomputed aggregate table (list of dicts). Falls back to [] if missing/malformed.
-    aggregate_table = service.get_insights_aggregate_table()
-
-    cache_meta = service.get_cache_meta()
-    context = {
-        "request": request,
-        "charts": charts,
-        "aggregate_table": aggregate_table,
-        "current_path": "/insights",
-        "cache_meta": cache_meta,
-        # One block: all three sections are drawn from the same backtest corpus.
-        "old_rule_scope": service.cached_span_old_rule_scope(BACKTEST_SEASON_RANGE_KEY),
-    }
-    template_response = templates.TemplateResponse(
-        request, "pages/insights.html", context
-    )
-    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
-    return template_response
+def insights_retired(request: Request):
+    """Retired: its model half is How It Works (the market half is on Track Record)."""
+    return _legacy_redirect(request, "/how-it-works")
 
 
 @router.get("/betting")
-def betting_page(
+def betting_retired(
     request: Request,
     scope: str = Query(_DEFAULT_BETTING_SCOPE),
     service: DataService = Depends(get_data_service),
 ):
-    """Serve the Betting Dashboard page.
+    """Retired: a full navigation is sent to Track Record's betting section, query kept.
 
-    Renders the 7-card KPI strip, the flat-vs-Kelly equity curve plus three
-    per-bet-type mini equities, the three ROI grouped-bar charts plus a ROI
-    summary table, and the three per-type edge histograms -- all in D-04 order
-    (KPI -> Equity -> ROI -> Edge). A page-level All/Recommended toggle (D-05/
-    D-17) re-renders the swappable ``betting_content`` block via HTMX.
-
-    All charts and the KPI/ROI JSON blobs are pre-rendered for BOTH scope
-    variants during cache population (Plan 17-03); this handler reads cached
-    HTML/JSON only and contains NO betting metric logic (D-20). ``scope`` is
-    whitelisted to {"all", "recommended"}, defaulting to ``"recommended"`` on
-    anything else (Security V5 / T-V5-01).
-
-    On an HX-Request the handler returns only the ``betting_content`` block so a
-    full navigation to ``/betting?scope=`` and the toggle's fragment swap share
-    one code path. Cache-Control is set on the returned TemplateResponse
-    (Phase 15 D-07).
+    An HTMX request gets the betting block for the whitelisted scope, as the old page's own
+    HX-Request branch did.
     """
-    scope = _normalize_betting_scope(scope)
-    context = _build_betting_context(service, scope, request)
-
-    block_name = "betting_content" if request.headers.get("HX-Request") else None
-    template_response = templates.TemplateResponse(
-        request, "pages/betting.html", context, block_name=block_name
-    )
-    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
-    return template_response
+    if request.headers.get("HX-Request"):
+        return _betting_block_response(
+            request, service, _normalize_betting_scope(scope)
+        )
+    return _legacy_redirect(request, "/track-record", anchor="betting-sim")
 
 
 @router.get("/bets")

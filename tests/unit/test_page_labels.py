@@ -55,22 +55,20 @@ NEW_RULE_SEASON = 2026
 # web/templates/pages/ is a key; a page inspected and found to render no pre-fix number would be
 # declared 0 with its reason in DELIBERATELY_UNLABELLED_REASONS.
 EXPECTED_PREFIX_BLOCKS: dict[str, int] = {
-    # The four pre-rendered charts over the whole backtest corpus, as one block.
-    "backtest.html": 1,
     # The selected week's live list (a past week is a replay), and the replay tracker sections.
     "bets.html": 2,
-    # KPI strip, equity, ROI and edge charts: one simulation over the backtest window.
-    "betting.html": 1,
     # The game header: its season line and the completed-game result overlay (score, badge, CLV).
     "game_detail.html": 1,
-    # Calibration, feature importance and model-vs-market sections: one backtest corpus.
-    "insights.html": 1,
-    # The all-history summary strip, and the season-scoped metrics table.
-    "performance.html": 2,
-    # The selected season's KPI strip and its cumulative and weekly charts.
+    # Calibration, feature importance and the accuracy trend: one backtest corpus.
+    "how_it_works.html": 1,
+    # The selected season's KPI strip, week strip and its cumulative and weekly charts.
     "season.html": 1,
     # The selected week's summary banner and game grid.
     "this_week.html": 1,
+    # The all-history summary (tiles + season heatmap), the season-scoped metrics table, the
+    # model-vs-market section (charts, aggregate table, cumulative CLV), and the betting
+    # simulation: four blocks, four scopes.
+    "track_record.html": 4,
 }
 
 # Pages inspected and deliberately left with no labelled block, each with its reason. Every page
@@ -166,21 +164,18 @@ def page_context(page: str, season: int) -> dict[str, Any]:
     """A context shaped like the one *page*'s route builds, every block showing *season*."""
     scope = scope_for(season)
     common: dict[str, Any] = {"request": _StubRequest(), "cache_meta": {}}
-    if page == "backtest.html":
-        charts = {
-            cid: f"<div>{cid}</div>"
-            for cid in ("calibration", "clv", "heatmap", "equity")
-        }
+    if page == "track_record.html":
+        metrics = [
+            {"season": season, "target": "wp", "games": 256, "accuracy": 64.0}
+            | {"mae": None, "rmse": None, "r2": None}
+        ]
         return {
             **common,
-            "charts": charts,
-            "current_path": "/backtest",
-            "old_rule_scope": scope,
-        }
-    if page == "insights.html":
-        return {
-            **common,
-            "charts": {"calibration": "<div>calibration</div>"},
+            "charts": {"heatmap": "<div>heatmap</div>", "clv": "<div>clv</div>"},
+            "available_seasons": [season],
+            "current_season": None,
+            "season_metrics": metrics,
+            "summary": {"total_games": 256, "overall_clv": -1.2, "wp_accuracy": 64.0},
             "aggregate_table": [
                 {
                     "target": "wp",
@@ -191,33 +186,21 @@ def page_context(page: str, season: int) -> dict[str, Any]:
                     "gap_favorable": False,
                 }
             ],
-            "current_path": "/insights",
-            "old_rule_scope": scope,
-        }
-    if page == "betting.html":
-        return {
-            **common,
-            "charts": {},
             "kpis": {"total_bets": 5, "win_rate": 60.0, "roi_flat": 1.2},
             "roi_table": [],
             "current_scope": "recommended",
-            "current_path": "/betting",
-            "old_rule_scope": scope,
-        }
-    if page == "performance.html":
-        metrics = [
-            {"season": season, "target": "wp", "games": 256, "accuracy": 64.0}
-            | {"mae": None, "rmse": None, "r2": None}
-        ]
-        return {
-            **common,
-            "available_seasons": [season],
-            "current_season": None,
-            "season_metrics": metrics,
-            "summary": {"total_games": 256, "overall_clv": -1.2, "wp_accuracy": 64.0},
-            "current_path": "/performance",
+            "current_path": "/track-record",
             "summary_old_rule_scope": scope,
             "season_metrics_old_rule_scope": scope,
+            "backtest_old_rule_scope": scope,
+            "betting_old_rule_scope": scope,
+        }
+    if page == "how_it_works.html":
+        return {
+            **common,
+            "charts": {"calibration": "<div>calibration</div>"},
+            "current_path": "/how-it-works",
+            "old_rule_scope": scope,
         }
     if page == "season.html":
         return {
@@ -517,14 +500,12 @@ class TestTheSeasonSpanStamp:
 # A string each page renders only when the page itself rendered, so a template error that yields an
 # empty or truncated string cannot satisfy a zero-count assertion.
 PAGE_MARKERS: dict[str, str] = {
-    "backtest.html": "Backtest Results",
     "bets.html": "Weekly Bet List",
-    "betting.html": "Betting Dashboard",
     "game_detail.html": "BUF @ KC",
-    "insights.html": "Model Insights",
-    "performance.html": "Historical Performance",
+    "how_it_works.html": "What the models rely on",
     "season.html": "Season Tracking",
     "this_week.html": "This Week's Predictions",
+    "track_record.html": "Season by season",
 }
 
 
@@ -581,11 +562,13 @@ class TestTwoWayRendering:
         assert html.strip() == ""
 
     def test_a_page_with_an_empty_context_labels_its_block_once(self) -> None:
-        """The backtest page with no scope at all: its one block labels once, never zero times."""
-        context = _without_scopes(page_context("backtest.html", NEW_RULE_SEASON))
-        html = render_page("backtest.html", context)
+        """How It Works with no scope at all: its one block labels once, never zero times."""
+        context = _without_scopes(page_context("how_it_works.html", NEW_RULE_SEASON))
+        html = render_page("how_it_works.html", context)
         assert label_count(html) == 1
 
     def test_the_rendered_label_is_dated(self) -> None:
-        html = render_page("backtest.html", page_context("backtest.html", PAST_SEASON))
+        html = render_page(
+            "how_it_works.html", page_context("how_it_works.html", PAST_SEASON)
+        )
         assert "2026-09-15" in html

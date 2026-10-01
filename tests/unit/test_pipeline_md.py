@@ -76,15 +76,22 @@ class TestPipelineMdAnchors:
             "PIPELINE.md Stage 2 still contains the dead path: data/silver/team_form.parquet"
         )
 
-    def test_stage7_betting_and_season_pages_present(self):
-        """D-06.2 — Stage 7 page list includes /betting and /season.
+    def test_stage7_lists_the_five_broadcast_pages(self):
+        """D-06.2, updated by the Broadcast redesign (2026-10): Stage 7 lists the five nav pages.
 
-        These two pages were added in Phase 23 (WR-03); README and RUNBOOK were
-        corrected then but PIPELINE.md was missed.  Phase 23.1 closes the gap.
+        Phase 23.1 added /betting and /season to this list. The Broadcast redesign then merged
+        /performance, /backtest, /insights and /betting into /track-record and /how-it-works, so
+        the list names the five pages the nav serves; the retired URLs appear only as redirects.
         """
         content = _read_pipeline_md()
-        assert "/betting" in content, "PIPELINE.md Stage 7 missing page: /betting"
-        assert "/season" in content, "PIPELINE.md Stage 7 missing page: /season"
+        for page in ("/bets", "/season", "/track-record", "/how-it-works"):
+            assert f"`{page}`" in content, f"PIPELINE.md Stage 7 missing page: {page}"
+        assert "the five top-nav pages" in content, (
+            "PIPELINE.md Stage 7 does not say the nav has five pages"
+        )
+        assert "the seven top-nav pages" not in content, (
+            "PIPELINE.md Stage 7 still lists the seven pre-redesign pages"
+        )
 
     def test_stage7_six_page_framing_present(self):
         """D-06.2 — Stage 7 retains the README-authoritative six-page + drill-down framing.

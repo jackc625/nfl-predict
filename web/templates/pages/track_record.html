@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+{% import "components/_broadcast.html" as bc %}
+{% import "components/_chart_panel.html" as cp %}
+{% block title %}Track Record{% endblock %}
+{% block content %}
+
+<header class="mb-8">
+  <h1 class="display text-4xl md:text-5xl leading-none text-fg">Track Record</h1>
+  <p class="text-sm text-muted mt-2 max-w-2xl">How the model has done on past seasons -- season by season, against the betting market, and in a simulated betting account. Every figure on this page comes from a walk-forward backtest.</p>
+  <nav aria-label="On this page" class="flex flex-wrap gap-2 mt-4">
+    {% for anchor, text in [("summary", "Summary"), ("seasons", "Season by season"), ("vs-market", "Model vs market"), ("clv", "Closing-line value"), ("betting-sim", "Betting simulation")] %}
+    <a href="#{{ anchor }}" class="skew-control"><span class="unskew">{{ text }}</span></a>
+    {% endfor %}
+  </nav>
+</header>
+
+{# ---------------------------------------------------------------------- #}
+{# 1. All-time summary: the four headline tiles and the season heatmap.    #}
+{# Both are drawn from the WHOLE backtest corpus whatever season is chosen #}
+{# below, so they share one scope and one label (R16 / D33.2-07) -- never  #}
+{# the season query parameter.                                             #}
+{# ---------------------------------------------------------------------- #}
+<section id="summary" class="mb-12 scroll-mt-6">
+  {{ bc.section_head("All-time summary", meta="every backtest season") }}
+  {% with scope=summary_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+  {% set clv = summary.overall_clv|default(0) %}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+    {{ bc.stat_tile("Total Games", summary.total_games|default(0)) }}
+    {# CLV is a realised measurement against the closing line, so it may carry green/red. #}
+    {{ bc.stat_tile("Overall CLV", "%.2f"|format(clv) ~ "%", value_class=("text-green-400" if clv > 0 else ("text-red-400" if clv < 0 else "text-muted"))) }}
+    {{ bc.stat_tile("WP Accuracy", "%.1f"|format(summary.wp_accuracy|default(0)) ~ "%") }}
+    {{ bc.stat_tile("WP Brier Score", ("%.4f"|format(summary.brier_score)) if summary.brier_score is defined and summary.brier_score is not none else "--") }}
+  </div>
+  {{ cp.chart_panel("Season Comparison", charts.heatmap, "Season heatmap has not been generated.") }}
+</section>
+
+{# ---------------------------------------------------------------------- #}
+{# 2. Season by season: selector + export, and the swappable table.       #}
+{# ---------------------------------------------------------------------- #}
+<section id="seasons" class="mb-12 scroll-mt-6">
+  {{ bc.section_head("Season by season", meta="backtest metrics for each season and target") }}
+  <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+    {% include "components/_season_selector.html" %}
+    {% with csv_url="/api/export/csv?type=backtest",
+            json_url="/api/export/json?type=backtest" %}
+      {% include "components/_export_buttons.html" %}
+    {% endwith %}
+  </div>
+
+  {# Season-specific content (HTMX swap target: /fragments/performance). The block reads only
+     season_metrics, current_season and its own scope -- the fragment passes nothing else. #}
+  <div id="performance-content">
+  {% block performance_content %}
+  {# Old-rule label for the season-scoped table, from the seasons the table shows. #}
+  {% with scope=season_metrics_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+  {% if season_metrics %}
+  <div class="panel p-0 overflow-hidden">
+    <h3 class="panel-title px-4 pt-4 pb-3">Season Metrics</h3>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-line">
+            <th scope="col" class="label px-4 py-2 text-left">Season</th>
+            <th scope="col" class="label px-4 py-2 text-left">Target</th>
+            <th scope="col" class="label px-4 py-2 text-right">Games</th>
+            <th scope="col" class="label px-4 py-2 text-right">Accuracy</th>
+            <th scope="col" class="label px-4 py-2 text-right">MAE</th>
+            <th scope="col" class="label px-4 py-2 text-right">RMSE</th>
+            <th scope="col" class="label px-4 py-2 text-right">R&sup2;</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-line">
+          {% for m in season_metrics %}
+          <tr class="hover:bg-panel-2 transition-colors">
+            <td class="px-4 py-2.5 text-fg font-semibold num">{{ m.season }}</td>
+            <td class="px-4 py-2.5 text-fg font-semibold uppercase">{{ m.target }}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{{ m.games if m.games is not none else '-' }}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{% if m.accuracy is not none %}{{ "%.1f"|format(m.accuracy) }}%{% else %}-{% endif %}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{% if m.mae is not none %}{{ "%.4f"|format(m.mae) }}{% else %}-{% endif %}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{% if m.rmse is not none %}{{ "%.2f"|format(m.rmse) }}{% else %}-{% endif %}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{% if m.r2 is not none %}{{ "%.3f"|format(m.r2) }}{% else %}-{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+    {% with heading="No backtest data",
+            body="Run the backtest pipeline to generate historical performance data.",
+            action_text=none, action_url=none %}
+      {% include "components/_empty_state.html" %}
+    {% endwith %}
+  {% endif %}
+  {% endblock %}
+  </div>
+</section>
+
+{# ---------------------------------------------------------------------- #}
+{# 3. Model vs market, with the cumulative closing-line value chart. All   #}
+{# of it is drawn from the same backtest corpus, so one label covers the   #}
+{# section; #clv is the CLV panel's own anchor.                            #}
+{# ---------------------------------------------------------------------- #}
+<section id="vs-market" class="mb-12 scroll-mt-6">
+  {{ bc.section_head("Model vs Market", meta="against the closing line") }}
+  {% with scope=backtest_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+  <p class="text-sm text-muted mb-4 max-w-3xl">How the model stacks up against the closing market line -- by season and in aggregate.</p>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+    {{ cp.chart_panel("Win Probability -- Model vs Market", charts.insights_model_vs_market_wp, "No backtest predictions or market data available for comparison.") }}
+    {{ cp.chart_panel("Against the Spread -- Model vs Market MAE", charts.insights_model_vs_market_ats, "No backtest predictions or market data available for comparison.") }}
+    {{ cp.chart_panel("Over / Under -- Model vs Market MAE", charts.insights_model_vs_market_ou, "No backtest predictions or market data available for comparison.") }}
+  </div>
+
+  <div class="panel p-0 overflow-hidden mb-4">
+    <h3 class="panel-title px-4 pt-4 pb-3">Model vs Market -- Aggregate</h3>
+    {% if aggregate_table %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-line">
+            <th scope="col" class="label px-4 py-2 text-left">Target</th>
+            <th scope="col" class="label px-4 py-2 text-left">Metric</th>
+            <th scope="col" class="label px-4 py-2 text-right">Model</th>
+            <th scope="col" class="label px-4 py-2 text-right">Market</th>
+            <th scope="col" class="label px-4 py-2 text-right">Gap</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-line">
+          {% for row in aggregate_table %}
+          <tr class="hover:bg-panel-2 transition-colors">
+            <td class="px-4 py-2.5 text-fg font-semibold uppercase">{{ row.target }}</td>
+            <td class="px-4 py-2.5 text-fg">{{ row.metric }}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{{ row.model_fmt }}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{{ row.market_fmt }}</td>
+            {# MONOCHROME (Decision 13): a gap compares two metrics, it is not a realised result, so
+               it never takes green or red. The stored gap_favorable tri-state picks the word. #}
+            <td class="px-4 py-2.5 text-right font-semibold text-fg num whitespace-nowrap">{{ row.gap_fmt }}{% if row.gap_favorable is sameas true %} <span class="font-sans text-xs font-normal text-muted">favours model</span>{% elif row.gap_favorable is sameas false %} <span class="font-sans text-xs font-normal text-muted">favours market</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs text-muted px-4 py-3 border-t border-line">Gap = Model - Market. "Favours model" means the model's number is on the better side of the metric (higher accuracy, lower error); "favours market" means the market's is. No word means a neutral gap or missing data. A gap compares two measurements, so it is not coloured as a win or a loss.</p>
+    {% else %}
+      <div class="px-4 pb-4">
+        {% with heading="Chart unavailable", body="Aggregate metrics could not be computed. Backtest predictions or market data are missing.", action_text=none, action_url=none %}
+          {% include "components/_empty_state.html" %}
+        {% endwith %}
+      </div>
+    {% endif %}
+  </div>
+
+  {# The panel carries the #clv anchor itself (chart_panel's panel_id). #}
+  {{ cp.chart_panel("Cumulative CLV", charts.clv, "CLV chart data has not been generated.", panel_id="clv") }}
+</section>
+
+{# ---------------------------------------------------------------------- #}
+{# 4. Betting simulation (HTMX swap target: /fragments/betting).          #}
+{# ---------------------------------------------------------------------- #}
+<section id="betting-sim" class="mb-12 scroll-mt-6">
+  {{ bc.section_head("Betting Simulation", meta="walk-forward backtest, pretend bankroll") }}
+  <p class="text-sm text-muted mb-4 max-w-3xl">Would betting this model have made money -- and is its edge real? A walk-forward simulation over the backtest seasons, from a pretend $10,000 bankroll.</p>
+
+  <div id="betting-content">
+  {% block betting_content %}
+  {# Imported INSIDE the block: jinja2-fragments renders this block on its own for the scope swap
+     and does not run the template's top-level statements. #}
+  {% import "components/_broadcast.html" as bc %}
+  {% import "components/_chart_panel.html" as cp %}
+
+  {# Scope toggle (All / Recommended). Lives INSIDE the swap target so every swap re-renders it
+     with the correct current_scope-driven active highlight + aria-pressed (WR-01). #}
+  <div class="mb-6">
+    {% include "components/_betting_scope_toggle.html" %}
+  </div>
+
+  {# Old-rule label for every part of the simulation below (R16 / D33.2-07). Inside the block so
+     the fragment swap re-renders it with the figures. #}
+  {% with scope=betting_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+
+  {# KPI scoreboard (D-06). Simulated profit and loss are realised outcomes of the simulation,
+     so the ROI and profit tiles may carry green/red. #}
+  {% set roi_flat = kpis.roi_flat|default(0) %}
+  {% set roi_kelly = kpis.roi_kelly|default(0) %}
+  {% set net_profit = kpis.net_profit_flat|default(0) %}
+  <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
+    {{ bc.stat_tile("Total Bets", kpis.total_bets|default(0)) }}
+    {{ bc.stat_tile("Win Rate", "%.1f"|format(kpis.win_rate|default(0)) ~ "%") }}
+    {{ bc.stat_tile("ROI (Flat)", "%+.2f"|format(roi_flat) ~ "%", value_class=("text-green-400" if roi_flat > 0 else ("text-red-400" if roi_flat < 0 else "text-muted"))) }}
+    {{ bc.stat_tile("ROI (Kelly)", "%+.2f"|format(roi_kelly) ~ "%", value_class=("text-green-400" if roi_kelly > 0 else ("text-red-400" if roi_kelly < 0 else "text-muted"))) }}
+    {{ bc.stat_tile("Net Profit", net_profit|format_currency, value_class=("text-green-400" if net_profit > 0 else ("text-red-400" if net_profit < 0 else "text-muted"))) }}
+    {{ bc.stat_tile("Final Bankroll", kpis.final_bankroll_flat|default(10000)|format_currency) }}
+    {{ bc.stat_tile("Max Drawdown", kpis.max_drawdown_flat|default(0)|format_currency) }}
+  </div>
+  <p class="text-xs text-muted mt-3 mb-8 max-w-3xl">Kelly figures are identical across scopes -- Kelly already zeroes non-edge bets, so only flat-stake and bet counts change when you switch scope.</p>
+
+  {# Equity Curve (D-07 / D-08) #}
+  <h3 class="panel-title mb-1">Equity Curve</h3>
+  <p class="text-sm text-muted mb-3 max-w-3xl">Cumulative pretend bankroll from a $10,000 start, flat-stake vs Kelly, ordered by season and week.</p>
+  <div class="mb-6">
+    {{ cp.chart_panel(none, charts['betting_equity_' ~ current_scope], "Betting simulation data has not been generated. Run the cache rebuild to populate this view.", min_height=320) }}
+  </div>
+
+  <h3 class="panel-title mb-1">Equity by Bet Type</h3>
+  <p class="text-sm text-muted mb-3 max-w-3xl">Which bet type drove returns -- Winner, Spread, Totals.</p>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8">
+    {% for tgt, label in [("wp", "Winner"), ("ats", "Spread"), ("ou", "Totals")] %}
+      {{ cp.chart_panel(label, charts["betting_equity_mini_" ~ tgt ~ "_" ~ current_scope], "Betting simulation data has not been generated. Run the cache rebuild to populate this view.") }}
+    {% endfor %}
+  </div>
+
+  {# ROI Breakdown (D-10 / D-11) #}
+  <h3 class="panel-title mb-1">ROI Breakdown</h3>
+  <p class="text-sm text-muted mb-3 max-w-3xl">Return on investment by bet type, season, and edge bucket. Flat-stake isolates pick quality; Kelly mixes in sizing.</p>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-3">
+    {% for slice_kind, label in [("type", "ROI by Bet Type"), ("season", "ROI by Season"), ("bucket", "ROI by Edge Bucket")] %}
+      {{ cp.chart_panel(label, charts["betting_roi_" ~ slice_kind ~ "_" ~ current_scope], "Betting simulation data has not been generated. Run the cache rebuild to populate this view.") }}
+    {% endfor %}
+  </div>
+  <p class="text-xs text-muted mb-6 max-w-3xl">Bars above 0% are profitable; bars below are losses.</p>
+
+  <div class="panel p-0 overflow-hidden mb-8">
+    <h3 class="panel-title px-4 pt-4 pb-3">ROI Summary</h3>
+    {% if roi_table %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-line">
+            <th scope="col" class="label px-4 py-2 text-left">Slice</th>
+            <th scope="col" class="label px-4 py-2 text-right">Bets</th>
+            <th scope="col" class="label px-4 py-2 text-right">Win Rate</th>
+            <th scope="col" class="label px-4 py-2 text-right">ROI (Flat)</th>
+            <th scope="col" class="label px-4 py-2 text-right">ROI (Kelly)</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-line">
+          {% for row in roi_table %}
+          <tr class="hover:bg-panel-2 transition-colors">
+            <td class="px-4 py-2.5 text-fg font-semibold uppercase">{{ row.label|default(row.slice|default('')) }}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{{ row.bet_count|default(0) }}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{{ row.win_rate_fmt|default('-') }}</td>
+            <td class="px-4 py-2.5 text-right font-semibold num {% if row.roi_favorable is sameas true %}text-green-400{% elif row.roi_favorable is sameas false %}text-red-400{% else %}text-muted{% endif %}">{{ row.roi_flat_fmt|default('-') }}</td>
+            <td class="px-4 py-2.5 text-right text-fg num">{{ row.roi_kelly_fmt|default('-') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs text-muted px-4 py-3 border-t border-line">52.4% is the standard -110 break-even, exact for spread and totals. Moneyline (Winner) odds vary, so per-bet breakeven differs -- treat this as a reference, not a per-bet truth.</p>
+    {% else %}
+      <div class="px-4 pb-4">
+        {% with heading="Chart unavailable", body="Betting simulation results could not be computed. Run the backtest betting simulation and rebuild the cache.", action_text=none, action_url=none %}
+          {% include "components/_empty_state.html" %}
+        {% endwith %}
+      </div>
+    {% endif %}
+  </div>
+
+  {# Edge Distribution (D-13 / D-14) #}
+  <h3 class="panel-title mb-1">Edge Distribution</h3>
+  <p class="text-sm text-muted mb-3 max-w-3xl">How often big-edge bets won. Each bet type is shown in its own units -- probability for Winner, points for Spread and Totals.</p>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    {% for tgt, label in [("wp", "Winner"), ("ats", "Spread"), ("ou", "Totals")] %}
+      {{ cp.chart_panel(label, charts["betting_edge_hist_" ~ tgt ~ "_" ~ current_scope], "Betting simulation data has not been generated. Run the cache rebuild to populate this view.") }}
+    {% endfor %}
+  </div>
+  {% endblock %}
+  </div>
+</section>
+
+{% endblock %}

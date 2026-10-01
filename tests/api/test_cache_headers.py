@@ -19,15 +19,25 @@ def test_this_week_page_has_cache_control(test_client: TestClient) -> None:
     assert response.headers.get("cache-control") == "public, max-age=60"
 
 
-def test_performance_page_has_cache_control(test_client: TestClient) -> None:
-    response = test_client.get("/performance")
+def test_track_record_page_has_cache_control(test_client: TestClient) -> None:
+    response = test_client.get("/track-record")
     assert response.status_code == 200
     assert response.headers.get("cache-control") == "public, max-age=60"
 
 
-def test_backtest_page_has_cache_control(test_client: TestClient) -> None:
-    response = test_client.get("/backtest")
+def test_how_it_works_page_has_cache_control(test_client: TestClient) -> None:
+    response = test_client.get("/how-it-works")
     assert response.status_code == 200
+    assert response.headers.get("cache-control") == "public, max-age=60"
+
+
+@pytest.mark.parametrize("url", ["/performance", "/backtest", "/insights", "/betting"])
+def test_a_retired_page_redirect_has_cache_control(
+    test_client: TestClient, url: str
+) -> None:
+    """A 301 is cacheable by default; the header bounds it to a minute so it can be re-pointed."""
+    response = test_client.get(url, follow_redirects=False)
+    assert response.status_code == 301
     assert response.headers.get("cache-control") == "public, max-age=60"
 
 

@@ -5,8 +5,8 @@ for HTMX-powered dynamic updates without full page reloads.
 
 Routes:
     GET /fragments/games       -- Game grid fragment (swapped into #game-grid)
-    GET /fragments/performance -- Performance content fragment (season swap)
-    GET /fragments/betting     -- Betting content fragment (All/Recommended scope swap)
+    GET /fragments/performance -- Track Record's season-metrics block (season swap)
+    GET /fragments/betting     -- Track Record's betting block (All/Recommended scope swap)
     GET /fragments/season      -- Season tracking content fragment (season swap)
 """
 
@@ -19,13 +19,13 @@ from api.routes.pages import (
     _DEFAULT_BETTING_SCOPE,
     PAGE_CACHE_CONTROL,
     _annotate_wp_correct,
-    _build_betting_context,
+    _betting_block_response,
     _build_season_context,
     _compute_week_summary,
     _normalize_betting_scope,
     _normalize_season,
     _parse_int_param,
-    _pivot_season_metrics,
+    _performance_block_response,
     _rows_seasons,
     _this_week_grid_context,
 )
@@ -105,32 +105,12 @@ def performance_fragment(
     season: str | None = Query(None),
     service: DataService = Depends(get_data_service),
 ):
-    """Return the performance_content block for HTMX season swap.
+    """Return Track Record's ``performance_content`` block for the HTMX season swap.
 
-    Renders only the season metrics table portion of the performance
-    page, used when the season selector dropdown changes.
+    Renders only the season-metrics table, used when the season selector changes. The render is
+    shared with the retired ``/performance`` URL's HTMX branch (``_performance_block_response``).
     """
-    season_int = _parse_int_param(season)
-    raw_metrics = service.get_backtest_metrics(season=season_int)
-    season_metrics = _pivot_season_metrics(raw_metrics)
-
-    context = {
-        "request": request,
-        "season_metrics": season_metrics,
-        "current_season": season_int,
-        # The same scope performance_page builds for the performance_content block (R16 / D33.2-07).
-        "season_metrics_old_rule_scope": DataService.old_rule_scope(
-            _rows_seasons(season_metrics)
-        ),
-    }
-    template_response = templates.TemplateResponse(
-        request,
-        "pages/performance.html",
-        context,
-        block_name="performance_content",
-    )
-    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
-    return template_response
+    return _performance_block_response(request, service, _parse_int_param(season))
 
 
 @router.get("/betting")
@@ -139,28 +119,13 @@ def betting_fragment(
     scope: str = Query(_DEFAULT_BETTING_SCOPE),
     service: DataService = Depends(get_data_service),
 ):
-    """Return the ``betting_content`` block for the HTMX All/Recommended swap.
+    """Return Track Record's ``betting_content`` block for the All/Recommended swap.
 
-    Renders only the swappable portion of the betting page (KPI strip + the
-    equity / ROI / edge sections) for the selected *scope*, used when the
-    scope toggle flips between "Recommended" and "All bets" (D-17).
-
-    ``scope`` is whitelisted to {"all", "recommended"} (default ``"recommended"``)
-    via the same chokepoint the full page uses, and the context is built by the
-    shared ``_build_betting_context`` helper so the cached-read logic is not
-    duplicated. Reads cached HTML/JSON only -- zero metric logic on the request
-    path (D-20). Cache-Control is set on the returned TemplateResponse.
+    ``scope`` is whitelisted to {"all", "recommended"} (default ``"recommended"``) through the
+    same chokepoint the page uses, and the render is shared with the retired ``/betting`` URL's
+    HTMX branch (``_betting_block_response``). Reads cached HTML/JSON only (D-20).
     """
-    scope = _normalize_betting_scope(scope)
-    context = _build_betting_context(service, scope, request)
-    template_response = templates.TemplateResponse(
-        request,
-        "pages/betting.html",
-        context,
-        block_name="betting_content",
-    )
-    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
-    return template_response
+    return _betting_block_response(request, service, _normalize_betting_scope(scope))
 
 
 @router.get("/season")

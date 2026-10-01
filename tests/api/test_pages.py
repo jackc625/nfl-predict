@@ -1,7 +1,8 @@
 """Tests for HTML page routes.
 
-Validates the predictions dashboard (landing page), performance page,
-backtest page, and HTMX block rendering.
+Validates the predictions dashboard (landing page), the game detail page, the season page and
+HTMX block rendering. The merged Track Record and How It Works pages and the retired-URL
+redirects are covered in ``tests/api/test_merged_pages.py``.
 
 Plan 31-15 adds the D31-26 regression: the week selector was PARAMETERISED IN PLACE so that /
 and /bets share one partial, and this module pins the claim that the This Week page renders
@@ -132,29 +133,6 @@ def test_this_week_empty_state(empty_test_client: TestClient):
     assert "No predictions available" in response.text
 
 
-def test_performance_page(test_client: TestClient):
-    """UIAP-03: Historical performance view loads and renders."""
-    response = test_client.get("/performance")
-    assert response.status_code == 200
-    assert "Historical Performance" in response.text
-    assert "Season Metrics" in response.text or "No backtest data" in response.text
-
-
-def test_performance_season_filter(test_client: TestClient):
-    """Performance page accepts season query parameter."""
-    response = test_client.get("/performance?season=2024")
-    assert response.status_code == 200
-
-
-def test_backtest_page(test_client: TestClient):
-    """UIAP-05: Backtest dashboard with charts loads and renders."""
-    response = test_client.get("/backtest")
-    assert response.status_code == 200
-    assert "Backtest Results" in response.text
-    assert "Calibration" in response.text
-    assert "CLV" in response.text
-
-
 def test_performance_fragment(test_client: TestClient):
     """UIAP-08: Season selector HTMX swap returns partial HTML."""
     response = test_client.get(
@@ -173,23 +151,6 @@ def test_performance_fragment_all_seasons(test_client: TestClient):
         headers={"HX-Request": "true"},
     )
     assert response.status_code == 200
-
-
-def test_backtest_page_has_chart_containers(test_client: TestClient):
-    """Backtest page includes all 4 chart container sections."""
-    response = test_client.get("/backtest")
-    assert response.status_code == 200
-    assert "Calibration Reliability" in response.text
-    assert "Cumulative CLV" in response.text
-    assert "Season Comparison" in response.text
-    assert "Betting Equity Curves" in response.text
-
-
-def test_backtest_page_responsive_grid(test_client: TestClient):
-    """Backtest page uses responsive 2x2 grid layout."""
-    response = test_client.get("/backtest")
-    assert response.status_code == 200
-    assert "grid-cols-1 lg:grid-cols-2" in response.text
 
 
 def test_performance_page_htmx_returns_block(test_client: TestClient):
@@ -293,101 +254,8 @@ def test_game_detail_export_buttons(test_client: TestClient):
 
 
 # ---------------------------------------------------------------------------
-# Phase 16: /insights page (DASH-10) route tests
+# /fragments/betting: Track Record's All/Recommended swap (default "recommended", D-17)
 # ---------------------------------------------------------------------------
-# Activated by Plan 16-03 (route, template, and nav link are now wired).
-
-
-def test_insights_page_200(test_client: TestClient):
-    """DASH-10: /insights returns 200 with all three section headings."""
-    response = test_client.get("/insights")
-    assert response.status_code == 200
-    html = response.text
-    assert "Model Insights" in html
-    assert "Calibration" in html
-    assert "Feature Importance" in html
-    assert "Model vs Market" in html
-
-
-def test_insights_page_cache_control(test_client: TestClient):
-    """D-20 / PAGE_CACHE_CONTROL: Cache-Control header is set on TemplateResponse."""
-    response = test_client.get("/insights")
-    assert response.status_code == 200
-    cc = response.headers.get("Cache-Control", "")
-    assert "public" in cc and "max-age" in cc
-
-
-def test_insights_page_nav_links_to_how_it_works(test_client: TestClient):
-    """The insights content moves to How It Works (Task 15); the nav already links there."""
-    response = test_client.get("/insights")
-    # Desktop nav + mobile menu.
-    assert response.text.count('href="/how-it-works"') >= 2
-
-
-def test_insights_page_renders_expected_chart_ids(test_client: TestClient):
-    """REVIEWS Codex HIGH #7: route reads exactly the 9 insights chart IDs
-    plus the existing ``calibration`` chart_id (D-22)."""
-    from api.charts import INSIGHTS_CHART_IDS
-
-    assert len(INSIGHTS_CHART_IDS) == 9
-    response = test_client.get("/insights")
-    html = response.text
-    # conftest inserts marker divs for each chart_id; assert all 9 markers render.
-    for chart_id in INSIGHTS_CHART_IDS:
-        assert f'data-chart-id="{chart_id}"' in html, f"Missing chart_id: {chart_id}"
-    # WP calibration reuses the existing `calibration` chart_id.
-    assert 'data-chart-id="calibration"' in html
-
-
-def test_insights_page_empty_db(empty_test_client: TestClient):
-    """D-29: empty DB renders empty-state cards, not 500."""
-    response = empty_test_client.get("/insights")
-    assert response.status_code == 200
-    assert "Chart unavailable" in response.text
-
-
-# ---------------------------------------------------------------------------
-# Phase 17: /betting page + /fragments/betting route scaffolds (skip-gated)
-# ---------------------------------------------------------------------------
-# Full assertion bodies now; gated by ``@pytest.mark.skip(reason="activated in
-# 17-04")`` until Plan 17-04 lands the ``betting_page`` handler, the
-# ``/fragments/betting`` route, ``web/templates/pages/betting.html``, and the
-# ``base.html`` nav link. Plan 17-04 activates them by deleting the skip marker
-# (Phase 16 skip-gated pattern). Default scope = "recommended" (D-17).
-
-
-def test_betting_page_200(test_client: TestClient):
-    """DASH-10: GET /betting returns 200 with the four section headings, a
-    Cache-Control header, and a nav link to /betting (desktop + mobile)."""
-    response = test_client.get("/betting")
-    assert response.status_code == 200
-    html = response.text
-    # Section headings (D-04 order: KPI strip -> Equity -> ROI -> Edge).
-    assert "Equity" in html
-    assert "ROI" in html
-    assert "Edge" in html
-    # Cache-Control set on the returned TemplateResponse (Phase 15 D-07).
-    cc = response.headers.get("Cache-Control", "")
-    assert "public" in cc and "max-age" in cc
-    # The betting simulation moves to Track Record (Task 15); the nav already links there.
-    assert html.count('href="/track-record"') >= 2
-
-
-def test_betting_page_renders_recommended_chart_ids(test_client: TestClient):
-    """Default load (scope=recommended) consumes the betting_*_recommended
-    chart_id markers the conftest fixture inserts."""
-    from tests.api.conftest import _BETTING_CHART_BASES, BETTING_SCOPES
-
-    assert "recommended" in BETTING_SCOPES
-    response = test_client.get("/betting")
-    html = response.text
-    # Every recommended-scope chart-HTML marker should render. The two JSON-blob
-    # families (kpis / roi_table) are decoded server-side, not emitted as markers.
-    for base in _BETTING_CHART_BASES:
-        if base in ("betting_kpis", "betting_roi_table"):
-            continue
-        chart_id = f"{base}_recommended"
-        assert f'data-chart-id="{chart_id}"' in html, f"Missing {chart_id}"
 
 
 def test_betting_fragment(test_client: TestClient):
@@ -419,14 +287,6 @@ def test_betting_fragment_scope_whitelist(test_client: TestClient):
     assert response.status_code == 200
     # Falls back to recommended-scope content.
     assert 'data-chart-id="betting_equity_recommended"' in response.text
-
-
-def test_betting_empty_db(empty_test_client: TestClient):
-    """Empty DB renders empty-state cards (not a 500): no betting_* chart_ids
-    are cached, so every chart slot falls back to 'Chart unavailable'."""
-    response = empty_test_client.get("/betting")
-    assert response.status_code == 200
-    assert "Chart unavailable" in response.text
 
 
 # ---------------------------------------------------------------------------
