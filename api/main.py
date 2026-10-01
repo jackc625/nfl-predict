@@ -13,6 +13,7 @@ Architecture:
 
 from __future__ import annotations
 
+import mimetypes
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -150,7 +151,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Mount static files
+# Mount static files. The self-hosted fonts are .woff2, which the Windows MIME registry does not
+# know: Starlette would serve them as text/plain and a browser honouring nosniff would refuse
+# them. Registering the type before the mount makes every font response say font/woff2.
+mimetypes.add_type("font/woff2", ".woff2")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Include routers -- pages_router last so its catch-all "/" doesn't shadow others

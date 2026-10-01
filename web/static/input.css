@@ -1,11 +1,619 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 
+/* source(none) turns off Tailwind v4's automatic scan of the WHOLE repo (which would pull class
+   names out of .md, .py and test files and change this sheet whenever they change), so only the
+   folders named here are scanned. Task 17 adds @source "../../api/charts"; for the class strings
+   that api/charts/core.py emits from Python. */
 @source "../../web/templates";
 
+/* ============================================================================================
+   Self-hosted fonts (SIL Open Font License; the texts ship in web/static/fonts/OFL-*.txt).
+   Absolute /static/ URLs on purpose: the compiled sheet lives in web/static/css/ and Tailwind
+   does not rebase relative url()s, so a relative path would resolve against the wrong folder.
+   ============================================================================================ */
+@font-face {
+  font-family: "Barlow Condensed";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/barlow-condensed-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/static/fonts/barlow-condensed-latin-800-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/barlow-condensed-latin-700-italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  font-style: italic;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/static/fonts/barlow-condensed-latin-800-italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-wght-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+}
+
+/* ============================================================================================
+   Design tokens (spec section 5). `static` so every variable is emitted even before a utility
+   uses it: custom.css, the component classes below and inline styles such as
+   style="--tile-accent: var(--color-target-wp)" all read these variables directly.
+   ============================================================================================ */
+@theme static {
+  --color-ink: #0B0F17;
+  --color-ink-2: #0E1320;
+  --color-panel: #151B29;
+  --color-panel-2: #1D2436;
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-fg: #F3F5F9;
+  --color-muted: #8A93A8;
+  --color-dim: #5D667C;
+  --color-accent: #FFD400;
+  --color-target-wp: #FFD400;
+  --color-target-ats: #4CC9F0;
+  --color-target-ou: #C77DFF;
+
+  --font-display: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* LEGACY -- the pre-redesign palette, kept ONLY so templates not yet restyled keep rendering
+   while the branch is in progress. Not `static`: it emits only while something still uses it.
+   Task 20 deletes this block once `grep -rn "nfl-" web/templates api` finds nothing. */
 @theme {
   --color-nfl-primary: #013369;
   --color-nfl-secondary: #D50A0A;
   --color-nfl-accent: #FF8C00;
   --color-nfl-dark: #1a1a1a;
   --color-nfl-light: #F8F9FA;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    background-color: var(--color-ink);
+  }
+
+  body {
+    background-image: linear-gradient(180deg, var(--color-ink) 0%, var(--color-ink-2) 100%);
+    background-attachment: fixed;
+    color: var(--color-fg);
+  }
+
+  ::selection {
+    background: rgb(255 212 0 / 0.35);
+    color: #FFFFFF;
+  }
+}
+
+/* ============================================================================================
+   Component classes (contract section 2). Plain CSS inside @layer components is always emitted,
+   and Tailwind utilities (a higher layer) still override it -- so value_class="text-green-400"
+   on a .stat-tile-value wins over the tile's default colour.
+
+   SLANT: every skewed box (.tag, .tag-ghost, .skew-control, .edge-chip, .team-block) transforms
+   the ELEMENT, and its text sits in a <span class="unskew"> child that counter-skews it upright.
+   The one exception is <select class="skew-control">, which cannot hold a child: it is clipped to
+   a parallelogram instead of transformed.
+   ============================================================================================ */
+@layer components {
+  /* -- Primitives ------------------------------------------------------------------------- */
+  .skew {
+    transform: skewX(-12deg);
+  }
+
+  .unskew {
+    display: inline-block;
+    transform: skewX(12deg);
+  }
+
+  .display {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 800;
+    line-height: 0.95;
+    letter-spacing: 0.01em;
+    text-transform: uppercase;
+  }
+
+  .label {
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+
+  .num,
+  .stat-num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .wordmark {
+    font-family: var(--font-display);
+    font-size: 22px;
+    font-style: italic;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+    text-transform: uppercase;
+    text-decoration: none;
+    color: var(--color-fg);
+  }
+
+  .skip-link {
+    position: absolute;
+    top: -48px;
+    left: 16px;
+    z-index: 50;
+    padding: 8px 12px;
+    background: var(--color-accent);
+    color: var(--color-ink);
+    font-weight: 700;
+  }
+
+  .skip-link:focus {
+    top: 8px;
+  }
+
+  /* -- Surfaces --------------------------------------------------------------------------- */
+  .panel {
+    background-color: var(--color-panel);
+    border-radius: 4px;
+    padding: 14px 16px;
+  }
+
+  .panel-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 10px;
+    font-family: var(--font-display);
+    font-size: 18px;
+    font-style: italic;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--color-fg);
+  }
+
+  .panel-title::before {
+    content: "";
+    flex: none;
+    width: 4px;
+    height: 16px;
+    background: var(--color-accent);
+    transform: skewX(-12deg);
+  }
+
+  /* -- Section heads and tags ------------------------------------------------------------- */
+  /* A plain flex row: no margin and no rule of its own. The rule is an explicit
+     <span class="flex-1 h-px bg-line"> child, so a badge placed after the heading sits inside the
+     row's first </div> (tests/api/test_bets_page.py reads the header up to that tag). */
+  .section-head {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .tag,
+  .tag-ghost {
+    display: inline-flex;
+    align-items: center;
+    margin: 0;
+    padding: 2px 12px;
+    transform: skewX(-12deg);
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-style: italic;
+    font-weight: 800;
+    line-height: 1.4;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .tag {
+    background: var(--color-accent);
+    color: var(--color-ink);
+  }
+
+  .tag-ghost {
+    background: transparent;
+    border: 1.5px solid rgb(255 255 255 / 0.5);
+    color: var(--color-fg);
+  }
+
+  /* Under 640px a long tag ("Backtest replay -- reconstructed after the fact") is wider than a
+     390px phone, so it wraps onto a second line instead of pushing the page sideways (spec 10). */
+  @media (max-width: 639.98px) {
+    .tag,
+    .tag-ghost {
+      white-space: normal;
+    }
+  }
+
+  /* -- Controls: nav links, tabs, buttons, selects ------------------------------------------ */
+  /* A 44px touch target that PAINTS a 32px slanted band: the background is a gradient sized to
+     the middle of the box, and the whole element is skewed (its text sits in a .unskew child). */
+  .skew-control {
+    --skew-bg: var(--color-panel-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 14px;
+    border: 0;
+    background: linear-gradient(var(--skew-bg), var(--skew-bg)) center / 100% calc(100% - 12px) no-repeat;
+    transform: skewX(-12deg);
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--color-fg);
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .skew-control:hover {
+    --skew-bg: #283149;
+  }
+
+  .skew-control:disabled,
+  .skew-control[aria-disabled="true"] {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* A <select> cannot hold a .unskew child, so it is never transformed: it is clipped to the same
+     32px parallelogram instead, and its text (the options) stays upright on its own. */
+  select.skew-control {
+    appearance: none;
+    transform: none;
+    padding-right: 32px;
+    background-color: var(--skew-bg);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23FFD400' stroke-width='1.6'/%3E%3C/svg%3E");
+    background-position: right 14px center;
+    background-repeat: no-repeat;
+    background-size: 10px 6px;
+    clip-path: polygon(7px 6px, 100% 6px, calc(100% - 7px) calc(100% - 6px), 0 calc(100% - 6px));
+  }
+
+  /* The clip-path would cut a focus outline off, so focus is shown by colour inside the shape. */
+  select.skew-control:focus-visible {
+    --skew-bg: #2E3850;
+    outline: none;
+    color: var(--color-accent);
+  }
+
+  select.skew-control option {
+    background: var(--color-panel);
+    color: var(--color-fg);
+  }
+
+  .nav-link {
+    --skew-bg: transparent;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0;
+    color: var(--color-muted);
+  }
+
+  .nav-link:hover {
+    --skew-bg: var(--color-panel-2);
+    color: var(--color-fg);
+  }
+
+  .skew-control-active,
+  .skew-control-active:hover,
+  .nav-link.skew-control-active {
+    --skew-bg: var(--color-accent);
+    color: var(--color-ink);
+  }
+
+  /* -- Team blocks and score bugs --------------------------------------------------------- */
+  .team-block {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 46px;
+    height: 26px;
+    margin-left: 5px;
+    padding: 0 6px;
+    background: var(--team-bg, var(--color-panel-2));
+    color: var(--team-fg, #FFFFFF);
+    transform: skewX(-12deg);
+    font-family: var(--font-display);
+    font-size: 17px;
+    font-style: italic;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+
+  .team-block-lg {
+    min-width: 86px;
+    height: 58px;
+    font-size: 34px;
+  }
+
+  .score-bug {
+    display: grid;
+    gap: 3px;
+  }
+
+  .score-row {
+    display: grid;
+    grid-template-columns: 56px 1fr 64px;
+    align-items: stretch;
+    height: 30px;
+  }
+
+  .score-row .team-block {
+    min-width: 0;
+    height: 100%;
+  }
+
+  .score-name {
+    display: flex;
+    align-items: center;
+    padding-left: 10px;
+    overflow: hidden;
+    background: var(--color-panel-2);
+    font-family: var(--font-display);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .score-value {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 8px;
+    background: var(--color-ink);
+    font-family: var(--font-display);
+    font-size: 19px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .score-row.is-fav .score-value {
+    color: var(--color-accent);
+  }
+
+  .score-row.is-dog .score-name,
+  .score-row.is-dog .score-value {
+    color: var(--color-muted);
+  }
+
+  /* -- Edge chips, monochrome bands, evidence chips --------------------------------------- */
+  .edge-chip,
+  .edge-chip-soft {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 8px;
+    transform: skewX(-12deg);
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-style: italic;
+    font-weight: 800;
+    line-height: 1.35;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .edge-chip {
+    background: var(--color-accent);
+    color: var(--color-ink);
+  }
+
+  /* Declared after .edge-chip so `class="edge-chip edge-chip-soft"` resolves to the outline. */
+  .edge-chip-soft {
+    background: transparent;
+    border: 1px solid rgb(255 212 0 / 0.45);
+    color: var(--color-accent);
+  }
+
+  .band {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .band-high {
+    background: #E6E9F0;
+    color: var(--color-ink);
+  }
+
+  .band-medium {
+    background: #5B6478;
+    color: #FFFFFF;
+  }
+
+  .band-low {
+    border: 1px solid #5B6478;
+    color: #C4CAD8;
+  }
+
+  /* Wraps rather than clips: the longest provenance label is 30 characters (UI-SPEC E10). */
+  .evidence-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border: 1px solid rgb(255 255 255 / 0.28);
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #D5DAE5;
+  }
+
+  .evidence-chip-strong {
+    background: rgb(255 255 255 / 0.12);
+    color: #FFFFFF;
+  }
+
+  /* -- Scoreboard tiles ------------------------------------------------------------------- */
+  .stat-tile {
+    padding: 10px 14px;
+    background: var(--color-panel);
+    border-top: 3px solid var(--tile-accent, rgb(255 255 255 / 0.12));
+  }
+
+  .stat-tile-value {
+    margin-top: 2px;
+    font-family: var(--font-display);
+    font-size: 34px;
+    font-weight: 800;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-fg);
+  }
+
+  /* 12px, not 11px: spec 5 allows 11px only for uppercase labels, and this line is lowercase. */
+  .stat-tile-sub {
+    font-size: 12px;
+    color: var(--color-muted);
+  }
+
+  /* -- Bet slips: the visual container only. pages/bets.html (Task 11) lays each slip out with
+     grid utilities -- seven columns on lg+, rank + stacked content below 1024px -- so the layout
+     lives next to the markup it arranges and no component grid competes with it. ---------- */
+  .bet-slip {
+    min-height: 64px;
+    background: var(--color-panel);
+    border-left: 4px solid var(--color-accent);
+    transition: background-color 150ms ease;
+  }
+
+  .bet-slip:hover {
+    background: #1A2133;
+  }
+
+  /* -- Honesty note: the condensed one-liner <details> (owner decision O4) ------------------ */
+  .honesty-note {
+    border: 1px solid rgb(255 255 255 / 0.16);
+    border-radius: 4px;
+    font-size: 12px;
+    color: #C4CAD8;
+  }
+
+  /* The summary is the note's only control, so it keeps the 44px touch target (spec 10). */
+  .honesty-note > summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    min-height: 44px;
+    padding: 7px 12px;
+    list-style: none;
+    cursor: pointer;
+  }
+
+  .honesty-note > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .honesty-note-key {
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-fg);
+  }
+
+  .honesty-note-line {
+    flex: 1 1 18rem;
+  }
+
+  .honesty-note-why {
+    margin-left: auto;
+    font-weight: 600;
+    color: var(--color-accent);
+  }
+
+  .honesty-note-why::after {
+    content: " \25BE";
+  }
+
+  .honesty-note[open] .honesty-note-why::after {
+    content: " \25B4";
+  }
+
+  .honesty-note-body {
+    max-width: 48rem;
+    padding: 0 12px 10px;
+    line-height: 1.55;
+    color: var(--color-muted);
+  }
+
+  /* -- Motion: the win-probability bar grows in from the left once, on load (spec 5). Readers
+     who ask for reduced motion get the final width at once (spec 10). ---------------------- */
+  .grow-in {
+    transform-origin: left center;
+    animation: grow-in 600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .grow-in {
+      animation: none;
+    }
+  }
+}
+
+@keyframes grow-in {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
 }
