@@ -91,6 +91,9 @@ _EXPECTED_REASONS = (
     # Plan 33.2-26: a win bet's second test (D33.2-11) and a target with no honest threshold.
     "edge_below_threshold",
     "no_honest_edge_threshold",
+    # b18b9fc (A33.2-review IN-06): a win bet whose second test cannot run because no
+    # converter is bound -- a missing converter, not a market-data gap.
+    "no_bound_converter",
 )
 
 # The commit the guard's body is pinned to. ``assert_real_odds`` is the LOCKED provenance guard,
