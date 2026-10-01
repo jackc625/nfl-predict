@@ -36,10 +36,12 @@
    and CLV are all pre-fix. The route scopes it to the game's own season. #}
 {% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
 
-{# The matchup header: team blocks and win chances either side, kickoff and stadium between. #}
+{# The matchup header: team blocks and win chances either side, kickoff and stadium between.
+   Side by side only from lg: each side needs ~340px (block, name, a 48px percentage), which a
+   768px tablet does not leave, and the overflow-hidden section clipped the home block. #}
 <h1 class="sr-only">{{ away }} @ {{ home }}</h1>
 <section class="mb-4 overflow-hidden rounded-sm bg-panel p-5" style="background-image: linear-gradient(90deg, color-mix(in srgb, {{ away_bg }} 40%, transparent) 0%, transparent 42%, transparent 58%, color-mix(in srgb, {{ home_bg }} 45%, transparent) 100%);">
-  <div class="grid grid-cols-1 items-center gap-4 md:grid-cols-[1fr_auto_1fr]">
+  <div class="grid grid-cols-1 items-center gap-4 lg:grid-cols-[1fr_auto_1fr]">
     <div class="flex items-center gap-4">
       {{ bc.team_block(away, away_bg, game.away_fg|default("#FFFFFF"), large=true) }}
       <div>
@@ -102,10 +104,13 @@
        edge is "-". #}
     <section class="panel">
       <h2 class="panel-title">Model vs Market</h2>
+      {# Every column after the first keeps a left gutter and never wraps its heading, so on a
+         phone the table outgrows the panel and scrolls (spec 10) instead of running "Market",
+         "Published" and "Edge" -- and their values -- together. #}
       <div class="overflow-x-auto">
-        <table class="w-full text-sm">
+        <table class="w-full text-sm [&_td+td]:pl-4 [&_th+th]:pl-4">
           <thead>
-            <tr class="label">
+            <tr class="label whitespace-nowrap">
               <th scope="col" class="pb-2 text-left"><span class="sr-only">Metric</span></th>
               <th scope="col" class="pb-2 text-right">Model</th>
               <th scope="col" class="pb-2 text-right">Market</th>
