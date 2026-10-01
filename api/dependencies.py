@@ -32,6 +32,7 @@ from jinja2_fragments.fastapi import Jinja2Blocks
 from api.exceptions import ModelUnavailableError
 from utils import get_logger
 
+from .presentation import team_block_colors, team_nickname
 from .services import DataService, clear_cache
 
 logger = get_logger(__name__)
@@ -167,6 +168,10 @@ def format_currency(value: float | int | None) -> str:
 
 templates.env.filters["format_datetime"] = format_datetime
 templates.env.filters["format_currency"] = format_currency
+# Broadcast presentation helpers (api/presentation.py). Globals rather than filters because a
+# page that knows only a game_id -- a /bets slip -- needs a team's colours from its abbreviation.
+templates.env.globals["team_colors"] = team_block_colors
+templates.env.globals["team_nickname"] = team_nickname
 
 
 def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:
