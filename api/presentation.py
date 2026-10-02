@@ -73,6 +73,13 @@ class TeamColors(NamedTuple):
     fg: str
 
 
+#: Per-team block overrides, applied before the primary/secondary rule. Seattle's secondary is
+#: Action Green (#69BE28), which reads as the site's "won" green; its College Navy primary
+#: (#002244) sits at 1.08 against the panel, under MIN_BLOCK_CONTRAST, so the block takes Wolf
+#: Grey with ink text instead.
+_BLOCK_OVERRIDES: dict[str, TeamColors] = {"SEA": TeamColors("#A5ACAF", TEXT_DARK)}
+
+
 def _channel(value: int) -> float:
     c = value / 255
     return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
@@ -106,13 +113,16 @@ def _text_on(bg: str) -> str:
 
 
 def team_block_colors(abbr: str | None) -> TeamColors:
-    """The block colour for *abbr*: its primary, else its secondary, else a neutral slate.
+    """The block colour for *abbr*: an override, else its primary, else its secondary, else slate.
 
     A colour is usable when it is neither pure black nor pure white and reads as a shape on the
     dark panel. An unknown abbreviation gets a neutral block rather than a guessed team colour.
     """
     if not abbr or not validate_team_abbreviation(abbr):
         return TeamColors(UNKNOWN_BLOCK, TEXT_LIGHT)
+    override = _BLOCK_OVERRIDES.get(abbr.upper())
+    if override is not None:
+        return override
     primary, secondary = (color.upper() for color in get_team_info(abbr)["colors"][:2])
     for candidate in (primary, secondary):
         if _usable_block(candidate):

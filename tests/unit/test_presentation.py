@@ -49,7 +49,6 @@ class TestTeamBlockColors:
             ("CHI", TeamColors("#C83803", TEXT_LIGHT)),
             ("HOU", TeamColors("#A71930", TEXT_LIGHT)),
             ("NE", TeamColors("#C60C30", TEXT_LIGHT)),
-            ("SEA", TeamColors("#69BE28", TEXT_DARK)),
             ("TEN", TeamColors("#4B92DB", TEXT_DARK)),
             ("CLE", TeamColors("#FF3C00", TEXT_DARK)),
         ],
@@ -58,6 +57,18 @@ class TestTeamBlockColors:
         self, abbr: str, expected: TeamColors
     ) -> None:
         assert team_block_colors(abbr) == expected
+
+    def test_seattle_is_wolf_grey_because_navy_fails_the_panel_floor(self) -> None:
+        # College Navy would be the identity colour, but it is 1.08 against the panel.
+        assert contrast_ratio("#002244", PANEL_HEX) < MIN_BLOCK_CONTRAST
+        assert team_block_colors("SEA") == TeamColors("#A5ACAF", TEXT_DARK)
+
+    def test_seattle_is_not_the_won_green(self) -> None:
+        bg = team_block_colors("SEA").bg
+        assert bg != "#69BE28"
+        red, green, blue = (int(bg[i : i + 2], 16) for i in (1, 3, 5))
+        # A grey has near-equal channels; no green hue to read as a win.
+        assert not (green > red + 20 and green > blue + 20)
 
     def test_a_pure_black_primary_is_never_a_block(self) -> None:
         assert team_block_colors("LV") == TeamColors("#A5ACAF", TEXT_DARK)
