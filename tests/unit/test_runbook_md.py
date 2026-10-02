@@ -330,25 +330,16 @@ class TestPhase31Reconciled:
 
     Paired with RUNBOOK.md in the same commit, per the lockstep rule. Three operator-visible
     things changed in Phase 31 and each would silently mislead if the runbook kept its old text:
-    the nav gained a seventh page, the Friday orchestrator now rebuilds the web cache (the runbook
-    previously said it does not), and the stylesheet compile has no build step that notices when
-    it is stale.
-
-    The body above the 2026-09-15 old-rule addendum is a FROZEN record and still reads as Phase 31
-    left it. What changed since -- the Broadcast redesign's five pages, the redirects from the old
-    URLs, and the closed stylesheet gap -- is in the dated redesign note appended after the
-    addendum, never written into the body.
+    the nav gained a seventh page, the Friday orchestrator now rebuilds the web cache (the
+    runbook previously said it does not), and the stylesheet compile has no build step that
+    notices when it is stale.
     """
 
     def test_serve_documents_seven_nav_pages_including_bets(self):
-        """The frozen Serve section lists the seven nav pages, /bets the seventh.
-
-        The redesign later merged them into five; the dated redesign note after the addendum names
-        the five and says the old URLs redirect, so the frozen list is not edited.
-        """
+        """The nav gained /bets; a runbook that still says six sends an operator hunting."""
         content = _read_runbook_md()
         assert "seven nav pages" in content, (
-            "RUNBOOK.md's frozen Serve section no longer lists the seven nav pages."
+            "RUNBOOK.md still describes six nav pages. /bets is the seventh."
         )
         assert "`/bets`" in content, "RUNBOOK.md does not name the /bets page"
 
@@ -385,17 +376,12 @@ class TestPhase31Reconciled:
             "RUNBOOK.md does not tell the operator when to recompile the stylesheet"
         )
 
-    def test_the_stylesheet_gap_stays_on_record(self):
-        """lg:grid-cols-7 was absent from the compiled sheet, and the runbook keeps that on record.
-
-        The frozen body records the gap as OPEN, as it was measured in Phase 31; the dated redesign
-        note after the addendum records it closed by the redesign's recompiled sheet.
-        """
+    def test_the_open_stylesheet_gap_is_recorded_not_claimed_fixed(self):
+        """lg:grid-cols-7 is absent from the compiled sheet, and that is an OPEN item."""
         content = _read_runbook_md()
         assert "lg:grid-cols-7" in content, (
-            "RUNBOOK.md does not record the once-missing utility class. It was measured open in "
-            "Phase 31 and later closed, and recording it is what keeps it from being rediscovered "
-            "as a mystery."
+            "RUNBOOK.md does not record the known missing utility class. It was measured, it is "
+            "open, and recording it is what keeps it from being rediscovered as a mystery."
         )
 
     def test_cross_links_the_profitability_readout(self):

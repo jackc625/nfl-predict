@@ -673,9 +673,3 @@ was claimed and when. Read it as history, not as a measure of how well the syste
 recorded live under the day-before 6 PM ET lock, counts (D33.2-07). See Phase 33.2.
 
 What this covers in this document: the model verdicts it summarises in its cross-references (the diagnosis ratings and the promotion and retention outcomes) are old-rule; the operating procedures themselves are not results and are not covered by this label.
-
-## Site redesign note (2026-10-01)
-
-This section was added on 2026-10-01, below the old-rule addendum; nothing above it has been changed. The dashboard was redesigned (the "Broadcast" theme) and now has five pages: This Week (`/`, with game detail at `/games/<id>`), Bets (`/bets`), Season (`/season`), Track Record (`/track-record`) and How It Works (`/how-it-works`). The former `/performance`, `/backtest` and `/betting` pages and the market half of `/insights` are now sections of Track Record; the rest of `/insights` is on How It Works. Each old URL redirects (301) to its matching section and keeps its query string. Page and fragment names above this note describe the site as it was when they were written; `api/routes/pages.py` and `api/routes/fragments.py` hold the current lists.
-
-The `lg:grid-cols-7` stylesheet gap recorded above is closed: the redesign's recompiled sheet contains the class, and the grid it styles is now Track Record's betting simulation.
