@@ -22,12 +22,17 @@
 
 {# Elo and recent-form line under a team name (spec 7.2). Each part is dropped when its data is
    missing; nothing at all when both are. Plain text: the green/red form chips live in the Tale
-   of the tape panel. #}
+   of the tape panel. The form strings are read from the cache, so they go out autoescaped and
+   the separator is literal template text -- nothing here is marked safe. #}
 {% macro elo_form_line(elo, form) -%}
-  {%- set parts = [] -%}
-  {%- if elo is not none %}{% set _ = parts.append("Elo " ~ "%.0f"|format(elo)) %}{% endif -%}
-  {%- if form %}{% set _ = parts.append("last " ~ form|length ~ ": " ~ form|join(" ")) %}{% endif -%}
-  {%- if parts %}<p class="mt-1 text-xs text-muted" data-elo-form>{{ parts|join(" &middot; ")|safe }}</p>{% endif -%}
+  {%- set has_elo = elo is not none -%}
+  {%- if has_elo or form -%}
+  <p class="mt-1 text-xs text-muted" data-elo-form>
+    {%- if has_elo %}Elo {{ "%.0f"|format(elo) }}{% endif -%}
+    {%- if has_elo and form %} &middot; {% endif -%}
+    {%- if form %}last {{ form|length }}: {{ form|join(" ") }}{% endif -%}
+  </p>
+  {%- endif -%}
 {%- endmacro %}
 
 <a href="/?season={{ game.season }}&amp;week={{ game.week }}" class="mb-3 inline-flex items-center gap-1 text-sm font-semibold text-accent hover:underline">&lsaquo; Week {{ game.week }}</a>

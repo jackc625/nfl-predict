@@ -221,6 +221,20 @@ def test_the_header_shows_elo_and_form_under_each_team(test_client: TestClient) 
     assert any(line.startswith("Elo ") for line in lines)
 
 
+def test_the_header_form_line_escapes_text_read_from_the_cache() -> None:
+    """The form strings come from the cache, so they are escaped like any other cached text."""
+    context = {
+        "away_elo": 1550.0,
+        "home_elo": None,
+        "away_last5_list": ["W", "<b>L</b>"],
+        "home_last5_list": [],
+    }
+    lines = re.findall(
+        r"<p[^>]*data-elo-form>(.*?)</p>", _main(_detail_html({"context": context}))
+    )
+    assert lines == ["Elo 1550 &middot; last 2: W &lt;b&gt;L&lt;/b&gt;"]
+
+
 def test_the_header_form_line_is_absent_without_context() -> None:
     main = _main(_detail_html())
     assert "data-elo-form" not in main
