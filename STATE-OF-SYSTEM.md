@@ -255,10 +255,12 @@ change to that count. The verdict itself is a measurement, not a repair.
 availability gap (D30-DEFER-22) and the gate's single-band freshness tolerance (D30-DEFER-04)
 are both still open exactly as recorded above. Neither was widened, narrowed or worked around.
 
-**One stylesheet gap, corrected from an earlier claim.** `lg:grid-cols-7` is ABSENT from
-`web/static/css/tailwind-compiled.css`, so `/betting`'s KPI grid is unstyled at the large
-breakpoint. An earlier in-phase report recorded it as present; only `max-w-3xl` is. Pre-existing,
-recorded rather than fixed.
+**One stylesheet gap, corrected from an earlier claim -- CLOSED 2026-10-01.** At the Phase-31
+close `lg:grid-cols-7` was ABSENT from `web/static/css/tailwind-compiled.css`, so `/betting`'s KPI
+grid was unstyled at the large breakpoint. An earlier in-phase report recorded it as present; only
+`max-w-3xl` was. Pre-existing, recorded rather than fixed then. The Broadcast redesign recompiled
+the sheet and the class is now present; the grid it styles is Track Record's betting simulation
+(`/track-record`), where the old `/betting` URL redirects.
 
 **Five tests are DELIBERATELY RED and must stay red.** They are tripwires that fired on facts the
 owner then accepted -- the gate baseline predating a label correction, and a protected-slice move

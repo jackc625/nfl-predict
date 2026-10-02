@@ -486,8 +486,9 @@ def _load_wp_brier_scores(conn: duckdb.DuckDBPyConnection) -> int:
     """Derive each season's WP Brier score from the stored backtest predictions.
 
     THE REAL BRIER SCORE, NOT THE MAE (33.2 review C2 WR-06). Neither ``season_metrics.csv`` nor
-    ``metrics_summary.json`` carries a WP Brier score, so ``/performance`` filled its "WP Brier
-    Score" card with the WP mean ABSOLUTE error (0.4316 for 2021) under the Brier label. The
+    ``metrics_summary.json`` carries a WP Brier score, so the "WP Brier Score" card -- then on
+    ``/performance``, now in Track Record's all-time summary on ``/track-record``, where the old
+    URL redirects -- showed the WP mean ABSOLUTE error (0.4316 for 2021) under the Brier label. The
     Brier score is ``mean((p - y)^2)`` over the season's WP predictions, taken HERE, at population
     time, from ``backtest_predictions`` -- the request path computes nothing (UIAP-01) -- and
     stored as ``(season, "wp", "brier_score")`` beside the season's other metrics. A metric row
@@ -616,7 +617,9 @@ def _load_betting_bets(
 
     Supplements (does NOT replace) ``_load_simulation_results``: that loader
     aggregates the same CSV into the lossy ``simulation_results`` /
-    ``equity_curve`` tables that ``/backtest`` still uses (D-19). This loader
+    ``equity_curve`` tables behind the backtest ``equity`` chart (D-19), which is
+    still pre-rendered though no page shows it since the retired ``/backtest`` page
+    became Track Record (``/track-record``; the old URL redirects). This loader
     keeps every per-bet row -- including the low/negative-edge bets the
     simulation placed -- so the Phase 17 betting dashboard can break results
     down by target / season / edge bucket / outcome and apply the
@@ -2470,8 +2473,9 @@ def _load_game_context(
 # shows pre-fix numbers and so carries the dated old-rule label. A missing key means the cache
 # predates the stamp and cannot say what its charts cover, and the reader LABELS in that case.
 
-# /backtest, /insights and the /performance all-history summary: every table their charts and
-# figures are drawn from.
+# The backtest corpus: Track Record's all-time summary and model-vs-market section
+# (/track-record) and every How It Works chart (/how-it-works) -- every table their charts and
+# figures are drawn from. The retired /backtest, /insights and /performance URLs redirect there.
 BACKTEST_SEASON_RANGE_KEY = "backtest_season_range"
 _BACKTEST_SEASONS_SQL = (
     "SELECT MIN(season), MAX(season) FROM ("
@@ -2480,7 +2484,9 @@ _BACKTEST_SEASONS_SQL = (
     "UNION ALL SELECT season FROM betting_bets)"
 )
 
-# /betting: the per-bet simulation ledger its KPI strip, charts and ROI table are drawn from.
+# Track Record's betting simulation (/track-record#betting-sim; the retired /betting URL
+# redirects there): the per-bet simulation ledger its KPI strip, charts and ROI table are drawn
+# from.
 BETTING_SEASON_RANGE_KEY = "betting_season_range"
 _BETTING_SEASONS_SQL = "SELECT MIN(season), MAX(season) FROM betting_bets"
 
@@ -2769,8 +2775,8 @@ def populate_cache(
 
         # Load full per-bet rows (Phase 17 betting dashboard, D-19). Supplements
         # the lossy simulation_results/equity_curve tables above -- both are kept
-        # for /backtest. Must run before _prerender_charts so the betting chart
-        # generators can read betting_bets.
+        # for the backtest equity chart. Must run before _prerender_charts so the
+        # betting chart generators can read betting_bets.
         bb_count = _load_betting_bets(conn, outputs_dir)
         logger.info("Betting bets loaded", count=bb_count)
 

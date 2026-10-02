@@ -330,16 +330,20 @@ class TestPhase31Reconciled:
 
     Paired with RUNBOOK.md in the same commit, per the lockstep rule. Three operator-visible
     things changed in Phase 31 and each would silently mislead if the runbook kept its old text:
-    the nav gained a seventh page, the Friday orchestrator now rebuilds the web cache (the
-    runbook previously said it does not), and the stylesheet compile has no build step that
-    notices when it is stale.
+    the nav gained a seventh page (since merged into five by the Broadcast redesign), the Friday
+    orchestrator now rebuilds the web cache (the runbook previously said it does not), and the
+    stylesheet compile has no build step that notices when it is stale.
     """
 
     def test_serve_documents_seven_nav_pages_including_bets(self):
-        """The nav gained /bets; a runbook that still says six sends an operator hunting."""
+        """/bets made the nav seven pages; the redesign then merged them into five.
+
+        The runbook names the five current pages and records the old seven, with the four
+        retired URLs that now redirect, so an operator holding an old link is not sent hunting.
+        """
         content = _read_runbook_md()
         assert "seven nav pages" in content, (
-            "RUNBOOK.md still describes six nav pages. /bets is the seventh."
+            "RUNBOOK.md no longer records the old seven nav pages the redesign merged into five."
         )
         assert "`/bets`" in content, "RUNBOOK.md does not name the /bets page"
 
@@ -376,12 +380,15 @@ class TestPhase31Reconciled:
             "RUNBOOK.md does not tell the operator when to recompile the stylesheet"
         )
 
-    def test_the_open_stylesheet_gap_is_recorded_not_claimed_fixed(self):
-        """lg:grid-cols-7 is absent from the compiled sheet, and that is an OPEN item."""
+    def test_the_stylesheet_gap_stays_on_record(self):
+        """lg:grid-cols-7 was absent from the compiled sheet; the redesign's recompile closed it.
+
+        The runbook keeps the instance on record as closed, beside the recompile instruction.
+        """
         content = _read_runbook_md()
         assert "lg:grid-cols-7" in content, (
-            "RUNBOOK.md does not record the known missing utility class. It was measured, it is "
-            "open, and recording it is what keeps it from being rediscovered as a mystery."
+            "RUNBOOK.md does not record the once-missing utility class. It was measured and later "
+            "closed, and recording it is what keeps it from being rediscovered as a mystery."
         )
 
     def test_cross_links_the_profitability_readout(self):

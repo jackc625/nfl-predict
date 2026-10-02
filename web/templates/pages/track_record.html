@@ -48,7 +48,8 @@
   </div>
 
   {# Season-specific content (HTMX swap target: /fragments/performance). The block reads only
-     season_metrics, current_season and its own scope -- the fragment passes nothing else. #}
+     season_metrics and its own scope, season_metrics_old_rule_scope; the season selector above
+     it, outside the block, is what reads current_season. #}
   <div id="performance-content">
   {% block performance_content %}
   {# Old-rule label for the season-scoped table, from the seasons the table shows. #}
