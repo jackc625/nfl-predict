@@ -2542,6 +2542,13 @@ def test_an_unmeasured_return_never_renders_as_a_zero(tmp_path: Path) -> None:
     )
 
 
+# The reds components/_error_state.html reserves for a FAILURE: its box, border, icon, heading and
+# body. Deliberately not the realised-loss red-400 / red-500 the tracker uses.
+_ERROR_STATE_REDS = frozenset(
+    {"bg-red-950", "border-red-800", "text-red-300", "text-red-200", "text-red-100"}
+)
+
+
 def test_green_and_red_appear_only_inside_the_tracker_sections(tmp_path: Path) -> None:
     """Realized-outcome colour is TRACKER ONLY; the EV band badges carry none of it.
 
@@ -2582,20 +2589,20 @@ def test_green_and_red_appear_only_inside_the_tracker_sections(tmp_path: Path) -
                     f"an EV band badge carries the {forbidden} hue: {classes}"
                 )
 
-    # Outside the tracker region the realized-outcome colours do not appear at all. The refusal
-    # role uses its own red family (the error state's red-950 / 800 / 200 / 100), so the OUTCOME
-    # shades -- green and red 400 text, 500 fill -- must be absent above the tracker outright.
+    # Outside the tracker region the realized-outcome colours do not appear at all: no green
+    # shade whatever, and no red shade but the error state's own family, which the failure
+    # template above the tracker carries and which can never read as "a bet lost". Any shade, not
+    # a list of exact ones, so a new green or red class elsewhere on the page fails here.
     tracker_start = min(body.index(s) for s in sections.values())
-    above = body[:tracker_start]
-    for outcome_class in (
-        "text-green-400",
-        "bg-green-500",
-        "text-red-400",
-        "bg-red-500",
-    ):
-        assert outcome_class not in above, (
-            f"the realized-outcome colour {outcome_class} rendered above the tracker"
-        )
+    last_section = max(body.index(s) for s in sections.values())
+    tracker_end = body.index("</section>", last_section) + len("</section>")
+    outside = body[:tracker_start] + body[tracker_end:]
+    greens = re.findall(r"\b(?:text|bg|border)-green-\d+", outside)
+    assert not greens, f"green rendered outside the tracker: {sorted(set(greens))}"
+    reds = set(re.findall(r"\b(?:text|bg|border)-red-\d+", outside))
+    assert reds - _ERROR_STATE_REDS == set(), (
+        f"a red outside the tracker is not the error state's: {sorted(reds - _ERROR_STATE_REDS)}"
+    )
 
 
 def test_the_forward_block_is_withheld_under_the_hard_block_while_replay_stays_readable(
@@ -2816,6 +2823,23 @@ def test_the_result_strip_draws_one_mark_per_graded_bet_in_its_own_section(
     assert ">2-1-1<" in replay, "the record line does not restate the stored counts"
     assert forward.count("data-result-mark") == 1
     assert "wins 1, losses 0, pushes 0" in forward
+    # Each mark carries its outcome's colour: green won, red lost, grey push. Counted by colour
+    # class, so a push drawn red (or a loss drawn grey) fails.
+    replay_marks = _mark_colours(replay)
+    assert replay_marks.count("bg-green-500") == 2
+    assert replay_marks.count("bg-red-500") == 1
+    assert replay_marks.count("bg-[#5B6478]") == 1
+    assert _mark_colours(forward) == ["bg-green-500"]
+
+
+def _mark_colours(section: str) -> list[str]:
+    """The background colour class of every mark in *section*'s result strip, in order."""
+    strip = section[section.index("data-result-strip") :]
+    strip = strip[: strip.index("</div>")]
+    return [
+        next(c for c in classes.split() if c.startswith("bg-"))
+        for classes in re.findall(r'<span data-result-mark class="([^"]*)"', strip)
+    ]
 
 
 def test_a_result_strip_that_disagrees_with_its_stored_block_is_omitted(
