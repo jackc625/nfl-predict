@@ -269,9 +269,9 @@ partials, CSV + JSON exports, and a `/health` endpoint.
               v
    +---------------------------------------------------------------------------------------+
    | FastAPI  (api/main.py lifespan: shared read-only DuckDB; single-worker envelope)      |
-   |   Pages:     /, /bets, /season, /track-record, /how-it-works, /games/{id}             |
-   |              (old /performance /backtest /insights /betting 301-redirect)             |
-   |   HTMX:      /fragments/{games,performance,betting,season}                            |
+   |   Pages:     /, /performance, /backtest, /insights, /betting, /season, /bets,        |
+   |              /games/{id}                                                              |
+   |   HTMX:      /fragments/games, /fragments/performance                                 |
    |   Exports:   /api/export/csv, /api/export/json                                        |
    |   Health:    /health                                                                  |
    +---------------------------------------------------------------------------------------+
@@ -766,3 +766,7 @@ was claimed and when. Read it as history, not as a measure of how well the syste
 recorded live under the day-before 6 PM ET lock, counts (D33.2-07). See Phase 33.2.
 
 What this covers in this document: the serving-model table, the gate outcomes and the 2025 profitability summary it reports are all old-rule; the description of how the system is built is not a result and is not covered by this label.
+
+## Site redesign note (2026-10-01)
+
+This section was added on 2026-10-01, below the old-rule addendum; nothing above it has been changed. The dashboard was redesigned (the "Broadcast" theme) and now has five pages: This Week (`/`, with game detail at `/games/<id>`), Bets (`/bets`), Season (`/season`), Track Record (`/track-record`) and How It Works (`/how-it-works`). The former `/performance`, `/backtest` and `/betting` pages and the market half of `/insights` are now sections of Track Record; the rest of `/insights` is on How It Works. Each old URL redirects (301) to its matching section and keeps its query string. Page and fragment names above this note describe the site as it was when they were written; `api/routes/pages.py` and `api/routes/fragments.py` hold the current lists.

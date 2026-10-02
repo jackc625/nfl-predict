@@ -330,20 +330,25 @@ class TestPhase31Reconciled:
 
     Paired with RUNBOOK.md in the same commit, per the lockstep rule. Three operator-visible
     things changed in Phase 31 and each would silently mislead if the runbook kept its old text:
-    the nav gained a seventh page (since merged into five by the Broadcast redesign), the Friday
-    orchestrator now rebuilds the web cache (the runbook previously said it does not), and the
-    stylesheet compile has no build step that notices when it is stale.
+    the nav gained a seventh page, the Friday orchestrator now rebuilds the web cache (the runbook
+    previously said it does not), and the stylesheet compile has no build step that notices when
+    it is stale.
+
+    The body above the 2026-09-15 old-rule addendum is a FROZEN record and still reads as Phase 31
+    left it. What changed since -- the Broadcast redesign's five pages, the redirects from the old
+    URLs, and the closed stylesheet gap -- is in the dated redesign note appended after the
+    addendum, never written into the body.
     """
 
     def test_serve_documents_seven_nav_pages_including_bets(self):
-        """/bets made the nav seven pages; the redesign then merged them into five.
+        """The frozen Serve section lists the seven nav pages, /bets the seventh.
 
-        The runbook names the five current pages and records the old seven, with the four
-        retired URLs that now redirect, so an operator holding an old link is not sent hunting.
+        The redesign later merged them into five; the dated redesign note after the addendum names
+        the five and says the old URLs redirect, so the frozen list is not edited.
         """
         content = _read_runbook_md()
         assert "seven nav pages" in content, (
-            "RUNBOOK.md no longer records the old seven nav pages the redesign merged into five."
+            "RUNBOOK.md's frozen Serve section no longer lists the seven nav pages."
         )
         assert "`/bets`" in content, "RUNBOOK.md does not name the /bets page"
 
@@ -381,14 +386,16 @@ class TestPhase31Reconciled:
         )
 
     def test_the_stylesheet_gap_stays_on_record(self):
-        """lg:grid-cols-7 was absent from the compiled sheet; the redesign's recompile closed it.
+        """lg:grid-cols-7 was absent from the compiled sheet, and the runbook keeps that on record.
 
-        The runbook keeps the instance on record as closed, beside the recompile instruction.
+        The frozen body records the gap as OPEN, as it was measured in Phase 31; the dated redesign
+        note after the addendum records it closed by the redesign's recompiled sheet.
         """
         content = _read_runbook_md()
         assert "lg:grid-cols-7" in content, (
-            "RUNBOOK.md does not record the once-missing utility class. It was measured and later "
-            "closed, and recording it is what keeps it from being rediscovered as a mystery."
+            "RUNBOOK.md does not record the once-missing utility class. It was measured open in "
+            "Phase 31 and later closed, and recording it is what keeps it from being rediscovered "
+            "as a mystery."
         )
 
     def test_cross_links_the_profitability_readout(self):

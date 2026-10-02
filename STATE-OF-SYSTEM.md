@@ -255,12 +255,10 @@ change to that count. The verdict itself is a measurement, not a repair.
 availability gap (D30-DEFER-22) and the gate's single-band freshness tolerance (D30-DEFER-04)
 are both still open exactly as recorded above. Neither was widened, narrowed or worked around.
 
-**One stylesheet gap, corrected from an earlier claim -- CLOSED 2026-10-01.** At the Phase-31
-close `lg:grid-cols-7` was ABSENT from `web/static/css/tailwind-compiled.css`, so `/betting`'s KPI
-grid was unstyled at the large breakpoint. An earlier in-phase report recorded it as present; only
-`max-w-3xl` was. Pre-existing, recorded rather than fixed then. The Broadcast redesign recompiled
-the sheet and the class is now present; the grid it styles is Track Record's betting simulation
-(`/track-record`), where the old `/betting` URL redirects.
+**One stylesheet gap, corrected from an earlier claim.** `lg:grid-cols-7` is ABSENT from
+`web/static/css/tailwind-compiled.css`, so `/betting`'s KPI grid is unstyled at the large
+breakpoint. An earlier in-phase report recorded it as present; only `max-w-3xl` is. Pre-existing,
+recorded rather than fixed.
 
 **Five tests are DELIBERATELY RED and must stay red.** They are tripwires that fired on facts the
 owner then accepted -- the gate baseline predating a label correction, and a protected-slice move
@@ -318,3 +316,9 @@ was claimed and when. Read it as history, not as a measure of how well the syste
 recorded live under the day-before 6 PM ET lock, counts (D33.2-07). See Phase 33.2.
 
 What this covers in this document: the AUDIT-01 to AUDIT-05 and AUTO-01 to AUTO-04 pass verdicts, the per-target diagnosis ratings and the 194/195/194-column gold dimensions it reports all rest on the defective inputs.
+
+## Site redesign note (2026-10-01)
+
+This section was added on 2026-10-01, below the old-rule addendum; nothing above it has been changed. The dashboard was redesigned (the "Broadcast" theme) and now has five pages: This Week (`/`, with game detail at `/games/<id>`), Bets (`/bets`), Season (`/season`), Track Record (`/track-record`) and How It Works (`/how-it-works`). The former `/performance`, `/backtest` and `/betting` pages and the market half of `/insights` are now sections of Track Record; the rest of `/insights` is on How It Works. Each old URL redirects (301) to its matching section and keeps its query string. Page and fragment names above this note describe the site as it was when they were written; `api/routes/pages.py` and `api/routes/fragments.py` hold the current lists.
+
+The `lg:grid-cols-7` stylesheet gap recorded above is closed: the redesign's recompiled sheet contains the class, and the grid it styles is now Track Record's betting simulation.

@@ -340,10 +340,8 @@ cache require `--workers 1`).
 uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-- **Succeeded when:** FastAPI is reachable at http://localhost:8000 with the five nav pages
-  `/`, `/bets`, `/season`, `/track-record`, `/how-it-works` (the Broadcast redesign merged the
-  old seven nav pages' `/performance`, `/backtest`, `/insights` and `/betting` into
-  `/track-record` and `/how-it-works`; those four old URLs now 301-redirect), the
+- **Succeeded when:** FastAPI is reachable at http://localhost:8000 with the seven nav pages
+  `/`, `/performance`, `/backtest`, `/insights`, `/betting`, `/season`, `/bets`, the
   `/games/{id}` detail drill-down, and a `/health` endpoint that
   returns HTTP 200. `/health` returns 200 for BOTH a healthy and a `degraded` status; in the
   offseason it is expected to report `status: "degraded"` (a data-freshness state) while
@@ -360,11 +358,10 @@ uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
   ```
 
   It is idempotent and takes about a second, so run it when in doubt. `PIPELINE.md` stage 8
-  owns the full explanation. **A known instance was recorded and is now closed:**
-  `lg:grid-cols-7` was absent from `web/static/css/tailwind-compiled.css`, so the betting
-  simulation KPI grid (then on `/betting`, now on `/track-record`) was unstyled at the large
-  breakpoint (`PROFITABILITY-READOUT.md` section 7e). The Broadcast redesign recompiled the
-  sheet and the class is now present.
+  owns the full explanation. **A known instance is OPEN right now:** `lg:grid-cols-7` is
+  absent from `web/static/css/tailwind-compiled.css`, so `/betting`'s KPI grid is unstyled at
+  the large breakpoint. It is pre-existing and recorded rather than fixed
+  (`PROFITABILITY-READOUT.md` section 7e).
 - **Verification basis:** verified live 2026-05-31 -- started uvicorn this session and reached
   http://localhost:8000/health: HTTP 200, `cache_ready: true`, `all_models_exist: true`,
   `status: "degraded"` (the expected offseason data-freshness state), then stopped it.
@@ -676,3 +673,9 @@ was claimed and when. Read it as history, not as a measure of how well the syste
 recorded live under the day-before 6 PM ET lock, counts (D33.2-07). See Phase 33.2.
 
 What this covers in this document: the model verdicts it summarises in its cross-references (the diagnosis ratings and the promotion and retention outcomes) are old-rule; the operating procedures themselves are not results and are not covered by this label.
+
+## Site redesign note (2026-10-01)
+
+This section was added on 2026-10-01, below the old-rule addendum; nothing above it has been changed. The dashboard was redesigned (the "Broadcast" theme) and now has five pages: This Week (`/`, with game detail at `/games/<id>`), Bets (`/bets`), Season (`/season`), Track Record (`/track-record`) and How It Works (`/how-it-works`). The former `/performance`, `/backtest` and `/betting` pages and the market half of `/insights` are now sections of Track Record; the rest of `/insights` is on How It Works. Each old URL redirects (301) to its matching section and keeps its query string. Page and fragment names above this note describe the site as it was when they were written; `api/routes/pages.py` and `api/routes/fragments.py` hold the current lists.
+
+The `lg:grid-cols-7` stylesheet gap recorded above is closed: the redesign's recompiled sheet contains the class, and the grid it styles is now Track Record's betting simulation.
