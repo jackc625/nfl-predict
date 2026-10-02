@@ -548,7 +548,9 @@
 {% set _return_measured = _return is not none and _return == _return %}
 {% set _hit_rate_measured = block.hit_rate is not none and block.hit_rate == block.hit_rate %}
 <div class="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-  <span class="display text-2xl text-fg whitespace-nowrap" data-tracker-record>{{ block.wins }}-{{ block.losses }}-{{ block.pushes }}</span>
+  {# "2-1-1" means nothing read aloud, and the strip that labels it is omitted whenever it
+     disagrees with the block, so the line carries its own key from the same stored counts. #}
+  <span class="display text-2xl text-fg whitespace-nowrap" data-tracker-record><span aria-hidden="true">{{ block.wins }}-{{ block.losses }}-{{ block.pushes }}</span><span class="sr-only">{{ block.wins }} {{ "win" if block.wins == 1 else "wins" }}, {{ block.losses }} {{ "loss" if block.losses == 1 else "losses" }}, {{ block.pushes }} {{ "push" if block.pushes == 1 else "pushes" }}</span></span>
   {{ result_strip(outcomes, block) }}
 </div>
 {# LAYOUT: one row of six equal tiles on lg+, each group growing by its tile count (mockup 03).

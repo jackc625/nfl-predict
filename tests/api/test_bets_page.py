@@ -2873,6 +2873,12 @@ def test_a_result_strip_that_disagrees_with_its_stored_block_is_omitted(
     assert "data-figure-value>4<" in replay
     assert "Hit rate" in replay
     assert ">2-1-1<" in replay
+    # Without the strip's label, the record line alone must say what "2-1-1" means to a screen
+    # reader, from the same stored counts.
+    record = replay[replay.index("data-tracker-record") :]
+    record = record[: record.index("</span></span>")]
+    assert '<span aria-hidden="true">2-1-1</span>' in record
+    assert '<span class="sr-only">2 wins, 1 loss, 1 push' in record
 
 
 # ---------------------------------------------------------------------------
