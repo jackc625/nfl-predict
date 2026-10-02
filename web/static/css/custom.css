@@ -56,12 +56,14 @@ html {
 /* ------------------------------------------------------------------------------------------
    Game card: lifts on hover and its glow picks up the accent
    ------------------------------------------------------------------------------------------ */
+/* The 2px lift is the card's own hover:-translate-y-0.5 utility, which moves it with the CSS
+   `translate` property; a transform here would add a second 2px on top. This sheet is unlayered,
+   so its transition list replaces the utility's -- it names `translate` so the lift still eases. */
 .game-card {
-  transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
+  transition: translate 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
 }
 
 .game-card:hover {
-  transform: translateY(-2px);
   box-shadow: 0 14px 30px -12px rgb(255 212 0 / 0.35);
 }
 
@@ -104,7 +106,7 @@ html {
   }
 
   .game-card:hover {
-    transform: none;
+    translate: none;
   }
 }
 
@@ -124,6 +126,26 @@ html {
    Print: black on white, no chrome
    ------------------------------------------------------------------------------------------ */
 @media print {
+  /* Every utility (text-fg, bg-panel, border-line and the rest) and every component class reads
+     the theme's colour tokens, so redefining them here flips the whole page -- including text
+     that sets its own colour, which a container-only rule left near-white on white paper. Every
+     colour token input.css's @theme defines is covered; the three bet-type colours keep their
+     hue, darkened to read on paper. */
+  :root {
+    --color-ink: #fff;
+    --color-ink-2: #fff;
+    --color-panel: #fff;
+    --color-panel-2: #f2f2f2;
+    --color-line: #999;
+    --color-fg: #000;
+    --color-muted: #333;
+    --color-dim: #555;
+    --color-accent: #000;
+    --color-target-wp: #7a6000;
+    --color-target-ats: #00708a;
+    --color-target-ou: #6b21a8;
+  }
+
   nav,
   footer,
   .skip-link,
@@ -148,8 +170,23 @@ html {
     break-inside: avoid;
   }
 
-  .text-muted,
-  .text-dim {
-    color: #333333 !important;
+  /* Text that sets its own light grey rather than reading a token. */
+  .honesty-note,
+  .evidence-chip,
+  .band,
+  .text-\[\#C4CAD8\] {
+    color: #000 !important;
+  }
+
+  /* Chips whose text sits on their own fill -- the accent fill, now black under white ink, or a
+     team's colours -- print that fill, or their text would vanish when the browser leaves
+     background colours out of the print. */
+  .tag,
+  .edge-chip,
+  .skew-control-active,
+  .bg-accent,
+  .team-block {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }

@@ -466,9 +466,29 @@ def test_controls_and_disclosures_declare_44px_touch_targets() -> None:
 
 
 def test_reduced_motion_stops_lifts_and_animations() -> None:
+    # The card lifts with the CSS `translate` property (Tailwind v4's hover:-translate-y-0.5), so
+    # that is the property reduced motion must reset; `transform: none` would not stop it.
     block = _at_rule(_stylesheets(), "@media (prefers-reduced-motion: reduce)")
-    assert "transform: none" in block
+    assert "translate: none" in block
     assert "animation" in block
+
+
+def test_a_game_card_lifts_once_on_hover() -> None:
+    """The lift is the card's hover:-translate-y-0.5 utility alone (2px).
+
+    A custom.css transform on .game-card:hover used to add a second 2px on top of it, because
+    `translate` and `transform` compose rather than replace each other.
+    """
+    hover_rules = [
+        body
+        for selector, body in _rules(_CUSTOM_CSS.read_text(encoding="utf-8"))
+        if selector.endswith(".game-card:hover")
+    ]
+    assert hover_rules, "custom.css has no .game-card:hover rule to check"
+    assert not any(re.search(r"(?<![-\w])transform\s*:", b) for b in hover_rules)
+    card = (_TEMPLATES / "components/_game_card.html").read_text(encoding="utf-8")
+    assert "hover:-translate-y-0.5" in card
+    assert "motion-reduce:hover:translate-y-0" in card
 
 
 def test_focus_ring_is_the_accent() -> None:
@@ -494,11 +514,38 @@ def test_focus_ring_is_the_accent() -> None:
     ), "the universal :focus-visible rule does not draw an accent outline"
 
 
+_BLACK = r"(?:#000\b|#000000\b|black\b)"
+_WHITE = r"(?:#fff\b|#ffffff\b|white\b)"
+
+
+def _print_root_declarations() -> str:
+    """The declarations of the :root rule inside the print block, where the tokens are redefined."""
+    block = _at_rule(_stylesheets(), "@media print")
+    bodies = [body for selector, body in _rules(block) if selector.endswith(":root")]
+    assert bodies, "the print block redefines no colour token on :root"
+    return "".join(bodies)
+
+
 def test_print_is_black_on_white() -> None:
     block = _at_rule(_stylesheets(), "@media print")
-    assert re.search(
-        r"background(?:-color)?:\s*(?:#fff\b|#ffffff|white)", block, re.IGNORECASE
-    )
-    assert re.search(
-        r"(?<![-\w])color:\s*(?:#000\b|#000000|black)", block, re.IGNORECASE
+    assert re.search(rf"background(?:-color)?:\s*{_WHITE}", block, re.IGNORECASE)
+    assert re.search(rf"(?<![-\w])color:\s*{_BLACK}", block, re.IGNORECASE)
+
+    # Containers alone are not enough: text-fg, .stat-tile-value, .panel-title, the accent picks
+    # and every other element that sets its own colour reads a token, so the TOKENS flip.
+    root = _print_root_declarations()
+    for token in ("--color-fg", "--color-accent"):
+        assert re.search(rf"{token}\s*:\s*{_BLACK}", root, re.IGNORECASE), token
+    for token in ("--color-ink", "--color-ink-2", "--color-panel"):
+        assert re.search(rf"{token}\s*:\s*{_WHITE}", root, re.IGNORECASE), token
+
+
+def test_print_redefines_every_theme_colour_token() -> None:
+    theme = _at_rule(_INPUT_CSS.read_text(encoding="utf-8"), "@theme")
+    tokens = set(re.findall(r"(--color-[\w-]+)\s*:", theme))
+    assert tokens, "no colour token found in the @theme block"
+    root = _print_root_declarations()
+    missing = sorted(t for t in tokens if not re.search(rf"{t}\s*:", root))
+    assert not missing, (
+        f"print leaves these theme colours as they are on screen: {missing}"
     )
