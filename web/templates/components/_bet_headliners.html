@@ -68,13 +68,14 @@
   {% endif %}
   {% if headliner.state in ("bets", "none_cleared") and (headliner.pending or headliner.missing) %}
   <div class="mt-2 space-y-1 text-xs text-muted">
+    {# The link ends the LAST line shown (missing when present, else pending), so it reads as
+       part of that sentence instead of a stray line of its own. #}
     {% if headliner.pending %}
-    <p data-headliner-partial>Some of this week's games are not evaluated yet. Each game's list is built by the daily run the day before its kickoff, before its 6:00 PM Eastern lock.</p>
+    <p data-headliner-partial>Some of this week's games are not evaluated yet. Each game's list is built by the daily run the day before its kickoff, before its 6:00 PM Eastern lock.{% if not headliner.missing %} <a href="{{ bets_url }}" class="font-semibold text-accent hover:underline">See Bets for which.</a>{% endif %}</p>
     {% endif %}
     {% if headliner.missing %}
-    <p data-headliner-partial>Some games past their lock have no list. Bets names them and says how to rebuild it.</p>
+    <p data-headliner-partial>Some games past their lock have no list. Bets names them and says how to rebuild it. <a href="{{ bets_url }}" class="font-semibold text-accent hover:underline">See Bets for which.</a></p>
     {% endif %}
-    <p><a href="{{ bets_url }}" class="font-semibold text-accent hover:underline">See Bets for which.</a></p>
   </div>
   {% endif %}
   {% if headliner.state == "bets" %}

@@ -11,6 +11,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -634,6 +635,13 @@ def test_a_partly_built_week_says_so_and_points_to_bets(
     if pending or missing:
         after = headliners[headliners.index("data-headliner-partial") :]
         assert 'href="/bets?season=2023&amp;week=1"' in after
+        # One link, ending the last partial line shown rather than standing alone below it.
+        lines = re.findall(
+            r"<p data-headliner-partial>.*?</p>", headliners, flags=re.DOTALL
+        )
+        assert len(lines) == int(pending) + int(missing)
+        assert headliners.count("See Bets for which.") == 1
+        assert lines[-1].endswith("See Bets for which.</a></p>")
 
 
 @pytest.mark.parametrize(
