@@ -7,8 +7,9 @@
    bets on. A value of None is a number we do not have: it renders as the given words, never as a
    zero. #}
 
+{# Muted, not dim: this is mostly 12px text, and dim is only 3.0:1 on a panel, below AA. #}
 {% macro absent(text) -%}
-<span class="text-dim italic">{{ text }}</span>
+<span class="text-muted italic">{{ text }}</span>
 {%- endmacro %}
 
 {# "KC 61.2%": the favoured team and its own chance of winning. The home team is named only

@@ -79,6 +79,8 @@ def test_a_week_with_no_market_lines_reads_cleanly() -> None:
     card = _render(decorate_game(_row()))
 
     assert card.count("No line") == 3, "each of the three market slots must say No line"
+    # 12px text in the muted token: dim is 3.0:1 on a panel, below AA for text this small.
+    assert card.count('<span class="text-muted italic">No line</span>') == 3
     assert "data-edge" not in card, "an edge chip rendered for a game with no edge"
     assert "None" not in card
     assert "nan" not in card.lower()

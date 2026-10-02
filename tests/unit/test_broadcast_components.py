@@ -184,6 +184,8 @@ class TestMonochromeBadges:
         for classes in class_attributes(html):
             for hue in ("green", "red", "amber", "blue"):
                 assert hue not in classes
+            # 12px text: the dim token is 3.0:1 on a panel, below AA for text this small.
+            assert "text-dim" not in classes.split()
 
 
 class TestStates:

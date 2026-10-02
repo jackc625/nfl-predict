@@ -12,7 +12,7 @@
 {% elif status == "postponed" %}
 <span class="{{ _status_base }} border border-line text-muted">Postponed</span>
 {% elif status == "cancelled" %}
-<span class="{{ _status_base }} border border-line text-dim">Cancelled</span>
+<span class="{{ _status_base }} border border-line text-muted">Cancelled</span>
 {% else %}
 <span class="{{ _status_base }} border border-line text-muted">{{ status|title }}</span>
 {% endif %}
