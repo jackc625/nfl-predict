@@ -64,11 +64,12 @@ SEASON_COLORS: dict[int, str] = {
 # Flat and Kelly are staking strategies, not outcomes, so they never take green/red.
 STRATEGY_COLORS: dict[str, str] = {"flat_stake": "#E6E9F0", "kelly": "#FF8A3D"}
 
-# Monochrome metric heatmap: brighter = a higher value. Each heatmap trace keeps its
-# pre-existing direction (reversed exactly where the old red-yellow-green scale was), so
-# brighter is not "better" on every column. The bright end is held to #646E86 so the FG cell
-# numbers stay at 4.67:1 on the brightest cell (WCAG AA; #7C869C gave 3.35:1), while the two
-# ends of the scale still differ by 3:1.
+# Monochrome metric heatmap. Each heatmap trace keeps its pre-existing direction: the wp trace
+# is not reversed, so a brighter cell is a higher value there; the ats and ou traces are reversed
+# (exactly where the old red-yellow-green scale was), so there a brighter cell is a LOWER value.
+# Brightness places a value on its trace's scale and says nothing about whether it is good. The
+# bright end is held to #646E86 so the FG cell numbers stay at 4.67:1 on the brightest cell (WCAG
+# AA; #7C869C gave 3.35:1), while the two ends of the scale still differ by 3:1.
 HEATMAP_SCALE: list[list[float | str]] = [[0.0, "#1D2436"], [1.0, "#646E86"]]
 
 LegendPosition = Literal["top", "bottom"]

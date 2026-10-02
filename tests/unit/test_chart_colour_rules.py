@@ -381,6 +381,29 @@ def test_heatmap_is_monochrome_and_keeps_each_traces_pre_existing_direction(
         assert trace["colorscale"] == theme.HEATMAP_SCALE
 
 
+def test_a_missing_heatmap_metric_leaves_its_cell_empty() -> None:
+    """A season with no value for a metric draws no cell, only its "N/A" label.
+
+    A 0.0 stand-in drew as the BRIGHTEST cell on the reversed ATS and O/U traces and stretched
+    their scale down to zero, dimming every real value beside it.
+    """
+    from api.charts import generate_dashboard_heatmap
+
+    metrics = [
+        m for m in _METRICS if not (m["target"] == "ats" and m["season"] == 2022)
+    ]
+    heatmaps = [
+        t
+        for t in _data(generate_dashboard_heatmap(metrics))
+        if t.get("type") == "heatmap"
+    ]
+    ats = heatmaps[0]  # targets render in sorted order: ats, ou, wp
+    assert ats["y"] == ["2021", "2022", "2023"]
+    assert ats["z"][1] == [None], "the missing 2022 ATS value is not an empty cell"
+    assert ats["text"][1] == ["N/A"]
+    assert None not in ats["z"][0] + ats["z"][2], "a measured value went missing"
+
+
 def test_edge_histogram_bars_sit_side_by_side_and_keep_their_outcome_colours(
     charts: dict[str, str],
 ) -> None:

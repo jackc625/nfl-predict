@@ -365,12 +365,14 @@ def generate_dashboard_heatmap(metrics: list[dict]) -> str:
         if not metric_names:
             continue
 
-        # Build z-values matrix: rows=seasons, cols=metrics
-        z_values: list[list[float]] = []
+        # Build z-values matrix: rows=seasons, cols=metrics. A missing value is None, which Plotly
+        # leaves as an empty cell; a 0.0 stand-in drew as the brightest cell on the reversed
+        # traces and stretched their scale down to zero.
+        z_values: list[list[float | None]] = []
         text_values: list[list[str]] = []
 
         for season in all_seasons:
-            row_z: list[float] = []
+            row_z: list[float | None] = []
             row_text: list[str] = []
             for metric in metric_names:
                 matching = [
@@ -388,16 +390,17 @@ def generate_dashboard_heatmap(metrics: list[dict]) -> str:
                     else:
                         row_text.append(f"{val:.2f}")
                 else:
-                    row_z.append(0.0)
+                    row_z.append(None)
                     row_text.append("N/A")
 
             z_values.append(row_z)
             text_values.append(row_text)
 
-        # One monochrome scale: brighter = a higher value. On this site green/red mean a
-        # realised win/loss, and a metric heatmap is neither. Each trace keeps the direction
-        # it already had: the ats and ou traces are reversed, exactly where the old
-        # red-yellow-green scale was reversed, and the wp trace is not.
+        # One monochrome scale, never green/red: on this site those mean a realised win/loss,
+        # and a metric heatmap is neither. Each trace keeps the direction it already had. The wp
+        # trace is not reversed, so there a brighter cell is a higher value; the ats and ou traces
+        # are reversed, exactly where the old red-yellow-green scale was, so there a brighter
+        # cell is a LOWER value.
         fig.add_trace(
             go.Heatmap(
                 z=z_values,
