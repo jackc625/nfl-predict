@@ -447,3 +447,7 @@ graphify-out/
 #
 # Deliberately NARROW: one glob over one directory, and every other JSON stays ignored.
 !config/upstream_live/*.json
+
+# Local scratch for AI-assisted work: superpowers plan ledgers and Playwright screenshots.
+.superpowers/
+.playwright-mcp/
