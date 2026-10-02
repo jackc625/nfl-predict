@@ -200,6 +200,17 @@ class TestGroupGamesByWindow:
     def test_an_empty_week_has_no_groups(self) -> None:
         assert group_games_by_window([]) == []
 
+    def test_a_window_mixing_naive_and_aware_kickoffs_sorts(self) -> None:
+        """A naive Eastern stamp and an aware UTC one can share a window; sorting them must work."""
+        groups = group_games_by_window(
+            _games(
+                datetime(2026, 9, 27, 13, 5),
+                datetime(2026, 9, 27, 17, 0, tzinfo=UTC),  # 1:00 PM ET
+            )
+        )
+        assert [g["label"] for g in groups] == [f"Sunday {DOT} 1:00 / 1:05 PM ET"]
+        assert [g["game_id"] for g in groups[0]["games"]] == ["g0", "g1"]
+
 
 class TestDecorateGame:
     def test_it_adds_the_presentation_fields_without_mutating_the_input(self) -> None:

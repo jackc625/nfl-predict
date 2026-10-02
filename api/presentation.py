@@ -5,7 +5,8 @@ cache or computes a metric (UIAP-01): which colour a team's block uses, what a t
 which TV window a kickoff falls in are formatting decisions, made identically on every request.
 
 ``predictions.game_date`` is a naive TIMESTAMP already in US Eastern time -- a 1 PM ET kickoff is
-stored as ``13:00:00`` -- so a naive value is read as Eastern as-is, and an aware one is converted.
+stored as ``13:00:00`` -- so a naive value is read as Eastern as-is, and an aware one is converted
+to Eastern and then made naive, so every kickoff in a group can be compared with every other.
 """
 
 from __future__ import annotations
@@ -132,7 +133,12 @@ def team_nickname(abbr: str | None) -> str:
 def _to_eastern(
     game_date: datetime | date | str | None,
 ) -> tuple[date, datetime | None] | None:
-    """(ET calendar date, ET kickoff or None when no time is known), or None when unknown."""
+    """(ET calendar date, ET kickoff or None when no time is known), or None when unknown.
+
+    The kickoff is always NAIVE Eastern wall-clock time. An aware input is converted and then
+    stripped of its zone: one window may mix a naive stored stamp with an aware one, and Python
+    refuses to sort a naive datetime against an aware one.
+    """
     if game_date is None:
         return None
     value: datetime | date | str = game_date
@@ -149,7 +155,7 @@ def _to_eastern(
         if value != value:  # noqa: PLR0124
             return None
         if value.tzinfo is not None:
-            value = value.astimezone(ET)
+            value = value.astimezone(ET).replace(tzinfo=None)
         # A midnight stamp is a date with no kickoff time: no NFL game kicks off at 00:00 ET.
         if (value.hour, value.minute, value.second) == (0, 0, 0):
             return value.date(), None
