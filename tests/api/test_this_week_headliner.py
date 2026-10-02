@@ -279,6 +279,8 @@ def test_a_week_bets_would_not_show_has_no_list_of_its_own(tmp_path: Path) -> No
     assert headliner == {
         "state": "no_week",
         "partial": False,
+        "missing": False,
+        "pending": False,
         "bets": [],
         "season": _SEASON,
         "week": _WEEK + 1,
@@ -358,22 +360,31 @@ def _rebuild_freeze(db_path: Path, locks: dict[str, datetime]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("second_lock", "expected_partial", "marker"),
+    ("second_lock", "expected_partial", "marker", "missing", "pending"),
     [
         (
             _PAST_LOCK,
             True,
             "CAR @ ATL",
+            True,
+            False,
         ),  # locked with no list: named as missing on /bets
         (
             _FUTURE_LOCK,
             True,
             "Not evaluated yet:",
+            False,
+            True,
         ),  # lock still ahead: the pending line
     ],
 )
 def test_a_partly_built_week_is_flagged_partial_as_bets_discloses_it(
-    tmp_path: Path, second_lock: datetime, expected_partial: bool, marker: str
+    tmp_path: Path,
+    second_lock: datetime,
+    expected_partial: bool,
+    marker: str,
+    missing: bool,
+    pending: bool,
 ) -> None:
     db_path = tmp_path / "partial.duckdb"
     _build_state_cache(db_path, "bets")
@@ -390,6 +401,10 @@ def test_a_partly_built_week_is_flagged_partial_as_bets_discloses_it(
     )
     assert headliner["state"] == "bets"
     assert headliner["partial"] is expected_partial
+    # A game past its lock with no list (a failure) and a game before its lock (normal) are told
+    # apart, so the headliner never words one as the other.
+    assert headliner["missing"] is missing
+    assert headliner["pending"] is pending
 
 
 def test_a_fully_built_week_is_not_partial(tmp_path: Path) -> None:
@@ -400,6 +415,8 @@ def test_a_fully_built_week_is_not_partial(tmp_path: Path) -> None:
         headliner = _build_headliner(DataService(conn), _SEASON, _WEEK, _REQUEST)
 
     assert headliner["partial"] is False
+    assert headliner["missing"] is False
+    assert headliner["pending"] is False
 
 
 def test_the_fragment_without_a_season_resolves_the_same_headliner_as_the_page(
@@ -574,26 +591,117 @@ def test_a_game_with_no_kickoff_time_renders_under_its_own_tag() -> None:
     assert "Time TBD" in html.split('data-window="Time TBD"', 1)[1]
 
 
+# The two partial-week lines, worded as /bets and the headliner notes already word them. A game
+# still ahead of its lock is normal (not evaluated yet); a game past its lock with no list is a
+# failure. They are separate lines so one is never read as the other.
+_PENDING_LINE = (
+    "Some of this week's games are not evaluated yet. Each game's list is built by the daily "
+    "run the day before its kickoff, before its 6:00 PM Eastern lock."
+)
+_MISSING_LINE = "Some games past their lock have no list. Bets names them and says how to rebuild it."
+_NONE_CLEARED_SO_FAR = "No bets cleared the floor among the games with a list so far."
+_NONE_CLEARED_REST = (
+    "Every candidate that was evaluated, and why each was declined, is on Bets."
+)
+
+
+def _headliners_of(db_path: Path) -> str:
+    """Serve *db_path* and return the headliner area of / for the fixture week."""
+    _insert_predictions(db_path, _WEEK_GAMES)
+    with _serving(db_path) as (client, _conn):
+        html = client.get(f"/?season={_SEASON}&week={_WEEK}").text
+    return html[html.index('id="headliners"') : html.index("data-window=")]
+
+
 @pytest.mark.parametrize(
-    ("second_lock", "partial"),
-    [(_PAST_LOCK, True), (_FUTURE_LOCK, True), (None, False)],
+    ("second_lock", "pending", "missing"),
+    [(_PAST_LOCK, False, True), (_FUTURE_LOCK, True, False), (None, False, False)],
 )
 def test_a_partly_built_week_says_so_and_points_to_bets(
-    tmp_path: Path, second_lock: datetime | None, partial: bool
+    tmp_path: Path, second_lock: datetime | None, pending: bool, missing: bool
 ) -> None:
     db_path = tmp_path / "partial_page.duckdb"
     _build_state_cache(db_path, "bets")
     if second_lock is not None:
         _rebuild_freeze(db_path, {_GAME: _PAST_LOCK, _SECOND_GAME: second_lock})
-    _insert_predictions(db_path, _WEEK_GAMES)
-    with _serving(db_path) as (client, _conn):
-        html = client.get(f"/?season={_SEASON}&week={_WEEK}").text
+    headliners = _headliners_of(db_path)
 
-    headliners = html[html.index('id="headliners"') : html.index("data-window=")]
-    assert ("data-headliner-partial" in headliners) is partial
-    if partial:
-        line = headliners[headliners.index("data-headliner-partial") :]
-        assert (
-            "only partly built" in line
-            and 'href="/bets?season=2023&amp;week=1"' in line
+    assert 'data-headliner-state="bets"' in headliners
+    assert (_PENDING_LINE in headliners) is pending
+    assert (_MISSING_LINE in headliners) is missing
+    assert headliners.count("data-headliner-partial") == int(pending) + int(missing)
+    assert "only partly built" not in headliners
+    if pending or missing:
+        after = headliners[headliners.index("data-headliner-partial") :]
+        assert 'href="/bets?season=2023&amp;week=1"' in after
+
+
+@pytest.mark.parametrize(
+    ("second_lock", "pending", "missing"),
+    [(_FUTURE_LOCK, True, False), (_PAST_LOCK, False, True), (None, False, False)],
+)
+def test_a_week_with_no_bet_so_far_never_states_a_whole_week_result(
+    tmp_path: Path, second_lock: datetime | None, pending: bool, missing: bool
+) -> None:
+    """C1: Thursday evaluated with no bet while Sunday is still ahead of its lock is no week result.
+
+    The note is scoped to the games with a list so far -- as /bets scopes "Every game with a list so
+    far was checked" -- and the pending or missing line says which kind of gap the week has.
+    """
+    db_path = tmp_path / "none_cleared_page.duckdb"
+    _build_state_cache(db_path, "none_cleared")
+    if second_lock is not None:
+        _rebuild_freeze(db_path, {_GAME: _PAST_LOCK, _SECOND_GAME: second_lock})
+    headliners = _headliners_of(db_path)
+
+    assert 'data-headliner-state="none_cleared"' in headliners
+    note = headliners[headliners.index("data-headliner-note") :]
+    note = note[: note.index("</p>")]
+    assert _NONE_CLEARED_REST in note
+    if pending or missing:
+        assert _NONE_CLEARED_SO_FAR in note
+        assert "this week." not in note, "the note states a result for the whole week"
+    else:
+        assert "No bets cleared the floor this week." in note
+        assert _NONE_CLEARED_SO_FAR not in note
+    assert (_PENDING_LINE in headliners) is pending
+    assert (_MISSING_LINE in headliners) is missing
+    assert headliners.count("data-headliner-partial") == int(pending) + int(missing)
+
+
+def _relabel_bets(db_path: Path, provenance: str, validation_type: str) -> None:
+    """Move every bet-list row into another honesty class, so a card can carry each chip."""
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute(
+            "UPDATE bet_list SET provenance = ?, validation_type = ?",
+            [provenance, validation_type],
         )
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("provenance", "validation_type", "chip"),
+    [
+        ("backtest_replay", "contaminated", "Contaminated split"),
+        ("backtest_replay", "clean_holdout", "Old rule -- 2025, not evidence"),
+        ("forward", "forward_realized", "Live forward record"),
+    ],
+)
+def test_each_headliner_card_carries_its_bets_evidence_chip(
+    tmp_path: Path, provenance: str, validation_type: str, chip: str
+) -> None:
+    """I1: R8 puts the evidence chip on every displayed bet, so the This Week cards carry it too."""
+    db_path = tmp_path / "chip.duckdb"
+    _build_state_cache(db_path, "bets")
+    _relabel_bets(db_path, provenance, validation_type)
+    headliners = _headliners_of(db_path)
+
+    card = headliners[headliners.index("data-headliner-bet=") :]
+    card = card[: card.index("</article>")]
+    assert (
+        f'data-provenance="{provenance}" data-validation-type="{validation_type}"'
+        in card
+    )
+    assert f'>{chip}<span class="sr-only">' in card

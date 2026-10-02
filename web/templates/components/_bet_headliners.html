@@ -1,11 +1,16 @@
 {# The week's bets, first on This Week (Broadcast redesign, spec 7.1, mockup 02 layout L3).
 
-   Pass: headliner -- {"state", "bets", "season", "week", "partial"} from pages._build_headliner.
-   The state is NOT decided here: it is the render /bets makes for the same season and week, read
-   off the same context in pages/bets.html's own precedence, so the two pages cannot describe one
-   week two ways. Only the "bets" state draws cards; every other state is one line pointing to
-   /bets, where the full explanation lives. A "bets" week for which /bets itself shows a
-   missing-games notice or a pending line adds one line saying the list is only partly built.
+   Pass: headliner -- {"state", "bets", "season", "week", "partial", "missing", "pending"} from
+   pages._build_headliner. The state is NOT decided here: it is the render /bets makes for the same
+   season and week, read off the same context in pages/bets.html's own precedence, so the two pages
+   cannot describe one week two ways. Only the "bets" state draws cards; every other state is one
+   line pointing to /bets, where the full explanation lives.
+
+   A week /bets shows only in part -- games still before their lock (pending, which is normal) or
+   games past their lock with no list (missing, a failure) -- is no whole-week result yet. In the
+   "bets" and "none_cleared" states each kind adds its own line, worded as /bets words it, followed
+   by one link to Bets; and the none_cleared note is scoped to the games with a list so far, as
+   /bets scopes its own "Every game with a list so far was checked".
 
    Each card shows the bet's OWN stored numbers -- the pick, the stake in units, the EV and its
    pre-registered EV band -- and nothing derived. No "edge": the only stored edge is the
@@ -19,11 +24,13 @@
 {% set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} %}
 {% set HEADLINER_NOTES = {
   "none_cleared": "No bets cleared the floor this week. Every candidate that was evaluated, and why each was declined, is on Bets.",
+  "none_cleared_so_far": "No bets cleared the floor among the games with a list so far. Every candidate that was evaluated, and why each was declined, is on Bets.",
   "not_evaluated": "Not evaluated yet. Each game's list is built by the daily run the day before its kickoff, before its 6:00 PM Eastern lock.",
   "blocked": "This week's list is missing for games past their lock. Bets names them and says how to rebuild it.",
   "not_built": "The bet list has not been built in this cache yet. Bets says how to build it.",
   "no_week": "There is no bet list for this week."
 } %}
+{% set note_key = "none_cleared_so_far" if headliner.state == "none_cleared" and headliner.partial else headliner.state %}
 {% set bets_url = "/bets?season=" ~ (headliner.season if headliner.season is not none else "") ~ "&week=" ~ (headliner.week if headliner.week is not none else "") %}
 <section id="headliners" class="mb-8" data-headliner-state="{{ headliner.state }}">
   {{ bc.section_head("This week's bets") }}
@@ -39,27 +46,40 @@
         <p class="label mt-1">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</p>
         <p class="display text-4xl leading-none text-accent">{{ bp.pick_label(bet) }}</p>
         {# stake_units and per_bet_ev are stored by the selector; the x100 is a unit render
-           (fraction -> percent), the same one /bets applies under its "EV %" header (UIAP-01). #}
+           (fraction -> percent), the same one /bets applies under its "EV %" header (UIAP-01).
+           The evidence chip is the one every bet row on /bets carries (R8), from the single
+           vocabulary partial, so a replay week's card is never read as a live record. #}
         <p class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
           <span>Stake <span class="num text-fg">{{ "%.2f"|format(bet.stake_units) }}u</span></span>
           <span>EV <span class="num text-fg">{{ "%+.2f"|format(bet.per_bet_ev * 100) }}%</span></span>
           {% with band=bet.ev_tier %}{% include "components/_ev_band_badge.html" %}{% endwith %}
+          {% with provenance=bet.provenance, validation_type=bet.validation_type %}{% include "components/_provenance_badge.html" %}{% endwith %}
         </p>
         <span aria-hidden="true" class="display pointer-events-none absolute -right-2 -bottom-6 text-8xl text-white/5">{{ drawn }}</span>
       </a>
     </article>
     {% endfor %}
   </div>
-  {% if headliner.partial %}
-  <p class="mt-2 text-xs text-muted" data-headliner-partial>This week's list is only partly built: some games have no list yet or are still pending. <a href="{{ bets_url }}" class="font-semibold text-accent hover:underline">See Bets for which.</a></p>
-  {% endif %}
-  <p class="mt-2 text-right text-xs">
-    <a href="{{ bets_url }}" class="font-semibold text-accent hover:underline">Full list, every declined candidate and the record on Bets &rsaquo;</a>
-  </p>
   {% else %}
   <p class="panel text-sm text-fg" data-headliner-note>
-    {{ HEADLINER_NOTES.get(headliner.state, headliner.state) }}
+    {{ HEADLINER_NOTES.get(note_key, headliner.state) }}
     <a href="{{ bets_url if headliner.state != 'no_week' else '/bets' }}" class="ml-1 whitespace-nowrap font-semibold text-accent hover:underline">Open Bets &rsaquo;</a>
+  </p>
+  {% endif %}
+  {% if headliner.state in ("bets", "none_cleared") and (headliner.pending or headliner.missing) %}
+  <div class="mt-2 space-y-1 text-xs text-muted">
+    {% if headliner.pending %}
+    <p data-headliner-partial>Some of this week's games are not evaluated yet. Each game's list is built by the daily run the day before its kickoff, before its 6:00 PM Eastern lock.</p>
+    {% endif %}
+    {% if headliner.missing %}
+    <p data-headliner-partial>Some games past their lock have no list. Bets names them and says how to rebuild it.</p>
+    {% endif %}
+    <p><a href="{{ bets_url }}" class="font-semibold text-accent hover:underline">See Bets for which.</a></p>
+  </div>
+  {% endif %}
+  {% if headliner.state == "bets" %}
+  <p class="mt-2 text-right text-xs">
+    <a href="{{ bets_url }}" class="font-semibold text-accent hover:underline">Full list, every declined candidate and the record on Bets &rsaquo;</a>
   </p>
   {% endif %}
 </section>
