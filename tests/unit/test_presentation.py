@@ -24,6 +24,7 @@ from api.presentation import (
     TeamColors,
     contrast_ratio,
     decorate_game,
+    et_timestamp_label,
     group_games_by_window,
     kickoff_label,
     kickoff_window,
@@ -261,3 +262,43 @@ def test_the_helpers_are_jinja_globals() -> None:
         "{{ team_colors('KC').bg }} {{ team_colors('KC').fg }} {{ team_nickname('KC') }}"
     ).render()
     assert rendered == "#E31837 #FFFFFF Chiefs"
+
+
+class TestEtTimestampLabel:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            # A UTC "Z" and a "+00:00" instant read as 6 PM EDT in September.
+            ("2025-09-06T22:00:00Z", "Sep 6, 2025, 6:00 PM ET"),
+            ("2025-09-06T22:00:00+00:00", "Sep 6, 2025, 6:00 PM ET"),
+            # An offset other than UTC is converted, not trusted.
+            ("2023-09-07T18:00:00-04:00", "Sep 7, 2023, 6:00 PM ET"),
+            # A naive value is read as UTC, the way the cache writes its instants.
+            ("2025-09-06T22:00:00", "Sep 6, 2025, 6:00 PM ET"),
+            (datetime(2025, 9, 6, 22, 0), "Sep 6, 2025, 6:00 PM ET"),
+            (datetime(2025, 9, 6, 22, 0, tzinfo=UTC), "Sep 6, 2025, 6:00 PM ET"),
+            (pd.Timestamp("2025-09-06T22:00:00Z"), "Sep 6, 2025, 6:00 PM ET"),
+            # The DST offset: EDT is UTC-4 in summer, EST is UTC-5 in winter.
+            ("2025-07-04T16:00:00+00:00", "Jul 4, 2025, 12:00 PM ET"),
+            ("2025-12-14T16:00:00+00:00", "Dec 14, 2025, 11:00 AM ET"),
+            # The 12-hour clock edges, with no leading zeros.
+            ("2025-12-14T05:00:00+00:00", "Dec 14, 2025, 12:00 AM ET"),
+            ("2025-12-14T17:05:00+00:00", "Dec 14, 2025, 12:05 PM ET"),
+            ("2025-09-06T13:30:00+00:00", "Sep 6, 2025, 9:30 AM ET"),
+            # Eastern's calendar day can differ from UTC's.
+            ("2025-09-07T02:00:00+00:00", "Sep 6, 2025, 10:00 PM ET"),
+        ],
+    )
+    def test_label(self, value: object, expected: str) -> None:
+        assert et_timestamp_label(value) == expected
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_nothing_stored_is_an_empty_label(self, value: object) -> None:
+        assert et_timestamp_label(value) == ""
+
+    def test_a_pandas_not_a_time_is_an_empty_label(self) -> None:
+        assert et_timestamp_label(pd.NaT) == ""
+
+    @pytest.mark.parametrize("value", ["not a date", "2025-13-45T99:00:00", 12345])
+    def test_unparseable_input_is_returned_as_stored(self, value: object) -> None:
+        assert et_timestamp_label(value) == str(value)

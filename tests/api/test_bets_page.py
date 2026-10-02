@@ -93,6 +93,7 @@ _EV_FLOOR_T = 0.0
 _FROZEN_SD = 13.0
 _SEASON_BIAS = {_SEASON: -1.0}
 _SNAPSHOT_TS = "2023-09-07T18:00:00-04:00"
+_SNAPSHOT_TS_LABEL = "Sep 7, 2023, 6:00 PM ET"
 _FREEZE_TS = "2023-09-08T18:00:00-04:00"
 _MINUS_110 = -110.0
 
@@ -658,6 +659,8 @@ def test_suppressed_rows_are_in_the_document_while_collapsed(tmp_path: Path) -> 
     assert "<details open" not in body, "the disclosure was not collapsed"
     assert "SEA @ SFO" in body
     assert "Line captured after the lock" in body
+    # The suppressed table's "Line as of" cell reads as Eastern time, stored text on hover.
+    assert f'title="{_SNAPSHOT_TS}">{_SNAPSHOT_TS_LABEL}</time>' in body
 
 
 def test_the_caption_is_present_whether_or_not_the_disclosure_is_expanded(
@@ -753,7 +756,10 @@ def test_each_live_bet_renders_one_ranked_slip(
     count = len(selected_records)
 
     assert body.count('<li class="bet-slip') == count
-    assert f"data-slip-asof>{_SNAPSHOT_TS}<" in body
+    # Read as Eastern time, with the exact stored text kept on hover and machine-readable.
+    assert f'title="{_SNAPSHOT_TS}">{_SNAPSHOT_TS_LABEL}</time>' in body
+    assert f'data-slip-asof datetime="{_SNAPSHOT_TS}"' in body
+    assert f"data-slip-asof>{_SNAPSHOT_TS}<" not in body
     assert "Line as of</span>" in body
     # The header meta, with its row count -- not the <ol>'s aria-label, which also says
     # "ranked by expected value" and would satisfy a bare substring check on its own.
@@ -838,6 +844,7 @@ _FORBIDDEN_WEEK_LEVEL_CLAIMS = (
 )
 
 _POPULATED_AT = "2023-09-08T22:30:00+00:00"
+_POPULATED_AT_LABEL = "Sep 8, 2023, 6:30 PM ET"
 # Strictly LATER than _POPULATED_AT, so the population run finished BEFORE the freeze moved.
 # TZ-AWARE UTC, like every instant ``build_bet_week_schedule`` produces (CR-01). A naive fixture
 # here would exercise a shape the real writer never emits, and the ``bet_week_freeze`` column is
@@ -1415,7 +1422,10 @@ def test_the_cache_stamp_makes_the_per_game_claim_and_no_week_level_one(
     with contextmanager(_client)(db_path) as client:
         body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
 
-    assert f"Bet list last populated: {_POPULATED_AT}." in body
+    assert (
+        f'Bet list last populated: <time datetime="{_POPULATED_AT}" '
+        f'title="{_POPULATED_AT}">{_POPULATED_AT_LABEL}</time>.'
+    ) in body
     assert _PER_GAME_FREEZE_SENTENCE in body
     lowered = body.lower()
     for claim in _FORBIDDEN_WEEK_LEVEL_CLAIMS:

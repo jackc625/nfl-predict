@@ -11,7 +11,7 @@ to Eastern and then made naive, so every kickoff in a group can be compared with
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, NamedTuple
 
 # The project's one America/New_York constant, not a third copy of it.
@@ -234,6 +234,40 @@ def kickoff_window(game_date: datetime | date | str | None) -> str:
     if moment is None:
         return _window_label(day, "allday", [])
     return _window_label(day, _band(moment), [moment])
+
+
+def et_timestamp_label(value: object) -> str:
+    """A stored timestamp as Eastern wall-clock text: ``"Sep 6, 2025, 6:00 PM ET"``.
+
+    Accepts an ISO-8601 string, a ``datetime`` or a ``pandas.Timestamp``. The cache writes its
+    instants in UTC (``datetime.now(tz=UTC).isoformat()``) or with an explicit offset, so an
+    aware value is converted to Eastern and a NAIVE one is read as UTC. Nothing usable gives
+    ``""`` for None and empty, and ``str(value)`` unchanged for anything unparseable: the page
+    shows what is stored rather than a guess.
+    """
+    if value is None:
+        return ""
+    moment: datetime
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        try:
+            moment = datetime.fromisoformat(text)
+        except ValueError:
+            return str(value)
+    else:
+        return str(value)
+    # pandas' NaT is a datetime that is not equal to itself.
+    if moment != moment:  # noqa: PLR0124
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    local = moment.astimezone(ET)
+    month = _MONTH_ABBR[local.month - 1]
+    return f"{month} {local.day}, {local.year}, {_clock(local)} {_meridiem(local)} ET"
 
 
 def decorate_game(game: dict[str, Any]) -> dict[str, Any]:
