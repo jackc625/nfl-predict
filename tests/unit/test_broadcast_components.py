@@ -24,6 +24,18 @@ NOT_ADVICE_FULL_TEXT = (
     "win-probability and spread models on recent past seasons. A bet appearing on this "
     "list means it cleared a pre-registered expected-value floor, not that it is expected to win."
 )
+# The always-visible one-line summary of the same note (owner-approved wording, 2026-10-01).
+NOT_ADVICE_SUMMARY_LINE = (
+    "Research tool: no wager is placed, stakes are units, and no edge over the betting market "
+    "has been demonstrated."
+)
+# The caption under the Track Record betting scope toggle (owner-approved wording, 2026-10-01).
+SCOPE_TOGGLE_CAPTION = (
+    "\"Recommended\" = bets the simulation's Kelly sizing gave a stake, because the model's own "
+    'estimate showed an edge over the price. "All bets" includes every directional bet the '
+    "simulation placed. Both are simulated on a pretend bankroll over old-rule seasons, so "
+    "neither is evidence."
+)
 OLD_RULE_FULL_TEXT = (
     "Built under the old rule on inputs later found defective; not evidence. These figures come "
     "from before the September 2026 fix to what the models were fed, and they stay here for the "
@@ -64,6 +76,13 @@ class TestNotAdviceBanner:
 
     def test_the_full_text_is_kept_word_for_word(self) -> None:
         assert NOT_ADVICE_FULL_TEXT in flat(render("_not_advice_banner.html"))
+
+    def test_the_summary_line_is_kept_word_for_word(self) -> None:
+        summary = summary_of(render("_not_advice_banner.html"))
+        assert (
+            f'<span class="honesty-note-line">{NOT_ADVICE_SUMMARY_LINE}</span>'
+            in summary
+        )
 
 
 class TestOldRuleLabel:
@@ -244,6 +263,13 @@ class TestControls:
         pressed = html[html.index('aria-pressed="true"') :]
         assert "skew-control-active" in pressed[: pressed.index(">")]
         assert '<span class="unskew">All bets</span></button>' in html
+
+    def test_scope_toggle_caption_is_kept_word_for_word(self) -> None:
+        html = render("_betting_scope_toggle.html", current_scope="recommended")
+        assert (
+            f'<p class="text-xs text-muted mt-2 max-w-3xl">{SCOPE_TOGGLE_CAPTION}</p>'
+            in flat(html)
+        )
 
     def test_sort_controls_keep_their_wiring(self) -> None:
         html = render("_sort_controls.html", current_sort="edge")
