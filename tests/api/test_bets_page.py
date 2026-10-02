@@ -1277,6 +1277,83 @@ def test_a_partly_built_week_shows_its_rows_and_names_the_rest(tmp_path: Path) -
     assert "Suppressed candidates (0)" in body
 
 
+_PARTIAL_ZERO_ADMITTED_HEADING = (
+    "No bets cleared the floor among the games with a list so far"
+)
+
+
+@pytest.mark.parametrize(
+    ("other_game", "other_lock"),
+    [
+        (
+            "2023_W01_JAX@IND",
+            datetime(2099, 9, 8, 22, 0, tzinfo=UTC),
+        ),  # still ahead: pending
+        ("2023_W01_CAR@ATL", _LATER_FREEZE),  # past its lock with no list: missing
+    ],
+    ids=["pending", "missing"],
+)
+def test_the_empty_heading_is_scoped_to_the_games_checked_in_a_partial_week(
+    tmp_path: Path, other_game: str, other_lock: datetime
+) -> None:
+    """A week built in part, with nothing cleared among the built games, must not say "this week".
+
+    DET@KC has a list (one suppressed candidate, no live bet) and a second game has none, so the
+    claim "no bets cleared the floor this week" would cover a game that was never checked.
+    """
+    clear_cache()
+    db_path = tmp_path / "partial_empty.duckdb"
+    conn = _build_bare_cache(db_path)
+    schedule = [("2023_W01_DET@KC", _LATER_FREEZE), (other_game, other_lock)]
+    try:
+        materialize_bet_list(
+            conn,
+            pd.DataFrame([_suppressed_row("2023_W01_DET@KC", "ou", "ev_below_floor")]),
+        )
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [
+                    {"game_id": game_id, "season": _SEASON, "week": _WEEK}
+                    for game_id, _lock in schedule
+                ]
+            ),
+        )
+        materialize_bet_week_freeze(
+            conn,
+            pd.DataFrame(
+                [
+                    {
+                        "game_id": game_id,
+                        "season": _SEASON,
+                        "week": _WEEK,
+                        "game_freeze_ts": lock,
+                    }
+                    for game_id, lock in schedule
+                ]
+            ),
+        )
+        _stamp_populated_at(conn, _POPULATED_AT)
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert _PARTIAL_ZERO_ADMITTED_HEADING in body
+    assert _ZERO_ADMITTED_HEADING not in body
+    assert "Every game with a list so far was checked" in body
+
+
+def test_the_empty_heading_says_this_week_when_the_whole_week_was_checked(
+    bets_client: TestClient,
+) -> None:
+    body = bets_client.get(f"/bets?season={_SEASON}&week={_EMPTY_WEEK}").text
+    assert _ZERO_ADMITTED_HEADING in body
+    assert _PARTIAL_ZERO_ADMITTED_HEADING not in body
+    assert "Every scheduled game was evaluated" in body
+
+
 def test_a_week_whose_locks_are_all_ahead_is_not_evaluated_yet(tmp_path: Path) -> None:
     """33.2 review C2 WR-01: a future week is 'not evaluated yet', never the stale-cache refusal."""
     clear_cache()

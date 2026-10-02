@@ -204,7 +204,7 @@
   {% elif not bets %}
     {# The claim is scoped to what was evaluated: with a game missing or still ahead of its lock,
        "every scheduled game" would be false (33.2 review C2 CR-02). #}
-    {% with heading="No bets cleared the floor this week",
+    {% with heading=("No bets cleared the floor among the games with a list so far" if (missing_labels or pending_labels) else "No bets cleared the floor this week"),
             body=("Every game with a list so far was checked" if (missing_labels or pending_labels) else "Every scheduled game was evaluated") ~ " for all three bet types and none cleared the pre-registered expected-value floor. An empty list is a result, not a failure or an outage. The full record of what was evaluated and why each candidate was declined is in the suppressed section below.",
             action_text=none, action_url=none %}
       {% include "components/_empty_state.html" %}
