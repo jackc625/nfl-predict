@@ -210,6 +210,52 @@ class TestRetiredUrls:
         assert not (PAGES_DIR / name).exists()
 
 
+# The six owner-approved methodology paragraphs (2026-10-01), as rendered with their tags
+# stripped: each bold lead-in, then its text. Transcribed from the approved wording rather than
+# read from the template, so an edit to either side is a failure rather than a tautology.
+METHODOLOGY_PARAGRAPHS = (
+    "What it predicts. For every game the site publishes three numbers: each team's chance of "
+    "winning, the expected winning margin (set against the point spread), and the expected total "
+    "points (set against the over/under). Each one is shown next to the market's number for the "
+    "same game -- the point spread, the over/under, and the win chance implied by the spread -- "
+    "so you can see where the model and the market disagree.",
+    "What it knows, and when. Each game's information locks at 6 PM Eastern on the day before "
+    "kickoff. Anything known by then can be used -- team strength ratings that update after every "
+    "game (an Elo system running since 2002), recent form, rest, travel and schedule, the venue, "
+    "and the weather forecast as it stood at the lock. Anything that arrives later cannot. "
+    "Betting lines are not inputs: the models never see the market. The models are trained and "
+    "tested walk-forward: a model is only ever tested on games played after everything it "
+    "learned from.",
+    "Three models, then the market. Win probability comes from a logistic regression whose "
+    "output is calibrated, which aims to make a 70% call come true about 70% of the time. The "
+    "margin and the total each come from a gradient-boosted tree model (XGBoost). Each model's "
+    "number is then blended with the latest market line from before the lock -- win probability "
+    "in log-odds, the margin and total on the line itself -- using one fixed weight per "
+    "prediction, tuned on recent past seasons. As of the September 2026 tuning, the model gets "
+    "no weight for the win chance or the margin and about 13% for the total, because on those "
+    "seasons the market on its own did at least as well as any mix. So the blended win chance "
+    "and margin are the market's own numbers, and the model's own numbers are shown beside them.",
+    "How the current models got in. In September 2026 all three models were rebuilt from "
+    "scratch on corrected inputs, and the rebuilt models replaced the old ones outright. Nothing "
+    "built on the old inputs, models or comparison baselines, was kept to compare against. No "
+    "model on this site has shown that it beats the betting market.",
+    "What the numbers on this site mean. In September 2026 the inputs behind every earlier "
+    "result were found to be defective -- for example, closing lines known only at kickoff were "
+    "used as inputs, and missing weather was filled in with a flat placeholder. Every "
+    "past-season figure on this site is labelled as old rule, kept for the record, and is not "
+    "evidence. Only 2026 games recorded live, each locked at 6 PM Eastern on the day before "
+    "kickoff, count as evidence.",
+    "Not betting advice. This is a personal research tool and not betting advice. A bet on the "
+    "Bets page cleared an expected-value threshold fixed before this season's first bet; that is "
+    "not a forecast that it will win.",
+)
+
+
+def _flat_text(markup: str) -> str:
+    """The markup's text with its tags stripped and its whitespace collapsed."""
+    return " ".join(re.sub(r"<[^>]+>", " ", markup).split())
+
+
 def _methodology_section(html: str) -> str:
     """The methodology section's own markup, ending at its closing tag -- so the old-rule label
     that follows it can never satisfy an assertion about the methodology text."""
@@ -230,6 +276,18 @@ class TestTheMethodologySection:
         assert "not evidence" in section
         assert "not betting advice" in section
         assert "walk-forward" in section
+
+    def test_keeps_the_six_approved_paragraphs_word_for_word_in_order(
+        self, test_client: TestClient
+    ) -> None:
+        text = _flat_text(_methodology_section(test_client.get("/how-it-works").text))
+        positions = []
+        for paragraph in METHODOLOGY_PARAGRAPHS:
+            assert paragraph in text, f"approved paragraph changed: {paragraph[:40]!r}"
+            positions.append(text.index(paragraph))
+        assert positions == sorted(positions), (
+            "the approved paragraphs are out of order"
+        )
 
     def test_makes_no_over_claim(self, test_client: TestClient) -> None:
         from backtest.ev_chain_constants import READOUT_FORBIDDEN_WORDS
