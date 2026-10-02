@@ -187,6 +187,10 @@ class TestMonochromeBadges:
             # 12px text: the dim token is 3.0:1 on a panel, below AA for text this small.
             assert "text-dim" not in classes.split()
 
+    @pytest.mark.parametrize("status", [None, ""])
+    def test_no_status_renders_no_badge(self, status: str | None) -> None:
+        assert render("_status_badge.html", status=status).strip() == ""
+
 
 class TestStates:
     def test_empty_state_is_a_grey_box_with_a_heading_and_a_paragraph(self) -> None:

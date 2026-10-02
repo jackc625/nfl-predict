@@ -165,6 +165,21 @@ def test_a_tie_is_graded_neither_correct_nor_incorrect() -> None:
     assert _hues(card) == []
 
 
+def test_a_completed_game_with_no_score_still_says_it_is_over() -> None:
+    """Without a score the card cannot show FINAL, but it must not read as an upcoming game."""
+    card = _render(decorate_game(_row(status="completed", **_MARKET)))
+
+    assert ">Completed</span>" in card
+    assert "Final" not in card, "FINAL is the score's header; there is no score to show"
+
+
+def test_a_game_with_no_status_renders_no_none_badge() -> None:
+    card = _render(decorate_game(_row(status=None)))
+
+    assert "None" not in card
+    assert "game-card" in card
+
+
 def test_the_card_renders_from_a_bare_row_with_no_decoration() -> None:
     """A row nobody decorated still renders: every new field has a default."""
     card = _render(_row())

@@ -1,9 +1,11 @@
 {# Game status badge. Pass: status ("scheduled"/"completed"/"postponed"/etc.)
 
    Neutral on purpose (Broadcast redesign): a game's status is not a result, so it never borrows
-   the green/red outcome hues. Only a game in progress gets the accent, because it is live. #}
+   the green/red outcome hues. Only a game in progress gets the accent, because it is live.
+   A row with no status draws no badge at all, never one reading "None". #}
 {% set _status_base = "inline-flex items-center px-2 py-0.5 font-display text-xs font-bold uppercase tracking-wider" %}
-{% if status == "completed" %}
+{% if not status %}
+{% elif status == "completed" %}
 <span class="{{ _status_base }} bg-panel-2 text-fg">Completed</span>
 {% elif status == "scheduled" %}
 <span class="{{ _status_base }} border border-line text-muted">Scheduled</span>

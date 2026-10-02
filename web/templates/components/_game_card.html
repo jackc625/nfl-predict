@@ -41,7 +41,9 @@
         {%- if bet_targets -%}
           <span class="label px-1.5 bg-accent text-ink">Bet</span>
         {%- endif -%}
-        {%- if game.status not in ("scheduled", "completed") -%}
+        {#- Every status but scheduled gets its badge unless the header already says FINAL: a
+            completed game whose score is missing must not read as an upcoming one. -#}
+        {%- if game.status != "scheduled" and not final -%}
           {% with status=game.status %}{% include "components/_status_badge.html" %}{% endwith %}
         {%- endif -%}
       </span>
