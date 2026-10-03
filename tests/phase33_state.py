@@ -19751,3 +19751,40 @@ CLOSE_TRIPWIRE_NODE_IDS_MEASURED_RED: tuple[str, ...] = (
     "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_the_moved_set_is_exactly_the_build_clock",
     "tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore_all_fields",
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33-18 Task 9 -- the readout's guard vocabulary.
+#
+# APPENDED 2026-10-03 (about 18:31 ET). Nothing above this line was edited. Read by
+# tests/unit/test_phase33_readout_md.py, the permanent doc-drift guard on the repo-root
+# LIVE-COLD-START-READOUT.md; the guard itself spells none of these words or phrases.
+# ---------------------------------------------------------------------------
+
+#: The readout's ten level-2 headings, verbatim, in document order.
+LIVE_READOUT_SECTION_MARKERS: tuple[str, ...] = (
+    "## 1. What this phase set out to prove, and what it proves",
+    "## 2. The acceptance evidence: week 3's Elo, value by value",
+    "## 3. The week-3 games: predicted, locked out, missed",
+    "## 4. The bracketed daily run",
+    "## 5. Forward bet rows",
+    "## 6. What Phase 33.2 superseded",
+    "## 7. The Elo re-derivation",
+    "## 8. Dated operational findings",
+    "## 9. Suite state, as measured",
+    "## 10. Open items handed forward",
+)
+
+#: Phrases the readout must carry (matched case-insensitively).
+LIVE_READOUT_REQUIRED_PHRASES: tuple[str, ...] = (
+    "re-derivation",
+    "A zero exit code is not the evidence",
+    "value by value",
+    "superseded",
+    "never back-filled",
+    "decided_at_utc",
+    "Phase 34",
+)
+
+#: The restore-family spellings -- the verb and its past participle -- the readout may not use
+#: about the Elo work (F-03: no known-good copy existed, so the honest word is re-derivation).
+LIVE_READOUT_FORBIDDEN_WORDS: tuple[str, ...] = ("restore", "restored")
