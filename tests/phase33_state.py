@@ -19788,3 +19788,65 @@ LIVE_READOUT_REQUIRED_PHRASES: tuple[str, ...] = (
 #: The restore-family spellings -- the verb and its past participle -- the readout may not use
 #: about the Elo work (F-03: no known-good copy existed, so the honest word is re-derivation).
 LIVE_READOUT_FORBIDDEN_WORDS: tuple[str, ...] = ("restore", "restored")
+
+# ---------------------------------------------------------------------------
+# Plan 33-18 Task 9 -- phase closure.
+#
+# APPENDED 2026-10-03 (about 18:41 ET), in a commit LATER than the readout's. Nothing above this
+# line was edited.
+# ---------------------------------------------------------------------------
+
+#: The full sha of the commit that tracked LIVE-COLD-START-READOUT.md and registered it in
+#: tests/unit/test_old_rule_labels.py (`docs(33-18): the live cold-start readout`). The
+#: readout-ancestry arm of tests/unit/test_phase33_preregistration_ancestry.py asserts that
+#: PRE_REGISTRATION_COMMIT is a strict ancestor of it (D33-19 anchor (i)).
+READOUT_COMMIT: str = "580856e4996b029e0f4368b2e11ab42e50fb1362"
+
+#: The owner's Task 3 ruling, verbatim reply "A: Skip the count (Recommended)", given
+#: 2026-09-28 at about 13:34 ET. No whole-project collect or run was made by this plan.
+TEST_COUNT_CLOSE_RULING: str = "A (2026-09-28)"
+
+#: The collected nodes every Plan 33-18 commit added, MEASURED 2026-10-03 between about 18:37
+#: and 18:39 ET with `python -m pytest --collect-only -q -o addopts= -p no:cacheprovider <module>`,
+#: one module per process, never a directory and never across the Broadcast UI redesign block
+#: (ba92c45..0b074b5, not this plan's). Per block and module, with the method:
+#:   * the paused block 85bd503..17ab76e (17 commits, 2026-09-15) -- throwaway `git worktree`
+#:     checkouts of 85bd503 (before) and 17ab76e (after), collected with the main venv's
+#:     interpreter; 98 = test_weather_features_refusal_stops_pipeline 3 + test_data_qa_live_friday
+#:     _checks 16 + test_ingest_odds_market_extraction 27 + test_ingest_odds_silver_write 4 +
+#:     test_phase33_no_exit_code_evidence 23 + test_upsert_silver_duckdb_sync 8 +
+#:     test_weather_features_step_scope 17 (all seven absent at 85bd503) + test_step_registry_order
+#:     16 -> 16 (0);
+#:   * the Segment-2 block 878116b..ba92c45 (15 commits, 2026-09-30) -- worktrees of 878116b and
+#:     ba92c45; 7 = test_daily_lock_run 24 -> 26 (+2) + test_data_qa_live_friday_checks 16 -> 19
+#:     (+3) + test_sealed_zone_refusal 29 -> 30 (+1) + test_train_exclude_groups 18 -> 19 (+1);
+#:     the other six changed modules moved 0 (test_bets_page 100, test_daily_run_skips 16,
+#:     test_promote_models_tuned_path 56, test_sportsbook_preference 14,
+#:     test_suppression_freshness 40, test_weekly_candidates_exclusion 19);
+#:   * Task 1 (92fe2b4) -- tests/integration/test_live_2026_prediction_set.py, new: 40 (worktree
+#:     of 878116b and the main tree at HEAD both collect 40);
+#:   * Task 9 (036c31c) -- tests/unit/test_phase33_readout_md.py, new: 12 (main tree);
+#:   * Task 8 and Task 9 edits to existing modules -- worktree of 90bb0b0 vs the main tree:
+#:     test_phase33_elo_anchors 23 -> 23, test_final_fit_entry_point 44 -> 44,
+#:     test_temporal_display_columns 36 -> 36, test_bet_list_completeness 12 -> 12,
+#:     test_old_rule_labels 130 -> 130 (0 each);
+#:   * Tasks 2 and 7 changed only this module and the two capture-record files (0).
+#: 98 + 7 + 40 + 12 = 157.
+TESTS_ADDED_33_18: int = 157
+
+#: The phase aggregate, appended ONCE: the sum of the eighteen slots named in
+#: PER_PLAN_TEST_COUNT_SLOTS, read 2026-10-03 -- 44 + 67 + 56 + 41 + 78 + 114 + 43 + 120 + 92 +
+#: 27 + 55 + 33 + 33 + 59 + 66 + 53 + 93 + 157 = 1231. TESTS_ADDED_33_16 counts as its slot's
+#: 53; TESTS_ADDED_33_16_CORRECTED (55) stands beside it as Plan 33-16's correction and is not
+#: summed, because the protocol sums the eighteen named slots.
+TESTS_ADDED_BY_PHASE_33: int = 1231
+
+#: Why POST_PHASE_COLLECTED is not recorded (ruling A).
+POST_PHASE_COLLECTED_NOT_MEASURED_REASON: str = (
+    "Not measured, by the owner's Task 3 ruling A of 2026-09-28. The Phase-33 window was "
+    "interleaved with two inserted phases (33.1 and 33.2) that added hundreds of their own "
+    "tests, so PRE_PHASE_COLLECTED plus the eighteen per-plan slots can no longer equal a "
+    "post-phase whole-project count, and the owner forbids whole-suite runs. The per-plan "
+    "slots are summed in TESTS_ADDED_BY_PHASE_33; the five tripwires were run by node id "
+    "(CLOSE_TRIPWIRE_RUN_LINE)."
+)
