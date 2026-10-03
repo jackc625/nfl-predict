@@ -1236,15 +1236,23 @@ class DataQualityMonitor:
                         # "not_applicable" joins the list for tables produced by a later
                         # registered step (_TABLES_PRODUCED_AFTER_DATA_QA); the section
                         # checks below already skip it.
+                        #
+                        # "error" is NOT on this list (review WR-02). A check that raised
+                        # (status "error: ...", or a quality sub-check "error") is counted
+                        # as FAILED: a check that could not run is not a check that passed,
+                        # the rule the D30-18 guard above already follows.
                         not_applicable_statuses = [
                             "not_applicable",
                             "no_timestamp",
                             "invalid_timestamps",
                             "unknown_expected",
                             "empty",
-                            "error",
                             "unknown",
                         ]
+                        if status.startswith("error"):
+                            total_checks += 1
+                            failed_checks += 1
+                            continue
 
                         # The quality result carries NO top-level status, only its
                         # sub-checks. Judged by that missing status ("unknown") it was
@@ -1272,7 +1280,7 @@ class DataQualityMonitor:
                                         total_checks += 1
                                         if sub_status == "pass":
                                             passed_checks += 1
-                                        elif sub_status == "fail":
+                                        elif sub_status in ("fail", "error"):
                                             failed_checks += 1
                                         elif sub_status == "warning":
                                             warnings += 1

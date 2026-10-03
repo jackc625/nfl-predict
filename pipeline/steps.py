@@ -592,8 +592,14 @@ def step_data_qa(weather_game_ids: frozenset[str] | None = None) -> None:
 
     monitor = DataQualityMonitor()
     report = monitor.generate_qa_report(weather_game_ids=weather_game_ids)
-    # Fail if overall status indicates issues
+    # A report that errored has counted nothing, so its empty summary is not a pass
+    # (review WR-02): a gate that could not run is not a gate that passed.
     summary = report.get("summary", {})
+    if report.get("error") or not summary:
+        raise RuntimeError(
+            f"Data QA could not complete: {report.get('error', 'the report has no summary')}"
+        )
+    # Fail if overall status indicates issues
     if (
         summary.get("overall_status") == "issues_detected"
         and summary.get("failed", 0) > 0
