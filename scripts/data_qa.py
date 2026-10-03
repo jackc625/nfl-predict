@@ -518,7 +518,16 @@ class DataQualityMonitor:
                 completeness_pct = (result["actual_count"] / expected_count) * 100
                 result["completeness_pct"] = round(completeness_pct, 1)
 
-                if completeness_pct >= 90:
+                if game_ids is not None:
+                    # An EXACT slate is judged by membership, not by percentage (review
+                    # WR-03): a slate game missing its row with no recorded reason fails by
+                    # name. The 70-90% bands let a 14-game slate lose 3 rows unnoticed.
+                    missing = sorted(
+                        set(game_ids) - set(filtered_df["game_id"].astype(str))
+                    )
+                    result["missing_data"] = missing
+                    result["status"] = "incomplete" if missing else "complete"
+                elif completeness_pct >= 90:
                     result["status"] = "complete"
                 elif completeness_pct >= 70:
                     result["status"] = "mostly_complete"
