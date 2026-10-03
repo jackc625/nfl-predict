@@ -19694,7 +19694,7 @@ DAILY_BRACKET_OBSERVED_MARKET_SIDE: str = (
 # ---------------------------------------------------------------------------
 # Plan 33-18 Task 8 -- the served models' gold history, as a content digest (routed pin).
 #
-# APPENDED 2026-10-03 (about 18:35 ET). Nothing above this line was edited.
+# APPENDED 2026-10-03 (about 18:21 ET). Nothing above this line was edited.
 # tests/unit/test_final_fit_entry_point.py's
 # TestTheRecordedGenerationIsTheLaddersOwn::test_the_live_gold_is_the_generation_the_served_models_were_fitted_on
 # compared the WHOLE-FILE generation key of live gold with P332_25B_REFIT_GOLD_GENERATION. The
@@ -19702,7 +19702,7 @@ DAILY_BRACKET_OBSERVED_MARKET_SIDE: str = (
 # slate's 2026 rows and a new build clock, so that key moved on the first live night while the
 # history the served models were fitted on did not. The node now compares this digest instead.
 #
-# MEASURED 2026-10-03 at about 18:30 ET on commit 20d05e9, on the gold the 2026-10-03 17:00 ET
+# MEASURED 2026-10-03 at about 18:19 ET on commit 20d05e9, on the gold the 2026-10-03 17:00 ET
 # scheduled run built (the last rebuild Plan 33-18 observes). sha256 over the three matrices in
 # the order wp, ats, ou; per matrix: the repo-relative path, then the rows with season <= 2025
 # (6,499 each) sorted by game_id with feature_timestamp dropped -- the game_id column joined by
