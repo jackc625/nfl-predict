@@ -383,6 +383,10 @@ class TestANonPassPromotionRequiresARecordedOverride:
             staging_dir=roots.staging,
             authorised_targets=("wp", "ats", "ou"),
             overrides={"ats": _OWNER_OVERRIDE, "ou": _OWNER_OVERRIDE},
+            # Stage two now appends each applied override to the committed TOML half
+            # too (code review WR-13); point it at the sandbox half stage one wrote, or
+            # the default would append to the real config/phase33_gate_verdict.toml.
+            committed_verdict_path=tmp_path / "config" / "verdict.toml",
         )
 
         assert promoted == ("wp", "ats", "ou")

@@ -1800,6 +1800,38 @@ def _authorised_promotions(
     ]
 
 
+def _record_applied_overrides(
+    entries: Sequence[Mapping[str, str]],
+    verdict_record_path: Path,
+    committed_verdict_path: Path,
+) -> None:
+    """Append each applied owner override BESIDE the verdicts, in both record halves.
+
+    Appended, never merged into a verdict row: the FAIL stays a FAIL and the ruling that
+    shipped it anyway sits next to it. A TOML array of tables, so a repeat run appends
+    another entry rather than producing a duplicate table.
+    """
+    record_path = Path(verdict_record_path)
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload.setdefault("stage_two_overrides", []).extend(dict(e) for e in entries)
+    record_path.write_text(
+        json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8"
+    )
+
+    lines: list[str] = []
+    for entry in entries:
+        lines.extend(["", "[[stage_two_overrides]]"])
+        lines.extend(f"{key} = {_toml_string(value)}" for key, value in entry.items())
+    committed = Path(committed_verdict_path)
+    committed.write_text(
+        committed.read_text(encoding="utf-8") + "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+    logger.info(
+        "Recorded applied owner overrides", targets=[e["target"] for e in entries]
+    )
+
+
 def stage_two_promote(
     *,
     verdict_record_path: Path = VERDICT_RECORD_PATH,
@@ -1807,6 +1839,7 @@ def stage_two_promote(
     staging_dir: Path = STAGING_ARTIFACTS_DIR,
     authorised_targets: Sequence[str] | None = None,
     overrides: Mapping[str, Mapping[str, str]] | None = None,
+    committed_verdict_path: Path = COMMITTED_VERDICT_PATH,
 ) -> tuple[str, ...]:
     """Apply the AUTHORISED promotions from stage one's record. Recomputes no verdict.
 
@@ -1838,7 +1871,10 @@ def stage_two_promote(
         overrides: ``{target: {"ruling": ..., "ruled_on": ...}}``, required for every
             authorised target whose verdict is not PASS. See
             :func:`_authorised_promotions` for why this exists and what it deliberately
-            does NOT do, which is touch the verdict.
+            does NOT do, which is touch the verdict. Every override actually applied is
+            appended to BOTH record halves before anything is copied or swapped.
+        committed_verdict_path: The committed TOML half the applied overrides are
+            appended to, beside the JSON record at *verdict_record_path*.
 
     Returns:
         The promoted targets, in canonical order.
@@ -1881,6 +1917,26 @@ def stage_two_promote(
             "nothing has compared against it. Nothing was copied or swapped."
         )
         raise StaleStageOneVerdictError(msg)
+
+    # Every non-PASS target here carries a complete override (_authorised_promotions
+    # refused it otherwise). Recorded BEFORE anything is copied or swapped, so no
+    # production change can exist without the ruling that authorised it on disk.
+    supplied = dict(overrides or {})
+    applied = [
+        {
+            "target": target,
+            "ruling": str(supplied[target]["ruling"]),
+            "ruled_on": str(supplied[target]["ruled_on"]),
+            "verdict": str(record.targets[target].get("verdict")),
+            "candidate_version": version,
+            "incumbent_version": str(record.targets[target].get("incumbent_version")),
+            "applied_at": datetime.now(UTC).isoformat(),
+        }
+        for target, version in promoted
+        if record.targets[target].get("verdict") != "PASS"
+    ]
+    if applied:
+        _record_applied_overrides(applied, verdict_record_path, committed_verdict_path)
 
     for target, version in promoted:
         promote_models._promote_artifact_dir(
