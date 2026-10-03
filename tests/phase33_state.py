@@ -19480,3 +19480,213 @@ DAILY_BRACKET_FALLBACK_REASON: str = (
     "resumed at about 20:11 ET, after Task 5's 16:30 ET start limit, so no before-picture was "
     "taken and the bracket moves to the 2026-10-03 17:00 ET run."
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33-18 Task 7 -- the daily bracket, observed.
+#
+# APPENDED 2026-10-03 (about 18:11 ET). Nothing above this line was edited. Under the Fallback
+# procedure: every command used DAILY_BRACKET_FALLBACK_ROOTS, DAILY_BRACKET_FALLBACK_LOCK_UTC
+# and DAILY_BRACKET_FALLBACK_SLATE_GAME_IDS; DAILY_BRACKET_MUST_WRITE / _MAY_WRITE /
+# _JSONL_APPENDS are shared (both runs are week 4).
+#
+# MEASURED 2026-10-03 between 18:08 and 18:11 ET on commit 0b074b5 (HEAD at the before-pictures,
+# 12:38:09-12:38:13 ET; nothing in the project ran between the pictures and the after-pictures).
+# The after side is tests.data_boundary.content_digest_tree over each root (never a stat
+# signature), diffed with diff_digests against the Task 5 before-documents under
+# .planning/phases/33-live-cold-start-forward-temporal-integrity/acceptance-bracket/daily-2026-10-03/
+# (verify_<root>.txt, comparison.txt, jsonl_lines_after.txt, run_values.txt). This plan started
+# no run: the run below is the Task Scheduler's own.
+# ---------------------------------------------------------------------------
+
+#: The ET date of the bracketed run (the fallback date; DAILY_BRACKET_FALLBACK_REASON says why).
+DAILY_BRACKET_OBSERVED_RUN_DATE_ET: str = "2026-10-03"
+
+#: The run, from its own record (logs/friday_pipeline.json, read-only) and the scheduler's
+#: (schtasks /query /tn NFL_Predict_Pipeline /v /fo LIST, read 2026-10-03 18:08 ET). The start
+#: minute agrees with the scheduler's Last Run Time; the run executed all 21 registry steps, each
+#: status success, warnings [] and skipped_games [].
+DAILY_BRACKET_OBSERVED_RUN: tuple[tuple[str, str], ...] = (
+    ("start_time", "2026-10-03T17:00:17.418538-04:00"),
+    ("end_time", "2026-10-03T17:19:00.098388-04:00"),
+    ("status", "success"),
+    ("pid", "22148"),
+    ("mode", "full"),
+    ("season_week", "2026 4"),
+    ("forced", "false"),
+    ("steps_success", "21 of 21"),
+    ("skipped_games", "[]"),
+    ("scheduler_last_run_time", "10/3/2026 5:00:01 PM"),
+    ("scheduler_last_result", "0"),
+)
+
+#: Every repo-relative path whose CONTENT digest was added or changed across the five roots (29).
+#: REMOVED [], MIXED [], UNDECLARED [], ARTIFACTS_MOVED [] (nothing under artifacts/: 206 files
+#: unchanged). The five staged Elo generations after the run are 20260914T235426782597,
+#: 20260915T124923653678, 20260919T153744623671, 20260926T210109328901 and the new
+#: 20261003T210053635117: the pruner (keeps the newest 5) removed nothing, as expected because
+#: the failed 2026-09-30 run staged none. The four MAY entries that moved met their conditions:
+#: ingest_odds status success (odds bronze and silver; 126 silver rows for the 14 slate games,
+#: created_at 2026-10-03T21:00:48.334399Z); the snap-count capture's max upstream_captured_at
+#: moved 2026-09-29T11:01:26Z -> 2026-10-02T11:01:51Z and the injury capture's
+#: 2026-09-30T13:36:27Z -> 2026-10-03T12:26:57Z (previous bronze capture vs tonight's).
+DAILY_BRACKET_OBSERVED_MOVED: tuple[str, ...] = (
+    "config/upstream_live/2026.json",
+    "data/bronze/depth_charts_raw_bronze_2026_W04_20261003T210010.parquet",
+    "data/bronze/games_raw_bronze_2026_W00_20261003T210016.parquet",
+    "data/bronze/injuries_raw_bronze_2026_W00_20261003T210047.parquet",
+    "data/bronze/odds_raw_bronze_2026_W04.parquet",
+    "data/bronze/pbp_raw_bronze_2026_W04_20261003T210015.parquet",
+    "data/bronze/schedules_raw_bronze_2026_W04_20261003T210015.parquet",
+    "data/bronze/snap_counts_raw_bronze_2026_W00_20261003T210045.parquet",
+    "data/bronze/weather_raw_bronze_2026_W04_20261003T210044.parquet",
+    "data/gold/features_ats.parquet",
+    "data/gold/features_ou.parquet",
+    "data/gold/features_wp.parquet",
+    "data/nfl_predictions.duckdb",
+    "data/silver/elo_game_snapshots.parquet",
+    "data/silver/elo_generation.json",
+    "data/silver/elo_generations/20261003T210053635117/elo_game_snapshots.parquet",
+    "data/silver/games.parquet",
+    "data/silver/injuries.parquet",
+    "data/silver/odds_snapshot.parquet",
+    "data/silver/snap_counts.parquet",
+    "data/silver/team_form_features.parquet",
+    "data/silver/weather.parquet",
+    "data/silver/weather_features.parquet",
+    "data/web_cache.duckdb",
+    "logs/friday_pipeline.json",
+    "outputs/bet_list/bet_list.parquet",
+    "outputs/predictions/game_context_2026_week4.csv",
+    "outputs/predictions/predictions_2026_week4.csv",
+    "outputs/predictions/predictions_2026_week4.json",
+)
+
+#: (path, cause). ONE finding: a MUST_WRITE entry whose content did not move. No undeclared
+#: write, so no declaration miss; the declaration is NOT widened or narrowed after the fact.
+DAILY_BRACKET_OBSERVED_FINDINGS: tuple[tuple[str, str], ...] = (
+    (
+        "outputs/bet_list/bet_tracker.json",
+        "MUST_WRITE entry unmoved in content, though WRITTEN: "
+        "backtest.weekly_bet_list.write_bet_list_pair rewrote it during the run (mtime "
+        "2026-10-03 17:18:11 ET, the same instant as bet_list.parquet), but "
+        "backtest.bet_tracker.aggregate_by_provenance counts only GRADED rows with status "
+        "live, and tonight's 42 forward rows are ungraded (their games kick off 2026-10-04), so "
+        "both blocks (backtest_replay 90 graded; forward 0 graded) are unchanged and the JSON "
+        "is byte-identical (sha256 72161a1e... before and after). Task 2 declared it MUST "
+        "because it is written on every call; the bracket compares content, which moves only "
+        "when a graded live row or a new provenance class appears. An over-declaration in "
+        "kind, not a defect.",
+    ),
+)
+
+#: (file, line delta) for the three .jsonl files the digest cannot see (before: Task 5's
+#: jsonl_lines_before.txt 10 / 5 / 0 absent; after: 11 / 5 / 0 absent). Each equals its declared
+#: DAILY_BRACKET_JSONL_APPENDS delta. The new probe line: mode capture, event_class clean,
+#: checked 76 of 76, probed_at_utc 2026-10-03T21:00:15.536371Z.
+DAILY_BRACKET_OBSERVED_JSONL_DELTAS: tuple[tuple[str, int], ...] = (
+    ("config/upstream_probe_log.jsonl", 1),
+    ("logs/daily_lock_runs.jsonl", 0),
+    ("config/skip_records.jsonl", 0),
+)
+
+#: (game, captured_at_utc, information_cutoff_utc, computed_at_utc) for each of the 14 slate
+#: rows in outputs/predictions/predictions_2026_week4.csv, verbatim. The week-4 file holds
+#: exactly these 14 rows (2026_W04_PIT@CLE has none: its 2026-09-30 run failed and it is never
+#: back-filled). Every cutoff equals the lock 2026-10-03T22:00:00Z; captured is 3551.54 s and
+#: computed 2509.22 s before it (utils.game_lock.is_admissible admits both); wp_prob,
+#: ats_prediction and ou_prediction are non-null on every row.
+DAILY_BRACKET_OBSERVED_SLATE_STAMPS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "2026_W04_ARI@NYG",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_DAL@HOU",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_DEN@SF",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_DET@CAR",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_GB@TB",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_IND@WAS",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_JAX@CIN",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_KC@LV",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_LA@PHI",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_LAC@SEA",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_MIA@MIN",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_NE@BUF",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_NYJ@CHI",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+    (
+        "2026_W04_TEN@BAL",
+        "2026-10-03T21:00:48.459247+00:00",
+        "2026-10-03T22:00:00+00:00",
+        "2026-10-03T21:18:10.782578+00:00",
+    ),
+)
+
+#: A fact, never a pass/fail (D33-39: the first predicting run on the free Odds API key).
+DAILY_BRACKET_OBSERVED_MARKET_SIDE: str = (
+    "All 14 slate games had a pre-lock market line: market_spread and market_total are "
+    "non-null on every slate prediction row, read from 126 live odds rows (9 sportsbooks x 14 "
+    "games) captured at 2026-10-03T21:00:48Z, before the 22:00:00Z lock. The slate produced 42 "
+    "forward bet rows (14 games x 3 targets; 24 live, 18 suppressed), every one decided at "
+    "2026-10-03T21:18:10.874141Z, 2509.13 s before the lock, with freeze_ts equal to the lock."
+)
