@@ -217,15 +217,24 @@ PRE_EDIT_RECORDS_SHA256 = (
 )
 
 # The live expectation: the 60 pre-2025-addition records as they stand AFTER Plan
-# 33.2-20's three surface corrections (measured 2026-09-22).
+# 33.2-20's three surface corrections (measured 2026-09-22) AND the Phase-33 review's
+# MUN01 correction (WR-09, measured 2026-10-03).
 CURRENT_PRE_EDIT_RECORDS_SHA256 = (
-    phase33_state.P332_20_VENUE_RECORDS_SHA256_AFTER_SURFACE_FIX
+    phase33_state.REVIEW33_VENUE_RECORDS_SHA256_AFTER_MUN01_FIX
 )
 
-# ``stadium_id -> (field, was, now)``: the ratified cells Plan 33.2-20 corrected, read
-# from the ONE record in `tests.phase33_state` rather than restated here.
-SURFACE_CORRECTIONS: dict[str, tuple[str, str, str]] = (
-    phase33_state.P332_20_VENUE_SURFACE_CORRECTIONS
+# ``stadium_id -> (field, was, now)``: every ratified cell a later record corrected, read
+# from the records in `tests.phase33_state` rather than restated here -- Plan 33.2-20's
+# three, then the Phase-33 review's MUN01 surface.
+SURFACE_CORRECTIONS: dict[str, tuple[str, str, str]] = {
+    **phase33_state.P332_20_VENUE_SURFACE_CORRECTIONS,
+    **phase33_state.REVIEW33_VENUE_SURFACE_CORRECTIONS,
+}
+
+# One cited source per corrected cell, across both correction records.
+SURFACE_CORRECTION_SOURCES: tuple[tuple[str, str, str], ...] = (
+    *phase33_state.P332_20_VENUE_SURFACE_SOURCES,
+    *phase33_state.REVIEW33_VENUE_SURFACE_SOURCES,
 )
 
 PRE_EDIT_RECORD_COUNT = 60
@@ -274,7 +283,7 @@ def _facts_by_stadium_id() -> dict[str, dict[str, object]]:
         ratified = facts[stadium_id]
         assert ratified[field] == was, (
             f"{stadium_id}.{field} reads {ratified[field]!r} in the ratified table, but "
-            f"the Plan 33.2-20 correction record says it was {was!r}. The correction "
+            f"its correction record says it was {was!r}. The correction "
             "names a cell that no longer says what it corrected; re-measure rather than "
             "adjusting either side."
         )
@@ -674,8 +683,9 @@ class TestTheTwo2025InternationalVenues:
         pre_existing = _pre_existing_records()
         assert len(pre_existing) == PRE_EDIT_RECORD_COUNT
         assert _canonical_digest(pre_existing) == CURRENT_PRE_EDIT_RECORDS_SHA256, (
-            "a record that existed before Plan 33.2-09 changed, beyond the three "
-            "surface cells Plan 33.2-20 corrected. Static venue data is time-invariant "
+            "a record that existed before Plan 33.2-09 changed, beyond the recorded "
+            "surface corrections (Plan 33.2-20's three and the review's MUN01). Static "
+            "venue data is time-invariant "
             "(D33.2-04); a value that moves needs its own cited record."
         )
 
@@ -695,7 +705,7 @@ class TestTheTwo2025InternationalVenues:
                 record = {**record, field: was}
             rewound.append(record)
         assert _canonical_digest(rewound) == PRE_EDIT_RECORDS_SHA256, (
-            "undoing the three recorded surface corrections does NOT reproduce the "
+            "undoing the recorded surface corrections does NOT reproduce the "
             "2026-09-21 digest, so something else in the 60 pre-existing records moved "
             "as well. Find it and record it; do not re-pin."
         )
@@ -703,7 +713,7 @@ class TestTheTwo2025InternationalVenues:
     def test_every_corrected_cell_carries_a_cited_source(self) -> None:
         cited = {
             (code, field)
-            for code, field, source in phase33_state.P332_20_VENUE_SURFACE_SOURCES
+            for code, field, source in SURFACE_CORRECTION_SOURCES
             if source
         }
         expected = {
@@ -716,6 +726,7 @@ class TestTheTwo2025InternationalVenues:
             "33-06 checkpoint exists to prevent."
         )
         assert phase33_state.P332_20_VENUE_SURFACE_RESEARCHED_BY
+        assert phase33_state.REVIEW33_VENUE_SURFACE_RESEARCHED_BY
 
     def test_every_corrected_surface_is_a_classified_grass_spelling(self) -> None:
         """The correction may not introduce a spelling the classifier cannot read."""

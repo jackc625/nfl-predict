@@ -19850,3 +19850,54 @@ POST_PHASE_COLLECTED_NOT_MEASURED_REASON: str = (
     "slots are summed in TESTS_ADDED_BY_PHASE_33; the five tripwires were run by node id "
     "(CLOSE_TRIPWIRE_RUN_LINE)."
 )
+
+
+# ---------------------------------------------------------------------------
+# Phase-33 code review fix WR-09 (= Part B WR-06), 2026-10-03: THE MUNICH SURFACE.
+#
+# `data/venues.json` held the same building twice -- MUN01 "FC Bayern Munich Stadium" and
+# GER00 "Allianz Arena", identical coordinates, elevation, capacity, timezone and roof --
+# with two different surfaces: MUN01 "FieldTurf" (synthetic) and GER00 "Hybrid Grass"
+# (grass). The 2026 week-10 NE @ DET game is routed to MUN01, so its `surface_mismatch`
+# would have been computed against a synthetic pitch that does not exist.
+#
+# THIS SUPERSEDES ONE CELL OF `INTERNATIONAL_VENUE_FACTS` (owner-ratified 2026-09-12), the
+# same way `P332_20_VENUE_SURFACE_CORRECTIONS` superseded three: the ratified slot is not
+# edited, and `tests/unit/test_venues_json_international.py` applies this record beside the
+# Plan 33.2-20 one. "Hybrid Grass" is already classified grass by
+# `features.contextual.SURFACE_CLASS_BY_SPELLING`, so no new spelling enters the vocabulary.
+# MUN01 hosts exactly one game (2026 week 10, unplayed), so no gold row moves.
+# ---------------------------------------------------------------------------
+
+#: ``stadium_id -> (field, was, now)`` for the ratified cell this fix corrects.
+REVIEW33_VENUE_SURFACE_CORRECTIONS: dict[str, tuple[str, str, str]] = {
+    "MUN01": ("surface", "FieldTurf", "Hybrid Grass"),
+}
+
+#: The cited source for the corrected cell: ``(stadium_id, field, source)``.
+REVIEW33_VENUE_SURFACE_SOURCES: tuple[tuple[str, str, str], ...] = (
+    (
+        "MUN01",
+        "surface",
+        "allianz-arena.com (the stadium's official site), news 2023-08-07 'Zum Saisonstart "
+        "2023/24: Neuer Hybrid-Rasen in der Allianz Arena verlegt' -- a new hybrid grass "
+        "pitch laid for the 2023/24 season (read 2026-10-03 via the Wayback Machine "
+        "snapshot 20230829091354); en.wikipedia Allianz_Arena infobox 'surface = Hybrid "
+        "grass', citing that article; and this file's own GER00 record for the same "
+        "building, 'Hybrid Grass'",
+    ),
+)
+
+#: Who researched the source above, and when.
+REVIEW33_VENUE_SURFACE_RESEARCHED_BY: str = (
+    "the Phase-33 review fixer (gsd-code-fixer), 2026-10-03, fetched directly"
+)
+
+#: sha256 of the 60 records that predate Plan 33.2-09's two additions, canonicalised as
+#: ``test_venues_json_international._canonical_digest`` does, taken 2026-10-03 AFTER the
+#: MUN01 correction above. WAS ``P332_20_VENUE_RECORDS_SHA256_AFTER_SURFACE_FIX``; rewinding
+#: MUN01's surface to "FieldTurf" reproduces that value exactly (measured), so the digest
+#: moved for this one cell and nothing else.
+REVIEW33_VENUE_RECORDS_SHA256_AFTER_MUN01_FIX: str = (
+    "442c03a8bd5e00f7da70d78b97f0ca9d83f74ff5473f749c9691c84656cf0973"
+)
