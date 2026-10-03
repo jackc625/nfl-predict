@@ -192,6 +192,15 @@ class MissingStageOneVerdictError(RuntimeError):
     """Stage two was asked to promote with no stage-one verdict record present."""
 
 
+class StaleStageOneVerdictError(RuntimeError):
+    """Production no longer serves the incumbent a stage-one verdict was rendered against.
+
+    Raised BEFORE anything is copied or swapped. A verdict compares ONE candidate with ONE
+    incumbent; once production serves some third model, promoting the old candidate would
+    replace whatever is live now with a model the verdict never compared against it.
+    """
+
+
 class FixCycleAllowanceExceededError(RuntimeError):
     """A second candidate was offered for a target whose verdict is already recorded."""
 
@@ -1782,9 +1791,38 @@ def stage_two_promote(
         NonPassPromotionWithoutOverrideError: An authorised target is not PASS and carries
             no complete override. Raised BEFORE anything is copied or swapped, so a
             refusal leaves the production swap surface untouched rather than half-moved.
+        StaleStageOneVerdictError: Production serves neither the verdict's incumbent nor
+            its candidate for a target about to be promoted. Also raised before anything
+            is copied or swapped.
     """
     record = read_verdict_record(verdict_record_path)
     promoted = _authorised_promotions(record, authorised_targets, overrides)
+
+    # A verdict is a comparison against the incumbent production served WHEN IT WAS
+    # RENDERED. If production has since moved to some third model, replaying the verdict
+    # would roll that model back to the old candidate (the 2026-09-14 record would put the
+    # voided wp_20260914_221745 back in place of the live WP). A manifest that already
+    # names the candidate is this same promotion having run, so a repeat is a no-op.
+    serving = _read_json(Path(artifacts_dir) / "latest.json")
+    stale = {
+        target: {
+            "production_serves": serving.get(target),
+            "verdict_incumbent": record.targets[target].get("incumbent_version"),
+            "verdict_candidate": version,
+        }
+        for target, version in promoted
+        if serving.get(target)
+        not in (record.targets[target].get("incumbent_version"), version)
+    }
+    if stale:
+        msg = (
+            f"refusing to promote from the stage-one record at '{verdict_record_path}': "
+            f"production has moved since that verdict was rendered: {stale}. The verdict "
+            "compared its candidate with the incumbent it names, not with the model "
+            "production serves now, so applying it would replace the live model with one "
+            "nothing has compared against it. Nothing was copied or swapped."
+        )
+        raise StaleStageOneVerdictError(msg)
 
     for target, version in promoted:
         promote_models._promote_artifact_dir(
