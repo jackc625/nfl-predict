@@ -19690,3 +19690,35 @@ DAILY_BRACKET_OBSERVED_MARKET_SIDE: str = (
     "forward bet rows (14 games x 3 targets; 24 live, 18 suppressed), every one decided at "
     "2026-10-03T21:18:10.874141Z, 2509.13 s before the lock, with freeze_ts equal to the lock."
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33-18 Task 8 -- the served models' gold history, as a content digest (routed pin).
+#
+# APPENDED 2026-10-03 (about 18:35 ET). Nothing above this line was edited.
+# tests/unit/test_final_fit_entry_point.py's
+# TestTheRecordedGenerationIsTheLaddersOwn::test_the_live_gold_is_the_generation_the_served_models_were_fitted_on
+# compared the WHOLE-FILE generation key of live gold with P332_25B_REFIT_GOLD_GENERATION. The
+# scheduled daily run rebuilds gold on every game night (2026-09-26, 2026-10-03), adding the
+# slate's 2026 rows and a new build clock, so that key moved on the first live night while the
+# history the served models were fitted on did not. The node now compares this digest instead.
+#
+# MEASURED 2026-10-03 at about 18:30 ET on commit 20d05e9, on the gold the 2026-10-03 17:00 ET
+# scheduled run built (the last rebuild Plan 33-18 observes). sha256 over the three matrices in
+# the order wp, ats, ou; per matrix: the repo-relative path, then the rows with season <= 2025
+# (6,499 each) sorted by game_id with feature_timestamp dropped -- the game_id column joined by
+# newlines, then every other column in name order as its name followed by its values cast to
+# float64 (so int64 vs float64 storage of the same value cannot move it; WP home_win became
+# float64 once unplayed 2026 rows carried NaN).
+#
+# WHY THIS IS THE FITTED GENERATION'S HISTORY, re-confirmed before recording (read-only):
+# (1) every 2002-2025 per-season column digest of tonight's gold equals
+# outputs/fingerprints/p332_rung9.json's (all three matrices, same column sets, zero columns
+# moved; home_win differs only in dtype), and P332_20_CLEAN_BUILD_HISTORY_COLUMNS_MOVED = 0
+# records that the clean build the served models were fitted on reproduced that history;
+# (2) the served WP pipeline (wp_20260923_172144) imputer medians and scaler mean_ / var_ over
+# its 40 columns equal tonight's 6,499 history rows with a maximum absolute difference of 0.0;
+# (3) the ATS and O/U XGBoost base scores (2.2880442, 44.632404) equal tonight's history means
+# of home_margin and total_points to float32 precision.
+CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256: str = (
+    "e89ad1266c4d1ed727447ae37131bb5c51a08095bbea77bb7146629b2297c6c3"
+)

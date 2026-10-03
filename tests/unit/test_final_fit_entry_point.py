@@ -39,6 +39,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import ast
+import hashlib
 import inspect
 import json
 import re
@@ -69,14 +70,14 @@ from models.trainers.final_fit import (
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WP_PIPELINE_STEP_NAMES, WPTrainer
 from tests.data_boundary import digest_file
-from tests.gold_generation import gold_generation_key
+from tests.gold_generation import GOLD_MATRIX_PATHS
 from tests.phase33_state import (
+    CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256,
     FINAL_FIT_NOT_RUN_IN_PHASE_331,
     GOLD_GENERATION_AFTER_ELO_REBUILD,
     GOLD_GENERATION_AT_REFIT,
     GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
     P332_25_POST_SWAP_LATEST_JSON_SHA256,
-    P332_25B_REFIT_GOLD_GENERATION,
     WP_PREPROCESSING_DEFECT_CLOSURE,
 )
 from tests.unit.test_weather_bridge_expiry import WEATHER_GENERATION_MARKER_KEY
@@ -898,8 +899,46 @@ class TestTheRecordedGenerationIsTheLaddersOwn:
         This used to compare live gold with ``GOLD_GENERATION_AT_REFIT``, the Phase-33
         re-fit's generation. Plan 33.2-20 rebuilt gold and Plan 33.2-25 re-fitted on it,
         so that record is history and the live comparison is against the 33.2-25 re-fit's.
+
+        Was (until Plan 33-18 Task 8): the whole-file generation key of live gold against
+        ``P332_25B_REFIT_GOLD_GENERATION``. The scheduled daily run rebuilds gold on every
+        game night, adding the slate's 2026 rows and a new build clock, so that key moved
+        on the first live night while the fitted history did not. The served models were
+        fitted on 2002-2025, so that history is what is compared, by content.
         """
-        assert gold_generation_key() == P332_25B_REFIT_GOLD_GENERATION
+        assert _gold_history_content_key() == (
+            CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256
+        ), (
+            "the 2002-2025 history in live gold is no longer the history the served "
+            "models were fitted on (CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256). A "
+            "nightly 2026 append cannot move this digest, so a historical feature value "
+            "changed: find what rebuilt it before re-recording anything."
+        )
+
+
+def _gold_history_content_key() -> str:
+    """sha256 of the 2002-2025 rows of the three gold matrices, by content.
+
+    The recipe recorded beside ``CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256``: per
+    matrix (wp, ats, ou), the path, then the season <= 2025 rows sorted by ``game_id``
+    with the build clock dropped -- ``game_id`` joined by newlines, then each other
+    column in name order as its name and its values cast to float64.
+    """
+    digest = hashlib.sha256()
+    for relative in GOLD_MATRIX_PATHS:
+        frame = pd.read_parquet(Path(relative))
+        history = (
+            frame.loc[frame["season"] <= 2025]
+            .drop(columns=["feature_timestamp"])
+            .sort_values("game_id")
+            .reset_index(drop=True)
+        )
+        digest.update(f"{relative}\n".encode("ascii"))
+        digest.update("\n".join(history["game_id"]).encode("ascii"))
+        for column in sorted(c for c in history.columns if c != "game_id"):
+            digest.update(f"\n{column}\n".encode("ascii"))
+            digest.update(history[column].astype("float64").to_numpy().tobytes())
+    return digest.hexdigest()
 
 
 class TestTheWPPreprocessingDefectClosureIsRecordedInOnePlace:
