@@ -589,6 +589,20 @@ def render_target_verdict(
     comparator = deploy_gate.live_secondary_metrics(
         target, scoring.incumbent_scored, scoring.gold, index
     )
+    # The candidate's secondary scalars are re-scored by the SAME function over the SAME
+    # index. `build_candidate_bundle` computes them over the games with a closing line
+    # only (557 in the Phase-33 run) while the comparator covers the whole index (570),
+    # so passing the bundle's scalars through compared the two models on different games.
+    candidate_secondary = deploy_gate.live_secondary_metrics(
+        target, scoring.candidate_scored, scoring.gold, index
+    )
+    candidate_bundle = {
+        **scoring.candidate_bundle,
+        **{
+            metric: candidate_secondary[metric]
+            for metric in deploy_gate.SECONDARY_METRICS_FOR[target]
+        },
+    }
     pooled_delta, per_season_delta = _delta_on_index(
         scoring.paired_delta, index.game_ids
     )
@@ -611,7 +625,7 @@ def render_target_verdict(
             for metric in deploy_gate.SECONDARY_METRICS_FOR[target]
         },
         "candidate_metrics": {
-            metric: scoring.candidate_bundle.get(metric)
+            metric: candidate_bundle.get(metric)
             for metric in deploy_gate.SECONDARY_METRICS_FOR[target]
         },
         # ALL FIVE secondary scalars on EVERY row, keyed by
@@ -620,7 +634,7 @@ def render_target_verdict(
         # and a completeness check written against four would have PASSED with one
         # scalar unchecked. A scalar this target does not own is None, never 0.0.
         "secondary_scalars": _secondary_scalar_table(
-            target, scoring.candidate_bundle, comparator
+            target, candidate_bundle, comparator
         ),
         "comparator_secondary_scalars": _secondary_scalar_table(
             target, comparator, comparator, side="comparator"
@@ -674,7 +688,7 @@ def render_target_verdict(
             "n_paired": sig["n"],
         }
 
-    bundle = dict(scoring.candidate_bundle)
+    bundle = dict(candidate_bundle)
     bundle["clv_delta_values"] = pooled_delta
     bundle["per_season_clv_delta_values"] = per_season_delta
     result = deploy_gate.evaluate_target(target, bundle, comparator, cfg)

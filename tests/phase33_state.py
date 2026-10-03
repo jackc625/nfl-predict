@@ -19901,3 +19901,20 @@ REVIEW33_VENUE_SURFACE_RESEARCHED_BY: str = (
 REVIEW33_VENUE_RECORDS_SHA256_AFTER_MUN01_FIX: str = (
     "442c03a8bd5e00f7da70d78b97f0ca9d83f74ff5473f749c9691c84656cf0973"
 )
+
+
+# ---------------------------------------------------------------------------
+# Phase-33 code review fix CR-04 (= Part A CR-01 = Part C WR-01), 2026-10-03: THE JUDGE
+# VERSION AFTER THE SECONDARY CHECKS WERE PAIRED.
+#
+# The deploy gate scored the candidate's secondary and calibration scalars over the games
+# with a closing line (557 in the Phase-33 run) and the incumbent's over the whole
+# eligibility index (570). Both sides are now scored by `live_secondary_metrics` over the
+# one index, which is a change of deployment policy, so the judge carries a new name.
+# `JUDGE_VERSION_PHASE33` above stays as the record of the judge that rendered the
+# Phase-33 verdict; that verdict (config/phase33_gate_verdict.toml) is superseded (D33-38)
+# and is not re-rendered.
+# ---------------------------------------------------------------------------
+
+#: `models.deploy_gate.JUDGE_VERSION` from this fix on.
+REVIEW33_JUDGE_VERSION: str = "phase33-live-secondary-rescore-2"

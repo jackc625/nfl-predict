@@ -254,7 +254,13 @@ SECONDARY_METRICS_FOR: dict[str, tuple[str, ...]] = {
 # The judge that renders a verdict. A permanent semantic change to deployment policy
 # needs a name: a verdict that cannot say which judge produced it cannot be compared
 # against a later one.
-JUDGE_VERSION: str = "phase33-live-secondary-rescore-1"
+#
+# "-1" judged the candidate's secondary scalars as `build_candidate_bundle` computed
+# them (games with a closing line only) against a comparator re-scored over the whole
+# eligibility index, so the two sides covered different games (557 vs 570 in the
+# Phase-33 run). "-2" scores BOTH sides with `live_secondary_metrics` over the one index
+# (Phase-33 code review CR-04). The Phase-33 verdict record says "-1" and stays as it is.
+JUDGE_VERSION: str = "phase33-live-secondary-rescore-2"
 
 # The functions whose source the judge digest covers. A judging function OUTSIDE this
 # tuple is a change no verdict record can see.
@@ -444,23 +450,28 @@ def live_secondary_metrics(
     gold: Any,
     eligibility_index: Any,
 ) -> dict[str, Any]:
-    """Re-score the DEPLOYED INCUMBENT's secondary scalars on the shared index (D33-11).
+    """Re-score one side's secondary scalars on the shared index (D33-11).
 
-    This is the comparator ``_secondary_reasons`` and ``_calibration_reasons`` now
-    read. It is the same live-re-score idea ``build_candidate_bundle`` already applies
-    to ``baseline_clv_values``, extended to the FIVE secondary scalars so the whole
-    judge is gold-invariant BY CONSTRUCTION rather than by re-freezing
-    ``config/gate.toml`` after every rebuild.
+    Called TWICE per verdict, once per side, over the SAME index: on the deployed
+    incumbent it is the comparator ``_secondary_reasons`` and ``_calibration_reasons``
+    read, and on the candidate it supplies the candidate's own secondary scalars. The
+    candidate's must come from here too, NOT from ``build_candidate_bundle``, which
+    computes them over the games with a closing line only -- a smaller set than the index
+    (Phase-33 code review CR-04). It is the same live-re-score idea
+    ``build_candidate_bundle`` already applies to ``baseline_clv_values``, extended to the
+    FIVE secondary scalars so the whole judge is gold-invariant BY CONSTRUCTION rather
+    than by re-freezing ``config/gate.toml`` after every rebuild.
 
-    BOTH sides are REINDEXED onto ``eligibility_index`` before anything is computed.
-    That is what makes the comparison order-invariant and genuinely paired: a scorer
-    that derived its own eligible set from the gold file could silently score the two
-    models on different rows.
+    The frame is REINDEXED onto ``eligibility_index`` before anything is computed. That
+    is what makes the comparison order-invariant and genuinely paired: a scorer that
+    derived its own eligible set from the gold file could silently score the two models
+    on different rows.
 
     Args:
         target: One of "wp", "ats", "ou".
-        incumbent: The deployed incumbent's scored frame (``game_id`` plus the
-            target's prediction column, and ``actual`` when *gold* is not supplied).
+        incumbent: The scored frame of the side being re-scored -- the deployed
+            incumbent or the candidate (``game_id`` plus the target's prediction
+            column, and ``actual`` when *gold* is not supplied).
         gold: The truth frame (``game_id`` + ``actual``). It is the AUTHORITATIVE
             source of ``actual`` when present, so both sides are graded against one
             truth; ``None`` falls back to the scored frame's own ``actual`` column.
@@ -1211,7 +1222,11 @@ def evaluate_target(
 
     Args:
         target: One of "wp", "ats", "ou".
-        candidate: The candidate bundle from ``build_candidate_bundle``.
+        candidate: The candidate bundle from ``build_candidate_bundle``. When the
+            comparator is a live paired re-score, the bundle's secondary scalars
+            (``SECONDARY_METRICS_FOR[target]``) must be replaced by
+            :func:`live_secondary_metrics` run on the candidate over the SAME index, or
+            the two sides are scored on different games (code review CR-04).
         comparator: The live re-scored incumbent bundle for this target (same key
             shape as the candidate -- ``accuracy``/``ece``/``brier_score`` for WP or
             ``mae`` for ATS/OU). Returned unchanged under the ``baseline`` /

@@ -639,8 +639,12 @@ class TestTheJudgeSaysWhichJudgeItIs:
     """A permanent change to deployment policy must be attributable."""
 
     def test_the_judge_version_is_declared_and_matches_the_manifest(self) -> None:
+        # RE-POINTED by the Phase-33 code review (CR-04) at REVIEW33_JUDGE_VERSION: the
+        # candidate's secondary scalars are now re-scored over the same index as the
+        # comparator, a policy change that needed a new name. JUDGE_VERSION_PHASE33 stays
+        # unedited as the judge that rendered the Phase-33 verdict.
         assert gate.JUDGE_VERSION
-        assert gate.JUDGE_VERSION == phase33_state.JUDGE_VERSION_PHASE33
+        assert gate.JUDGE_VERSION == phase33_state.REVIEW33_JUDGE_VERSION
 
     def test_the_code_digest_is_a_64_hex_sha256(self) -> None:
         digest = gate.judge_code_digest()
