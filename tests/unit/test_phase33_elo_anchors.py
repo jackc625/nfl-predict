@@ -128,6 +128,17 @@ def test_each_elo_artifact_matches_its_committed_anchor(relative_path, expected_
     ratified 2026-09-21). For those the anchor's question has a different honest answer:
     not "the bytes still match" and not "the lake was never built" (the skip reason
     below), but "the file is gone, by ruling" -- which is asserted.
+
+    The live snapshot store is anchored by the CONTENT of its 2002-2025 history, not by
+    its whole-file bytes. Was: a whole-file sha256 against
+    ``P332_20_ELO_SNAPSHOT_DIGEST_AFTER_2026_CAPTURE`` (pinned 2026-09-22). Every
+    game-night run of the scheduled daily task (``scripts/daily_lock_pipeline.py``,
+    ``build_elo`` -> ``save_live_append``) legitimately rewrites this store -- measured:
+    the 2026-09-26 and 2026-10-03 runs, the two nights in
+    ``config/upstream_probe_log.jsonl`` whose run reached ``build_elo``, each staged a
+    generation -- so the byte pin went stale on the first live night and said nothing
+    about the history it exists to protect (Plan 33-18 Task 8). The 2026 rows are
+    covered value by value by ``tests/integration/test_live_2026_prediction_set.py``.
     """
     path = Path(relative_path)
     if Path(relative_path).relative_to("data").as_posix() in (
@@ -139,6 +150,21 @@ def test_each_elo_artifact_matches_its_committed_anchor(relative_path, expected_
         )
         return
     _skip_if_absent(path)
+
+    if relative_path == SNAPSHOT_ARTIFACT:
+        rows, slice_digest = _canonical_slice_digest(path)
+        assert rows == P332_20_ELO_CANONICAL_SLICE_ROWS, (
+            f"the 2002-2025 slice of {relative_path} holds {rows} rows, not "
+            f"{P332_20_ELO_CANONICAL_SLICE_ROWS}"
+        )
+        assert slice_digest == P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256, (
+            f"the 2002-2025 history in {relative_path} no longer matches its anchor.\n"
+            f"  anchor   sha256 {P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256}\n"
+            f"  on disk  sha256 {slice_digest}\n"
+            "A forward append cannot move this digest, so a derived historical rating "
+            "changed: find what wrote it before re-anchoring anything."
+        )
+        return
 
     expected_digest = _live_anchor(relative_path)
     actual = digest_file(path)
@@ -204,6 +230,11 @@ def test_a_one_byte_change_moves_the_digest(tmp_path):
     Without this, a green anchor test is consistent with a digest function that
     returns a constant. The flip is done on a COPY under ``tmp_path``; the
     production artifact is never written.
+
+    Was: the intact copy was compared with the 2026-09-22 byte pin, which the
+    scheduled daily run's rewrites made stale (see the anchor node above). The
+    control's purpose needs no pin: an intact copy must reproduce the digest of the
+    file AS IT IS NOW, and a one-bit flip must move it (Plan 33-18 Task 8).
     """
     source = Path(SNAPSHOT_ARTIFACT)
     _skip_if_absent(source)
@@ -214,9 +245,10 @@ def test_a_one_byte_change_moves_the_digest(tmp_path):
     intact = tmp_path / "intact.bin"
     intact.write_bytes(original)
     intact_digest = digest_file(intact)
-    assert intact_digest == _live_anchor(SNAPSHOT_ARTIFACT), (
-        "an untouched copy of the artifact does not reproduce its anchor, so the "
-        "control cannot distinguish a flipped byte from a broken instrument."
+    assert intact_digest == digest_file(source), (
+        "an untouched copy of the artifact does not reproduce the digest of the file "
+        "it was copied from, so the control cannot distinguish a flipped byte from a "
+        "broken instrument."
     )
 
     flipped_bytes = bytearray(original)
