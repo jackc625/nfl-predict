@@ -285,8 +285,11 @@ def compute_market_baseline(
         Dict with keys: market_accuracy, market_brier (WP only),
         market_logloss (WP only), n_games, n_excluded.
     """
-    # Merge games with closing odds on game_id
-    merged = games_df.merge(
+    # Merge PLAYED games with closing odds on game_id. Gold carries the live slate's
+    # unplayed games, whose NaN scores would otherwise grade as away wins / no cover /
+    # under (NaN > NaN is False) -- code review WR-04.
+    played = games_df.dropna(subset=["home_score", "away_score"])
+    merged = played.merge(
         closing_odds_df, on="game_id", how="inner", suffixes=("", "_odds")
     )
 
@@ -988,7 +991,13 @@ def main() -> None:
     if not args.no_clv:
         odds_path = Path("data/silver/odds_snapshot.parquet")
         if odds_path.exists():
-            closing_odds_df = pd.read_parquet(odds_path)
+            # ONE row per game, through the backtest engine's reader (code review WR-04):
+            # the live store holds one row per BOOK per capture (nine per 2026 game), and
+            # every consumer here joins on game_id. Same dedupe and LAR->LA game_id
+            # normalisation as the engine (aaa3b34).
+            from backtest.engine import BacktestEngine
+
+            closing_odds_df = BacktestEngine()._load_closing_odds()
             logger.info(
                 "Loaded closing odds",
                 n_games=len(closing_odds_df),
