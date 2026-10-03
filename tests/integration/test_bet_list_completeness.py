@@ -569,7 +569,14 @@ class TestTheStoredReplayRowsAreNeverBackfilled:
     def test_the_stored_artifact_is_all_replay_and_carries_no_observation_time(
         self,
     ) -> None:
-        """Measured, not assumed: 234 rows, every one ``backtest_replay``, every stamp NULL."""
+        """Measured, not assumed: 234 ``backtest_replay`` rows, every stamp NULL.
+
+        Was (until Plan 33-18 Task 8): the WHOLE file was 234 rows, all replay. Since
+        2026-09-26 the scheduled daily run appends guarded ``forward`` rows (D33-38),
+        each carrying its own pre-lock ``decided_at_utc`` and asserted by
+        ``tests/integration/test_live_2026_prediction_set.py``. The claim here is about
+        the stored REPLAY rows, so it is pinned on them.
+        """
         from backtest.weekly_bet_list import (
             DECIDED_AT_COLUMN,
             read_bet_list_with_schema_shim,
@@ -577,11 +584,11 @@ class TestTheStoredReplayRowsAreNeverBackfilled:
         from tests.phase33_state import BET_LIST_REPLAY_ROW_COUNT
 
         frame = read_bet_list_with_schema_shim(self._artifact())
+        replay = frame.loc[frame["provenance"] == "backtest_replay"]
 
-        assert len(frame) == BET_LIST_REPLAY_ROW_COUNT
+        assert len(replay) == BET_LIST_REPLAY_ROW_COUNT
         assert list(frame.columns) == list(BET_LIST_COLUMNS)
-        assert set(frame["provenance"]) == {"backtest_replay"}
-        assert frame[DECIDED_AT_COLUMN].isna().all(), (
+        assert replay[DECIDED_AT_COLUMN].isna().all(), (
             "a stored replay row carries an observation time; the 234 rows predate this column "
             "and were ruled un-backfillable on 2026-09-12"
         )
@@ -608,10 +615,16 @@ class TestTheStoredReplayRowsAreNeverBackfilled:
         assert path.read_bytes() == before, (
             "the schema shim wrote to the stored artifact"
         )
-        assert first[DECIDED_AT_COLUMN].isna().all()
-        assert second[DECIDED_AT_COLUMN].isna().all()
+        for frame in (first, second):
+            replay = frame.loc[frame["provenance"] == "backtest_replay"]
+            assert replay[DECIDED_AT_COLUMN].isna().all()
 
-        # The file itself is still the pre-bump width; only the in-memory frame is 29 wide.
+        # Was (until Plan 33-18 Task 8): the file on disk was still the pre-bump width
+        # (BET_LIST_COLUMN_COUNT_BEFORE) with no DECIDED_AT_COLUMN. Since 2026-09-26 the
+        # scheduled daily run writes the bumped schema when it appends forward rows, so
+        # the column is on disk -- and on every stored replay row it is still NULL.
         raw = pd.read_parquet(path)
-        assert raw.shape[1] == BET_LIST_COLUMN_COUNT_BEFORE
-        assert DECIDED_AT_COLUMN not in raw.columns
+        assert raw.shape[1] in (BET_LIST_COLUMN_COUNT_BEFORE, len(BET_LIST_COLUMNS))
+        if DECIDED_AT_COLUMN in raw.columns:
+            stored_replay = raw.loc[raw["provenance"] == "backtest_replay"]
+            assert stored_replay[DECIDED_AT_COLUMN].isna().all()
