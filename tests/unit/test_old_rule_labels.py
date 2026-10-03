@@ -148,6 +148,12 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "evidence' (D33.2-07); it rests on no pre-fix model, so the old-rule addendum does not "
         "describe it."
     ),
+    "LIVE-COLD-START-READOUT.md": (
+        "Plan 33-18's closing record of Phase 33, written under the day-before lock. Its "
+        "measurements are the 2026 live scheduled runs'; it names Phase 33's superseded models, "
+        "gate verdicts and frozen numbers only as superseded records beside their replacements "
+        "and restates no result from them, so the old-rule addendum does not describe it."
+    ),
     "PROFITABILITY-PREREGISTRATION.md": (
         "A sealed pre-registration whose ancestry anchor is checked by "
         "tests/unit/test_preregistration_ancestry.py; editing it in place would destroy that "
