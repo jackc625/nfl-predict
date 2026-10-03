@@ -733,6 +733,12 @@ def _refuse_second_candidate(
     without checking it a re-run would silently overwrite the committed verdict.
     """
     recorded: dict[Path, set[str]] = {}
+    # A run that STARTED scoring and never wrote its record (killed after a verdict was
+    # logged, or crashed in the blend re-score) still spent its one candidate.
+    started = _run_started_path(record_path)
+    if started.exists():
+        sentinel = json.loads(started.read_text(encoding="utf-8"))
+        recorded[started] = set(sentinel.get("targets", []))
     if Path(record_path).exists():
         existing = json.loads(Path(record_path).read_text(encoding="utf-8"))
         recorded[Path(record_path)] = set(existing.get("targets", {}))
@@ -744,13 +750,34 @@ def _refuse_second_candidate(
         already = sorted(judged & set(targets))
         if already and PHASE33_FIX_CYCLE_ALLOWANCE <= 0:
             msg = (
-                f"a verdict is already recorded at '{path}' for {already}, and the "
+                f"a verdict, or a run that started scoring, is already recorded at "
+                f"'{path}' for {already}, and the "
                 f"pre-registered fix-cycle allowance is {PHASE33_FIX_CYCLE_ALLOWANCE}. "
                 "Offering a second candidate for a judged target is unlimited retries "
                 "against a live gate, which is p-hacking with extra steps. The allowance "
                 "was declared before any verdict existed and is not editable now."
             )
             raise FixCycleAllowanceExceededError(msg)
+
+
+def _run_started_path(record_path: Path) -> Path:
+    """Where stage one records that scoring STARTED, beside the JSON verdict record."""
+    path = Path(record_path)
+    return path.with_name(f"{path.stem}.run_started.json")
+
+
+def _write_run_started(record_path: Path, targets: Sequence[str]) -> None:
+    """Record, BEFORE the first candidate is scored, that this run has started.
+
+    "Once scoring starts, one run is the run, whatever kills it" is enforced by this file:
+    :func:`_refuse_second_candidate` refuses any target it names, whether or not a verdict
+    record was ever written. Kept out of ``stage_one_judge`` for the same reason
+    :func:`_write_verdict_record` is.
+    """
+    path = _run_started_path(record_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"started_at": datetime.now(UTC).isoformat(), "targets": list(targets)}
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _render_committed_verdict_toml(record: GateVerdictRecord) -> str:
@@ -1044,16 +1071,12 @@ def stage_one_judge(
     )
     logger.info("Phase-33 gate pre-flight PASSED", checks=sorted(preflight))
     _refuse_second_candidate(verdict_record_path, targets, committed_verdict_path)
+    _write_run_started(verdict_record_path, targets)
 
     rows: dict[str, dict[str, Any]] = {}
     for target in targets:
         rows[target] = render_target_verdict(
             target, scorer(target, staging_dir, artifacts_dir), cfg
-        )
-        logger.info(
-            "Phase-33 gate verdict rendered",
-            target=target,
-            verdict=rows[target]["verdict"],
         )
 
     blend_section: dict[str, Any] = {}
@@ -1077,6 +1100,13 @@ def stage_one_judge(
     )
     validate_verdict_payload(record.as_dict())
     _write_verdict_record(record, verdict_record_path, committed_verdict_path)
+    # Logged only AFTER the record is written, so no verdict is shown before it is on disk.
+    for target in targets:
+        logger.info(
+            "Phase-33 gate verdict rendered",
+            target=target,
+            verdict=rows[target]["verdict"],
+        )
     return record
 
 
