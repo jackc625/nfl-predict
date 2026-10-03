@@ -162,6 +162,22 @@ _DISPLAY_COLUMNS_NOT_IN_GOLD = frozenset(
     phase33_state.P332_20_DISPLAY_COLUMNS_NOT_IN_GOLD
 )
 
+
+def _clean_build_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """The rows the Plan 33.2-20 clean build carried: 2002-2025 plus its 17 played 2026 games.
+
+    Was (until Plan 33-18 Task 8): the counts below were measured on the WHOLE live frame.
+    The scheduled daily run rebuilds gold on every game night and adds each slate's 2026
+    rows (6,516 -> 6,562 by 2026-10-03), so whole-frame counts went stale on the first live
+    night while the recorded rows did not move. MEASURED 2026-10-03: on these 6,516 rows
+    every recorded row count, distinct count and null count reproduces exactly.
+    """
+    in_clean_build = (frame["season"] <= 2025) | frame["game_id"].isin(
+        phase33_state.P332_20_CLEAN_BUILD_GAMES_2026_IN_GOLD
+    )
+    return frame.loc[in_clean_build]
+
+
 # Measured on the accepted rung-4 gold, identically in all three matrices. Every one
 # is > 1, so the six are NOT constant after the Phase-30 rebuild -- which is what
 # falsified the old constancy rationale in ``utils/feature_columns.py``. They are
@@ -472,7 +488,7 @@ class TestRealGold:
         exactly when its weather family is absent -- so a legitimate row addition
         cannot make it stale, and a single imputed cell still fails it.
         """
-        frame = pd.read_parquet(_GOLD_DIR / "features_wp.parquet")
+        frame = _clean_build_rows(pd.read_parquet(_GOLD_DIR / "features_wp.parquet"))
         assert len(frame) == _LIVE_GOLD_ROWS
         nulls = dict(phase33_state.P332_20_DISPLAY_NULLS_AFTER_CLEAN_BUILD)
         assert int(frame["raw_humidity_pct"].isna().sum()) == nulls["raw_humidity_pct"]
@@ -532,7 +548,7 @@ class TestRealGold:
         variation where the reanalysis had been broadcast from fourteen rows. The
         falsified "all six are constant" claim is NOT restored.
         """
-        frame = pd.read_parquet(_GOLD_DIR / f"{table}.parquet")
+        frame = _clean_build_rows(pd.read_parquet(_GOLD_DIR / f"{table}.parquet"))
 
         measured = {
             name: int(frame[name].nunique())
@@ -566,7 +582,7 @@ class TestRealGold:
         covered dome genuinely scores 0.0 there, which is Ruling J's split seen on the
         display siblings. Both populations are asserted, so a change to either fails.
         """
-        frame = pd.read_parquet(_GOLD_DIR / "features_ats.parquet")
+        frame = _clean_build_rows(pd.read_parquet(_GOLD_DIR / "features_ats.parquet"))
         nulls = {
             name: int(frame[name].isna().sum())
             for name in sorted(_DISPLAY_COLUMNS_IN_GOLD)
