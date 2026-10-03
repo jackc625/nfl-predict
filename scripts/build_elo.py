@@ -813,8 +813,10 @@ class EloBuilder:
             EloForeignSeasonRowsError: If the frame carries a row from another season.
             EloProvisionalPrecedenceError: If a provisional row is offered for a
                 ``game_id`` that already has a REAL stored row.
-            EloSnapshotOrderError: If a stored or offered row names a game the silver
-                ``games`` table does not have, so it has no place in the row order.
+            EloSnapshotOrderError: If an offered row or a stored REAL row names a game
+                the silver ``games`` table does not have, so it has no place in the row
+                order. A stored PROVISIONAL row for such a game is deleted instead
+                (:meth:`_orphaned_provisional_ids`).
         """
         # With one row table this refusal guards one frame. It is kept, not inlined
         # away, because it regains its teeth the day a second row table returns.
@@ -874,11 +876,12 @@ class EloBuilder:
             return 0
 
         order_rows: Callable[[pd.DataFrame], pd.DataFrame] | None = None
+        orphaned: list[str] = []
         if table_name == ELO_SNAPSHOT_TABLE:
             self._align_stored_snapshot_flag()
-            order_rows = partial(
-                order_snapshots_canonically, games=self.load_games_data()
-            )
+            games = self.load_games_data()
+            orphaned = self._orphaned_provisional_ids(frame, games)
+            order_rows = partial(order_snapshots_canonically, games=games)
 
         path = upsert_silver(
             frame,
@@ -886,6 +889,7 @@ class EloBuilder:
             key_column=ELO_ROW_TABLE_KEY_COLUMN,
             base_path=self.data_root,
             order_rows=order_rows,
+            remove_keys=orphaned,
         )
         combined = pd.read_parquet(path, engine="pyarrow")
         get_db_connection().create_table_from_df(
@@ -894,6 +898,36 @@ class EloBuilder:
         return len(frame)
 
     # -- the provisional-flag rules the write path enforces --------------------
+
+    def _orphaned_provisional_ids(
+        self, frame: pd.DataFrame, games: pd.DataFrame
+    ) -> list[str]:
+        """Stored PROVISIONAL rows of *frame*'s season(s) whose game left silver ``games``.
+
+        A slate game moved to another week after its lock gets a new ``game_id`` (the id
+        embeds the week), and the games ingest deletes the old id. Its provisional row then
+        has no kickoff, so the canonical ordering refuses the WHOLE table on every later
+        append and the nightly run stops at ``build_elo``. A provisional row is a
+        placeholder for a game that no longer exists, so it is deleted in the same atomic
+        write, by name. A REAL row whose game vanished is not touched here: it still
+        reaches the ordering refusal, because that is a genuine integrity defect.
+        """
+        stored = self._stored_snapshots()
+        if len(stored) == 0 or "season" not in frame.columns:
+            return []
+        scheduled = set(games["game_id"].astype(str))
+        orphaned_mask = (
+            stored[PROVISIONAL_COLUMN]
+            & stored["season"].isin(set(frame["season"]))
+            & ~stored["game_id"].astype(str).isin(scheduled)
+        )
+        orphaned = sorted(stored.loc[orphaned_mask, "game_id"].astype(str).unique())
+        if orphaned:
+            logger.warning(
+                "Deleting provisional Elo rows whose game left the schedule",
+                game_ids=orphaned,
+            )
+        return orphaned
 
     def _stored_snapshots(self) -> pd.DataFrame:
         """The snapshot PARQUET as it stands, flag-aligned.
@@ -1123,8 +1157,11 @@ def order_snapshots_canonically(
         raise EloSnapshotOrderError(
             f"{len(unplaced)} Elo snapshot game(s) have no kickoff in the silver games "
             f"table: {shown}. The snapshot table is stored in (season, kickoff_et, "
-            "game_id) order and a row with no kickoff has no place in it. Re-ingest the "
-            "schedule (python -m scripts.ingest_games) before writing Elo."
+            "game_id) order and a row with no kickoff has no place in it. If silver games "
+            "is merely behind, re-ingest the schedule (python -m scripts.ingest_games). If "
+            "the game has left the schedule, a re-ingest cannot help (it is what removed "
+            "the id): a REAL snapshot row for it is cleared only by a full rebuild "
+            "(python -m scripts.build_elo --all-seasons --full-rebuild)."
         )
 
     key = "__snapshot_order_kickoff__"
