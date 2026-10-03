@@ -655,7 +655,11 @@ class TestTheJudgeSaysWhichJudgeItIs:
         assert gate.judge_code_digest() == gate.judge_code_digest()
 
     def test_the_digest_covers_every_judging_function(self) -> None:
-        """A judging function outside the digest is a change the verdict cannot see."""
+        """A judging function outside the digest is a change the verdict cannot see.
+
+        The last six were added by the Phase-33 code review (WR-05): they decided the
+        ATS and O/U FAILs, or combine or feed every check, and moved no digest.
+        """
         assert set(gate.JUDGE_DIGEST_FUNCTIONS) == {
             "_secondary_reasons",
             "_calibration_reasons",
@@ -663,6 +667,12 @@ class TestTheJudgeSaysWhichJudgeItIs:
             "clv_non_regression_passes",
             "live_secondary_metrics",
             "build_eligibility_index",
+            "_per_season_floor_reasons",
+            "evaluate_target",
+            "clv_floor_passes",
+            "per_season_clv",
+            "_absolute_verdict",
+            "build_candidate_bundle",
         }
 
     def test_the_digest_moves_when_a_judging_function_moves(self) -> None:

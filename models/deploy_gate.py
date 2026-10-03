@@ -264,6 +264,11 @@ JUDGE_VERSION: str = "phase33-live-secondary-rescore-2"
 
 # The functions whose source the judge digest covers. A judging function OUTSIDE this
 # tuple is a change no verdict record can see.
+#
+# The last six were added by the Phase-33 code review (WR-05): the per-season floor
+# rendered the ATS and O/U FAILs, `evaluate_target` combines every check, and the rest
+# decide or feed a verdict, yet none of them moved the digest. The Phase-33 verdict record
+# carries the digest of the original six and stays as it is.
 JUDGE_DIGEST_FUNCTIONS: tuple[str, ...] = (
     "_secondary_reasons",
     "_calibration_reasons",
@@ -271,6 +276,12 @@ JUDGE_DIGEST_FUNCTIONS: tuple[str, ...] = (
     "clv_non_regression_passes",
     "live_secondary_metrics",
     "build_eligibility_index",
+    "_per_season_floor_reasons",
+    "evaluate_target",
+    "clv_floor_passes",
+    "per_season_clv",
+    "_absolute_verdict",
+    "build_candidate_bundle",
 )
 
 # The marker `live_secondary_metrics` stamps onto every comparator it produces, and
