@@ -571,6 +571,7 @@ def test_data_qa_expects_the_slate_minus_only_its_recorded_failures(
         )
     monkeypatch.setattr(data_qa, "get_database_stats", lambda: {})
     monkeypatch.setattr(data_qa, "get_current_nfl_week", lambda: (2026, 3))
+    live_skip.reset_excluded_games()  # a dropped game is not expected (review WR-10)
 
     def _data_qa(failures: dict[str, str]) -> None:
         slate = DailySlate(

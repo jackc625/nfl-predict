@@ -690,10 +690,15 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
         # -- BUILD -----------------------------------------------------------------------
         # A slate game whose forecast failed WITH a recorded reason is built with its weather
         # unknown (step 27b, D33.2-05), so it is not expected here; a game missing its row
-        # with NO recorded reason (an ingest that silently wrote nothing) still fails.
+        # with NO recorded reason (an ingest that silently wrote nothing) still fails. A game
+        # this run already DROPPED (close_collection refused it: collection ended after its
+        # lock, and the weather ingest leaves a lock-passed game out) is not expected either,
+        # so a late collection finishes with skips instead of failing here (review WR-10).
         step(
             "data_qa",
-            lambda: step_data_qa(slate.game_ids - frozenset(slate.weather_failures)),
+            lambda: step_data_qa(
+                _slate_in_scope(slate) - frozenset(slate.weather_failures)
+            ),
             build,
             description="Data quality validation (weather expected for the slate)",
         ),
