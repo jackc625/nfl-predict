@@ -82,6 +82,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -722,21 +723,34 @@ def _refuse_shared_roots(artifacts_dir: Path, staging_dir: Path) -> None:
         raise PreflightFailedError(msg)
 
 
-def _refuse_second_candidate(record_path: Path, targets: Sequence[str]) -> None:
-    """Enforce :data:`PHASE33_FIX_CYCLE_ALLOWANCE` against an existing verdict record."""
-    if not Path(record_path).exists():
-        return
-    existing = json.loads(Path(record_path).read_text(encoding="utf-8"))
-    already = sorted(set(existing.get("targets", {})) & set(targets))
-    if already and PHASE33_FIX_CYCLE_ALLOWANCE <= 0:
-        msg = (
-            f"a verdict is already recorded at '{record_path}' for {already}, and the "
-            f"pre-registered fix-cycle allowance is {PHASE33_FIX_CYCLE_ALLOWANCE}. Offering "
-            "a second candidate for a judged target is unlimited retries against a live "
-            "gate, which is p-hacking with extra steps. The allowance was declared before "
-            "any verdict existed and is not editable now."
-        )
-        raise FixCycleAllowanceExceededError(msg)
+def _refuse_second_candidate(
+    record_path: Path, targets: Sequence[str], committed_path: Path
+) -> None:
+    """Enforce :data:`PHASE33_FIX_CYCLE_ALLOWANCE` against an existing verdict record.
+
+    BOTH halves are checked. The JSON half lives under the gitignored ``outputs/``, so a
+    fresh clone or a cleaned ``outputs/`` has none; the committed TOML half survives, and
+    without checking it a re-run would silently overwrite the committed verdict.
+    """
+    recorded: dict[Path, set[str]] = {}
+    if Path(record_path).exists():
+        existing = json.loads(Path(record_path).read_text(encoding="utf-8"))
+        recorded[Path(record_path)] = set(existing.get("targets", {}))
+    if Path(committed_path).exists():
+        committed = tomllib.loads(Path(committed_path).read_text(encoding="utf-8"))
+        recorded[Path(committed_path)] = set(committed.get("verdicts", {}))
+
+    for path, judged in recorded.items():
+        already = sorted(judged & set(targets))
+        if already and PHASE33_FIX_CYCLE_ALLOWANCE <= 0:
+            msg = (
+                f"a verdict is already recorded at '{path}' for {already}, and the "
+                f"pre-registered fix-cycle allowance is {PHASE33_FIX_CYCLE_ALLOWANCE}. "
+                "Offering a second candidate for a judged target is unlimited retries "
+                "against a live gate, which is p-hacking with extra steps. The allowance "
+                "was declared before any verdict existed and is not editable now."
+            )
+            raise FixCycleAllowanceExceededError(msg)
 
 
 def _render_committed_verdict_toml(record: GateVerdictRecord) -> str:
@@ -1029,7 +1043,7 @@ def stage_one_judge(
         min_free_bytes=min_free_bytes,
     )
     logger.info("Phase-33 gate pre-flight PASSED", checks=sorted(preflight))
-    _refuse_second_candidate(verdict_record_path, targets)
+    _refuse_second_candidate(verdict_record_path, targets, committed_verdict_path)
 
     rows: dict[str, dict[str, Any]] = {}
     for target in targets:
