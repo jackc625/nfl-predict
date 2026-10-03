@@ -746,7 +746,10 @@ class DataQualityMonitor:
             games_df = load_dataframe("games", layer="silver")
             game_ids = set(games_df["game_id"]) if not games_df.empty else set()
 
-            for table in ["odds_snapshot", "weather_forecast"]:
+            # Silver ``weather`` is the table the live ingest writes; the legacy DuckDB-only
+            # ``weather_forecast`` was retired from ``monitored_tables`` by Plan 33-18 R1 and
+            # is not read here either (review WR-19).
+            for table in ["odds_snapshot", "weather"]:
                 try:
                     table_df = load_dataframe(table, layer="silver")
                     if not table_df.empty and "game_id" in table_df.columns:
@@ -764,13 +767,19 @@ class DataQualityMonitor:
                             "sample_missing": list(missing)[:5],
                         }
                 except (
+                    DataIngestionError,
                     ValueError,
                     KeyError,
                     TypeError,
                     FileNotFoundError,
                     OSError,
                 ) as e:
-                    result["checks"][f"{table}_consistency_error"] = str(e)
+                    # A table that cannot be read is a FAILED check, not an escape that
+                    # aborts the whole report, and not an uncounted string (review WR-19).
+                    result["checks"][f"{table}_consistency_error"] = {
+                        "status": "fail",
+                        "message": f"{type(e).__name__}: {e}",
+                    }
 
             # Check team name consistency
             if not games_df.empty:
@@ -1095,7 +1104,7 @@ class DataQualityMonitor:
 
         # 2. Silver tables that carry home_team / away_team columns.
         observed_abbreviations: set[str] = set()
-        for table in ["games", "odds_snapshot", "weather_forecast"]:
+        for table in ["games", "odds_snapshot", "weather"]:
             try:
                 table_df = load_dataframe(table, layer="silver")
                 if table_df.empty:
