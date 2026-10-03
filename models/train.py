@@ -1026,9 +1026,24 @@ def main() -> None:
             # `load_dataframe` entirely. Refuse a PROVISIONAL Elo row as a TRAINING input
             # here, immediately after the read and BEFORE the feature-group exclusion below --
             # a provisional row excluded from the column set is still in the rows being fitted.
+            #
+            # Judged over every row up to the LAST season this run fits (code review WR-01).
+            # Every fold trains on `season < holdout`, tests on the holdout, and the final fit
+            # takes `partition.final_fit`, so no row past that season is ever fitted. During
+            # the season, gold always carries the next slate's provisional rows (unplayed,
+            # live season); refusing on them blocked every re-fit until the season ended.
             from features.elo_features import assert_no_provisional_training_rows
 
-            assert_no_provisional_training_rows(features_df, f"train:{target}")
+            last_fit_season = max(
+                *config.train_seasons,
+                *config.hp_val_seasons,
+                *config.holdout_seasons,
+                *default_season_partition().final_fit,
+            )
+            assert_no_provisional_training_rows(
+                features_df[features_df["season"] <= last_fit_season],
+                f"train:{target}",
+            )
             logger.info(
                 "Loaded features",
                 target=target,

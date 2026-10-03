@@ -221,7 +221,21 @@ class TestEveryTrainerGoldBoundaryRefusesAProvisionalRow:
 
         _seed_trainer_sandbox(monkeypatch, tmp_path, "models.train")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(sys, "argv", ["train", "--target", "wp", "--no-clv"])
+        # The guard judges only rows up to the last season the run fits (code review
+        # WR-01), so the fixture's 2026 season is made a holdout season here. Without it
+        # 2026 is the unfitted live season and the row is correctly NOT refused.
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "train",
+                "--target",
+                "wp",
+                "--no-clv",
+                "--config-holdout-seasons",
+                str(LIVE_SEASON),
+            ],
+        )
         trainer = importlib.import_module("models.train")
 
         with pytest.raises(ProvisionalSnapshotAsTrainingInputError) as excinfo:

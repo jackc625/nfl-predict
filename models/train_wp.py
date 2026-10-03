@@ -1145,23 +1145,24 @@ def main():
     try:
         features_df = load_dataframe("features_wp", layer="gold")
 
-        # COLD-02 / T-33-18: refuse a PROVISIONAL Elo row as a TRAINING input, HERE at
-        # the gold-loading boundary and BEFORE any filtering. This trainer reads gold
-        # DIRECTLY and never passes through features/elo_features.build_features, so a
-        # guard placed only in the feature builder protects none of this path. Filtering
-        # first would let a provisional row drop out of sight and still be trained on in
-        # a different slice. The refusal is a RuntimeError subclass and is therefore NOT
-        # caught by the surrounding handler tuple -- a refusal converted into a logged
-        # `return` would be a silent no-train.
-        from features.elo_features import assert_no_provisional_training_rows
-
-        assert_no_provisional_training_rows(features_df, "train:wp")
-
         # Filter for target season/week
         if season:
             features_df = features_df[features_df["season"] == season]
         if week:
             features_df = features_df[features_df["week"] == week]
+
+        # COLD-02 / T-33-18: refuse a PROVISIONAL Elo row as a TRAINING input, HERE at
+        # the gold-loading boundary. This trainer reads gold DIRECTLY and never passes
+        # through features/elo_features.build_features, so a guard placed only in the
+        # feature builder protects none of this path. It judges the FILTERED frame, which
+        # is exactly what this trainer fits and validates on (code review WR-01): judging
+        # the whole file refused every run while the live slate's provisional rows sat in
+        # gold, whatever season was asked for. The refusal is a RuntimeError subclass and
+        # is therefore NOT caught by the surrounding handler tuple -- a refusal converted
+        # into a logged `return` would be a silent no-train.
+        from features.elo_features import assert_no_provisional_training_rows
+
+        assert_no_provisional_training_rows(features_df, "train:wp")
 
         logger.info(
             "Loaded WP features", season=season, week=week, records=len(features_df)
