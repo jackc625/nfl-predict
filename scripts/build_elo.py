@@ -66,8 +66,7 @@ sys.path.append(".")
 
 from conf.settings import get_settings
 from data.storage import (
-    get_db_connection,
-    load_dataframe,
+    get_parquet_manager,
     save_dataframe,
     upsert_silver,
 )
@@ -302,7 +301,13 @@ class EloBuilder:
 
     def load_games_data(self, seasons: list[int] | None = None) -> pd.DataFrame:
         """
-        Load games data for specified seasons.
+        Load games data for specified seasons, from THIS builder's silver layer.
+
+        Read from ``self.silver_root`` rather than through ``load_dataframe``'s module
+        singletons (review WR-14), so a builder given a ``data_root`` computes and orders
+        from that lake's games, not production's. The parquet is the artifact the write
+        verbs are judged on, and ``data_qa`` gates its DuckDB copy's membership before the
+        live Elo step runs; the Elo chain reads the same instants either way.
 
         Args:
             seasons: List of seasons to load (default: all available)
@@ -311,7 +316,9 @@ class EloBuilder:
             DataFrame with game data
         """
         try:
-            games_df = load_dataframe("games", layer="silver")
+            games_df = pd.read_parquet(
+                self.silver_root / "games.parquet", engine="pyarrow"
+            )
 
             if seasons:
                 games_df = games_df[games_df["season"].isin(seasons)]
@@ -763,6 +770,16 @@ class EloBuilder:
             start_season: The first season this rebuild covers -- named in the log so a
                 full rebuild can never be mistaken for a weekly run in a log file.
         """
+        # ``save_dataframe`` takes no root: it writes wherever the storage singletons point.
+        # A builder whose data_root is elsewhere would replace THAT lake's snapshot table
+        # while staging under its own, so the mismatch is refused (review WR-14).
+        writes_to = Path(get_parquet_manager().base_path).resolve()
+        if writes_to != self.data_root.resolve():
+            raise ValueError(
+                f"save_full_rebuild writes through save_dataframe, which writes under "
+                f"{writes_to}, but this builder's data_root is {self.data_root}. Refusing "
+                "to replace the snapshot table of a lake this builder was not given."
+            )
         if not isinstance(snapshots, pd.DataFrame):
             snapshots = build_snapshot_frame([])
         if len(snapshots) > 0:
@@ -854,14 +871,15 @@ class EloBuilder:
         )
 
     def _upsert_row_table(self, frame: pd.DataFrame, table_name: str) -> int:
-        """Upsert *frame* into a silver ROW table and keep DuckDB in step.
+        """Upsert *frame* into a silver ROW table under this builder's data root.
 
-        ``upsert_silver`` writes PARQUET ONLY. ``load_dataframe(source="auto")``
-        resolves DuckDB FIRST (data/storage.py:959-963), so a parquet-only upsert would
-        leave the database serving the pre-append rows and every consumer would read
-        the stale copy -- the same "the write did not land" failure this plan exists to
-        remove, merely relocated. The combined table is therefore read back and the
-        DuckDB copy replaced from it, so the two stores cannot disagree.
+        ``load_dataframe(source="auto")`` resolves DuckDB FIRST, so a parquet-only upsert
+        would leave the database serving the pre-append rows. ``upsert_silver`` keeps the
+        READER's DuckDB copy in step itself (``data.storage._keep_duckdb_copy_in_step``):
+        only when this builder's root is the root readers resolve, only an existing copy,
+        and loudly on failure. This method used to replace the process DuckDB a second
+        time, unconditionally -- from a sandbox root too, creating a mirror where none
+        existed -- which is why that write was removed (review WR-14).
 
         THE SNAPSHOT TABLE IS WRITTEN IN :data:`SNAPSHOT_ROW_ORDER`. Latest-wins removes
         a replaced row and appends its successor at the END, so without an explicit
@@ -883,17 +901,13 @@ class EloBuilder:
             orphaned = self._orphaned_provisional_ids(frame, games)
             order_rows = partial(order_snapshots_canonically, games=games)
 
-        path = upsert_silver(
+        upsert_silver(
             frame,
             table_name,
             key_column=ELO_ROW_TABLE_KEY_COLUMN,
             base_path=self.data_root,
             order_rows=order_rows,
             remove_keys=orphaned,
-        )
-        combined = pd.read_parquet(path, engine="pyarrow")
-        get_db_connection().create_table_from_df(
-            combined, table_name, if_exists="replace"
         )
         return len(frame)
 
