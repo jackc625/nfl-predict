@@ -522,21 +522,77 @@ def test_an_unexpected_capture_error_records_every_slate_game_and_reraises(monke
     }
 
 
-def test_data_qa_expects_the_slate_minus_only_its_recorded_failures(monkeypatch):
-    """A recorded failure is not expected; a game missing with no reason still is (2026-09-30)."""
-    handed: list[frozenset[str]] = []
-    monkeypatch.setattr(daily_steps, "step_data_qa", handed.append)
-    slate = DailySlate(
-        run_date_et=RUN_DATE,
-        lock=slate_lock(RUN_DATE),
-        schedule=_schedule().iloc[1:3].reset_index(drop=True),
-        weather_failures={"2026_W03_LA@DEN": "WeatherDataError: timeout"},
+def test_data_qa_expects_the_slate_minus_only_its_recorded_failures(
+    monkeypatch, tmp_path
+):
+    """A recorded failure is not expected; a game missing with no reason still is (2026-09-30).
+
+    Runs the REAL ``step_data_qa`` over a sandbox weather table last written 72 hours ago
+    (review CR-03: the stubbed step never reached the freshness check, which halted the very
+    night every slate forecast failed with a recorded reason). Only the whole-lake sections
+    and the other monitored tables are cut away; the weather checks are the real ones.
+    """
+    import data.storage as storage_mod
+    from data.storage import DuckDBConnection, ParquetManager
+    from scripts import data_qa
+
+    root = tmp_path / "lake"
+    monkeypatch.setattr(storage_mod, "_parquet_manager", ParquetManager(str(root)))
+    monkeypatch.setattr(
+        storage_mod, "_db_connection", DuckDBConnection(str(root / "qa.duckdb"))
     )
-    registry = {s.name: s for s in daily_steps.build_daily_step_registry(slate)}
+    written = datetime.now(UTC) - timedelta(hours=72)
+    ParquetManager(str(root)).save(
+        pd.DataFrame(
+            {
+                "game_id": ["2026_W03_ATL@GB"],  # an EARLIER slate's row, 72 hours old
+                "forecast_time": [written],
+                "is_outdoor": [True],
+                "created_at": [written],
+            }
+        ),
+        "silver/weather.parquet",
+    )
+    real_init = data_qa.DataQualityMonitor.__init__
 
-    registry["data_qa"].callable()
+    def _weather_only(self):
+        real_init(self)
+        self.monitored_tables = {"weather": self.monitored_tables["weather"]}
 
-    assert handed == [frozenset({"2026_W03_LAC@BUF"})]
+    monkeypatch.setattr(data_qa.DataQualityMonitor, "__init__", _weather_only)
+    for section in (
+        "check_data_consistency",
+        "check_gold_integrity",
+        "check_team_abbreviations",
+        "check_duckdb_parquet_consistency",
+    ):
+        monkeypatch.setattr(
+            data_qa.DataQualityMonitor, section, lambda *_a, **_k: {"checks": {}}
+        )
+    monkeypatch.setattr(data_qa, "get_database_stats", lambda: {})
+    monkeypatch.setattr(data_qa, "get_current_nfl_week", lambda: (2026, 3))
+
+    def _data_qa(failures: dict[str, str]) -> None:
+        slate = DailySlate(
+            run_date_et=RUN_DATE,
+            lock=slate_lock(RUN_DATE),
+            schedule=_schedule().iloc[1:3].reset_index(drop=True),
+            weather_failures=failures,
+        )
+        registry = {s.name: s for s in daily_steps.build_daily_step_registry(slate)}
+        registry["data_qa"].callable()
+
+    try:
+        # Every slate forecast failed WITH a reason: nothing was written tonight, and the
+        # night goes on (each game is built with its weather unknown).
+        timeout = "WeatherDataError: timeout"
+        _data_qa({"2026_W03_LA@DEN": timeout, "2026_W03_LAC@BUF": timeout})
+
+        # One failed with a reason; the other has no row and NO reason: still refused.
+        with pytest.raises(RuntimeError, match="Data QA failed"):
+            _data_qa({"2026_W03_LA@DEN": timeout})
+    finally:
+        storage_mod._db_connection.close()
 
 
 # ---------------------------------------------------------------------------

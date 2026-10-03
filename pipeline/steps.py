@@ -584,9 +584,9 @@ def step_data_qa(weather_game_ids: frozenset[str] | None = None) -> None:
 
     Args:
         weather_game_ids: The daily run's slate, whose forecasts are the only ones that run
-            fetched; the weather completeness check then expects exactly those games. None
-            (this Friday registry) expects the whole week, which ``step_ingest_weather``
-            forecasts.
+            fetched; the weather completeness and freshness checks then judge exactly those
+            games. None (this Friday registry) expects the whole week, which
+            ``step_ingest_weather`` forecasts.
     """
     from scripts.data_qa import DataQualityMonitor
 

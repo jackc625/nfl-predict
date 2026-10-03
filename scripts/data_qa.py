@@ -286,15 +286,35 @@ class DataQualityMonitor:
         }
 
     def check_data_freshness(
-        self, table_name: str, max_age_hours: int = 24
+        self,
+        table_name: str,
+        max_age_hours: int = 24,
+        *,
+        game_ids: frozenset[str] | None = None,
     ) -> dict[str, Any]:
         """Check if data is fresh (recently updated).
 
         A table produced by a step registered AFTER ``data_qa`` is still MEASURED, and its
         result is marked ``not_applicable`` with the producing step named, so the age is on
         the record without refusing a correct run. See ``_TABLES_PRODUCED_AFTER_DATA_QA``.
+
+        *game_ids* is the daily run's expected slate (see :meth:`check_data_completeness`):
+        the age is then measured over THOSE games' rows only. The daily run writes weather
+        once per slate, so the whole table's newest row is a day or more old whenever
+        tonight wrote nothing -- every forecast failed with a recorded reason, or the capture
+        raised -- and judging the whole table halted exactly the night those failures are
+        meant to survive (review CR-03). An empty expected set is ``not_applicable``.
         """
-        result = self._measure_data_freshness(table_name, max_age_hours)
+        if game_ids is not None and not game_ids:
+            return {
+                "table": table_name,
+                "status": "not_applicable",
+                "not_applicable_reason": (
+                    "no slate game is expected to have a row tonight (every one failed "
+                    "with a recorded reason or was dropped)"
+                ),
+            }
+        result = self._measure_data_freshness(table_name, max_age_hours, game_ids)
         producer = _TABLES_PRODUCED_AFTER_DATA_QA.get(table_name)
         if producer is not None:
             result["measured_status"] = result["status"]
@@ -306,9 +326,12 @@ class DataQualityMonitor:
         return result
 
     def _measure_data_freshness(
-        self, table_name: str, max_age_hours: int = 24
+        self,
+        table_name: str,
+        max_age_hours: int = 24,
+        game_ids: frozenset[str] | None = None,
     ) -> dict[str, Any]:
-        """Measure a table's age from its timestamp columns."""
+        """Measure a table's age from its timestamp columns (over *game_ids*' rows if given)."""
         logger.info(
             "Checking data freshness", table=table_name, max_age_hours=max_age_hours
         )
@@ -324,6 +347,10 @@ class DataQualityMonitor:
         try:
             # Try to load the table
             df = load_dataframe(table_name, layer="silver")
+            if game_ids is not None:
+                # No expected row present is a COMPLETENESS failure, judged there; here it
+                # reads "empty", which is not counted.
+                df = df[df["game_id"].astype(str).isin(game_ids)]
 
             if df.empty:
                 result["status"] = "empty"
@@ -1149,7 +1176,8 @@ class DataQualityMonitor:
 
         *weather_game_ids* is the daily run's slate: the weather completeness check then
         expects a forecast for those games, not the whole week (see
-        :meth:`check_data_completeness`). None keeps the whole week.
+        :meth:`check_data_completeness`), and weather freshness is measured over those
+        games' rows only (see :meth:`check_data_freshness`). None keeps the whole week.
         """
         if season is None or week is None:
             current_season, current_week = get_current_nfl_week()
@@ -1184,7 +1212,10 @@ class DataQualityMonitor:
                 logger.info("Processing table for QA report", table=table_name)
 
                 table_report = {
-                    "freshness": self.check_data_freshness(table_name),
+                    "freshness": self.check_data_freshness(
+                        table_name,
+                        game_ids=weather_game_ids if table_name == "weather" else None,
+                    ),
                     "completeness": self.check_data_completeness(
                         table_name,
                         season,
