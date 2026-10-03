@@ -19722,3 +19722,32 @@ DAILY_BRACKET_OBSERVED_MARKET_SIDE: str = (
 CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256: str = (
     "e89ad1266c4d1ed727447ae37131bb5c51a08095bbea77bb7146629b2297c6c3"
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33-18 Task 8 -- the five deliberate tripwires, still red after the last observed rebuild.
+#
+# APPENDED 2026-10-03 (about 18:29 ET). Nothing above this line was edited.
+# MEASURED 2026-10-03 at about 18:27 ET on commit c31b3a9, AFTER the 2026-10-03 17:00 ET
+# scheduled run rebuilt gold (the last gold rebuild Plan 33-18 observes), by running EXACTLY
+# DELIBERATE_TRIPWIRE_NODE_IDS in one child process:
+#     python -m pytest <the five ids> -q -p no:cacheprovider
+# The FAILED set equals the constant in both directions, and each fails for its recorded
+# reason: the gate-baseline byte identity and promote-models all-fields nodes on the frozen
+# baseline vs the re-score (wp pooled mean -0.03800034 frozen vs 0.01537494 re-scored); the
+# rung-3 attribution node on 11 non-clock column-slots moved in the protected 2021-2024 window;
+# the two n01 resync nodes on the 2021-2024 column set the p332_ ladder changed.
+# tests/integration/test_phase33_expected_failure_set.py: 8 passed, 1 skipped (the opt-in
+# whole-tier verdict, by its pinned message). No suite-wide number is recorded here.
+# ---------------------------------------------------------------------------
+
+#: The verbatim summary line of that run (the wall clock is the run's own).
+CLOSE_TRIPWIRE_RUN_LINE: str = "5 failed, 34 warnings in 13.40s"
+
+#: The five FAILED node ids as that run printed them.
+CLOSE_TRIPWIRE_NODE_IDS_MEASURED_RED: tuple[str, ...] = (
+    "tests/integration/test_gate_baseline_byte_identity.py::TestTheRegeneratedBaselineIsByteIdenticalToTheCommittedOne::test_the_generated_block_equals_the_committed_block_byte_for_byte",
+    "tests/integration/test_gold_rebuild_attribution.py::TestThePhase31Rung3IsTheFullRebuildOfTheVerdictPopulation::test_no_NON_CLOCK_column_moved_in_a_protected_season",
+    "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_every_data_column_reproduces_its_pre_resync_digest_exactly",
+    "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_the_moved_set_is_exactly_the_build_clock",
+    "tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore_all_fields",
+)
