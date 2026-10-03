@@ -574,15 +574,23 @@ class EloFeatureBuilder:
         ``tests/unit/test_elo_gold_features.py`` rather than inferred from these
         selectors.
 
-        THE CONSEQUENCE THE ORIGINAL COMMENT DOES NOT STATE -- a REPRODUCIBILITY HAZARD,
-        recorded here rather than left for a reviewer to discover. A gold row's rank and
-        percentile columns built on FRIDAY can differ from the same row rebuilt after the
-        results land, because the provisional row is replaced in place by the real one and
-        the ranking then resolves against different values. Nothing about that is a leak;
-        it does mean these four columns are not a pure function of the game alone, they
-        are a function of the game AND when the build ran. Handed to PHASE 34's replay
-        work, which owns forward reproducibility. COLD-01's value-by-value comparison does
-        NOT catch it: that comparison is scoped to the seven JOINED snapshot columns
+        THE CONSEQUENCE THE ORIGINAL COMMENT DOES NOT STATE -- a TRAIN/SERVE SKEW and a
+        REPRODUCIBILITY HAZARD, recorded here rather than left for a reviewer to discover.
+        A rebuilt gold has a week-W snapshot for EVERY week-W game, so every team playing
+        in week W is ranked on its week-W pre-game rating (which includes its week W-1
+        result). A LIVE daily build has week-W rows only for the games already slated --
+        tonight's slate and the week's earlier slates -- because
+        ``pipeline.steps.persist_current_season_elo`` persists provisional rows for the
+        slate alone. Every team whose week-W game is not yet slated is therefore ranked on
+        its latest EARLIER-week pre-game rating, one result staler than training saw (on a
+        Thursday slate, 30 of 32 teams; on a Sunday slate, the Monday-night teams). The
+        served rank/percentile is then not the quantity the deployed models were trained
+        on, and it changes when gold is rebuilt after the week. (The cause is NOT the
+        provisional row being replaced by the real one: a provisional pre-game row equals
+        its real replacement whenever no earlier result was missing at serve time -- review
+        WR-08 corrected this paragraph.) Nothing about that is a leak. Handed to PHASE 34's
+        replay work, which owns forward reproducibility. COLD-01's value-by-value comparison
+        does NOT catch it: that comparison is scoped to the seven JOINED snapshot columns
         (``tests/phase33_state.ELO_GOLD_JOIN_SUBSET``), and these four are DERIVED after
         the join rather than joined.
 
