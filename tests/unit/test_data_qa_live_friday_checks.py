@@ -217,17 +217,32 @@ class TestOddsFreshnessIsNotDemandedBeforeTheOddsStep:
     def test_per_table_quality_checks_are_counted(self, lake, monkeypatch):
         """2026-09-30: the quality result has no top-level status, so none ever counted.
 
-        28.5 is a real closing total (2023 W18 NYJ@NE); 20.0 is not and must fail.
+        Counted for a gated table: weather missing a required column fails. The ODDS quality
+        is run and reported but NOT counted (review WR-18): it judges the whole append-only
+        store, and an odds failure never stops predictions, so one bad live capture must not
+        halt every later night. 28.5 is a real closing total (2023 W18 NYJ@NE); 20.0 is not.
         """
+        tables = ("weather",)
+        _save_parquet(lake, _weather(WEEK_2_IDS), "weather")
+        summary = _report_over(lake, tables, monkeypatch, real_quality=True)["summary"]
+        assert (summary["total_checks"], summary["failed"]) == (2, 0), summary
+        unshaped = _weather(WEEK_2_IDS).drop(columns=["is_outdoor"])
+        _save_parquet(lake, unshaped, "weather")
+        summary = _report_over(lake, tables, monkeypatch, real_quality=True)["summary"]
+        assert summary["failed"] == 1, summary
+
+        tables = ("odds_snapshot",)
         odds = _stale_odds(WEEK_2_IDS).assign(total=[28.5] + [44.5] * 15)
         _save_parquet(lake, odds, "odds_snapshot")
-        tables = ("odds_snapshot",)
         report = _report_over(lake, tables, monkeypatch, real_quality=True)
-        summary = report["summary"]
-        assert (summary["total_checks"], summary["failed"]) == (3, 0), summary
+        rules = report["table_reports"]["odds_snapshot"]["quality"]["checks"]
+        assert rules["business_rules"]["status"] == "pass"
         _save_parquet(lake, odds.assign(total=[20.0] + [44.5] * 15), "odds_snapshot")
         report = _report_over(lake, tables, monkeypatch, real_quality=True)
-        assert report["summary"]["failed"] == 1, report["summary"]
+        rules = report["table_reports"]["odds_snapshot"]["quality"]["checks"]
+        assert rules["business_rules"]["status"] == "fail", "the bad total is reported"
+        summary = report["summary"]
+        assert (summary["total_checks"], summary["failed"]) == (0, 0), summary
 
 
 # ---------------------------------------------------------------------------

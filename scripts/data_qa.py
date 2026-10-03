@@ -200,21 +200,36 @@ _COPY_READ_FAILURES = (
 # COUNT is exact; the id list is a bounded sample for diagnosis.
 _CONSISTENCY_SAMPLE_LIMIT = 20
 
-# Tables produced by a pipeline step registered AFTER ``data_qa``, mapped to that step's name.
+# Tables whose producing step never gates predictions, mapped to that step's name.
 #
-# WHY A TABLE-LEVEL CHECK ON THESE IS NOT APPLICABLE HERE (Plan 33-18, owner ruling R1 of
-# 2026-09-15). ``step_data_qa`` is the fourth DATA step; ``ingest_odds`` is the first
-# PREDICTIONS step. So at the instant this gate runs, the odds are ALWAYS last week's, and a
-# freshness or completeness demand on them refuses every correct Friday. Plan 33-18's live
-# acceptance run, attempt 1, counted exactly that as one of its five failures.
+# WHY A TABLE-LEVEL CHECK ON THESE IS NOT COUNTED (Plan 33-18, owner ruling R1 of
+# 2026-09-15; review WR-18). In the FRIDAY registry ``step_data_qa`` is the fourth DATA step
+# and ``ingest_odds`` the first PREDICTIONS step, so at the instant this gate runs the odds
+# are ALWAYS last week's, and a freshness or completeness demand on them refuses every
+# correct Friday -- Plan 33-18's live acceptance run, attempt 1, counted exactly that as one
+# of its five failures. In the DAILY registry ``ingest_odds`` runs BEFORE ``data_qa`` but is
+# deliberately NON-critical: no market line is a model input (D33.2-03), and an odds failure
+# never stops predictions. Counting the odds QUALITY checks broke that rule: they judge the
+# whole append-only store, so one out-of-range live capture would have halted that night and
+# every later one until silver was edited by hand. So freshness, completeness AND quality
+# are all reported here and none of them is counted.
 #
-# NOT COUNTED IS NOT UNREPORTED. The freshness check still measures and records the age; it
-# only stops counting it toward the gate. The step name is pinned against the registry by
-# ``tests/unit/test_data_qa_live_friday_checks.py``, so if the registry ever moves the
-# producer ahead of ``data_qa``, that test fails and names this exemption for removal.
+# NOT COUNTED IS NOT UNREPORTED. Each check still measures and records its result; it only
+# stops counting it toward the gate. The step name is pinned against the Friday registry by
+# ``tests/unit/test_data_qa_live_friday_checks.py``.
 _TABLES_PRODUCED_AFTER_DATA_QA: dict[str, str] = {
     "odds_snapshot": "ingest_odds",
 }
+
+
+def _not_counted_reason(table_name: str, producer: str) -> str:
+    """Why a check on a ``_TABLES_PRODUCED_AFTER_DATA_QA`` table is reported, not counted."""
+    return (
+        f"{table_name} is produced by {producer}, which never gates predictions: the "
+        "Friday registry runs it AFTER data_qa, and the daily registry runs it as a "
+        "non-critical step (no market line is a model input)"
+    )
+
 
 # Last season for which gold is considered fully ingested. Seasons beyond this are
 # treated as expected, documented trailing-coverage gaps (D-05), NOT failures.
@@ -319,10 +334,7 @@ class DataQualityMonitor:
         if producer is not None:
             result["measured_status"] = result["status"]
             result["status"] = "not_applicable"
-            result["not_applicable_reason"] = (
-                f"{table_name} is produced by {producer}, which is registered AFTER "
-                "data_qa, so at this boundary it is always the previous run's data"
-            )
+            result["not_applicable_reason"] = _not_counted_reason(table_name, producer)
         return result
 
     def _measure_data_freshness(
@@ -458,10 +470,7 @@ class DataQualityMonitor:
         producer = _TABLES_PRODUCED_AFTER_DATA_QA.get(table_name)
         if producer is not None:
             result["status"] = "not_applicable"
-            result["not_applicable_reason"] = (
-                f"{table_name} is produced by {producer}, which is registered AFTER "
-                "data_qa, so its rows for this week cannot exist yet at this boundary"
-            )
+            result["not_applicable_reason"] = _not_counted_reason(table_name, producer)
             return result
 
         try:
@@ -570,6 +579,11 @@ class DataQualityMonitor:
         table_config = self.monitored_tables.get(table_name, {})
 
         result = {"table": table_name, "timestamp": datetime.now(), "checks": {}}
+        producer = _TABLES_PRODUCED_AFTER_DATA_QA.get(table_name)
+        if producer is not None:
+            # Run and REPORTED, never counted (review WR-18; see the exemption's comment).
+            result["status"] = "not_applicable"
+            result["not_applicable_reason"] = _not_counted_reason(table_name, producer)
 
         try:
             df = load_dataframe(table_name, layer="silver")
@@ -1268,7 +1282,9 @@ class DataQualityMonitor:
                         # skipped here as not applicable, so until 2026-09-30 no
                         # per-table quality sub-check ever counted.
                         is_quality = (
-                            check_type == "quality" and "checks" in check_result
+                            check_type == "quality"
+                            and "checks" in check_result
+                            and status != "not_applicable"
                         )
                         if not is_quality and any(
                             na_status in status for na_status in not_applicable_statuses
