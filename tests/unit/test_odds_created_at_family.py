@@ -123,7 +123,16 @@ class TestTheLiveFamily:
         assert (created.isna() | (created.dt.year != 1970)).all()
 
     def test_no_row_was_dropped(self, record: dict, odds: pd.DataFrame) -> None:
+        """The correction dropped nothing and every row it covered is still there.
+
+        The live table GROWS after the correction (2026-09-21): the daily run resumed capturing
+        2026 lines on 2026-09-26. So the table's total size is not pinned; the rows the
+        correction could have covered -- games of seasons before 2026, the only seasons that
+        existed in the table when it was measured -- must still number exactly
+        ``table_rows_after``.
+        """
         measured = record["measurements"]["created_at_family"]
-        assert (
-            measured["table_rows_before"] == measured["table_rows_after"] == len(odds)
-        )
+        assert measured["table_rows_before"] == measured["table_rows_after"]
+        covered = odds[odds["game_id"].str[:4].astype(int) < 2026]
+        assert len(covered) == measured["table_rows_after"]
+        assert len(odds) >= len(covered)

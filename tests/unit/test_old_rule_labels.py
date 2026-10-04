@@ -304,3 +304,75 @@ class TestEachAddendum:
         assert len(headings) == 1, (
             f"{name} has content headings after its addendum: {headings}"
         )
+
+
+LABELLING_COMMIT = "7b1928f965ba5e3cbc4a1a4f918015df34aec8aa"
+
+
+def _git_history_is_unavailable() -> bool:
+    """True when this is not a git checkout, or a shallow one, or the commit is absent."""
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+        )
+
+    if run("rev-parse", "--git-dir").returncode != 0:
+        return True
+    shallow = run("rev-parse", "--is-shallow-repository")
+    if shallow.returncode != 0 or shallow.stdout.strip() == "true":
+        return True
+    return run("cat-file", "-e", f"{LABELLING_COMMIT}^{{commit}}").returncode != 0
+
+
+def _labelling_numstat(commit: str = LABELLING_COMMIT) -> dict[str, tuple[int, int]]:
+    """{path: (added, deleted)} for every repo-root markdown file the labelling commit touched."""
+    out = subprocess.run(
+        ["git", "show", "--numstat", "--format=", commit],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    stats: dict[str, tuple[int, int]] = {}
+    for line in out.splitlines():
+        added, deleted, path = line.split("\t", 2)
+        # The commit also carried this guard and a readout-test edit; only repo-root markdown
+        # is a readout.
+        if "/" not in path and path.endswith(".md"):
+            stats[path] = (int(added), int(deleted))
+    return stats
+
+
+def _files_with_deletions(stats: dict[str, tuple[int, int]]) -> list[str]:
+    return sorted(path for path, (_, deleted) in stats.items() if deleted != 0)
+
+
+@pytest.mark.skipif(
+    _git_history_is_unavailable(),
+    reason=(
+        "git history is unavailable (shallow clone, not a git checkout, or the labelling "
+        "commit is absent), so its numstat cannot be read; skipping rather than reporting a "
+        "false violation."
+    ),
+)
+class TestTheLabellingCommitOnlyAppended:
+    """R16: 'original numbers unchanged' -- pinned on the labelling commit itself.
+
+    Later edits to these files by OTHER commits are out of scope; only commit 7b1928f is read.
+    """
+
+    def test_it_deleted_zero_lines_from_every_readout_it_touched(self) -> None:
+        stats = _labelling_numstat()
+        assert stats, "the labelling commit touched nothing; the check is vacuous"
+        assert _files_with_deletions(stats) == [], (
+            "the labelling commit deleted original lines: "
+            f"{ {p: stats[p] for p in _files_with_deletions(stats)} }"
+        )
+
+    def test_it_touched_exactly_the_declared_labelled_set(self) -> None:
+        assert set(_labelling_numstat()) == set(LABELLED_READOUTS)
+
+    def test_a_planted_deletion_would_be_caught(self) -> None:
+        planted = {"README.md": (22, 0), "RUNBOOK.md": (21, 1)}
+        assert _files_with_deletions(planted) == ["RUNBOOK.md"]

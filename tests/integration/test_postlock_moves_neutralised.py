@@ -591,3 +591,147 @@ class TestGoldCarriesThePreMoveFacts:
             }
             assert raw_changed, game_id
             assert gold_changed == raw_changed, (game_id, sorted(gold_changed))
+
+
+# ------------------------------------------------------ gold, today's (not rung 3's)
+
+needs_live_gold = pytest.mark.skipif(
+    not all((GOLD_AFTER_DIR / f"{m}.parquet").is_file() for m in GOLD_MATRICES),
+    reason="data/gold/features_{wp,ats,ou}.parquet is not built on this checkout",
+)
+
+
+def _same_value(left: object, right: object) -> bool:
+    """Equality that treats two missing values as equal."""
+    if pd.isna(left) and pd.isna(right):
+        return True
+    return bool(left == right)
+
+
+# Gold stores the contextual columns EXPANDING-WINDOW Z-SCORED, so a gold cell is never the
+# raw builder value. The raw builds are therefore pushed through the repo's own
+# ``expanding_normalize`` (lock-ordered, prior-season bootstrap) before being compared. Gold
+# also winsorizes upstream of that step and orders by the build's own timing, which this
+# reference does not replicate, so the comparison is NEAREST-HYPOTHESIS with a tolerance:
+# the gold cell must sit near the pre-move value and nearer to it than to the as-played one.
+NORMALIZED_TOLERANCE = 0.35
+
+
+def _normalized_build(
+    silver: pd.DataFrame, calculator, games: pd.DataFrame, game_id: str, season: int
+) -> pd.Series:
+    """One game's contextual row, normalized exactly as gold normalizes its season."""
+    from features.normalization import compute_prior_season_stats, expanding_normalize
+    from utils.game_lock import lock_frame
+
+    window = pd.concat(
+        [_season_frame(silver, season - 1), games[games["season"] == season]],
+        ignore_index=True,
+    )
+    built = calculator.build_features(window, datetime(2026, 9, 21, tzinfo=UTC))
+    built = built.drop(columns=["season", "week"], errors="ignore").merge(
+        window[["game_id", "season", "week"]], on="game_id", how="left"
+    )
+    numeric = [
+        c
+        for c in built.select_dtypes("number").columns
+        if c not in ("season", "week", "stadium_id")
+    ]
+    this_season = built[built["season"] == season].reset_index(drop=True)
+    locks = lock_frame(
+        silver[silver["season"] == season].reset_index(drop=True)
+    ).dt.tz_convert("UTC")
+    row_locks = pd.Series(
+        this_season["game_id"]
+        .map(lambda g: locks.get(g, locks.get(g.removeprefix("PROBE_"))))
+        .map(lambda t: pd.Timestamp(t).value),
+        index=this_season.index,
+    )
+    normalized = expanding_normalize(
+        this_season,
+        feature_cols=numeric,
+        group_col="season",
+        sort_cols=["season", "week"],
+        min_periods=4,
+        prior_season_stats=compute_prior_season_stats(built, numeric, season - 1),
+        row_locks=row_locks,
+    )
+    return normalized.set_index("game_id").loc[game_id]
+
+
+@needs_live_gold
+class TestLiveGoldCarriesThePreMoveFacts:
+    """Against TODAY's gold, not the rung-3 snapshot (which skips once gold moves on).
+
+    The columns compared are DERIVED from the contextual builder: every output column on
+    which the as-played build and the pre-move build disagree (the columns a post-move
+    fact would reach). In each of them the live gold row must sit near the pre-move
+    build and nearer to it than to the as-played build.
+    """
+
+    @staticmethod
+    def _references(silver, calculator, game_id: str):
+        season = int(silver.at[game_id, "season"])
+        season_games = _season_frame(silver, season)
+        facts = facts_at_lock(game_id, silver.loc[game_id])
+        probe = TestTheBuildersUseThePreMoveFacts._at_facts(
+            season_games, game_id, facts
+        )
+        played_frame = season_games.copy()
+        played_frame.loc[played_frame["game_id"] == game_id, "game_id"] = (
+            f"PLAYED_{game_id}"
+        )
+        pre_move = _normalized_build(
+            silver, calculator, probe, f"PROBE_{game_id}", season
+        )
+        played = _normalized_build(
+            silver, calculator, played_frame, f"PLAYED_{game_id}", season
+        )
+        derived = [
+            c
+            for c in pre_move.index
+            # Renaming the game to build it as played also detaches it from the Elo
+            # schedule the spot flags read, so only the schedule-fact family (as in the
+            # rung-3 test above) is judged, and within it only the columns that moved.
+            if c in SCHEDULE_FACT_COLUMNS and not _same_value(pre_move[c], played[c])
+        ]
+        return pre_move, played, derived
+
+    @pytest.mark.parametrize("matrix", GOLD_MATRICES)
+    def test_live_gold_row_carries_the_pre_move_facts(
+        self, matrix, silver, calculator, data_boundary_guard
+    ) -> None:
+        gold = pd.read_parquet(GOLD_AFTER_DIR / f"{matrix}.parquet").set_index(
+            "game_id"
+        )
+        for game_id in _real_post_lock_games():
+            pre_move, played, derived = self._references(silver, calculator, game_id)
+            columns = [c for c in derived if c in gold.columns]
+            assert columns, f"{game_id}: the move reaches no {matrix} column (vacuous)"
+            row = gold.loc[game_id]
+            far = [
+                c
+                for c in columns
+                if abs(row[c] - pre_move[c]) > NORMALIZED_TOLERANCE
+                or abs(row[c] - pre_move[c]) >= abs(row[c] - played[c])
+            ]
+            assert not far, (
+                f"{matrix} {game_id}: gold is not at the pre-move fact in {far}: "
+                f"{ {c: (row[c], pre_move[c], played[c]) for c in far} }"
+            )
+
+    def test_a_gold_row_holding_the_post_move_facts_would_be_caught(
+        self, silver, calculator, data_boundary_guard
+    ) -> None:
+        """CONTROL: the same predicate, on a row planted with the as-played values."""
+        game_id = _real_post_lock_games()[0]
+        pre_move, played, derived = self._references(silver, calculator, game_id)
+        assert derived
+        planted = played  # a gold row that carried the post-move facts
+        far = [
+            c
+            for c in derived
+            if abs(planted[c] - pre_move[c]) > NORMALIZED_TOLERANCE
+            or abs(planted[c] - pre_move[c]) >= abs(planted[c] - played[c])
+        ]
+        assert far, "the post-move facts are indistinguishable from the pre-move ones"
