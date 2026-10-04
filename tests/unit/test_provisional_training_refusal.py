@@ -61,6 +61,7 @@ from tests.phase33_state import (
     P332_23_TRAINER_GOLD_LOAD_SITES,
     P332_24C_TRAINER_GOLD_LOAD_SITES,
     P332_REVIEW3_TRAINER_GOLD_LOAD_SITES,
+    REVIEW33_TRAINER_GOLD_LOAD_SITES,
     TRAINER_GOLD_LOAD_SITES,
 )
 
@@ -319,8 +320,15 @@ class TestTheGuardIsWiredAtEveryPinnedSite:
         # RE-POINTED AGAIN by the 33.2 review, batch 3, at
         # ``P332_REVIEW3_TRAINER_GOLD_LOAD_SITES``: ``models.train`` gained the thread pin it
         # records (WR-02), which wraps its training loop, so its load moved from 907 to 972.
+        #
+        # RE-POINTED AGAIN by the Phase-33 code review, batch 2, at
+        # ``REVIEW33_TRAINER_GOLD_LOAD_SITES``: ``1b904a8`` (2026-09-30) added the shared
+        # verdict-exclusion resolution above ``models.train``'s training loop, moving its
+        # load from 972 to 1023, and the review's WR-04 odds-read fix moved it to 1032. This
+        # test was red from ``1b904a8`` until this re-point. Every earlier tuple stays unedited.
         assert len(P332_24C_TRAINER_GOLD_LOAD_SITES) == 4
-        for module_name, _function_name, line in P332_REVIEW3_TRAINER_GOLD_LOAD_SITES:
+        assert len(P332_REVIEW3_TRAINER_GOLD_LOAD_SITES) == 4
+        for module_name, _function_name, line in REVIEW33_TRAINER_GOLD_LOAD_SITES:
             path = Path(module_name.replace(".", "/") + ".py")
             assert path.is_file(), f"{path} does not exist"
             lines = path.read_text(encoding="utf-8").splitlines()

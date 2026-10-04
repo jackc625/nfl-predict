@@ -19918,3 +19918,27 @@ REVIEW33_VENUE_RECORDS_SHA256_AFTER_MUN01_FIX: str = (
 
 #: `models.deploy_gate.JUDGE_VERSION` from this fix on.
 REVIEW33_JUDGE_VERSION: str = "phase33-live-secondary-rescore-2"
+
+
+# ---------------------------------------------------------------------------
+# THE TRAINER GOLD-LOAD PROVENANCE LINES, RE-MEASURED AFTER THE PHASE-33 CODE REVIEW,
+# BATCH 2 (2026-10-03).
+#
+# APPENDED under the APPEND-ONCE protocol; `P332_REVIEW3_TRAINER_GOLD_LOAD_SITES` and every
+# earlier slot stay BYTE-UNCHANGED as the record of where the four loads stood then.
+#
+# WHY ``models/train.py`` MOVED. `1b904a8` (Plan 33-18, 2026-09-30) added the shared
+# `verdict_exclusion` / `resolve_exclusion` and the derived-exclusion banner above `main`'s
+# training loop, moving the gold load from line 972 to 1023; the review's WR-04 fix then
+# routed the odds read through `BacktestEngine._load_closing_odds` (five lines more), moving
+# it to 1032. Measured with `grep -n 'read_parquet(features_path)'` at each commit. The
+# guard did not leave `main`. The three per-target trainers' loads did not move (the WR-01
+# fix moved their guard BELOW the load, not above it).
+# ---------------------------------------------------------------------------
+
+REVIEW33_TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
+    ("models.train_wp", "main", 1146),
+    ("models.train_ats", "main", 1161),
+    ("models.train_ou", "main", 1421),
+    ("models.train", "main", 1032),
+)
