@@ -615,7 +615,22 @@ class TestTheTwoCopiesOfSilverGamesAgree:
             "N-01 re-sync ran: the parquet gained stadium_id and the DuckDB copy "
             "did not, while source='auto' kept serving the DuckDB one."
         )
-        assert table_content_digest(from_db) == table_content_digest(from_parquet), (
+
+        # The two stores return the same INSTANTS in different representations: DuckDB
+        # hands TIMESTAMPTZ back in its session zone at microsecond unit, the parquet
+        # copy is UTC at the unit it was written with. The byte digest would read that
+        # representation difference as a content difference, so both copies are put on
+        # one representation (UTC, nanoseconds) before hashing.
+        def _as_instants(frame: pd.DataFrame) -> pd.DataFrame:
+            frame = frame.copy()
+            for column in frame.columns:
+                if isinstance(frame[column].dtype, pd.DatetimeTZDtype):
+                    frame[column] = frame[column].dt.tz_convert("UTC").dt.as_unit("ns")
+            return frame
+
+        assert table_content_digest(_as_instants(from_db)) == table_content_digest(
+            _as_instants(from_parquet)
+        ), (
             "the two copies of silver games have the same shape but different "
             "CONTENT. Re-sync them before trusting anything built on top."
         )
