@@ -19942,3 +19942,35 @@ REVIEW33_TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
     ("models.train_ou", "main", 1421),
     ("models.train", "main", 1032),
 )
+
+
+# ---------------------------------------------------------------------------
+# PHASE 33 CLOSE-OUT (2026-10-03): THE PRE-REGISTRATION'S EXTERNAL ANCHOR WAS MISSED.
+#
+# APPENDED under the APPEND-ONCE protocol. `PRE_REGISTRATION_EXTERNAL_ANCHOR`,
+# `PRE_REGISTRATION_EXTERNAL_ANCHOR_KIND` ("PENDING_DEFERRED_TO_PHASE_END") and
+# `PRE_REGISTRATION_EXTERNAL_ANCHOR_DEFERRAL` stay BYTE-UNCHANGED as the record of the
+# 2026-09-14 deferral. This slot records what happened instead: the first push of a commit
+# containing `11761c7` landed on 2026-09-26, nine days after the deferral's own deadline, so
+# the remote copy cannot prove the frozen 2026 numbers predated the season's first lock. The
+# pre-registration therefore rests on git ancestry plus a corroborating author date only --
+# exactly the state the deferral's "until_it_lands" clause describes. `11761c7` was never used
+# live: the corrected rule `9bb7568` replaced it before the first 2026 bet row.
+# Owner ruling 2026-10-03 (WINDOWS row 50): "Record the miss and close (Recommended)".
+# ---------------------------------------------------------------------------
+
+PRE_REGISTRATION_EXTERNAL_ANCHOR_MISSED: dict[str, str] = {
+    "recorded_on": "2026-10-03",
+    "owner_ruling": "Record the miss and close (Recommended)",
+    "deadline": "2026-09-17T20:15:00-04:00",
+    "first_push_containing_11761c7": (
+        "2026-09-26T18:10:13-04:00, the push of a421804 "
+        "(refs/remotes/origin/master reflog; 11761c7 is an ancestor of a421804)"
+    ),
+    "consequence": (
+        "the remote copy cannot prove 11761c7 predated the 2026 season's first lock; the "
+        "pre-registration rests on git ancestry plus a corroborating author date only"
+    ),
+    "superseded_by": "9bb7568, the corrected 2026 rule in use; 11761c7 was never used live",
+    "windows_row": "50",
+}

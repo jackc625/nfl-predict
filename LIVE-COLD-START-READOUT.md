@@ -215,6 +215,7 @@ rebuild. The nightly runs only add 2026 rows.
   clean capture line.
 - **2026-10-03.** The bracketed run (section 4): 21 of 21 steps, 14 of 14 games, every slate game
   with a pre-lock line.
+- **2026-09-17 deadline, missed.** The outside timestamp for the pre-registration was not taken in time: the first push containing `11761c7` landed 2026-09-26 18:10 ET, nine days late, so GitHub cannot prove those frozen numbers predated the season; `11761c7` was never used live and `9bb7568` replaced it (owner ruling 2026-10-03: record the miss and close).
 
 ## 9. Suite state, as measured
 
