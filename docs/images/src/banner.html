@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NFL/Predict banner</title>
+<!-- Source for docs/images/banner.png (1280x640): the README header and the GitHub social
+     preview. Regenerate by serving the repo root over HTTP, opening this page at a 1280x640
+     viewport and taking a viewport screenshot. Colours and fonts are the site's own
+     (web/static/input.css @theme). -->
+<style>
+  @font-face { font-family: "Barlow Condensed"; font-weight: 800; font-style: italic;
+    src: url("../../../web/static/fonts/barlow-condensed-latin-800-italic.woff2") format("woff2"); }
+  @font-face { font-family: "Barlow Condensed"; font-weight: 700; font-style: normal;
+    src: url("../../../web/static/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+  @font-face { font-family: "Inter"; font-weight: 100 900;
+    src: url("../../../web/static/fonts/inter-latin-wght-normal.woff2") format("woff2"); }
+  :root { --ink: #0B0F17; --ink-2: #0E1320; --panel: #151B29; --fg: #F3F5F9; --muted: #8A93A8;
+          --accent: #FFD400; --wp: #FFD400; --ats: #4CC9F0; --ou: #C77DFF; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body { background: linear-gradient(180deg, var(--ink) 0%, var(--ink-2) 100%); color: var(--fg);
+         font-family: "Inter", system-ui, sans-serif; position: relative; }
+  .stripe { position: absolute; top: 0; left: 0; right: 0; height: 8px; background: var(--accent); }
+  .copy { position: absolute; left: 72px; top: 96px; width: 600px; z-index: 2; }
+  .kicker { font-family: "Barlow Condensed"; font-weight: 700; letter-spacing: 0.18em;
+            text-transform: uppercase; color: var(--muted); font-size: 22px; }
+  .wordmark { font-family: "Barlow Condensed"; font-weight: 800; font-style: italic;
+              font-size: 132px; line-height: 0.95; margin-top: 14px; text-transform: uppercase; }
+  .wordmark span { color: var(--accent); }
+  .tagline { margin-top: 26px; font-size: 25px; line-height: 1.4; color: var(--fg); }
+  .chips { display: flex; gap: 12px; margin-top: 36px; }
+  .chip { transform: skewX(-12deg); background: var(--panel); border-left: 6px solid var(--c);
+          padding: 10px 18px; }
+  .chip b { display: inline-block; transform: skewX(12deg); font-family: "Barlow Condensed";
+            font-weight: 700; font-size: 22px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .shot { position: absolute; right: -120px; top: 92px; width: 700px; height: 456px;
+          transform: perspective(1400px) rotateY(-14deg) skewX(-2deg); border-radius: 10px;
+          overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,0.6);
+          border: 1px solid rgba(255,255,255,0.08); }
+  .shot img { width: 100%; display: block; }
+  .shot::after { content: ""; position: absolute; inset: 0;
+                 background: linear-gradient(90deg, rgba(11,15,23,0) 55%, rgba(11,15,23,0.85) 100%); }
+</style>
+</head>
+<body>
+  <div class="stripe"></div>
+  <div class="copy">
+    <p class="kicker">Pre-game NFL forecasts</p>
+    <h1 class="wordmark">NFL<span>/</span>Predict</h1>
+    <p class="tagline">Win probability, spread and total for every game, locked at 6 PM Eastern the day before kickoff.</p>
+    <div class="chips">
+      <div class="chip" style="--c: var(--wp)"><b>Win probability</b></div>
+      <div class="chip" style="--c: var(--ats)"><b>Spread</b></div>
+      <div class="chip" style="--c: var(--ou)"><b>Total</b></div>
+    </div>
+  </div>
+  <div class="shot"><img src="../this-week.png" alt=""></div>
+</body>
+</html>
