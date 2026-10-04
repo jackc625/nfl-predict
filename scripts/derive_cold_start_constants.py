@@ -2266,8 +2266,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "which is what produces the digests a later run declares. Never for a check run."
         ),
     )
-    parser.add_argument("--out-module", default=MODULE_PATH)
-    parser.add_argument("--out-doc", default=DOCUMENT_PATH)
+    # No default here: the destination depends on the mode. Without --corrected it is the
+    # original pre-registration (MODULE_PATH / DOCUMENT_PATH); with --corrected it is the
+    # correction (CORRECTED_MODULE_PATH / CORRECTION_DOCUMENT_PATH). Both modes honour an
+    # explicit path (review WR-16: --corrected used to drop it silently).
+    parser.add_argument("--out-module")
+    parser.add_argument("--out-doc")
     parser.add_argument(
         "--print-digests",
         action="store_true",
@@ -2327,9 +2331,19 @@ def _write_ascii(repo_root: Path, outputs: Sequence[tuple[str, str]]) -> None:
 
 
 def main_corrected(args: argparse.Namespace, repo_root: Path) -> int:
-    """Verify the inputs, derive the superseding correction, and emit its two files."""
+    """Verify the inputs, derive the superseding correction, and emit its two files.
+
+    ``--print-digests`` prints the measured input digests and writes nothing, and
+    ``--out-module`` / ``--out-doc`` redirect the two files, exactly as without
+    ``--corrected`` (review WR-16). Before, both were dropped silently, so a digest-printing
+    run with ``--trust-inputs`` rewrote the live 2026 bet rule's files.
+    """
     swap, converter_id = resolve_corrected_inputs(repo_root)
     keys = corrected_input_keys(swap, converter_id)
+    if args.print_digests:
+        for key, value in measure_input_digests_for(keys, repo_root).items():
+            sys.stdout.write(f"{key}={value}\n")
+        return 0
     if args.trust_inputs:
         input_digests = measure_input_digests_for(keys, repo_root)
     else:
@@ -2350,8 +2364,11 @@ def main_corrected(args: argparse.Namespace, repo_root: Path) -> int:
     _write_ascii(
         repo_root,
         (
-            (module_text, CORRECTED_MODULE_PATH),
-            (render_correction_document(derivation), CORRECTION_DOCUMENT_PATH),
+            (module_text, args.out_module or CORRECTED_MODULE_PATH),
+            (
+                render_correction_document(derivation),
+                args.out_doc or CORRECTION_DOCUMENT_PATH,
+            ),
         ),
     )
     t = derivation.thresholds
@@ -2456,6 +2473,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         input_digests = _verify_digests(declared, repo_root)
 
     derivation = measure(artifacts, input_digests, repo_root)
+    args.out_module = args.out_module or MODULE_PATH
+    args.out_doc = args.out_doc or DOCUMENT_PATH
 
     module_text = ruff_format(render_module(derivation), MODULE_PATH)
     document_text = render_document(derivation)
