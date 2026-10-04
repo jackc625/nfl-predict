@@ -7,7 +7,7 @@ name = "nfl-predict"
 version = "1.0.0"
 description = "NFL Prediction System - Pre-game predictions for Win Probability, ATS, and O/U"
 authors = [
-    {name = "Jack", email = "jack@example.com"},
+    {name = "Jack Cutrara"},
 ]
 readme = "README.md"
 license = {text = "MIT"}
@@ -79,9 +79,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jackc/nfl-predict"
-Repository = "https://github.com/jackc/nfl-predict"
-Issues = "https://github.com/jackc/nfl-predict/issues"
+Homepage = "https://github.com/jackc625/nfl-predict"
+Repository = "https://github.com/jackc625/nfl-predict"
+Issues = "https://github.com/jackc625/nfl-predict/issues"
 
 [project.scripts]
 nfl-predict = "scripts.friday_pipeline:main"
