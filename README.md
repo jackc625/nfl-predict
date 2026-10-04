@@ -63,24 +63,30 @@ information that was not available at the time.
 ## How it works (architecture)
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph sources [Sources]
+        direction LR
         A[nflverse<br/>games and play-by-play]
         B[The Odds API<br/>betting lines]
         C[Open-Meteo and NWS<br/>weather forecasts]
+        A ~~~ B ~~~ C
     end
-    sources --> D[(Bronze<br/>raw snapshots)]
-    D --> E[(Silver<br/>schema-checked tables)]
-    E --> F[Feature builders<br/>and leakage gates]
-    F --> G[(Gold<br/>feature matrices)]
-    G --> H[Win probability<br/>calibrated logistic regression]
-    G --> I[Margin<br/>XGBoost]
-    G --> J[Total<br/>XGBoost]
-    H --> K[Market blend<br/>latest pre-lock line]
-    I --> K
-    J --> K
-    K --> L[(Web cache<br/>DuckDB)]
-    L --> M[FastAPI + HTMX<br/>dashboard]
+    subgraph lake [Lakehouse and features]
+        direction LR
+        D[(Bronze<br/>raw snapshots)] --> E[(Silver<br/>schema-checked tables)] --> F[Feature builders<br/>and leakage gates] --> G[(Gold<br/>feature matrices)]
+    end
+    subgraph models [Models]
+        direction LR
+        H[Win probability<br/>calibrated logistic regression]
+        I[Margin<br/>XGBoost]
+        J[Total<br/>XGBoost]
+        H ~~~ I ~~~ J
+    end
+    subgraph serve [Blend and serve]
+        direction LR
+        K[Market blend<br/>latest pre-lock line] --> L[(Web cache<br/>DuckDB)] --> M[FastAPI + HTMX<br/>dashboard]
+    end
+    sources --> lake --> models --> serve
 ```
 
 1. **Ingest.** Games and play-by-play come from [nflverse](https://github.com/nflverse) via
