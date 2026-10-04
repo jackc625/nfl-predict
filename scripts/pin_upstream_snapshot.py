@@ -592,9 +592,12 @@ def refresh_sealed_lock(manifest_path: Path, lock_path: Path) -> dict:
     REGENERATION NEVER ERASES AN ACKNOWLEDGEMENT. The ``sha256``/``rows``/``bytes`` half
     is re-derived from the manifest, but ``upstream_updated_at``, ``upstream_size`` and
     ``acknowledgement`` are carried forward verbatim for every ``(dataset, season)`` that
-    survives. An acknowledgement is a committed, attributed ruling (D32-10); silently
-    dropping it would re-arm a CRITICAL the owner has already ruled on, and the owner
-    would have no way to tell that their ruling had evaporated.
+    survives WITH THE SAME ``sha256``. An acknowledgement is a committed, attributed ruling
+    (D32-10); silently dropping it would re-arm a CRITICAL the owner has already ruled on,
+    and the owner would have no way to tell that their ruling had evaporated. A pair whose
+    ``sha256`` changed was RE-PINNED: its signature and ruling describe bytes the lock no
+    longer holds, so they are reset to null and the pair is logged, by name, for
+    re-seeding (review WR-20).
 
     This function is reachable ONLY through ``--refresh-sealed-lock``, which itself
     requires ``--sealed-rewrite-reason``. A lock that re-derived itself from the manifest
@@ -617,6 +620,20 @@ def refresh_sealed_lock(manifest_path: Path, lock_path: Path) -> dict:
     for dataset, seasons in lock["datasets"].items():
         for season, entry in seasons.items():
             carried = previous.get(dataset, {}).get(season, {})
+            # ONLY onto the SAME bytes (review WR-20). A season re-pinned under
+            # --allow-sealed-rewrite has a new sha256; the old asset's signature and any
+            # acknowledgement were observed and ruled for the OLD bytes, and carrying them
+            # would make the metadata probe flag the new pin as a sealed revision forever.
+            # The slots stay null and the pair is named for re-seeding.
+            if carried and carried.get("sha256") != entry["sha256"]:
+                logger.warning(
+                    "Re-pinned sealed pair: its upstream signature and acknowledgement "
+                    "were for the old bytes and are reset to null; re-seed its signature",
+                    dataset=dataset,
+                    season=season,
+                    dropped={f: carried.get(f) for f in _CARRIED_FORWARD_FIELDS},
+                )
+                continue
             for field in _CARRIED_FORWARD_FIELDS:
                 if field in carried:
                     entry[field] = carried[field]
