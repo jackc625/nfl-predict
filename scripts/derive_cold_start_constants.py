@@ -70,6 +70,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import importlib
 import subprocess
 import sys
 import tomllib
@@ -83,6 +84,12 @@ import pandas as pd
 
 from backtest.ou_ev_chain import estimate_prior_season_bias
 from models.market_probability import oof_market_probability
+from scripts.derive_corrected_ev_chain import (
+    CORRECTIONS,
+    DEFAULT_CORRECTION,
+    P332_25B_CORRECTION,
+    BetRuleCorrection,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -1186,19 +1193,25 @@ in-sample and therefore attenuated, and that it was frozen rather than chosen la
 # game's lock, never a closing line; WP's market side converted OUT OF FOLD). WHAT IS HELD: WP's
 # 0.05 / 0.02 anchor pair, the WP-anchored band-share quantiles, ``QUANTILE_METHOD``, the STRICT
 # ``>`` bands, the digest refusals and the walk-forward bias estimator.
+#
+# WHICH CORRECTION (quick task 261003-vke, WINDOWS row 19): ``--correction`` selects a
+# ``scripts.derive_corrected_ev_chain.BetRuleCorrection`` -- its inputs, output paths, the record
+# it supersedes and the text it quotes. The default is the 33.2 correction, so the four names below
+# are that correction's values, exactly as before. ``row19`` re-measures with this same recipe on
+# the models re-fitted after the neutral-site Elo fix, superseding 9bb7568.
 # ---------------------------------------------------------------------------
 
-CORRECTED_MODULE_PATH = "backtest/corrected_cold_start_constants.py"
-CORRECTION_DOCUMENT_PATH = "COLD-START-CORRECTION.md"
+CORRECTED_MODULE_PATH = P332_25B_CORRECTION.cold_module_path
+CORRECTION_DOCUMENT_PATH = P332_25B_CORRECTION.cold_document_path
 
 #: The record the correction supersedes, by sha. Resolved to the full sha at render time.
-SUPERSEDED_PREREGISTRATION_SHORT = "11761c7"
+SUPERSEDED_PREREGISTRATION_SHORT = P332_25B_CORRECTION.cold_superseded_short
 
 #: The corrected chain fit (Plan 33.2-29), read by EXPLICIT path and never through
 #: ``backtest.weekly_bet_list.DEFAULT_CHAIN_FIT_PATH``: this derivation must read the corrected
 #: record whatever the live default names, and until the repoint that default is the Phase-31
 #: record.
-CHAIN_FIT_SOURCE: Path = Path("outputs") / "p332" / "corrected_chain_fit.json"
+CHAIN_FIT_SOURCE: Path = P332_25B_CORRECTION.ev_record_path
 
 #: The threshold window: every season with honest pre-lock prices.
 CORRECTED_THRESHOLD_SEASONS: tuple[int, ...] = (2020, 2021, 2022, 2023, 2024)
@@ -1499,36 +1512,42 @@ def extend_prior_season_bias(
         raise EmptyResidualPoolError(msg) from error
 
 
-def load_corrected_chain_fit(repo_root: Path = REPO_ROOT) -> Any:
-    """The corrected chain fit, through the live loader, by EXPLICIT path.
+def load_corrected_chain_fit(
+    repo_root: Path = REPO_ROOT,
+    correction: BetRuleCorrection = P332_25B_CORRECTION,
+) -> Any:
+    """The correction's chain fit, through the live loader, by EXPLICIT path.
 
     Called through the module attribute so the path it is handed is observable, and handed
-    ``repo_root / CHAIN_FIT_SOURCE`` -- never ``DEFAULT_CHAIN_FIT_PATH``.
+    ``repo_root / correction.ev_record_path`` (the default: ``CHAIN_FIT_SOURCE``) -- never
+    ``DEFAULT_CHAIN_FIT_PATH``.
     """
     from backtest import weekly_bet_list
 
-    return weekly_bet_list.load_frozen_chain_fit(path=repo_root / CHAIN_FIT_SOURCE)
+    return weekly_bet_list.load_frozen_chain_fit(
+        path=repo_root / correction.ev_record_path
+    )
 
 
-def resolve_corrected_inputs(repo_root: Path = REPO_ROOT) -> tuple[dict[str, str], str]:
+def resolve_corrected_inputs(
+    repo_root: Path = REPO_ROOT,
+    correction: BetRuleCorrection = P332_25B_CORRECTION,
+) -> tuple[dict[str, str], str]:
     """The four served artifact ids and the converter the LIVE blend binds.
 
     Precondition of the whole correction (Plan 33.2-25 Task 3 ruled "swap"): the live manifest
-    names exactly ``tests.phase33_state.P332_25B_SWAP_ARTIFACT_IDS``. The converter is reached
-    through the live blend's own provenance (``blend_weights.json``), never as a fifth manifest
-    pointer, and must be the one the blend was recorded binding.
+    names exactly the correction's served ids (the default:
+    ``tests.phase33_state.P332_25B_SWAP_ARTIFACT_IDS``). The converter is reached through the
+    live blend's own provenance (``blend_weights.json``), never as a fifth manifest pointer, and
+    must be the one the correction records.
 
     Raises:
         DigestMismatchError: the live manifest or the blend's converter is not the recorded one.
     """
     import json
 
-    from tests.phase33_state import (
-        P332_25B_BLEND_CONVERTER_ARTIFACT_ID,
-        P332_25B_SWAP_ARTIFACT_IDS,
-    )
-
-    swap = dict(P332_25B_SWAP_ARTIFACT_IDS)
+    recorded_converter = correction.converter_id()
+    swap = correction.swap_ids()
     manifest = json.loads(
         (repo_root / "artifacts" / "latest.json").read_text(encoding="utf-8")
     )
@@ -1545,22 +1564,26 @@ def resolve_corrected_inputs(repo_root: Path = REPO_ROOT) -> tuple[dict[str, str
         )
     )
     converter_id = str(blend.get("market_probability_artifact_id"))
-    if converter_id != P332_25B_BLEND_CONVERTER_ARTIFACT_ID:
+    if converter_id != recorded_converter:
         msg = (
             f"the live blend binds converter {converter_id!r}, not the recorded "
-            f"{P332_25B_BLEND_CONVERTER_ARTIFACT_ID!r}; there is no yardstick to derive against."
+            f"{recorded_converter!r}; there is no yardstick to derive against."
         )
         raise DigestMismatchError(msg)
     return swap, converter_id
 
 
-def corrected_input_keys(swap: Mapping[str, str], converter_id: str) -> list[str]:
+def corrected_input_keys(
+    swap: Mapping[str, str],
+    converter_id: str,
+    correction: BetRuleCorrection = P332_25B_CORRECTION,
+) -> list[str]:
     """Every input the correction reads, in a stable order."""
     keys = [
         "artifacts/latest.json",
         "data/silver/games.parquet",
         "data/silver/odds_timeline.parquet",
-        CHAIN_FIT_SOURCE.as_posix(),
+        correction.ev_record_path.as_posix(),
     ]
     keys.extend(f"data/gold/features_{target}.parquet" for target in TARGETS)
     keys.extend(f"artifact:{swap[key]}" for key in (*TARGETS, "blend"))
@@ -1604,12 +1627,19 @@ class CorrectedDerivation:
     input_digests: Mapping[str, str]
     formatter: str
     thread_limit: int
+    correction: BetRuleCorrection = P332_25B_CORRECTION
 
 
 def measure_corrected(
-    input_digests: Mapping[str, str], repo_root: Path = REPO_ROOT
+    input_digests: Mapping[str, str],
+    repo_root: Path = REPO_ROOT,
+    correction: BetRuleCorrection = P332_25B_CORRECTION,
 ) -> CorrectedDerivation:
     """Derive the corrected thresholds and 2026 bias. READ-ONLY over data/, artifacts/, outputs/.
+
+    The superseded pairs and bias (the label movement's "before" and the old-beside-new values)
+    are READ from the module the correction supersedes -- for the default, the frozen 11761c7
+    ``backtest.cold_start_constants``.
 
     Raises:
         DigestMismatchError: the manifest, the converter or the gold is not the recorded one.
@@ -1619,7 +1649,6 @@ def measure_corrected(
 
     from threadpoolctl import threadpool_limits
 
-    import backtest.cold_start_constants as superseded
     from backtest.profitability_2025 import _residuals_by_season
     from backtest.tune import (
         _gold_predictions_fn,
@@ -1636,13 +1665,14 @@ def measure_corrected(
         fit_frame_for,
     )
     from tests.gold_generation import gold_generation_key
-    from tests.phase33_state import P332_25B_REFIT_GOLD_GENERATION
 
-    swap, converter_id = resolve_corrected_inputs(repo_root)
+    superseded = importlib.import_module(correction.cold_superseded_module)
+    chain_fit_source = correction.ev_record_path
+    swap, converter_id = resolve_corrected_inputs(repo_root, correction)
     artifacts_dir = repo_root / "artifacts"
     model_ids = {target: swap[target] for target in TARGETS}
     recipes = read_source_recipes(model_ids, artifacts_dir)
-    gold_digest = common_gold_generation(recipes, P332_25B_REFIT_GOLD_GENERATION)
+    gold_digest = common_gold_generation(recipes, correction.refit_gold_generation())
     if gold_generation_key() != gold_digest:
         msg = (
             "the gold on disk is not the generation the corrected models were fitted on "
@@ -1650,17 +1680,17 @@ def measure_corrected(
         )
         raise DigestMismatchError(msg)
 
-    record = json.loads((repo_root / CHAIN_FIT_SOURCE).read_text(encoding="utf-8"))
+    record = json.loads((repo_root / chain_fit_source).read_text(encoding="utf-8"))
     if dict(record["artifact_ids"]) != swap or (
         record["market_probability_artifact_id"] != converter_id
     ):
         msg = (
-            f"{CHAIN_FIT_SOURCE.as_posix()} was fitted on {record['artifact_ids']} / "
+            f"{chain_fit_source.as_posix()} was fitted on {record['artifact_ids']} / "
             f"{record['market_probability_artifact_id']}, not the served {swap} / "
             f"{converter_id}."
         )
         raise DigestMismatchError(msg)
-    chain_fit = load_corrected_chain_fit(repo_root)
+    chain_fit = load_corrected_chain_fit(repo_root, correction)
 
     converter = load_market_probability_artifact(converter_id, artifacts_dir)
     slopes = converter["walk_forward_slopes"]
@@ -1710,7 +1740,7 @@ def measure_corrected(
         bias_rows[target] = int(sum(len(values) for values in residuals.values()))
 
     return CorrectedDerivation(
-        superseded_commit=_resolve_commit(SUPERSEDED_PREREGISTRATION_SHORT, repo_root),
+        superseded_commit=_resolve_commit(correction.cold_superseded_short, repo_root),
         swap=swap,
         converter_id=converter_id,
         gold_generation=gold_digest,
@@ -1729,6 +1759,7 @@ def measure_corrected(
         input_digests=dict(input_digests),
         formatter=formatter_version(),
         thread_limit=int(PINNED_THREAD_COUNT),
+        correction=correction,
     )
 
 
@@ -1759,9 +1790,17 @@ def _target_lines(values: Mapping[str, Any], render: Any = repr) -> str:
 
 
 def render_corrected_module(derivation: CorrectedDerivation) -> str:
-    """Emit ``backtest/corrected_cold_start_constants.py``. Pure; deterministic; ASCII."""
+    """Emit the correction's cold-start module (the default: ``CORRECTED_MODULE_PATH``).
+
+    Pure; deterministic; ASCII. The text that differs between corrections -- what is superseded
+    and why -- comes from ``derivation.correction``; everything else is shared.
+    """
     d = derivation
     t = d.thresholds
+    c = d.correction
+    short = c.cold_superseded_short
+    superseded_document, superseded_module = c.cold_superseded_paths
+    ev_chain_module = c.ev_module_path.with_suffix("").as_posix().replace("/", ".")
     wp_seasons = tuple(
         season for season in CORRECTED_THRESHOLD_SEASONS if season != 2020
     )
@@ -1770,7 +1809,7 @@ def render_corrected_module(derivation: CorrectedDerivation) -> str:
             "artifact": d.swap[target],
             "kind": "owner_ruled_swap",
             "residuals": "walk-forward refits of this artifact's own recorded recipe",
-            "verdict": "NOT_GATED (SPEC R13: owner readiness ruling, no pass/fail gate)",
+            "verdict": c.cold_source_verdict,
         }
         for target in TARGETS
     }
@@ -1800,17 +1839,12 @@ def render_corrected_module(derivation: CorrectedDerivation) -> str:
         + "}"
     )
 
-    return f'''"""SUPERSEDING CORRECTION of the frozen 2026 cold-start rule (Plan 33.2-26, SPEC R14).
+    return f'''"""{c.cold_title}
 
-GENERATOR OUTPUT. Emitted by ``python -m scripts.derive_cold_start_constants --corrected``.
+GENERATOR OUTPUT. Emitted by ``python -m scripts.derive_cold_start_constants --corrected{c.cli_flag()}``.
 Do NOT hand-edit any value below; re-run the derivation.
 
-WHAT IT SUPERSEDES. Commit ``{SUPERSEDED_PREREGISTRATION_SHORT}`` ({d.superseded_commit}) froze the 2026 edge-band
-thresholds and the 2026 chain-fit bias in ``backtest/cold_start_constants.py`` +
-``COLD-START-PREREGISTRATION.md``. Those values were derived from models fitted on inputs later
-found defective and from CLOSING lines, and those models are gone. This module SUPERSEDES them.
-The originals are byte-unchanged and remain the record of what was frozen and when; nothing here
-edits them. ``COLD-START-CORRECTION.md`` is the human-readable half of this record.
+{c.cold_module_supersedes.format(short=short, full=d.superseded_commit)}
 
 WHAT MOVED, symbol by symbol:
   * ``EDGE_TIER_THRESHOLDS_BY_TARGET`` / ``_UNROUNDED`` -- re-derived on the corrected models'
@@ -1822,22 +1856,20 @@ WHAT MOVED, symbol by symbol:
     band -- never a default, a zero or the old value (``EDGE_TIER_THRESHOLD_REFUSALS`` says why);
   * ``WP_ANCHOR_BAND_SHARES`` -- re-measured on that population;
   * ``CHAIN_FIT_BIAS_2026`` / ``_SEASONS`` / ``_BY_SEASON`` -- the corrected chain fit's own
-    walk-forward bias series (Plan 33.2-29, ``outputs/p332/corrected_chain_fit.json``) extended
+    walk-forward bias series ({c.ev_chain_label}, ``{c.ev_record_path.as_posix()}``) extended
     to ``CHAIN_FIT_BIAS_TARGET_SEASON``: the derivation reproduces every season that record prices
     before extending it. The pool ends at 2024 because no 2025 row is read, which is why the target
     season is NAMED here rather than derived as the pool's last season plus one;
   * ``THRESHOLD_DERIVATION_POPULATION``, ``EDGE_TIER_THRESHOLD_UNITS`` (WP's market side),
     ``CHAIN_FIT_BIAS_SOURCE_BY_TARGET``, ``DERIVATION_*`` and the band tables -- restated for the
-    corrected population. "UNDER_CURRENT" now means under the superseded 11761c7 pairs.
+    corrected population. "UNDER_CURRENT" now means under the superseded {short} pairs.
 
 WHAT DID NOT MOVE: WP's 0.05 / 0.02 pair (the anchor), the WP-anchored band-share quantile rule
 (``THRESHOLD_QUANTILE_CONVENTION``, ``numpy.quantile`` method "linear"), the STRICT ``>`` bands,
 the digest refusals, the walk-forward bias estimator
 (``backtest.ou_ev_chain.estimate_prior_season_bias``) and ``FIX_CYCLE_ALLOWANCE``.
 
-THE OTHER TWO MOVED PARTS OF THE 2026 BET RULE -- the EV floor and the frozen residual SD -- are
-superseded separately, naming ``ee20773``: ``backtest.corrected_ev_chain_constants`` and
-``EV-CHAIN-CORRECTION.md`` (Plan 33.2-29).
+{c.cold_module_ev_half}
 
 NOT CLEAN EVIDENCE (D33.2-07): every number here is re-measured on past seasons. It sets a
 threshold; it does not show one is profitable. Only the 2026 season, recorded live, counts.
@@ -1849,12 +1881,12 @@ from __future__ import annotations
 
 # THE TWO FILES THAT ARE THIS CORRECTION, and the two it supersedes. Repo-root-relative POSIX.
 PREREGISTRATION_PATHS: tuple[str, ...] = (
-    "{CORRECTION_DOCUMENT_PATH}",
-    "{CORRECTED_MODULE_PATH}",
+    "{c.cold_document_path}",
+    "{c.cold_module_path}",
 )
 SUPERSEDED_PREREGISTRATION_PATHS: tuple[str, ...] = (
-    "{DOCUMENT_PATH}",
-    "{MODULE_PATH}",
+    "{superseded_document}",
+    "{superseded_module}",
 )
 SUPERSEDED_PREREGISTRATION_COMMIT: str = {d.superseded_commit!r}
 
@@ -1873,7 +1905,7 @@ EDGE_TIER_THRESHOLD_REFUSALS: dict[str, str] = {{
 {_target_lines(t.refusals)}
 }}
 
-# The pairs this correction supersedes, READ from the frozen 11761c7 module and restated so the
+# The pairs this correction supersedes, READ from the frozen {short} module and restated so the
 # old value sits beside the new one.
 SUPERSEDED_EDGE_TIER_THRESHOLDS_BY_TARGET: dict[str, tuple[float, float]] = {{
 {_target_lines(d.superseded_pairs, _pair_text)}
@@ -1939,8 +1971,8 @@ CHAIN_FIT_BIAS_SOURCE_BY_TARGET: dict[str, dict[str, object]] = {{
 {_target_lines(sources)}
 }}
 
-# The corrected chain fit this bias series continues (Plan 33.2-29), read by explicit path.
-CHAIN_FIT_SOURCE_RECORD_PATH: str = {CHAIN_FIT_SOURCE.as_posix()!r}
+# The corrected chain fit this bias series continues ({c.ev_chain_label}), read by explicit path.
+CHAIN_FIT_SOURCE_RECORD_PATH: str = {c.ev_record_path.as_posix()!r}
 CHAIN_FIT_SOURCE_RECORD_ID: str = {d.chain_fit_record_id!r}
 
 # The corrected model artifacts every number above was derived from, the live blend, and the
@@ -1967,7 +1999,7 @@ DERIVATION_ELIGIBLE_COUNTS: dict[str, dict[str, int]] = {{
 {_target_lines(eligible)}
 }}
 
-# THE LABEL MOVEMENT on the corrected edges: under the superseded 11761c7 pairs, and under the
+# THE LABEL MOVEMENT on the corrected edges: under the superseded {short} pairs, and under the
 # corrected pairs. A target with no threshold has no row.
 BAND_SHARES_UNDER_CURRENT_THRESHOLDS: dict[str, dict[str, float]] = {{
 {_render_share_table(t.band_shares_under_current)}
@@ -1992,15 +2024,21 @@ GAMES_CHANGING_BAND: dict[str, int] = {{
 # Plan 33-08's declared allowance, carried unchanged.
 FIX_CYCLE_ALLOWANCE: int = {FIX_CYCLE_ALLOWANCE}
 
-# Where the other two moved parts of the 2026 bet rule live (Plan 33.2-29, superseding ee20773).
-EV_CHAIN_CORRECTION_MODULE: str = "backtest.corrected_ev_chain_constants"
+# Where the other two moved parts of the 2026 bet rule live ({c.ev_chain_label}, superseding {c.ev_superseded_short}).
+EV_CHAIN_CORRECTION_MODULE: str = "{ev_chain_module}"
 '''
 
 
 def render_correction_document(derivation: CorrectedDerivation) -> str:
-    """Emit ``COLD-START-CORRECTION.md``. Pure; deterministic; ASCII."""
+    """Emit the correction's document (the default: ``CORRECTION_DOCUMENT_PATH``).
+
+    Pure; deterministic; ASCII. What is superseded and why comes from ``derivation.correction``.
+    """
     d = derivation
     t = d.thresholds
+    c = d.correction
+    short = c.cold_superseded_short
+    superseded_document, superseded_module = c.cold_superseded_paths
     rows = []
     for target in ("wp", "ats", "ou"):
         old = d.superseded_pairs[target]
@@ -2058,18 +2096,25 @@ def render_correction_document(derivation: CorrectedDerivation) -> str:
     wp_window = f"{CORRECTED_THRESHOLD_SEASONS[1]}-{CORRECTED_THRESHOLD_SEASONS[-1]}"
     wp_pair = t.thresholds["wp"]
     wp_admission = "no threshold" if wp_pair is None else f"`{wp_pair[1]:.4f}`"
+    refused_floors = [
+        target for target in ("wp", "ats", "ou") if d.chain_fit_floors[target] is None
+    ]
+    floor_refusal_text = (
+        "none is `None` here."
+        if not refused_floors
+        else "it is `None` here for: "
+        + ", ".join(f"`{target}`" for target in refused_floors)
+        + "."
+    )
 
-    return f"""# COLD-START CORRECTION -- superseding the 2026 rule frozen at `{SUPERSEDED_PREREGISTRATION_SHORT}`
+    return f"""# COLD-START CORRECTION -- superseding the 2026 rule frozen at `{short}`
 
-**Status:** a SUPERSEDING CORRECTION. This document and `{CORRECTED_MODULE_PATH}` are one
-record in two files. The record they supersede -- `{DOCUMENT_PATH}` and `{MODULE_PATH}`,
-frozen at commit `{SUPERSEDED_PREREGISTRATION_SHORT}` (`{d.superseded_commit}`) -- is
+**Status:** a SUPERSEDING CORRECTION. This document and `{c.cold_module_path}` are one
+record in two files. The record they supersede -- `{superseded_document}` and `{superseded_module}`,
+frozen at commit `{short}` (`{d.superseded_commit}`) -- is
 **byte-unchanged** and stays the record of what was frozen and when. Nothing here edits it.
 
-**Why it is superseded.** `{SUPERSEDED_PREREGISTRATION_SHORT}` froze the 2026 edge thresholds and the 2026 chain-fit
-bias from models fitted on inputs later found defective (Phase 33.2) and from CLOSING lines, which
-did not exist at a game's lock. Those models are gone. A value derived from them sits inside the
-live 2026 bet rule, so it is replaced visibly rather than edited quietly.
+{c.cold_document_why.format(short=short)}
 
 **Not clean evidence (D33.2-07).** Every number below is re-measured on past seasons. It sets a
 threshold; it does not show that a bet in any band is profitable. Only the 2026 season, recorded
@@ -2103,7 +2148,7 @@ lock and are not in any part of it.
 
 `medium / high`, each on its target's own unit, over the rows with a computable edge.
 
-| target | superseded (`{SUPERSEDED_PREREGISTRATION_SHORT}`) | corrected | rows | unit |
+| target | superseded (`{short}`) | corrected | rows | unit |
 |---|---|---|---|---|
 {threshold_table}
 
@@ -2123,7 +2168,7 @@ carries no edge band. The superseded value is never borrowed. Refusals in this d
 Counts are `low / medium / high` over the corrected edges, under the superseded pairs and under
 the corrected ones.
 
-| target | under the `{SUPERSEDED_PREREGISTRATION_SHORT}` pairs | under the corrected pairs | games changing band |
+| target | under the `{short}` pairs | under the corrected pairs | games changing band |
 |---|---|---|---|
 {movement_table}
 
@@ -2131,46 +2176,36 @@ the corrected ones.
 
 ## 4. The 2026 chain-fit bias, old beside new
 
-| target | superseded (`{SUPERSEDED_PREREGISTRATION_SHORT}`) | corrected |
+| target | superseded (`{short}`) | corrected |
 |---|---|---|
 {bias_rows}
 
 The corrected value continues the walk-forward bias series of the corrected chain fit
-(`{CHAIN_FIT_SOURCE.as_posix()}`, record `{d.chain_fit_record_id}`, Plan 33.2-29): the same rows,
+(`{c.ev_record_path.as_posix()}`, record `{d.chain_fit_record_id}`, {c.ev_chain_label}): the same rows,
 the same residual helper and the same estimator. The derivation first reproduces every season
 that record prices, exactly, and only then extends the series to 2026, pooling every
 strictly-prior season it covers ({d.bias_seasons[0]}-{d.bias_seasons[-1]}). No 2025 row is read, so the pool ends at
 2024 and the target season is named (`CHAIN_FIT_BIAS_TARGET_SEASON`) rather than inferred from
-it. The superseded value was pooled IN-SAMPLE over the retired models' own training seasons; this
-one is out of sample.
+it. {c.cold_document_bias_contrast}
 
 ---
 
 ## 5. The other two moved parts of the 2026 bet rule: the EV floor and the frozen residual SD
 
-The 2026 bet rule is these thresholds and this bias PLUS the per-target **EV floor** (the number
-that decides whether a bet is placed at all) and the **frozen residual SD** (the scale that turns
-a model's miss into a bet's expected value). D33.2-25 rules that all of them move together. The
-EV floor and the residual SD are superseded separately -- naming `ee20773`, the Phase-31
-pre-registration they came from -- by Plan 33.2-29: `backtest/corrected_ev_chain_constants.py`
-and `EV-CHAIN-CORRECTION.md`. Their values, as the corrected chain fit records them:
+{c.cold_document_ev_half}
 
 | target | EV floor | frozen residual SD |
 |---|---|---|
 {ev_rows}
 
 WP fits no residual SD by design (D31-07). A `None` EV floor would mean no honest floor and no
-bets for that target; none is `None` here.
+bets for that target; {floor_refusal_text}
 
 ---
 
 ## 6. How the live rule changes
 
-The live rule changes in ONE commit (Plan 33.2-26 Task 3), which moves every live reader
-together: the chain-fit record path, this bias, and the edge bands read by the web cache and the
-current-week predictions. Before that commit the live bet list read the Phase-31 chain-fit record
-and the `{SUPERSEDED_PREREGISTRATION_SHORT}` bias; no run can judge corrected floors against an uncorrected bias,
-or the reverse. From that commit on, a 2026 WIN bet must pass two tests:
+{c.cold_document_live_change.format(short=short)}
 its edge over the spread-derived market probability, on the side bet, is above WP's corrected
 MEDIUM threshold ({wp_admission}: the edge band is at least "medium"), and the moneyline captured at
 that game's lock still leaves positive value after the book's cut (D33.2-11). A target whose
@@ -2181,7 +2216,7 @@ threshold is `None` places no bets at all.
 ## 7. How to reproduce every number above
 
 ```
-OMP_NUM_THREADS=1 uv run python -m scripts.derive_cold_start_constants --corrected --trust-inputs
+OMP_NUM_THREADS=1 uv run python -m scripts.derive_cold_start_constants --corrected{c.cli_flag()} --trust-inputs
 ```
 
 The derivation reads the four served artifact ids from `tests/phase33_state.py`, refuses unless
@@ -2191,8 +2226,7 @@ Running it twice against the same inputs produces byte-identical files.
 
 ---
 
-*Phase: 33.2-information-time-integrity-day-before-kickoff-lock-and-hones*
-*Plan 33.2-26, superseding `{SUPERSEDED_PREREGISTRATION_SHORT}`*
+{c.cold_document_footer.format(short=short)}
 """
 
 
@@ -2249,6 +2283,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--correction",
+        choices=sorted(CORRECTIONS),
+        default=DEFAULT_CORRECTION,
+        help=(
+            "With --corrected: WHICH superseding correction to emit (default "
+            f"{DEFAULT_CORRECTION}, the 33.2 correction of 11761c7; row19 = the re-measure of "
+            "9bb7568 after the neutral-site Elo fix). The recipe is the same for every value."
+        ),
+    )
+    parser.add_argument(
         "--digest",
         action="append",
         default=[],
@@ -2291,6 +2335,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     if args.check and args.corrected:
         parser.error(
             "--check reproduces the original pre-registration; drop --corrected"
+        )
+    if args.correction != DEFAULT_CORRECTION and not args.corrected:
+        parser.error(
+            "--correction selects which superseding correction --corrected emits; "
+            "give --corrected too"
         )
     missing = [
         flag
@@ -2338,8 +2387,11 @@ def main_corrected(args: argparse.Namespace, repo_root: Path) -> int:
     ``--corrected`` (review WR-16). Before, both were dropped silently, so a digest-printing
     run with ``--trust-inputs`` rewrote the live 2026 bet rule's files.
     """
-    swap, converter_id = resolve_corrected_inputs(repo_root)
-    keys = corrected_input_keys(swap, converter_id)
+    correction = CORRECTIONS[args.correction]
+    module_path = correction.cold_module_path
+    document_path = correction.cold_document_path
+    swap, converter_id = resolve_corrected_inputs(repo_root, correction)
+    keys = corrected_input_keys(swap, converter_id, correction)
     if args.print_digests:
         for key, value in measure_input_digests_for(keys, repo_root).items():
             sys.stdout.write(f"{key}={value}\n")
@@ -2357,18 +2409,13 @@ def main_corrected(args: argparse.Namespace, repo_root: Path) -> int:
             raise SystemExit(msg)
         input_digests = _verify_digests(declared, repo_root)
 
-    derivation = measure_corrected(input_digests, repo_root)
-    module_text = ruff_format(
-        render_corrected_module(derivation), CORRECTED_MODULE_PATH
-    )
+    derivation = measure_corrected(input_digests, repo_root, correction)
+    module_text = ruff_format(render_corrected_module(derivation), module_path)
     _write_ascii(
         repo_root,
         (
-            (module_text, args.out_module or CORRECTED_MODULE_PATH),
-            (
-                render_correction_document(derivation),
-                args.out_doc or CORRECTION_DOCUMENT_PATH,
-            ),
+            (module_text, args.out_module or module_path),
+            (render_correction_document(derivation), args.out_doc or document_path),
         ),
     )
     t = derivation.thresholds
