@@ -609,15 +609,26 @@ class TestWeatherSourceOnTheSilverTable:
         the write that widens the stored table. That write happened, so the stored table
         is now the schema's full width; `WEATHER_COLUMNS_AFTER_COVERAGE = 25` is retained
         in the manifest as history.
+
+        RE-TARGETED AGAIN at the Phase 33 close-out, in the same way. Plan 33.2-27
+        (`d35eb50`, D33.2-18) declared ONE more WeatherSchema column,
+        `model_run_available_at`, and appended the width 31 as
+        `P332_27_WEATHER_SCHEMA_FIELDS_AFTER_MODEL_STAMP`; the live forecast capture is the
+        write that widened the stored table. `P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS = 30`
+        is retained as history. Was: the width against that 30.
         """
         from tests import phase33_state
 
         frame = pd.read_parquet("data/silver/weather.parquet")
         assert (
-            len(frame.columns) == phase33_state.P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS
+            len(frame.columns)
+            == phase33_state.P332_27_WEATHER_SCHEMA_FIELDS_AFTER_MODEL_STAMP
         )
         assert "weather_source" in frame.columns
         assert "weather_coverage" in frame.columns
+        assert set(phase33_state.P332_27_WEATHER_SCHEMA_NEW_FIELDS) <= set(
+            frame.columns
+        )
 
     def test_the_pre_existing_rows_are_stamped_archive(self):
         """The fourteen rows already on disk came from the ARCHIVE endpoint, and the
