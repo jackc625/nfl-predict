@@ -144,11 +144,16 @@ class TestTheVacuousReport:
         assert set(week_one["home_elo_uncertainty"]) == {350.0}
 
     def test_2002_hfa_used_is_reported_as_vacuous_cells(
-        self, baseline: ReplayResult, snapshots: pd.DataFrame
+        self, baseline: ReplayResult, snapshots: pd.DataFrame, games: pd.DataFrame
     ) -> None:
         season_2002 = snapshots[snapshots["season"] == 2002]
-        # 0.0 since WINDOWS row 19 (dc7c34d): the 2002 Super Bowl is a neutral site.
-        assert set(season_2002["hfa_used"]) <= {48.0, 48.0 * 0.54, 0.0}
+        # Since WINDOWS row 19 (dc7c34d) a neutral site carries 0.0 (the 2002 Super Bowl);
+        # every other 2002 game carries the 48 init, times 0.54 when divisional.
+        neutral_ids = set(games.loc[games["neutral_site"].eq(True), "game_id"])
+        at_neutral = season_2002["game_id"].isin(neutral_ids)
+        assert at_neutral.any()
+        assert set(season_2002.loc[at_neutral, "hfa_used"]) == {0.0}
+        assert set(season_2002.loc[~at_neutral, "hfa_used"]) <= {48.0, 48.0 * 0.54}
         assert baseline.vacuous_cells == len(season_2002) - baseline.vacuous
 
 
