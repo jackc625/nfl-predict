@@ -35,6 +35,10 @@ message until every slot is present -- and a companion test drives the same reso
 asserts the skip happens, so the guard is known to be wired up rather than merely never
 observed.
 
+Since Plan 33-18 every slot is present, and the test STILL skips, by design:
+POST_PHASE_COLLECTED was never measured (the owner's ruling A of 2026-09-28, accepted risk
+AR-33-05), so the pinned message now cites ``POST_PHASE_COLLECTED_NOT_MEASURED_REASON``.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -54,12 +58,14 @@ _COUNT_RE = re.compile(r"(\d+)\s+([a-z]+)")
 
 _EXPECTED_SLOT_NAMES = tuple(f"TESTS_ADDED_33_{index:02d}" for index in range(1, 19))
 
+# Was: "cannot be checked yet: tests/phase33_state.py does not carry every per-plan slot
+# ... (33-03 .. 33-18)". All eighteen slots exist since Plan 33-18; POST_PHASE_COLLECTED is
+# absent by the owner's ruling A (accepted risk AR-33-05), so the message cites its reason.
 POST_PHASE_PENDING_SKIP = (
-    "the post-phase collected-count arithmetic cannot be checked yet: "
-    "tests/phase33_state.py does not carry every per-plan slot named in "
-    "PER_PLAN_TEST_COUNT_SLOTS and POST_PHASE_COLLECTED, both of which are appended by "
-    "the plans that measure them (33-03 .. 33-18). This is a control that did NOT run "
-    "on this checkout, not a control that passed."
+    "the post-phase collected-count arithmetic is not checked: POST_PHASE_COLLECTED is "
+    "not recorded. tests.phase33_state.POST_PHASE_COLLECTED_NOT_MEASURED_REASON: "
+    f"{phase33_state.POST_PHASE_COLLECTED_NOT_MEASURED_REASON} This is a control that "
+    "did NOT run on this checkout, not a control that passed."
 )
 
 
