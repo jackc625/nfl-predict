@@ -66,7 +66,6 @@ LABELLED_READOUTS: tuple[str, ...] = (
     "MODEL-DIAGNOSIS.md",
     "OU-DIVERGENCE-DIAGNOSIS.md",
     "PROFITABILITY-READOUT.md",
-    "README.md",
     "RUNBOOK.md",
     "SELECTION-CENSUS.md",
     "SIGNAL-LIFT-READOUT.md",
@@ -76,7 +75,7 @@ LABELLED_READOUTS: tuple[str, ...] = (
 # Readouts commit 7b1928f labelled that were later rewritten from scratch and no longer carry the
 # addendum. TestTheLabellingCommitOnlyAppended compares that commit's numstat against the labelled
 # set, so these names must still be counted there.
-LABELLED_THEN_REWRITTEN: frozenset[str] = frozenset()
+LABELLED_THEN_REWRITTEN: frozenset[str] = frozenset({"README.md"})
 
 # Tracked repo-root markdown that carries no addendum, each with the reason found on reading it.
 NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
@@ -174,6 +173,12 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "A sealed pre-registration whose ancestry anchor is checked by "
         "tests/unit/test_preregistration_ancestry.py; editing it in place would destroy that "
         "evidence. The 2025 results it governed are labelled in PROFITABILITY-READOUT.md."
+    ),
+    "README.md": (
+        "The visitor-facing front page, rewritten from scratch on 2026-10-04. It reports no "
+        "model accuracy or betting figure from before the fix: it says in words that those "
+        "results are not evidence and points at the labelled records. Its pre-rewrite text, "
+        "which commit 7b1928f labelled, survives in git history (LABELLED_THEN_REWRITTEN)."
     ),
 }
 

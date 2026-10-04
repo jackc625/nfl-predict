@@ -1,35 +1,21 @@
-"""Permanent content guard for the repo-root README.md + CLAUDE.md reconciliation.
+"""Permanent content guard for the repo-root CLAUDE.md reconciliation.
 
-Phase 23 (Trust & Reproducibility) reconciled the two top-level narrative docs
-to current v2.1 reality (D-06): README.md's stale Getting Started / Status /
-Deployment / Project Structure / Current Limitations sections, and CLAUDE.md's
-Project Overview / Current Status. A trust milestone whose front-door docs
-reference deleted files or claim the wrong phase status undercuts the whole
-point, so this committed test locks the contract:
+Phase 23 (Trust & Reproducibility) reconciled the two top-level narrative docs, README.md and
+CLAUDE.md, to current reality (D-06), and Phases 25, 30 and 31 extended this guard to each end
+state. On 2026-10-04 README.md was rewritten from scratch as a visitor-facing front page and the
+owner dropped its history-locking assertions; the pre-rewrite text survives in git history. What
+remains guards CLAUDE.md only -- the instruction file every agent session loads:
 
-- README.md uses the corrected setup command (``Copy-Item .env.example .env``),
-  NOT the file deleted in Phase 19 (``deployment/production.env``);
-- README.md no longer references any deleted file / non-existent Makefile target
-  / deleted script (``make snapshot``, ``operational_monitoring.py``,
-  ``validate_models.py``, ``make test-quick``, ``make dev-test``, the deleted
-  Docker-stack artifact filenames, the deleted CI workflow);
-- README.md cross-links MODEL-DIAGNOSIS.md for the production-vs-backtest
-  mismatch;
-- CLAUDE.md no longer claims "v1.0 MVP shipped 2026-03-28. 10 phases complete"
-  as the current status, and references both v2.0 and v2.1.
+- it no longer claims "v1.0 MVP shipped 2026-03-28. 10 phases complete" as the current status,
+  and references v2.0, v2.1 and v3.0;
+- it cross-links ACTIVATION-READOUT.md, GATED-REFIT-READOUT.md and PROFITABILITY-READOUT.md;
+- it names the Phase-30 production pointers, including the two the gate REFUSED, and attaches no
+  deployment verb to a refused candidate;
+- it states that Phase 31 deployed no model, names /bets, reports no target as profitable, and
+  presents the CLV-to-ROI divergence as the finding.
 
-Phase 30 (30-14) extended this guard to the Phase-30 end state in
-TestPhase30Reconciled: both docs cross-link GATED-REFIT-READOUT.md, name all
-three serving artifacts (including the two the gate REFUSED and therefore left
-in place), drop the stale v2.1-is-current / 7-stage-PIPELINE / dynamic-blend-
-pending claims, and attach no deployment verb to a refused candidate.
-
-NOTE: README.md and CLAUDE.md predate the Windows cp1252 / ASCII-only convention
-and legitimately contain non-ASCII characters (em-dashes, Unicode arrows). This
-guard therefore does NOT assert ``content.isascii()`` -- it is a no-stale-
-reference + corrected-string-presence contract only. (The new repo-root forensic
-docs RUNBOOK.md / METHODOLOGY.md / STATE-OF-SYSTEM.md ARE ASCII-guarded by their
-own committed tests.)
+This guard does not assert ``content.isascii()``; CLAUDE.md's ASCII rule is asserted by
+tests/unit/test_one_lock_rule_source_scan.py.
 
 This is a permanent committed test, NOT a throwaway script.
 """
@@ -39,94 +25,12 @@ from pathlib import Path
 
 # Repo root resolved from this file: tests/unit/test_readme_claude_reconciled.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-README_MD = REPO_ROOT / "README.md"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 
 
 def _read(path: Path) -> str:
     """Read a repo-root markdown file."""
     return path.read_text(encoding="utf-8")
-
-
-class TestReadmeReconciled:
-    """README.md must use corrected commands and reference no deleted files."""
-
-    def test_file_exists_at_repo_root(self):
-        """README.md is present at the repo root."""
-        assert README_MD.is_file(), f"missing: {README_MD}"
-
-    def test_corrected_setup_command_present(self):
-        """The corrected PowerShell setup command is documented."""
-        content = _read(README_MD)
-        assert "Copy-Item .env.example .env" in content
-
-    def test_no_deleted_env_template_reference(self):
-        """The Phase-19-deleted deployment/production.env is no longer referenced."""
-        content = _read(README_MD)
-        assert "deployment/production.env" not in content
-
-    def test_no_nonexistent_make_targets(self):
-        """Removed/non-existent Makefile targets are no longer documented."""
-        content = _read(README_MD)
-        for target in ("make snapshot", "make test-quick", "make dev-test"):
-            assert target not in content, f"stale Makefile target present: {target}"
-
-    def test_no_deleted_scripts_referenced(self):
-        """Scripts deleted in Phase 19 are not referenced in the front door."""
-        content = _read(README_MD)
-        for script in ("operational_monitoring.py", "validate_models.py"):
-            assert script not in content, f"deleted script referenced: {script}"
-
-    def test_no_deleted_docker_stack_artifacts(self):
-        """The deleted Docker/Nginx/CI artifact filenames are not referenced.
-
-        The reconciled Deployment section may NAME the deleted stack while
-        explaining it was removed, but it must not reference the concrete
-        deleted artifact filenames as if they still exist.
-        """
-        content = _read(README_MD)
-        for artifact in (
-            "docker-compose.yml",
-            "Dockerfile",
-            "gunicorn.conf.py",
-            "nginx.conf",
-            "crontab.txt",
-            "friday-production.yml",
-        ):
-            assert artifact not in content, f"deleted artifact referenced: {artifact}"
-
-    def test_no_stale_phase_status(self):
-        """The stale 'Phases 17-18 are not started' claim is gone (they shipped)."""
-        content = _read(README_MD)
-        assert "Phases 17-18 are not started" not in content
-
-    def test_cross_links_model_diagnosis(self):
-        """README cross-links MODEL-DIAGNOSIS.md for the prod-vs-backtest mismatch."""
-        content = _read(README_MD)
-        assert "MODEL-DIAGNOSIS.md" in content
-
-    def test_no_stale_production_runs_v1_claim(self):
-        """Phase 25 (D25-10): the present-tense 'production currently runs the v1.0
-        pre-Elo models' / 'production continues to run the v1.0 WP/ATS models' claims
-        are gone -- WP + ATS were activated through the gate, O/U retained.
-        """
-        content = _read(README_MD)
-        stale_claims = (
-            "Production currently\nruns the v1.0 pre-Elo models",
-            "production\n   continues to run the v1.0 WP/ATS models",
-            "production continues to run the v1.0 WP/ATS models",
-        )
-        present = [c for c in stale_claims if c in content]
-        assert not present, (
-            f"README.md still carries stale production-serves-v1 claims: {present}"
-        )
-
-    def test_cross_links_activation_readout(self):
-        """README cross-links ACTIVATION-READOUT.md for the Phase-25 activation record."""
-        content = _read(README_MD)
-        assert "ACTIVATION-READOUT.md" in content, (
-            "README.md should cross-link ACTIVATION-READOUT.md (the Phase-25 activation record)"
-        )
 
 
 class TestClaudeReconciled:
@@ -184,36 +88,13 @@ class TestClaudeReconciled:
 
 
 class TestPhase30Reconciled:
-    """Phase 30 (30-14): the two front-door docs describe the Phase-30 end state.
+    """Phase 30 (30-14): CLAUDE.md describes the Phase-30 end state.
 
-    Phase 30 rebuilt gold, ruled on three feature groups, and re-ran the
-    per-target deploy gate: WP PASSED and was promoted; ATS and O/U FAILED and
-    their incumbents were RETAINED. The Phase-25 record is kept BESIDE the new
-    one, never overwritten (the supersede-in-place rule), so the assertions
-    below are additive -- the Phase-25 markers guarded above still apply.
-
-    What is guarded here:
-
-    1. Both docs cross-link ``GATED-REFIT-READOUT.md``.
-    2. Both docs name the Phase-30 production pointers, including the two that
-       did NOT move. A reader must be able to see what a refused candidate left
-       serving, not merely that a phase ran.
-    3. The stale milestone-status claims are gone -- README no longer says v2.1
-       is the current milestone or that Phase 23 is in progress, and no longer
-       points at a 7-stage PIPELINE.md (it has 8 stages since Phase 25).
-    4. The stale "dynamic blend is implemented but not yet activated" claim is
-       gone; the dynamic blend has been live for all three targets since Phase 25.
-    5. No over-claim word is attached to a REFUSED target. A refusal leaves an
-       incumbent serving; calling that "deployed", "promoted", "activated" or
-       "shipped" would misreport the phase's single production change as three.
+    Phase 30 rebuilt gold, ruled on three feature groups, and re-ran the per-target deploy gate:
+    WP PASSED and was promoted; ATS and O/U FAILED and their incumbents were RETAINED. The
+    Phase-25 record is kept BESIDE the new one, never overwritten (the supersede-in-place rule),
+    so the assertions below are additive.
     """
-
-    def test_readme_cross_links_gated_refit_readout(self):
-        """README cross-links GATED-REFIT-READOUT.md (the Phase-30 record)."""
-        content = _read(README_MD)
-        assert "GATED-REFIT-READOUT.md" in content, (
-            "README.md should cross-link GATED-REFIT-READOUT.md (the Phase-30 record)"
-        )
 
     def test_claude_cross_links_gated_refit_readout(self):
         """CLAUDE.md cross-links GATED-REFIT-READOUT.md (the Phase-30 record)."""
@@ -222,8 +103,8 @@ class TestPhase30Reconciled:
             "CLAUDE.md should cross-link GATED-REFIT-READOUT.md (the Phase-30 record)"
         )
 
-    def test_both_docs_name_the_phase30_production_pointers(self):
-        """Both docs name all three serving artifacts, including the two retained.
+    def test_claude_names_the_phase30_production_pointers(self):
+        """CLAUDE.md names all three Phase-30 serving artifacts, including the two retained.
 
         ``wp_20260824_113325`` is the one pointer Phase 30 moved.
         ``ats_20260605_220128`` and ``ou_20260326_163930`` are what the two
@@ -235,52 +116,18 @@ class TestPhase30Reconciled:
             "ats_20260605_220128",
             "ou_20260326_163930",
         )
-        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
-            content = _read(path)
-            missing = [p for p in pointers if p not in content]
-            assert not missing, (
-                f"{label} missing Phase-30 end-state production pointers: {missing}"
-            )
-
-    def test_readme_stale_milestone_status_absent(self):
-        """README no longer presents v2.1 / Phase 23 as the current work."""
-        content = _read(README_MD)
-        stale_claims = (
-            'The current milestone, v2.1 "Trust & Reproducibility"',
-            "Phase 23 (documentation, runbook, state-of-system) is in progress",
-            "**In progress (v2.1 Trust & Reproducibility).**",
-        )
-        present = [c for c in stale_claims if c in content]
-        assert not present, (
-            f"README.md still presents v2.1 as the current milestone: {present} "
-            "(v2.1 shipped 2026-06-01; v3.0 is in progress)"
-        )
-
-    def test_readme_no_stale_seven_stage_pipeline_reference(self):
-        """README points at the 8-stage PIPELINE.md, not the pre-Phase-25 7-stage one."""
-        content = _read(README_MD)
-        assert "7-stage sequence" not in content, (
-            "README.md still points at a 7-stage PIPELINE.md "
-            "(Phase 25 inserted Promote; it has 8 stages)"
-        )
-
-    def test_readme_no_stale_dynamic_blend_pending_claim(self):
-        """The 'dynamic blend is ready to activate' claim is gone (it is live)."""
-        content = _read(README_MD)
-        assert (
-            "ready to\nactivate when the next retrain clears gating" not in content
-        ), "README.md still claims the dynamic blend is pending activation"
-        assert "ready to activate when the next retrain clears gating" not in content, (
-            "README.md still claims the dynamic blend is pending activation "
-            "(it has been live for all three targets since Phase 25)"
+        content = _read(CLAUDE_MD)
+        missing = [p for p in pointers if p not in content]
+        assert not missing, (
+            f"CLAUDE.md missing Phase-30 end-state production pointers: {missing}"
         )
 
     def test_no_over_claim_word_attached_to_a_refused_target(self):
-        """Neither doc describes a REFUSED Phase-30 target as deployed.
+        """CLAUDE.md does not describe a REFUSED Phase-30 target as deployed.
 
         Scans each line that names a refused target's artifact version and fails
         if that same line carries a deployment verb. Line-scoped rather than
-        document-scoped on purpose: both docs legitimately use "promoted" of WP,
+        document-scoped on purpose: CLAUDE.md legitimately uses "promoted" of WP,
         which actually was, and a document-wide substring search would false-
         positive on that. The point is the ASSOCIATION, not the vocabulary.
         """
@@ -292,88 +139,71 @@ class TestPhase30Reconciled:
             "shipped",
             "swapped in",
         )
-        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
-            for line in _read(path).splitlines():
-                lowered = line.lower()
-                if not any(v in lowered for v in refused_versions):
-                    continue
-                hits = [w for w in over_claim_words if w in lowered]
-                assert not hits, (
-                    f"{label} attaches over-claim word(s) {hits} to a REFUSED "
-                    f"Phase-30 candidate on this line: {line.strip()!r}"
-                )
+        for line in _read(CLAUDE_MD).splitlines():
+            lowered = line.lower()
+            if not any(v in lowered for v in refused_versions):
+                continue
+            hits = [w for w in over_claim_words if w in lowered]
+            assert not hits, (
+                f"CLAUDE.md attaches over-claim word(s) {hits} to a REFUSED "
+                f"Phase-30 candidate on this line: {line.strip()!r}"
+            )
 
 
 class TestPhase31Reconciled:
-    """Phase 31 (31-19): the two front-door docs describe the milestone-close end state.
+    """Phase 31 (31-19): CLAUDE.md describes the milestone-close end state.
 
-    Additive to the Phase-25 and Phase-30 assertions above -- the supersede-in-place rule means
-    the earlier records stay. What is guarded here:
+    Additive to the Phase-25 and Phase-30 assertions above. What is guarded here:
 
-    1. Both docs cross-link ``PROFITABILITY-READOUT.md``.
-    2. Both name the new ``/bets`` page.
-    3. Both state that Phase 31 DEPLOYED NO MODEL. This is the assertion that matters most: a
-       phase that shipped a betting page and spent the clean split is the easiest phase in the
-       project to misremember as one that changed what serves. It did not, and the Phase-30
-       production pointers asserted above are still the live ones.
-    4. Neither doc reports any target as profitable. No target came out ``PROFITABLE_CLEAN``, and
-       a front-door document is exactly where that would get rounded up.
+    1. CLAUDE.md cross-links ``PROFITABILITY-READOUT.md``.
+    2. It names the ``/bets`` page.
+    3. It states that Phase 31 DEPLOYED NO MODEL. A phase that shipped a betting page and spent
+       the clean split is the easiest phase in the project to misremember as one that changed
+       what serves.
+    4. It reports no target as profitable. No target came out ``PROFITABLE_CLEAN``.
     """
 
-    def test_both_docs_cross_link_the_profitability_readout(self):
-        """The milestone close is reachable from both front doors."""
-        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
-            assert "PROFITABILITY-READOUT.md" in _read(path), (
-                f"{label} should cross-link PROFITABILITY-READOUT.md (the Phase-31 milestone "
-                "close)"
-            )
+    def test_claude_cross_links_the_profitability_readout(self):
+        """The milestone close is reachable from CLAUDE.md."""
+        assert "PROFITABILITY-READOUT.md" in _read(CLAUDE_MD), (
+            "CLAUDE.md should cross-link PROFITABILITY-READOUT.md (the Phase-31 milestone close)"
+        )
 
-    def test_both_docs_name_the_new_bets_page(self):
-        """The nav gained a seventh page and both docs describe the web surface."""
-        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
-            assert "/bets" in _read(path), f"{label} does not name the new /bets page"
+    def test_claude_names_the_bets_page(self):
+        """CLAUDE.md describes the web surface, including /bets."""
+        assert "/bets" in _read(CLAUDE_MD), "CLAUDE.md does not name the /bets page"
 
-    def test_both_docs_state_that_phase_31_deployed_no_model(self):
-        """The single most misrememberable fact about this phase, pinned in both front doors."""
-        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
-            content = _read(path).lower()
-            assert "deployed no model" in content, (
-                f"{label} does not state that Phase 31 deployed no model. The Phase-30 pointers "
-                "are still the live ones, and a reader must be able to see that the 2025 verdict "
-                "measured what is actually serving."
-            )
-            assert "byte-unchanged" in content, (
-                f"{label} does not state that the production swap surface is byte-unchanged by "
-                "Phase 31"
-            )
+    def test_claude_states_that_phase_31_deployed_no_model(self):
+        """The single most misrememberable fact about this phase."""
+        content = _read(CLAUDE_MD).lower()
+        assert "deployed no model" in content, (
+            "CLAUDE.md does not state that Phase 31 deployed no model."
+        )
+        assert "byte-unchanged" in content, (
+            "CLAUDE.md does not state that the production swap surface is byte-unchanged by "
+            "Phase 31"
+        )
 
-    def test_neither_doc_reports_a_profitable_target(self):
-        """No target cleared its pre-registered ROI test, and a front door must not round up.
+    def test_claude_reports_no_profitable_target(self):
+        """No target cleared its pre-registered ROI test, and CLAUDE.md must not round up.
 
         Checked over whitespace-FLATTENED text and inside a preceding window, not line by line:
-        both documents are hard-wrapped, so the negation and the token it negates routinely land
-        on different lines. A line-scoped check would fail on correct prose, and a guard that
-        reddens on correct prose is a guard that gets deleted.
+        the document is hard-wrapped, so the negation and the token it negates can land on
+        different lines.
         """
         window = 80
-        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
-            flat = re.sub(r"\s+", " ", _read(path))
-            for match in re.finditer(r"(?<!UN)PROFITABLE_CLEAN", flat):
-                before = flat[max(0, match.start() - window) : match.start()].lower()
-                assert "no target" in before or "never called profitable" in before, (
-                    f"{label} uses PROFITABLE_CLEAN without a negation in the preceding "
-                    f"{window} characters: ...{flat[max(0, match.start() - window) : match.end()]!r}. "
-                    "No target came out profitable on the clean 2025 split."
-                )
-
-    def test_both_docs_state_the_clv_to_roi_divergence_as_the_finding(self):
-        """The headline is the divergence, not the return, and both front doors say so."""
-        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
-            content = _read(path).lower()
-            assert "closing-line value is not profitability" in content or (
-                "clv-to-roi divergence" in content
-            ), (
-                f"{label} does not present the CLV-to-ROI divergence as the finding. A front door "
-                "that reports the positive closing-line value without it is the misreading this "
-                "milestone exists to refuse."
+        flat = re.sub(r"\s+", " ", _read(CLAUDE_MD))
+        for match in re.finditer(r"(?<!UN)PROFITABLE_CLEAN", flat):
+            before = flat[max(0, match.start() - window) : match.start()].lower()
+            assert "no target" in before or "never called profitable" in before, (
+                f"CLAUDE.md uses PROFITABLE_CLEAN without a negation in the preceding "
+                f"{window} characters: ...{flat[max(0, match.start() - window) : match.end()]!r}. "
+                "No target came out profitable on the clean 2025 split."
             )
+
+    def test_claude_states_the_clv_to_roi_divergence_as_the_finding(self):
+        """The headline is the divergence, not the return."""
+        content = _read(CLAUDE_MD).lower()
+        assert "closing-line value is not profitability" in content or (
+            "clv-to-roi divergence" in content
+        ), "CLAUDE.md does not present the CLV-to-ROI divergence as the finding."
