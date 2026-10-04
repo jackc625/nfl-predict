@@ -72,12 +72,12 @@ from models.trainers.wp_trainer import WP_PIPELINE_STEP_NAMES, WPTrainer
 from tests.data_boundary import digest_file
 from tests.gold_generation import GOLD_MATRIX_PATHS
 from tests.phase33_state import (
-    CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256,
     FINAL_FIT_NOT_RUN_IN_PHASE_331,
     GOLD_GENERATION_AFTER_ELO_REBUILD,
     GOLD_GENERATION_AT_REFIT,
     GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
-    P332_25_POST_SWAP_LATEST_JSON_SHA256,
+    ROW19_POST_SWAP_LATEST_JSON_SHA256,
+    ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256,
     WP_PREPROCESSING_DEFECT_CLOSURE,
 )
 from tests.unit.test_weather_bridge_expiry import WEATHER_GENERATION_MARKER_KEY
@@ -737,7 +737,9 @@ class TestPhase33Wave15IsTheCallerAndTheBoundaryMovedByOneModule:
         NOT the Phase-33.1 value. Both halves are asserted, because "it changed" alone
         would be satisfied by any accident. RE-POINTED 2026-09-23 from Plan 33-15's
         ``POST_GATE_MANIFEST_DIGEST`` to Plan 33.2-25's post-swap digest; both records
-        are unedited.
+        are unedited. RE-POINTED 2026-10-04 to the WINDOWS row 19 swap's post-swap digest
+        (``ROW19_POST_SWAP_LATEST_JSON_SHA256``, the re-fits on the neutral-site Elo gold);
+        Plan 33.2-25's slot stays as its record.
         """
         latest = Path("artifacts") / "latest.json"
         if not latest.exists():
@@ -748,8 +750,8 @@ class TestPhase33Wave15IsTheCallerAndTheBoundaryMovedByOneModule:
 
         live = digest_file(latest)
 
-        assert live == P332_25_POST_SWAP_LATEST_JSON_SHA256, (
-            "the live manifest digest is not Plan 33.2-25's recorded post-swap state. "
+        assert live == ROW19_POST_SWAP_LATEST_JSON_SHA256, (
+            "the live manifest digest is not the row-19 swap's recorded post-swap state. "
             "Something moved the production swap surface outside an owner-authorised pass."
         )
         assert live != FINAL_FIT_NOT_RUN_IN_PHASE_331["latest_json_digest_after"]
@@ -905,12 +907,17 @@ class TestTheRecordedGenerationIsTheLaddersOwn:
         game night, adding the slate's 2026 rows and a new build clock, so that key moved
         on the first live night while the fitted history did not. The served models were
         fitted on 2002-2025, so that history is what is compared, by content.
+
+        RE-POINTED 2026-10-04 for WINDOWS row 19: the neutral-site Elo rebuild moved the
+        history's Elo columns and production now serves the re-fits on that gold, so the
+        comparison is against ``ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256``; the CLOSE_
+        value stays as the record of the 2026-09-23 re-fits' history.
         """
         assert _gold_history_content_key() == (
-            CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256
+            ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256
         ), (
             "the 2002-2025 history in live gold is no longer the history the served "
-            "models were fitted on (CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256). A "
+            "models were fitted on (ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256). A "
             "nightly 2026 append cannot move this digest, so a historical feature value "
             "changed: find what rebuilt it before re-recording anything."
         )

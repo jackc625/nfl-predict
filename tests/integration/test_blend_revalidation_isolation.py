@@ -86,8 +86,8 @@ from tests.phase30_state import (
     MANIFEST_SHA256_AFTER,
 )
 from tests.phase33_state import (
-    P332_25_POST_SWAP_LATEST_JSON_SHA256,
-    P332_25B_SWAP_ARTIFACT_IDS,
+    ROW19_POST_SWAP_LATEST_JSON_SHA256,
+    ROW19_SWAP_ARTIFACT_IDS,
 )
 
 # Repo root resolved from this file: tests/integration/test_blend_revalidation_isolation.py.
@@ -397,19 +397,24 @@ def test_live_production_manifest_is_the_recorded_post_promotion_manifest() -> N
     The pointers are asserted separately from the digest so a manifest re-serialization that
     preserved the pointers, and a pointer change that happened to preserve the digest, are told
     apart rather than conflated.
+
+    RE-PINNED 2026-10-04 for WINDOWS row 19 (quick task 261003-vke): the swap of the re-fits on
+    the neutral-site Elo gold, through the same script and ``replace_manifest``, is now the most
+    recent authorised write -- ``ROW19_SWAP_ARTIFACT_IDS`` and
+    ``ROW19_POST_SWAP_LATEST_JSON_SHA256``. The Plan 33.2-25 slots stay as its record.
     """
     if not _PROD_LATEST.exists():
         pytest.skip(f"production manifest not present at {_PROD_LATEST}")
 
     manifest = json.loads(_PROD_LATEST.read_text())
-    expected = dict(P332_25B_SWAP_ARTIFACT_IDS)
+    expected = dict(ROW19_SWAP_ARTIFACT_IDS)
     assert manifest == expected, (
         f"the production pointers moved: {manifest} != {expected}. Something swapped production "
-        "after Plan 33.2-25's recorded swap without appending its own record"
+        "after the row-19 recorded swap without appending its own record"
     )
-    assert _sha256(_PROD_LATEST) == P332_25_POST_SWAP_LATEST_JSON_SHA256, (
-        "artifacts/latest.json is not byte-identical to the manifest Plan 33.2-25 recorded after "
-        "the authorised swap; something rewrote the sole production swap surface afterwards"
+    assert _sha256(_PROD_LATEST) == ROW19_POST_SWAP_LATEST_JSON_SHA256, (
+        "artifacts/latest.json is not byte-identical to the manifest the row-19 swap recorded "
+        "after the authorised swap; something rewrote the sole production swap surface afterwards"
     )
 
 

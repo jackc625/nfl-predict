@@ -672,7 +672,9 @@ class TestDeployedArtifactResidue:
         manifest = json.loads(
             (_ARTIFACTS_DIR / "latest.json").read_text(encoding="utf-8")
         )
-        assert manifest == dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)
+        # The served set is the WINDOWS row 19 swap's (2026-10-04); was P332_25B_SWAP_*.
+        # MEASURED 2026-10-04: none of the three re-fits consumes a display column either.
+        assert manifest == dict(phase33_state.ROW19_SWAP_ARTIFACT_IDS)
         for target in ("wp", "ats", "ou"):
             assert (_ARTIFACTS_DIR / manifest[target] / "feature_list.json").is_file()
 

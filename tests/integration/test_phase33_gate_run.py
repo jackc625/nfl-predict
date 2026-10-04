@@ -1005,9 +1005,13 @@ class TestThePromotedAndRetainedSetsAreRecordedAndDisjoint:
         installed, and the committed verdict TOML is not touched.
 
         Was: ``manifest == dict(phase33_state.POST_GATE_ARTIFACT_MANIFEST)``.
+
+        RE-POINTED 2026-10-04 for WINDOWS row 19: the swap of the re-fits on the
+        neutral-site Elo gold is now the most recent authorised write, so the end state is
+        ``ROW19_SWAP_ARTIFACT_IDS``; ``P332_25B_SWAP_ARTIFACT_IDS`` stays as its record.
         """
         manifest = json.loads(LIVE_MANIFEST_PATH.read_text(encoding="utf-8"))
-        assert manifest == dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)
+        assert manifest == dict(phase33_state.ROW19_SWAP_ARTIFACT_IDS)
 
     def test_every_live_pointer_resolves_to_a_directory_on_disk(self) -> None:
         manifest = json.loads(LIVE_MANIFEST_PATH.read_text(encoding="utf-8"))

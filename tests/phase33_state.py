@@ -20228,3 +20228,26 @@ ROW19_ADVERSE_MEASUREMENTS: dict[str, dict[str, object]] = {
         "reason to retain the incumbent"
     ),
 }
+
+# THE ROW-19 SWAP, AS IT RAN: THE MANIFEST PRODUCTION NOW SERVES. On 2026-10-04 at about
+# 01:07 ET `uv run python -m scripts.swap_corrected_artifacts --apply` installed
+# ROW19_SWAP_ARTIFACT_IDS through models.artifacts.replace_manifest in ONE atomic write
+# (SWAPPED= 4; the dry run had VALIDATED= 4). The manifest it replaced hashed to
+# ROW19_PRE_SWAP_LATEST_JSON_SHA256. scripts/promote_models.py was not run; config/gate.toml
+# and config/phase33_gate_verdict.toml are byte-unchanged. This is now the most recent
+# AUTHORISED write of the sole production swap surface.
+
+#: sha256 of artifacts/latest.json's bytes immediately after the row-19 swap (CRLF as stored).
+ROW19_POST_SWAP_LATEST_JSON_SHA256: str = (
+    "0a3a3b34b7be1004052f858aa1d425d93e37bd00e7398457d0ba2301e10a5b6a"
+)
+
+#: The 2002-2025 history of live gold the row-19 re-fits were fitted on, by content -- the
+#: recipe of CLOSE_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256, measured with
+#: tests/unit/test_final_fit_entry_point._gold_history_content_key() on 2026-10-04 at about
+#: 01:09 ET, with live gold at ROW19_REFIT_GOLD_GENERATION (no gold build between the re-fit
+#: and the measurement). Supersedes the CLOSE_ value as what the served models were fitted
+#: on; the CLOSE_ value stays as the record of the 2026-09-23 re-fits' history.
+ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256: str = (
+    "9a4b22485a147445814f936a67c695619cbf9ede78d71e156dffb67d62c28d1d"
+)

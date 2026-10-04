@@ -496,7 +496,8 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
         manifest = json.loads(
             (REPO_ROOT / "artifacts" / "latest.json").read_text(encoding="utf-8")
         )
-        assert manifest == dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)
+        # The served set is the WINDOWS row 19 swap's (2026-10-04); was P332_25B_SWAP_*.
+        assert manifest == dict(phase33_state.ROW19_SWAP_ARTIFACT_IDS)
         live = tuple(_partition().holdout)
         windows = self._incumbent_windows()
         assert set(windows) == {"wp", "ats", "ou"}

@@ -626,12 +626,16 @@ class TestTheLiveManifestIsNeverWritten:
     owner-accepted batched swap (SPEC R13) installed the corrected artifacts, so the
     recorded END STATE is now ``P332_25B_SWAP_ARTIFACT_IDS``. Phase 33's
     ``POST_GATE_ARTIFACT_MANIFEST`` is retained unedited as the record of what it installed.
+
+    RE-POINTED AGAIN 2026-10-04 for WINDOWS row 19 (quick task 261003-vke): the swap of the
+    re-fits on the neutral-site Elo gold installed ``ROW19_SWAP_ARTIFACT_IDS``, now the
+    recorded END STATE; ``P332_25B_SWAP_ARTIFACT_IDS`` stays as the 2026-09-23 record.
     """
 
     def test_the_live_manifest_holds_the_POST_PROMOTION_pointers(self) -> None:
         """Reading it changed nothing, and the recorded END STATE is what is live."""
         manifest = _live_manifest()
-        for target, artifact_id in phase33_state.P332_25B_SWAP_ARTIFACT_IDS:
+        for target, artifact_id in phase33_state.ROW19_SWAP_ARTIFACT_IDS:
             assert manifest[target] == artifact_id, target
 
     def test_the_phase_331_close_record_is_RETAINED_unedited(self) -> None:
