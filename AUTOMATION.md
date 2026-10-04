@@ -102,13 +102,13 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
    weekdays): a `no_games` record in `logs/daily_lock_runs.jsonl`, exit 0, nothing built.
 3. **The run proper**, through the same orchestrator as section 2
    (`FridayPipeline(steps=pipeline.daily_steps.build_daily_step_registry(slate))`), with
-   its own 22-step registry in three stages:
+   its own 21-step registry in three stages:
    - **Collection** -- tomorrow's weather forecasts, the season's snaps and injuries, and
      tomorrow's odds from The Odds API (real requests against the API key's quota), then
      `close_collection`, which stamps `captured_at_utc` and refuses the slate if
      collection itself ended after the lock.
-   - **Build** -- data QA, Elo (with a flagged provisional pre-game row per slate game),
-     team form, contextual and weather features, then the **FULL-HISTORY gold build,
+   - **Build** -- data QA, Elo (with a flagged provisional week-start row for every unplayed
+     game of the week), team form and weather features, then the **FULL-HISTORY gold build,
      every night** (owner ruling 2026-09-23, "Rebuild everything nightly": a one-season
      build diverges from the full build on 139 of 186 numeric columns, so only the full
      build is the real one), then the leakage scan, gold currency and model loading.
