@@ -14,8 +14,9 @@
    MONOCHROME, for the reason _ev_band_badge.html is monochrome: hue on /bets carries meaning only
    inside the tracker's realized outcomes, where green means a bet WON and red means it LOST. A
    coloured honesty label would borrow that meaning for a statement about evidence class. Fill
-   WEIGHT carries the distinction instead: the clean-holdout class keeps the strong chip it had
-   before the Broadcast redesign (it was the heaviest grey), and the other two are the plain chip.
+   WEIGHT carries the distinction instead. The clean-holdout class held the strong chip until
+   review WR-06: it is now labelled "not evidence", so it takes the plain chip like the others
+   and is no longer drawn heavier than the live forward record.
 
    NO whitespace-nowrap: the longest label is 30 characters and the badge sits on a block header
    where it must WRAP rather than clip (UI-SPEC E10 overflow). Inside a table cell the cell's own
@@ -38,7 +39,7 @@
    } %}
 {% set _VALIDATION_CLASSES = {
      "contaminated": "evidence-chip",
-     "clean_holdout": "evidence-chip evidence-chip-strong",
+     "clean_holdout": "evidence-chip",
      "forward_realized": "evidence-chip"
    } %}
 {% set _VALIDATION_DESCRIPTIONS = {

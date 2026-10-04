@@ -133,7 +133,7 @@ class TestMonochromeBadges:
             (
                 "backtest_replay",
                 "clean_holdout",
-                "evidence-chip evidence-chip-strong",
+                "evidence-chip",  # review WR-06: "not evidence" takes the plain chip
                 "Old rule -- 2025, not evidence",
             ),
             (

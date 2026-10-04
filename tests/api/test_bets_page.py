@@ -2983,7 +2983,7 @@ _VALIDATION_LABELS: dict[str, str] = {
 }
 _VALIDATION_CLASSES: dict[str, str] = {
     "contaminated": "evidence-chip",
-    "clean_holdout": "evidence-chip evidence-chip-strong",
+    "clean_holdout": "evidence-chip",  # review WR-06: "not evidence" takes the plain chip
     "forward_realized": "evidence-chip",
 }
 _UNKNOWN_VALIDATION_TYPE = "validation_type_invented_by_a_future_plan"
