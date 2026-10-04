@@ -20043,3 +20043,188 @@ ROW19_REFIT_GOLD_GENERATION: str = (
 
 #: The OpenMP thread count the re-fit was pinned to.
 ROW19_REFIT_THREAD_LIMIT: int = 1
+
+# THE BLEND RE-TUNED ON THE THREE RE-FITS, THE SWAP IT FEEDS, AND THE ADVERSE MEASUREMENTS.
+# `uv run python -m backtest.tune --gold-generation <ROW19_REFIT_GOLD_GENERATION>` -- step 25b's
+# procedure, thread-pinned at 1, binding the unchanged converter
+# (P332_24B_CONVERTER_ARTIFACT_ID), over the same owned pre-lock corpus (1,348 rows; WP 1,093;
+# excluded 60 / 255), reading ROW19_REFIT_ARTIFACT_IDS. Its first run REFUSED on the 14
+# provisional 2026 week-4 rows in gold (a guard over the whole file); 27646be scoped that guard
+# to the rows the walk-forward fits, as 1cfea0a had for the trainers, and the re-run wrote
+# exactly one directory. latest.json byte-unchanged by both runs.
+# WHAT MOVED. O/U 0.13 -> 0.16. WP and ATS stay at 0.00 (market alone).
+
+#: The blend artifact the re-tune wrote.
+ROW19_BLEND_ARTIFACT_ID: str = "blend_20261004_050521"
+
+#: The fitted weight per target: the model's share of the blend, 0.00 = market alone.
+ROW19_BLEND_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("wp", 0.0),
+    ("ats", 0.0),
+    ("ou", 0.16),
+)
+
+#: Each target's loss at its weight, market alone and model alone, as the artifact records.
+ROW19_BLEND_LOSS_AT_WEIGHT: tuple[tuple[str, float], ...] = (
+    ("wp", 0.6135302593965576),
+    ("ats", 9.795252225519288),
+    ("ou", 10.278079642004357),
+)
+ROW19_BLEND_LOSS_MARKET_ONLY: tuple[tuple[str, float], ...] = (
+    ("wp", 0.6135302593965576),
+    ("ats", 9.795252225519288),
+    ("ou", 10.290986646884273),
+)
+ROW19_BLEND_LOSS_MODEL_ONLY: tuple[tuple[str, float], ...] = (
+    ("wp", 0.6454589474586762),
+    ("ats", 10.423068274768728),
+    ("ou", 10.855939134999623),
+)
+
+#: ``(manifest_key, artifact_id)`` exactly as the row-19 swap writes them into latest.json.
+ROW19_SWAP_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
+    ("wp", "wp_20261004_050223"),
+    ("ats", "ats_20261004_050228"),
+    ("ou", "ou_20261004_050232"),
+    ("blend", "blend_20261004_050521"),
+)
+
+# THE ADVERSE MEASUREMENTS, PUBLISHED AND OVERRIDDEN. Each target's incumbent (the
+# P332_25B ids) and re-fit metadata.json season_results side by side, and the blend losses
+# before (P332_25B_LOSS_*) and after. THE RE-FITS ARE PROMOTED REGARDLESS of every worse
+# number below: models fitted on the pre-fix Elo were fitted on defective inputs (standing
+# owner rule "old models and baselines are dead"; CONTEXT "Model promotion"). Worse on the
+# re-fit, stated plainly:
+#   WP  2024 MAE 0.44182 -> 0.44831; 2025 accuracy 0.64561 -> 0.63509, MAE 0.45385 -> 0.45687
+#       (2024 accuracy is better, 0.66667 -> 0.67018).
+#   ATS 2024 MAE 10.0734 -> 10.2950, RMSE 13.1540 -> 13.1699, R2 0.17041 -> 0.16841;
+#       2025 MAE 10.3135 -> 10.3181, RMSE 13.0271 -> 13.0826, R2 0.15036 -> 0.14312.
+#   O/U 2024 MAE 10.2149 -> 10.2170, RMSE 13.2070 -> 13.2682, R2 -0.00359 -> -0.01292;
+#       2025 MAE 11.0595 -> 11.2356, RMSE 13.8726 -> 14.1261, R2 -0.00702 -> -0.04416.
+#   Blend model-only loss: WP 0.645234 -> 0.645459 and O/U 10.846197 -> 10.855939 (worse);
+#       ATS 10.462824 -> 10.423068 (better). At-weight loss: WP and ATS unchanged (market
+#       alone both times); O/U 10.285894 -> 10.278080 (better).
+ROW19_ADVERSE_MEASUREMENTS: dict[str, dict[str, object]] = {
+    "wp": {
+        "incumbent": "wp_20260923_172144",
+        "refit": "wp_20261004_050223",
+        "season_results_incumbent": (
+            {
+                "season": 2024,
+                "n_games": 285,
+                "accuracy": 0.6666666666666666,
+                "mae": 0.44182334935450407,
+            },
+            {
+                "season": 2025,
+                "n_games": 285,
+                "accuracy": 0.6456140350877193,
+                "mae": 0.453850353235654,
+            },
+        ),
+        "season_results_refit": (
+            {
+                "season": 2024,
+                "n_games": 285,
+                "accuracy": 0.6701754385964912,
+                "mae": 0.44831260023130715,
+            },
+            {
+                "season": 2025,
+                "n_games": 285,
+                "accuracy": 0.6350877192982456,
+                "mae": 0.4568714344669296,
+            },
+        ),
+    },
+    "ats": {
+        "incumbent": "ats_20260923_172148",
+        "refit": "ats_20261004_050228",
+        "season_results_incumbent": (
+            {
+                "season": 2024,
+                "n_games": 285,
+                "mae": 10.073374768091659,
+                "rmse": 13.154046340352192,
+                "r2": 0.17041262896851894,
+            },
+            {
+                "season": 2025,
+                "n_games": 285,
+                "mae": 10.313470956794264,
+                "rmse": 13.027124425848687,
+                "r2": 0.15036376215839975,
+            },
+        ),
+        "season_results_refit": (
+            {
+                "season": 2024,
+                "n_games": 285,
+                "mae": 10.294952517908001,
+                "rmse": 13.169884932932531,
+                "r2": 0.16841363845624968,
+            },
+            {
+                "season": 2025,
+                "n_games": 285,
+                "mae": 10.318127599064457,
+                "rmse": 13.082574751359251,
+                "r2": 0.14311536681282544,
+            },
+        ),
+    },
+    "ou": {
+        "incumbent": "ou_20260923_172152",
+        "refit": "ou_20261004_050232",
+        "season_results_incumbent": (
+            {
+                "season": 2024,
+                "n_games": 285,
+                "mae": 10.214894813403749,
+                "rmse": 13.206983580371329,
+                "r2": -0.0035945004922313117,
+            },
+            {
+                "season": 2025,
+                "n_games": 285,
+                "mae": 11.059474824604235,
+                "rmse": 13.87257741286598,
+                "r2": -0.007019130674447371,
+            },
+        ),
+        "season_results_refit": (
+            {
+                "season": 2024,
+                "n_games": 285,
+                "mae": 10.217030106929311,
+                "rmse": 13.268175829144914,
+                "r2": -0.012916004577072204,
+            },
+            {
+                "season": 2025,
+                "n_games": 285,
+                "mae": 11.235573283413,
+                "rmse": 14.126064772371798,
+                "r2": -0.04415697445607636,
+            },
+        ),
+    },
+    "blend": {
+        "incumbent": "blend_20260923_212418",
+        "refit": "blend_20261004_050521",
+        "weights_incumbent": P332_25B_BLEND_WEIGHTS,
+        "weights_refit": ROW19_BLEND_WEIGHTS,
+        "loss_at_weight_incumbent": P332_25B_LOSS_AT_WEIGHT,
+        "loss_at_weight_refit": ROW19_BLEND_LOSS_AT_WEIGHT,
+        "loss_market_only_incumbent": P332_25B_LOSS_MARKET_ONLY,
+        "loss_market_only_refit": ROW19_BLEND_LOSS_MARKET_ONLY,
+        "loss_model_only_incumbent": P332_25B_LOSS_MODEL_ONLY,
+        "loss_model_only_refit": ROW19_BLEND_LOSS_MODEL_ONLY,
+    },
+    "promoted_regardless": True,
+    "why": (
+        "models fitted on the pre-fix Elo were fitted on defective inputs; standing owner "
+        "rule: old models and baselines are dead -- an adverse number is published, never a "
+        "reason to retain the incumbent"
+    ),
+}

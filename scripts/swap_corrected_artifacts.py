@@ -1,5 +1,13 @@
 """Install the four corrected artifacts into production in ONE atomic write (Plan 33.2-25).
 
+CURRENT USE: WINDOWS ROW 19 (quick task 261003-vke, 2026-10-04). The script now installs the
+three re-fits on the neutral-site Elo gold (zero home-field advantage at every neutral site,
+dc7c34d) and the blend tuned on them -- ``tests.phase33_state.ROW19_SWAP_ARTIFACT_IDS`` --
+guarded by ``ROW19_PRE_SWAP_LATEST_JSON_SHA256`` (the manifest the 2026-09-23 swap installed).
+The Plan 33.2-25 text below is kept as the history of the first swap through this script;
+its slots (``P332_25B_SWAP_ARTIFACT_IDS``, ``P332_25_PRE_SWAP_LATEST_JSON_SHA256``) stay in
+the state manifest unchanged.
+
 WHAT THIS DOES. It moves the four pointers in ``artifacts/latest.json`` -- ``wp``, ``ats``,
 ``ou`` and ``blend`` -- to the corrected artifacts, through
 ``models.artifacts.replace_manifest``, called exactly once. That function LOADS every
@@ -45,8 +53,8 @@ from models.artifacts import (
     replace_manifest,
 )
 from tests.phase33_state import (
-    P332_25_PRE_SWAP_LATEST_JSON_SHA256,
-    P332_25B_SWAP_ARTIFACT_IDS,
+    ROW19_PRE_SWAP_LATEST_JSON_SHA256,
+    ROW19_SWAP_ARTIFACT_IDS,
 )
 
 ARTIFACTS_DIR = Path("artifacts")
@@ -64,7 +72,7 @@ def _sha256(path: Path) -> str:
 
 def swap_mapping() -> dict[str, str]:
     """The four pointers the swap installs, exactly as recorded in the state manifest."""
-    return dict(P332_25B_SWAP_ARTIFACT_IDS)
+    return dict(ROW19_SWAP_ARTIFACT_IDS)
 
 
 def _current_manifest() -> dict[str, str]:
@@ -79,10 +87,10 @@ def assert_pre_swap_state() -> None:
         )
         raise SwapRefusedError(msg)
     actual = _sha256(LATEST_PATH)
-    if actual != P332_25_PRE_SWAP_LATEST_JSON_SHA256:
+    if actual != ROW19_PRE_SWAP_LATEST_JSON_SHA256:
         msg = (
             f"{LATEST_PATH} hashes to {actual}, not the recorded pre-swap "
-            f"{P332_25_PRE_SWAP_LATEST_JSON_SHA256}: production moved after the record was "
+            f"{ROW19_PRE_SWAP_LATEST_JSON_SHA256}: production moved after the record was "
             "written, so the recorded manifest would not restore what this swap replaces."
         )
         raise SwapRefusedError(msg)
