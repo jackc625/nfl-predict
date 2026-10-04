@@ -40,6 +40,7 @@ import pandas as pd
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+import utils.game_lock as lock_rule
 from data.storage import load_dataframe, save_dataframe
 from features.contextual import (
     ContextualFeaturesCalculator,
@@ -94,7 +95,6 @@ from utils import get_logger
 from utils.date_utils import ET
 from utils.exceptions import DataIngestionError
 from utils.feature_columns import normalization_exclude_columns
-from utils.game_lock import game_lock
 
 logger = get_logger(__name__)
 
@@ -483,7 +483,7 @@ def leave_out_unplayed_games_locking_after(
         for game_id, kickoff in zip(
             unplayed["game_id"], unplayed["kickoff_et"], strict=True
         )
-        if game_lock(kickoff, game_id=str(game_id)) > through_lock
+        if lock_rule.game_lock(kickoff, game_id=str(game_id)) > through_lock
     }
     if not later:
         return games_df
