@@ -20251,3 +20251,54 @@ ROW19_POST_SWAP_LATEST_JSON_SHA256: str = (
 ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256: str = (
     "9a4b22485a147445814f936a67c695619cbf9ede78d71e156dffb67d62c28d1d"
 )
+
+# THE ROW-19 RE-MEASURE OF THE 2026 BET RULE, STAGED (quick task 261003-vke, Task 3).
+# Owner ruling 2026-10-03 ~22:50 ET, verbatim: "Re-measure, same recipe (Recommended)". On
+# 2026-10-04 at about 01:23 ET both derivations ran with the unchanged recipe on the row-19
+# production models (ROW19_SWAP_ARTIFACT_IDS, gold ROW19_REFIT_GOLD_GENERATION), selected by the
+# new `--correction row19` (the default still renders the 33.2 correction):
+#   `OMP_NUM_THREADS=1 uv run python -m scripts.derive_corrected_ev_chain --correction row19`
+#   `OMP_NUM_THREADS=1 uv run python -m scripts.derive_cold_start_constants --corrected
+#    --correction row19 --trust-inputs` (its reproduction check passed before 2026 was extended).
+# They supersede the 8c9675e EV-chain record (P332_29_*) and the 9bb7568 cold-start values
+# (P332_26_*), whose files stay byte-unchanged. STAGED: the live readers move in the next commit.
+# Equal old and new values would be a legitimate outcome; no target was refused.
+
+#: The row-19 chain-fit run record (gitignored) and the sha256 of its bytes as derived.
+#: Supersedes P332_29_CORRECTED_CHAIN_FIT_PATH / _SHA256 (outputs/p332/corrected_chain_fit.json).
+ROW19_CHAIN_FIT_PATH: str = "outputs/row19/neutral_hfa_chain_fit.json"
+ROW19_CHAIN_FIT_SHA256: str = (
+    "fab1118b8093bf55fd1cd4d7d8ba80eff3f95b7bd9537c4cf4f3a6b2a6ce2906"
+)
+
+#: Per-target EV floor. 8c9675e (P332_29_CORRECTED_EV_FLOOR): wp 0.0, ats 0.05, ou 0.0.
+ROW19_EV_FLOOR: tuple[tuple[str, float | None], ...] = (
+    ("wp", 0.0),
+    ("ats", 0.0),
+    ("ou", 0.01),
+)
+
+#: Per-target frozen residual SD; WP none by design (D31-07). 8c9675e
+#: (P332_29_CORRECTED_FROZEN_SD): ats 13.446837941873182, ou 13.67472671184805.
+ROW19_FROZEN_SD: tuple[tuple[str, float | None], ...] = (
+    ("wp", None),
+    ("ats", 13.42742143578699),
+    ("ou", 13.737115789484102),
+)
+
+#: Per-target (high, medium) edge thresholds. 9bb7568 (P332_26_CORRECTED_EDGE_THRESHOLDS):
+#: wp (0.05, 0.02), ats (1.759, 0.7287), ou (0.0438, 0.0173). WP's pair is the anchor.
+ROW19_EDGE_THRESHOLDS: tuple[tuple[str, tuple[float, float] | None], ...] = (
+    ("wp", (0.05, 0.02)),
+    ("ats", (1.6229, 0.6211)),
+    ("ou", (0.0452, 0.0162)),
+)
+
+#: The 2026 chain-fit bias per target, pooled 2017-2024 (no 2025 row). 9bb7568
+#: (P332_26_CORRECTED_CHAIN_FIT_BIAS_2026): wp 0.0004000931458235923, ats -0.8288653630898939,
+#: ou 0.6443360853661155.
+ROW19_CHAIN_FIT_BIAS_2026: tuple[tuple[str, float], ...] = (
+    ("wp", -0.0001220760959361301),
+    ("ats", -0.4754073948548693),
+    ("ou", 0.0974858578219975),
+)
