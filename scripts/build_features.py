@@ -94,6 +94,7 @@ from utils import get_logger
 from utils.date_utils import ET
 from utils.exceptions import DataIngestionError
 from utils.feature_columns import normalization_exclude_columns
+from utils.game_lock import game_lock
 
 logger = get_logger(__name__)
 
@@ -448,6 +449,51 @@ def scope_full_rebuild_to_elo_coverage(
         else {},
     )
     return scoped
+
+
+def leave_out_unplayed_games_locking_after(
+    games_df: pd.DataFrame, through_lock: datetime | None
+) -> pd.DataFrame:
+    """*games_df* without the unplayed games whose lock is later than *through_lock*.
+
+    WHY (review WR-08, owner ruling B of 2026-10-03). The daily run stores a week-start
+    provisional Elo row for EVERY unplayed game of the slate's week, so the live rank and
+    percentile are computed over the same ratings training used. Those rows are for the
+    RANKING. The week's later games are not built tonight -- their weather is not
+    collected yet and they are predicted on their own night -- so the nightly full rebuild
+    keeps an unplayed game only when its lock is at or before tonight's slate lock. That is
+    tonight's slate plus earlier slates' games: exactly what it built before. A played
+    game is never touched.
+
+    Args:
+        games_df: The full-rebuild games frame (``game_id``, ``kickoff_et`` and scores).
+        through_lock: The slate's lock. ``None`` (the Friday registry, the CLI) returns
+            the SAME object.
+
+    Returns:
+        *games_df* without those games; the SAME object when there are none.
+    """
+    if through_lock is None or len(games_df) == 0:
+        return games_df
+
+    played = games_df["home_score"].notna() | games_df["away_score"].notna()
+    unplayed = games_df.loc[~played]
+    later = {
+        str(game_id)
+        for game_id, kickoff in zip(
+            unplayed["game_id"], unplayed["kickoff_et"], strict=True
+        )
+        if game_lock(kickoff, game_id=str(game_id)) > through_lock
+    }
+    if not later:
+        return games_df
+    logger.info(
+        "Left the week's later unplayed games out of tonight's gold: their Elo rows "
+        "exist only for the week's ranking",
+        through_lock=str(through_lock),
+        left_out=sorted(later),
+    )
+    return games_df.loc[~games_df["game_id"].astype(str).isin(later)]
 
 
 # THE TWO WEATHER BUILDER IDENTITIES (Ruling K1, Plan 33.1-04).
@@ -882,6 +928,7 @@ class FeatureMatrixBuilder:
         as_of_datetime: datetime | None = None,
         *,
         through_season: int | None = None,
+        unplayed_through_lock: datetime | None = None,
     ) -> dict[str, pd.DataFrame]:
         """
         Load all feature sources from silver layer.
@@ -896,6 +943,9 @@ class FeatureMatrixBuilder:
                 own lock. Defaults to ``datetime.now(ET)``.
             through_season: Last season a FULL rebuild carries (the ladder-rung
                 bound, see ``scope_games_through_season``). ``None`` = every season.
+            unplayed_through_lock: The daily slate's lock; a FULL rebuild leaves out every
+                unplayed game locking later (``leave_out_unplayed_games_locking_after``).
+                ``None`` = every game an Elo row can date.
 
         Returns:
             Dictionary with all feature DataFrames
@@ -953,6 +1003,9 @@ class FeatureMatrixBuilder:
             if target_season is None and target_week is None:
                 games_df = scope_full_rebuild_to_elo_coverage(
                     games_df, self.elo_calc._load_snapshots()
+                )
+                games_df = leave_out_unplayed_games_locking_after(
+                    games_df, unplayed_through_lock
                 )
             feature_sources["games"] = games_df
             logger.info("Loaded games data", records=len(games_df))
@@ -3262,6 +3315,7 @@ class FeatureMatrixBuilder:
         *,
         excluded_game_ids: frozenset[str] = frozenset(),
         through_season: int | None = None,
+        unplayed_through_lock: datetime | None = None,
     ) -> dict[str, pd.DataFrame]:
         """Generate complete feature matrices for all prediction targets.
 
@@ -3292,6 +3346,9 @@ class FeatureMatrixBuilder:
                 rungs pass 2025 (owner ruling 2026-09-21; ``scope_games_through_season``).
                 It narrows the base games frame BEFORE the lock frame, so every gate
                 below runs unchanged over the games that remain. ``None`` = every season.
+            unplayed_through_lock: The daily slate's lock. A FULL rebuild then leaves out
+                every unplayed game whose lock is later (review WR-08); ``None`` keeps
+                every game an Elo row can date.
 
         Returns:
             Dictionary with feature matrices for each target.
@@ -3319,6 +3376,7 @@ class FeatureMatrixBuilder:
                 target_week,
                 as_of_datetime=as_of_datetime,
                 through_season=through_season,
+                unplayed_through_lock=unplayed_through_lock,
             )
             feature_sources = drop_excluded_games(feature_sources, excluded_game_ids)
 

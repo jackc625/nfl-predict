@@ -285,3 +285,105 @@ class TestEveryWriteLandsInCanonicalRowOrder:
         assert read_sandbox_table(sandbox, "elo_game_snapshots").empty, (
             "the refusal half-applied: rows were written before it raised."
         )
+
+
+class TestTheLiveWeekRanksTheRatingsTrainingRanked:
+    """Review WR-08 (owner ruling B): the live rank/percentile equals the training-time one.
+
+    The daily step now stores a week-start row for every unplayed game of the slate's week.
+    The week's first game is played, the second is tonight's slate, the last two are later.
+    Training is the same week once every game is played and the chain is rebuilt. Week-1
+    margins are chosen so the slate's teams sit mid-table, where a stale rating moves a rank.
+    """
+
+    RANK_COLUMNS = (
+        "home_elo_rank",
+        "away_elo_rank",
+        "home_elo_percentile",
+        "away_elo_percentile",
+    )
+
+    @staticmethod
+    def _games(*, week_two_played: int) -> pd.DataFrame:
+        live = make_season_games(LIVE_SEASON, weeks=2)
+        week_two = live.index[live["week"] == 2]
+        live.loc[week_two[week_two_played:], ["home_score", "away_score"]] = None
+        week_one = live.index[live["week"] == 1]
+        live.loc[week_one, "home_score"] = [27.0, 20.0, 35.0, 0.0]
+        live.loc[week_one, "away_score"] = [17.0, 17.0, 3.0, 45.0]
+        return pd.concat(
+            [make_season_games(BURN_IN_SEASON, weeks=3), live], ignore_index=True
+        )
+
+    def test_the_slate_ranks_equal_training_and_differ_from_a_slate_only_store(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import scripts.build_elo as build_elo_mod
+        from features.elo_features import EloFeatureBuilder
+        from pipeline.steps import persist_current_season_elo
+
+        sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
+        tonight = self._games(week_two_played=1)
+        builder = sandbox_builder(sandbox, tonight)
+        builder.save_full_rebuild(
+            builder.build_all_ratings(start_season=BURN_IN_SEASON),
+            start_season=BURN_IN_SEASON,
+        )
+        real_builder = build_elo_mod.EloBuilder
+        monkeypatch.setattr(
+            build_elo_mod, "EloBuilder", lambda: real_builder(data_root=sandbox)
+        )
+        monkeypatch.setattr(
+            build_elo_mod, "get_current_nfl_week", lambda: (LIVE_SEASON, 2)
+        )
+        week_two = tonight[(tonight["season"] == LIVE_SEASON) & (tonight["week"] == 2)]
+        slate = str(week_two["game_id"].iloc[1])
+        persist_current_season_elo(frozenset({slate}))
+        live = read_sandbox_table(sandbox, "elo_game_snapshots")
+
+        stored_week_two = live[(live["season"] == LIVE_SEASON) & (live["week"] == 2)]
+        assert set(stored_week_two["game_id"]) == set(week_two["game_id"])
+        assert int(stored_week_two["is_provisional"].sum()) == 3
+
+        played = tonight.copy()
+        played[["home_score", "away_score"]] = played[
+            ["home_score", "away_score"]
+        ].fillna({"home_score": 20.0, "away_score": 10.0})
+        seed_sandbox_games(played)
+        trained = real_builder(data_root=sandbox).build_all_ratings(
+            start_season=BURN_IN_SEASON
+        )
+
+        # Each week-start row equals the real pre-game row that later replaces it.
+        ratings = ["game_id", "home_elo_pre", "away_elo_pre"]
+        pd.testing.assert_frame_equal(
+            stored_week_two[ratings].sort_values("game_id").reset_index(drop=True),
+            trained.loc[
+                (trained["season"] == LIVE_SEASON) & (trained["week"] == 2), ratings
+            ]
+            .sort_values("game_id")
+            .reset_index(drop=True),
+        )
+
+        game = week_two.loc[
+            week_two["game_id"] == slate,
+            ["game_id", "season", "week", "home_team", "away_team"],
+        ]
+        ranks = EloFeatureBuilder()._add_rank_features
+        live_ranks = ranks(game, live)[list(self.RANK_COLUMNS)]
+        trained_ranks = ranks(game, trained)[list(self.RANK_COLUMNS)]
+        pd.testing.assert_frame_equal(live_ranks, trained_ranks)
+
+        # Non-vacuity: the store before this fix held the slate's row alone for week 2.
+        slate_only = live[
+            ~(
+                (live["season"] == LIVE_SEASON)
+                & (live["week"] == 2)
+                & live["is_provisional"]
+                & (live["game_id"] != slate)
+            )
+        ]
+        stale_ranks = ranks(game, slate_only)[list(self.RANK_COLUMNS)]
+        assert not stale_ranks.equals(live_ranks), (
+            "a slate-only store ranks the same here, so the equality above proves nothing"
+        )

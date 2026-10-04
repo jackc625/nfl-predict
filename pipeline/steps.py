@@ -637,7 +637,7 @@ def step_build_elo() -> None:
 def persist_current_season_elo(
     provisional_game_ids: frozenset[str] = frozenset(),
 ) -> None:
-    """Re-derive the current season's Elo and persist it, plus provisional rows for some games.
+    """Re-derive the current season's Elo and persist it, plus provisional rows for some weeks.
 
     *provisional_game_ids* names unplayed games that need a pre-game rating NOW (Plan 33.2-27):
     the daily run passes tomorrow's slate. Without such a row an unplayed game has no Elo
@@ -645,6 +645,14 @@ def persist_current_season_elo(
     flagged ``is_provisional`` (``EloBuilder.snapshot_upcoming_week``), is replaced in place when
     the result lands, and is refused by every trainer. Empty (the Friday step's call) persists
     exactly what it always did.
+
+    A ROW IS STORED FOR EVERY UNPLAYED GAME OF THE SLATE'S WEEK, not only the slate (review
+    WR-08, owner ruling B of 2026-10-03). The Elo rank and percentile rank every team's latest
+    pre-game rating at ``week <= W``; training saw a week-W row for every week-W game, so the
+    live ranking needs the same set. A team plays once a week, so each of these rows is that
+    team's week-start rating and equals the real pre-game row that later replaces it. The
+    week's later games stay OUT of tonight's gold: ``build_and_save_gold`` leaves out every
+    unplayed game whose lock is after the slate's.
 
     Raises:
         EloSnapshotNotPersistedError: When snapshots were computed and not written.
@@ -679,9 +687,6 @@ def persist_current_season_elo(
             ],
             ignore_index=True,
         )
-        provisional = provisional.loc[
-            provisional["game_id"].astype(str).isin(sorted(provisional_game_ids))
-        ]
         snapshots = pd.concat([snapshots, provisional], ignore_index=True)
     builder.save_live_append(update.season, snapshots=snapshots)
 
@@ -827,7 +832,11 @@ def step_build_features() -> None:
     build_and_save_gold(serve)
 
 
-def build_and_save_gold(serve_game_ids: frozenset[str]) -> None:
+def build_and_save_gold(
+    serve_game_ids: frozenset[str],
+    *,
+    unplayed_through_lock: datetime | None = None,
+) -> None:
     """Build the full-history gold, excluding the run's dropped games, and save it.
 
     A SKIP MUST NEVER DELETE A HISTORICAL GAME FROM GOLD (33.2 review C1 CR-06 = B WR-01). An
@@ -839,13 +848,18 @@ def build_and_save_gold(serve_game_ids: frozenset[str]) -> None:
 
     Args:
         serve_game_ids: The games this run is about to predict (the daily slate).
+        unplayed_through_lock: The slate's lock. An unplayed game whose lock is later is
+            left out of the build: its Elo row exists only for the week's ranking (review
+            WR-08). None (the Friday registry) builds every game that has an Elo row.
     """
     from pipeline import live_skip
     from scripts.build_features import FeatureMatrixBuilder
 
     excluded = live_skip.excluded_games()
     builder = FeatureMatrixBuilder()
-    matrices = builder.generate_feature_matrices(excluded_game_ids=excluded)
+    matrices = builder.generate_feature_matrices(
+        excluded_game_ids=excluded, unplayed_through_lock=unplayed_through_lock
+    )
     # An empty result saves nothing; ``step_verify_gold_currency`` then refuses the stale gold.
     if matrices:
         builder.save_feature_matrices(

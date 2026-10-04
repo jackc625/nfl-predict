@@ -6,7 +6,8 @@
 * Every slate game is predicted, stamped with its three instants, and merged into the week's file
   without disturbing other games' rows; a game computed after its lock is refused, never
   back-dated; a game that silently produced no prediction is a named refusal.
-* Elo gains a flagged provisional row for exactly the slate's games.
+* Elo gains a flagged provisional row for every unplayed game of the slate's week (review
+  WR-08: the week's rank/percentile then ranks the same ratings training did).
 
 Every test writes only under ``tmp_path``.
 
@@ -387,7 +388,14 @@ def test_a_slate_game_with_no_prediction_is_a_named_refusal(predict_env):
 # ---------------------------------------------------------------------------
 
 
-def test_elo_gains_provisional_rows_for_exactly_the_slate(monkeypatch):
+def test_elo_gains_provisional_rows_for_the_slates_whole_week(monkeypatch):
+    """Every unplayed game of the slate's week gets its week-start row, not only the slate.
+
+    CHANGED BY REVIEW WR-08 (owner ruling B). This test used to pin "exactly the slate".
+    The rank/percentile ranks every team's latest pre-game rating at ``week <= W``, and
+    training saw a row for every week-W game; a slate-only store ranked the week's later
+    teams on a rating one result stale. ``PHI@CHI`` is not on the slate and now has a row.
+    """
     from pipeline.steps import persist_current_season_elo
     from scripts import build_elo
 
@@ -417,7 +425,7 @@ def test_elo_gains_provisional_rows_for_exactly_the_slate(monkeypatch):
 
     frame = saved["frame"]
     provisional = set(frame.loc[frame["is_provisional"], "game_id"])
-    assert provisional == {"2026_W03_LAC@BUF", "2026_W03_LA@DEN"}
+    assert provisional == set(week_games)
     assert "2026_W02_DET@BUF" in set(frame["game_id"])
 
 

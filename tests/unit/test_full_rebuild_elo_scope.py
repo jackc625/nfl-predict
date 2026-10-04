@@ -94,6 +94,58 @@ class TestTheUnplayedFutureIsScopedOut:
         assert scope_full_rebuild_to_elo_coverage(games, _snapshots([])) is games
 
 
+class TestTheWeeksLaterGamesStayOutOfTonightsGold:
+    """Review WR-08 (owner ruling B): week-start Elo rows exist for ranking, not for gold.
+
+    A Thursday slate's night: the whole week has Elo rows, but the build keeps only the
+    played games, tonight's slate and earlier slates -- unplayed games locking at or
+    before tonight's lock -- exactly the set it built before the week's rows were stored.
+    """
+
+    @staticmethod
+    def _week() -> pd.DataFrame:
+        from zoneinfo import ZoneInfo
+
+        et = ZoneInfo("America/New_York")
+        rows = [
+            ("2026_W04_A@B", 24.0, pd.Timestamp("2026-09-27 13:00", tz=et)),
+            ("2026_W05_C@D", None, pd.Timestamp("2026-10-01 20:15", tz=et)),
+            ("2026_W05_E@F", None, pd.Timestamp("2026-10-04 13:00", tz=et)),
+            ("2026_W05_G@H", None, pd.Timestamp("2026-10-05 20:15", tz=et)),
+        ]
+        return pd.DataFrame(
+            {
+                "game_id": [r[0] for r in rows],
+                "home_score": [r[1] for r in rows],
+                "away_score": [r[1] for r in rows],
+                "kickoff_et": [r[2] for r in rows],
+            }
+        )
+
+    def test_unplayed_games_locking_after_the_slate_are_left_out(self) -> None:
+        from scripts.build_features import leave_out_unplayed_games_locking_after
+        from utils.game_lock import game_lock
+
+        games = self._week()
+        thursday_lock = game_lock(games.loc[1, "kickoff_et"])
+        kept = leave_out_unplayed_games_locking_after(games, thursday_lock)
+        assert list(kept["game_id"]) == ["2026_W04_A@B", "2026_W05_C@D"]
+
+    def test_the_last_slate_of_the_week_keeps_the_whole_week(self) -> None:
+        from scripts.build_features import leave_out_unplayed_games_locking_after
+        from utils.game_lock import game_lock
+
+        games = self._week()
+        monday_lock = game_lock(games.loc[3, "kickoff_et"])
+        assert leave_out_unplayed_games_locking_after(games, monday_lock) is games
+
+    def test_no_lock_returns_the_same_frame(self) -> None:
+        from scripts.build_features import leave_out_unplayed_games_locking_after
+
+        games = self._week()
+        assert leave_out_unplayed_games_locking_after(games, None) is games
+
+
 class TestAPlayedGameWithNoSnapshotStillRefuses:
     """The bound that stops a scope becoming a silent history-dropper."""
 

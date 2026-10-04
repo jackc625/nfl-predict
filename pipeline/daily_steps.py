@@ -706,7 +706,7 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
             "build_elo",
             lambda: persist_current_season_elo(slate.game_ids),
             build,
-            description="Update Elo, with provisional rows for the slate",
+            description="Update Elo, with provisional rows for the slate's week",
         ),
         step("build_team_form", step_build_team_form, build, description="Team form"),
         # NO build_contextual step (33.2 review B WR-14). The Friday registry's step runs the
@@ -728,7 +728,11 @@ def build_daily_step_registry(slate: DailySlate) -> list[StepDefinition]:
         ),
         step(
             "build_features",
-            lambda: build_and_save_gold(slate.game_ids),
+            # The week's later games have Elo rows for ranking (review WR-08) but are not
+            # built tonight: an unplayed game locking after the slate stays out of gold.
+            lambda: build_and_save_gold(
+                slate.game_ids, unplayed_through_lock=slate.lock
+            ),
             build,
             description="Full-history gold build, saved; a history refusal keeps gold",
         ),
