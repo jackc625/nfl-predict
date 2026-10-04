@@ -995,8 +995,19 @@ class TestThePromotedAndRetainedSetsAreRecordedAndDisjoint:
         assert untestable & set(phase33_state.GATE_PROMOTED_TARGETS) == set()
 
     def test_the_live_manifest_matches_the_recorded_end_state(self) -> None:
+        """Production serves the LAST authorised swap's record, and nothing unrecorded.
+
+        Re-pointed at the Phase 33 close-out. Plan 33.2-25's owner-accepted batched swap
+        (2026-09-23) is now the most recent authorised write of ``artifacts/latest.json``,
+        so the recorded end state is ``P332_25B_SWAP_ARTIFACT_IDS`` -- the same re-pointing
+        ``test_weather_bridge_expiry`` and ``test_blend_revalidation_isolation`` made.
+        ``POST_GATE_ARTIFACT_MANIFEST`` stays unedited as the record of what this gate
+        installed, and the committed verdict TOML is not touched.
+
+        Was: ``manifest == dict(phase33_state.POST_GATE_ARTIFACT_MANIFEST)``.
+        """
         manifest = json.loads(LIVE_MANIFEST_PATH.read_text(encoding="utf-8"))
-        assert manifest == dict(phase33_state.POST_GATE_ARTIFACT_MANIFEST)
+        assert manifest == dict(phase33_state.P332_25B_SWAP_ARTIFACT_IDS)
 
     def test_every_live_pointer_resolves_to_a_directory_on_disk(self) -> None:
         manifest = json.loads(LIVE_MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -1008,8 +1019,18 @@ class TestThePromotedAndRetainedSetsAreRecordedAndDisjoint:
         assert unresolvable == [], unresolvable
 
     def test_the_blend_pointer_is_the_unchanged_incumbent(self) -> None:
-        manifest = json.loads(LIVE_MANIFEST_PATH.read_text(encoding="utf-8"))
-        assert manifest["blend"] == dict(phase33_state.INCUMBENT_ARTIFACTS)["blend"]
+        """T-33-42 for THIS gate's promotion: it left the blend pointer where it found it.
+
+        Re-pointed at the Phase 33 close-out to the gate's own recorded end state. The live
+        blend pointer moved afterwards, deliberately, in Plan 33.2-25's authorised swap
+        (``blend_20260923_212418``), so the live file can no longer witness what this
+        promotion did; ``POST_GATE_ARTIFACT_MANIFEST`` was read off it right after the
+        promotion and can. What production serves now is the test above's claim.
+
+        Was: the LIVE ``artifacts/latest.json`` blend pointer.
+        """
+        recorded = dict(phase33_state.POST_GATE_ARTIFACT_MANIFEST)
+        assert recorded["blend"] == dict(phase33_state.INCUMBENT_ARTIFACTS)["blend"]
 
     def test_every_non_pass_promotion_carries_an_owner_override(self) -> None:
         """The owner's ruling is recorded BESIDE the verdict, never inside it."""
