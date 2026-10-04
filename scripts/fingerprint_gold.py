@@ -1189,7 +1189,9 @@ PHASE33_PRECIP_RUNG_CAUSE: str = (
     "the mm-only branch the fix leaves byte-unchanged"
 )
 
-_PHASE33_LEVEL_PRESERVED_CACHE: tuple[str, ...] | None = None
+# Keyed on the RESOLVED data root (review WR-17): a single slot returned the first
+# root's answer to a later call that named a different root.
+_PHASE33_LEVEL_PRESERVED_CACHE: dict[Path, tuple[str, ...]] = {}
 
 
 def _gold_column_names(base_path: Path | None = None) -> tuple[str, ...]:
@@ -1215,37 +1217,53 @@ def _gold_column_names(base_path: Path | None = None) -> tuple[str, ...]:
 
 
 def phase33_level_preserved_family(base_path: Path | None = None) -> tuple[str, ...]:
-    """THE EXEMPTION RUNG'S DECLARED FAMILY, resolved through the BUILDER's predicate.
+    """The level-preservation family as the BUILDER's predicate resolves it TODAY.
 
     NOT A SECOND LIST. ``FeatureMatrixBuilder._level_preserved_columns`` is split
-    into its two arms precisely so this function can call the SAME two arms over
-    the same inputs the build sees, rather than re-expressing the rule here --
-    which is the D30-02 second-list failure mode, and which
-    ``_discrete_indicator_predicate`` twenty screens up already refuses for the
-    CR-02 predicate on identical grounds.
+    into its two arms precisely so this function can call the SAME two arms,
+    rather than re-expressing the rule here -- which is the D30-02 second-list
+    failure mode, and which ``_discrete_indicator_predicate`` twenty screens up
+    already refuses for the CR-02 predicate on identical grounds.
 
     The two arms need different universes, and each gets the one it is about:
 
     * The SUFFIX arm is a NAME question, so it runs over the gold column set.
     * The INDICATOR arm is a VALUE question about the frame as it ENTERS
-      normalization, so it runs over silver ``weather_features`` -- the frame the
+      normalization, so it runs over silver ``weather_features`` -- the SOURCE the
       gold build merges. Judging discreteness on GOLD would be meaningless:
       normalization is the very thing that destroys it, which is the defect this
       rung exists to fix.
+
+    WHAT THIS IS NOT (review WR-17). It is NOT the frame the build judges: the build
+    runs the indicator arm over its merged, game-level frame, whose rows differ from
+    silver's (silver carries 2026 and excluded games). And silver is MUTABLE, so the
+    answer moves with every weather rewrite. That is why the Phase-33 rung attributors
+    judge against the family DECLARED at that rebuild
+    (:func:`_phase33_declared_level_preserved_family`), not this one; this resolver
+    is the cross-check of today's predicate against the pinned declarations.
+
+    Args:
+        base_path: The data root to read (default: the configured root). Both arms
+            and the cache key use it.
 
     Raises:
         ValueError: when the resolved family is empty, which would make the rung
             refuse every move it exists to attribute.
     """
-    global _PHASE33_LEVEL_PRESERVED_CACHE
-    if _PHASE33_LEVEL_PRESERVED_CACHE is not None:
-        return _PHASE33_LEVEL_PRESERVED_CACHE
+    root = (
+        Path(base_path)
+        if base_path is not None
+        else Path(get_settings().config.data.root_path)
+    ).resolve()
+    if root in _PHASE33_LEVEL_PRESERVED_CACHE:
+        return _PHASE33_LEVEL_PRESERVED_CACHE[root]
 
-    from data.storage import load_dataframe
+    import pandas as pd
+
     from features.weather import WEATHER_FEATURE_COLUMNS_BY_BUILDER
     from scripts.build_features import FeatureMatrixBuilder
 
-    weather = load_dataframe("weather_features", "silver", "parquet")
+    weather = pd.read_parquet(root / "silver" / "weather_features.parquet")
     declared = set(WEATHER_FEATURE_COLUMNS_BY_BUILDER["full"])
     preserved = [
         column
@@ -1257,7 +1275,7 @@ def phase33_level_preserved_family(base_path: Path | None = None) -> tuple[str, 
         sorted(
             set(
                 FeatureMatrixBuilder._level_preserved_suffix_columns(
-                    _gold_column_names(base_path)
+                    _gold_column_names(root)
                 )
             )
             | set(
@@ -1275,8 +1293,22 @@ def phase33_level_preserved_family(base_path: Path | None = None) -> tuple[str, 
             "against one."
         )
         raise ValueError(msg)
-    _PHASE33_LEVEL_PRESERVED_CACHE = family
+    _PHASE33_LEVEL_PRESERVED_CACHE[root] = family
     return family
+
+
+def _phase33_declared_level_preserved_family() -> tuple[str, ...]:
+    """The family the Phase-33 exemption rung DECLARED at its rebuild (review WR-17).
+
+    The stored ``p33_rung0 -> p33_rung1`` transition is judged against what was declared
+    then -- ``tests.phase33_state.GOLD_LEVEL_PRESERVED_COLUMNS_33_14``, the 26 names
+    resolved and pinned at Plan 33-14 -- never against today's silver, which later
+    weather rewrites have changed. Imported lazily, as ``write_phase33_rebuild_diff``
+    imports the same module.
+    """
+    from tests.phase33_state import GOLD_LEVEL_PRESERVED_COLUMNS_33_14
+
+    return GOLD_LEVEL_PRESERVED_COLUMNS_33_14
 
 
 def phase33_elo_family() -> tuple[str, ...]:
@@ -3507,7 +3539,8 @@ def _phase33_structure(detail: dict, diff: dict, fail, label: str, what: str) ->
 def _attribute_phase33_exemption(detail: dict, diff: dict, verdict: dict, fail) -> bool:
     """The exemption rung: ONE declared family, resolved through the builder's predicate.
 
-    A moved column inside ``phase33_level_preserved_family()`` is attributed. A
+    A moved column inside the family DECLARED at the rebuild
+    (``_phase33_declared_level_preserved_family()``, review WR-17) is attributed. A
     moved column outside it is UNATTRIBUTED and fails, but does NOT block: the
     plan's instruction is to PARTITION rather than gate, with every out-of-family
     move carrying a written explanation in
@@ -3534,7 +3567,7 @@ def _attribute_phase33_exemption(detail: dict, diff: dict, verdict: dict, fail) 
         "decimals -- is_snow alone carried 274 -- and returning them to their "
         "recorded levels",
     )
-    family = {_canonical(name) for name in phase33_level_preserved_family()}
+    family = {_canonical(name) for name in _phase33_declared_level_preserved_family()}
 
     for column in sorted(diff["changed"]):
         if column in family:
@@ -3620,7 +3653,7 @@ def _attribute_phase33_elo(detail: dict, diff: dict, verdict: dict, fail) -> boo
     )
     elo = {_canonical(name) for name in phase33_elo_family()}
     situational = {_canonical(name) for name in PHASE33_ELO_DERIVED_SITUATIONAL_COLUMNS}
-    carried = {_canonical(name) for name in phase33_level_preserved_family()}
+    carried = {_canonical(name) for name in _phase33_declared_level_preserved_family()}
 
     for column in sorted(diff["changed"]):
         if column in elo:
