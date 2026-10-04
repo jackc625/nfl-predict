@@ -538,6 +538,28 @@ class TestTheMosHistoryRebuildsOfflineByteIdentically:
         # row carries no live forecast, so the regeneration now writes it and it is ENTIRELY
         # NULL; production silver predates the column. The intent is kept: every production
         # column reproduces exactly, and the only extra column is that one, all null.
+        #
+        # Was: every stored row, in stored order. SCOPED to the 2002-2025 corpus seasons at the
+        # Phase 33 close-out, as scope_sandbox_games_to_the_corpus (0de86cd) scoped its sibling.
+        # Production silver now also holds the live 2026 season -- 45 `forecast` weather rows and
+        # 63 weather_features rows -- which the regeneration carries along untouched but
+        # re-sorts, and the daily step_build_weather_features rewrites the whole
+        # weather_features table in games order. Neither is a claim about the MOS history, so
+        # the corpus rows are compared in game_id order: every history VALUE must still
+        # reproduce exactly, and the byte-identity claim is the two-run check above.
+        games = pd.read_parquet(root / "silver" / "games.parquet")
+        corpus_ids = set(
+            games.loc[
+                games["season"].between(CORPUS_FIRST_SEASON, CORPUS_LAST_SEASON),
+                "game_id",
+            ]
+        )
+
+        def corpus_rows(frame: pd.DataFrame) -> pd.DataFrame:
+            scoped = frame[frame["game_id"].isin(corpus_ids)]
+            ordered = scoped.sort_values("game_id", kind="mergesort")
+            return ordered.reset_index(drop=True)
+
         new_columns = set(phase33_state.P332_27_WEATHER_SCHEMA_NEW_FIELDS)
         for table in MOS_REBUILT_TABLES:
             regenerated = pd.read_parquet(root / "silver" / f"{table}.parquet")
@@ -548,10 +570,15 @@ class TestTheMosHistoryRebuildsOfflineByteIdentically:
                 assert regenerated[column].isna().all(), (
                     f"silver {table}: {column} carries a value on a MOS history row"
                 )
+            expected = corpus_rows(production)
+            assert len(expected) == len(corpus_ids), (
+                f"silver {table}: production holds {len(expected)} corpus rows, not one "
+                f"per corpus game ({len(corpus_ids)})"
+            )
             pd.testing.assert_frame_equal(
-                regenerated[list(production.columns)],
-                production,
-                obj=f"silver {table}: sandbox regeneration vs production",
+                corpus_rows(regenerated[list(production.columns)]),
+                expected,
+                obj=f"silver {table}: sandbox regeneration vs production, 2002-2025",
             )
 
 
