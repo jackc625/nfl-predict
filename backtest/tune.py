@@ -337,7 +337,12 @@ def _gold_predictions_fn(
         from features.elo_features import assert_no_provisional_training_rows
 
         gold = pd.read_parquet(Path(gold_dir) / f"features_{target}.parquet")
-        assert_no_provisional_training_rows(gold, f"blend-tune:{target}")
+        # Judged over the rows the walk-forward actually fits: every fold trains and
+        # predicts on ``season <= holdout``, so no row past ``max(seasons)`` is used. During
+        # the season gold always carries the next slate's provisional rows; judging the
+        # whole file refused every re-tune (the 1cfea0a trainer fix, applied here too).
+        fitted = gold[gold["season"] <= max(seasons)]
+        assert_no_provisional_training_rows(fitted, f"blend-tune:{target}")
         return walk_forward_predictions(target, gold, recipe, seasons)
 
     return predict
