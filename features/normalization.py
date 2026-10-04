@@ -142,8 +142,11 @@ def expanding_normalize(
 
             NOT A GENERAL EXEMPTION FOR INDICATORS. A binary flag that VARIES
             still carries its distinction through a monotone transform, and
-            z-scoring it is this pipeline's convention. Only a caller that NAMES
-            a column opts it out, and the set is expected to stay very small.
+            z-scoring it is this pipeline's convention. This function exempts
+            only the columns its caller NAMES. Its one production caller,
+            ``scripts/build_features.py`` (``_level_preserved_columns``), names
+            every ``*_coverage`` column and the active weather builder's
+            indicator flags (owner ruling D33-34(a), 2026-09-14).
         row_locks: Each row's game LOCK, as an orderable per-row value indexed like
             *df* -- in production, UTC nanoseconds from ``utils.game_lock`` through
             ``features.point_in_time_fill``. REQUIRED.
