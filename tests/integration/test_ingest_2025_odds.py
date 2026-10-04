@@ -176,10 +176,16 @@ class TestTheAppendedATSResidualConstantsStillHold:
         D33.2-03 removed the market columns it reads. So the constants are a RECORD of a
         retired model, and what is checkable is that the re-score is attributable to the
         model the live chain's own constants were derived from.
+
+        Re-pointed at the row-19 repoint (quick task 261003-vke): the live chain's constants are
+        the row-19 re-measure's (``backtest.neutral_hfa_ev_chain_constants``), derived from the
+        models swapped in on 2026-10-04; the 8c9675e module stays the record of the 09-23 ones.
         """
         import json
 
-        from backtest.corrected_ev_chain_constants import CORRECTED_SOURCE_ARTIFACT_IDS
+        from backtest.neutral_hfa_ev_chain_constants import (
+            CORRECTED_SOURCE_ARTIFACT_IDS,
+        )
 
         serving = CORRECTED_SOURCE_ARTIFACT_IDS["ats"]
         assert ats_bias_block["artifact_id"] == serving, (

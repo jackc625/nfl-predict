@@ -21,6 +21,14 @@ Over the WHOLE serving graph -- ``backtest/weekly_bet_list.py``, ``backtest/bet_
 the corrected module's objects, and a counting delegate over the original sees zero reads while
 the deferred edge-band import runs. Each negative has a planted-violation control.
 
+THE LIVE RULE IS NOW THE ROW-19 RE-MEASURE (quick task 261003-vke)
+---------------------------------------------------------------------
+Re-pointed in the row-19 repoint commit: "the corrected module" the live path reads is now
+``backtest.neutral_hfa_cold_start_constants`` (with the chain-fit record of
+``backtest.neutral_hfa_ev_chain_constants``), the same recipe re-run on the models re-fitted after
+the neutral-site Elo fix. The 9bb7568 module it supersedes, ``backtest.corrected_cold_start_constants``,
+joins the 11761c7 original as a module the serving graph must NOT import or read.
+
 Run this module:  uv run python -m pytest tests/unit/test_two_test_win_bet_rule.py -q
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -43,7 +51,8 @@ from backtest.weekly_bet_list import WeeklyChainFit, select_weekly_bets
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ORIGINAL_MODULE = "backtest.cold_start_constants"
-CORRECTED_MODULE = "backtest.corrected_cold_start_constants"
+SUPERSEDED_MODULE = "backtest.corrected_cold_start_constants"
+CORRECTED_MODULE = "backtest.neutral_hfa_cold_start_constants"
 SERVING_MODULES: tuple[str, ...] = (
     "backtest/weekly_bet_list.py",
     "backtest/bet_selector.py",
@@ -66,9 +75,17 @@ PRICE_BAD = (-400.0, 300.0)  # home at -400: EV = 0.65 * 0.25 - 0.35 = -0.1875
 
 
 def _corrected() -> Any:
-    import backtest.corrected_cold_start_constants as corrected
+    """The LIVE corrected module: the row-19 re-measure (superseding 9bb7568)."""
+    import backtest.neutral_hfa_cold_start_constants as corrected
 
     return corrected
+
+
+def _superseded() -> Any:
+    """The 9bb7568 correction the row-19 re-measure supersedes; importable history only."""
+    import backtest.corrected_cold_start_constants as superseded
+
+    return superseded
 
 
 def _fits() -> dict[str, WeeklyChainFit]:
@@ -252,6 +269,8 @@ def test_the_live_objects_are_the_corrected_module_s_objects() -> None:
     )
     assert weekly.CHAIN_FIT_BIAS_2026 is not original.CHAIN_FIT_BIAS_2026
     assert weekly.CHAIN_FIT_BIAS_2026 != original.CHAIN_FIT_BIAS_2026
+    assert weekly.CHAIN_FIT_BIAS_2026 is not _superseded().CHAIN_FIT_BIAS_2026
+    assert weekly.CHAIN_FIT_BIAS_2026 != _superseded().CHAIN_FIT_BIAS_2026
 
 
 class _CountingModule(types.ModuleType):
@@ -270,12 +289,14 @@ class _CountingModule(types.ModuleType):
         return getattr(self.__dict__["_real"], name)
 
 
-def _install_delegates(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
+def _install_delegates(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, Any]:
     old = _CountingModule(original)
+    superseded = _CountingModule(_superseded())
     new = _CountingModule(_corrected())
     monkeypatch.setitem(sys.modules, ORIGINAL_MODULE, old)
+    monkeypatch.setitem(sys.modules, SUPERSEDED_MODULE, superseded)
     monkeypatch.setitem(sys.modules, CORRECTED_MODULE, new)
-    return old, new
+    return old, superseded, new
 
 
 def test_the_deferred_edge_band_import_reads_the_corrected_module(
@@ -283,11 +304,12 @@ def test_the_deferred_edge_band_import_reads_the_corrected_module(
 ) -> None:
     import utils.edge_tier as edge_tier_module
 
-    old, new = _install_delegates(monkeypatch)
+    old, superseded, new = _install_delegates(monkeypatch)
     monkeypatch.setattr(edge_tier_module, "_THRESHOLDS_BY_TARGET", None)
     edge_tier_module.edge_tier(1.0, "ats")
 
     assert old.reads == []
+    assert superseded.reads == []
     assert "EDGE_TIER_THRESHOLDS_BY_TARGET" in new.reads
 
 
@@ -295,7 +317,7 @@ def test_the_delegate_detects_a_planted_read_of_the_original(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Planted-violation control: the delegate is not blind."""
-    old, _new = _install_delegates(monkeypatch)
+    old, _superseded_delegate, _new = _install_delegates(monkeypatch)
     namespace: dict[str, Any] = {}
     exec(f"from {ORIGINAL_MODULE} import EDGE_TIER_THRESHOLDS_BY_TARGET", namespace)
     assert old.reads == ["EDGE_TIER_THRESHOLDS_BY_TARGET"]
@@ -328,6 +350,9 @@ def test_no_serving_module_imports_the_original_and_one_imports_the_correction()
     assert ORIGINAL_MODULE not in union, {
         p: sorted(m for m in mods if "cold_start" in m) for p, mods in imported.items()
     }
+    assert SUPERSEDED_MODULE not in union, {
+        p: sorted(m for m in mods if "cold_start" in m) for p, mods in imported.items()
+    }
     assert CORRECTED_MODULE in union
 
 
@@ -341,9 +366,15 @@ def _reads_phase31_record(path: Path) -> bool:
 
 
 def test_the_live_chain_fit_path_is_the_corrected_record() -> None:
-    from backtest.corrected_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
+    """The live record is the row-19 re-measure's, not the 8c9675e record it supersedes."""
+    import backtest.corrected_ev_chain_constants as superseded_ev
+    from backtest.neutral_hfa_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
 
     assert weekly.DEFAULT_CHAIN_FIT_PATH.as_posix() == CORRECTED_CHAIN_FIT_RECORD_PATH
+    assert (
+        weekly.DEFAULT_CHAIN_FIT_PATH.as_posix()
+        != superseded_ev.CORRECTED_CHAIN_FIT_RECORD_PATH
+    )
     assert not _reads_phase31_record(weekly.DEFAULT_CHAIN_FIT_PATH)
     assert _reads_phase31_record(
         Path("outputs") / "p31" / "profitability_2025_verdict.json"

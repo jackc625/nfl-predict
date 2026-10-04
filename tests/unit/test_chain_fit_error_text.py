@@ -287,14 +287,19 @@ def test_the_residual_sd_refusal_still_names_the_target_and_the_offending_value(
 def test_a_missing_corrected_record_names_the_command_that_regenerates_it(
     tmp_path: Any,
 ) -> None:
-    """The corrected record IS regenerable, so the locked-door text would be false of it."""
-    from backtest.corrected_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
+    """The corrected record IS regenerable, so the locked-door text would be false of it.
+
+    Re-pointed at the row-19 repoint (quick task 261003-vke): the LIVE record is the row-19
+    re-measure, so the probe is its file name and the command it names carries the selector.
+    """
+    from backtest.neutral_hfa_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
 
     absent = tmp_path / CORRECTED_CHAIN_FIT_RECORD_PATH.rsplit("/", 1)[-1]
     with pytest.raises(FrozenChainFitError) as excinfo:
         load_frozen_chain_fit(absent)
     message = str(excinfo.value)
     assert "scripts.derive_corrected_ev_chain" in message
+    assert "--correction row19" in message
     assert "NO fallback" in message
     assert "CANNOT BE REGENERATED" not in message
 

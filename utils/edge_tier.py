@@ -42,12 +42,14 @@ into "high". Plan 31-17 DE-DUPLICATED and RENAMED the rule and deliberately did 
 because repairing it moves a published label on ``/`` and ``/betting`` (D31-04) and no measurement
 then existed showing new bands would be better.
 
-That measurement now exists and is FROZEN, and since Plan 33.2-26 the pair this helper reads is
-the SUPERSEDING CORRECTION: ``backtest.corrected_cold_start_constants.EDGE_TIER_THRESHOLDS_BY_TARGET``
-carries one ``(high, medium)`` pair per target, each on its target's OWN unit, re-derived on the
-corrected models and the owned pre-lock lines. The 11761c7 original,
-``backtest.cold_start_constants``, stays byte-unchanged as the record of what was frozen and when;
-this helper does not read it.
+That measurement now exists and is FROZEN, and since quick task 261003-vke (WINDOWS row 19) the
+pair this helper reads is the ROW-19 RE-MEASURE:
+``backtest.neutral_hfa_cold_start_constants.EDGE_TIER_THRESHOLDS_BY_TARGET`` carries one
+``(high, medium)`` pair per target, each on its target's OWN unit, re-derived by the Plan 33.2-26
+recipe on the models re-fitted after the neutral-site Elo fix and the owned pre-lock lines. It
+supersedes 9bb7568's ``backtest.corrected_cold_start_constants``, which superseded the 11761c7
+original ``backtest.cold_start_constants``; both stay byte-unchanged and importable as the record
+of what was measured and when, and this helper reads neither.
 
 A TARGET WITH NO HONEST THRESHOLD IS UNBANDED. The correction records ``None`` for a target whose
 honest pool was too small to derive a pair (SPEC R14). :func:`edge_tier` then returns ``None`` --
@@ -63,7 +65,7 @@ value instead of being rewritten.
 
 WHY THE FROZEN MAPPING IS IMPORTED LAZILY
 ------------------------------------------
-``backtest.corrected_cold_start_constants`` is a pure-constants module with no imports of its
+``backtest.neutral_hfa_cold_start_constants`` is a pure-constants module with no imports of its
 own, but
 reaching it executes ``backtest/__init__.py``, which pulls ``backtest.engine`` and
 ``backtest.simulation`` and through them ``models.*``, scikit-learn, XGBoost and Plotly. Two
@@ -153,12 +155,12 @@ def _thresholds_by_target() -> dict[str, tuple[float, float] | None]:
 
     The deferred import is deliberate and the module docstring gives both measured reasons:
     reaching the constants module executes ``backtest/__init__.py``, which inverts the ``utils``
-    -> ``backtest`` layering and loads the whole modelling stack. It reads the superseding
-    correction (Plan 33.2-26), never the frozen 11761c7 original.
+    -> ``backtest`` layering and loads the whole modelling stack. It reads the row-19 re-measure
+    (quick task 261003-vke), never the superseded 9bb7568 correction or the 11761c7 original.
     """
     global _THRESHOLDS_BY_TARGET
     if _THRESHOLDS_BY_TARGET is None:
-        from backtest.corrected_cold_start_constants import (
+        from backtest.neutral_hfa_cold_start_constants import (
             EDGE_TIER_THRESHOLDS_BY_TARGET,
         )
 
@@ -181,8 +183,8 @@ def _require_thresholds(target: str) -> tuple[float, float] | None:
             f"vocabulary is {sorted(EDGE_TIER_TARGETS)}. Each target's pair is on its OWN unit "
             "-- ats in POINTS, ou as a ratio of the market total, wp in probability -- so there "
             "is no neutral pair to fall back to and none is invented here. The pairs live in "
-            "backtest/corrected_cold_start_constants.EDGE_TIER_THRESHOLDS_BY_TARGET; inspect "
-            'them with `uv run python -c "import backtest.corrected_cold_start_constants as c; '
+            "backtest/neutral_hfa_cold_start_constants.EDGE_TIER_THRESHOLDS_BY_TARGET; inspect "
+            'them with `uv run python -c "import backtest.neutral_hfa_cold_start_constants as c; '
             'print(c.EDGE_TIER_THRESHOLDS_BY_TARGET, c.EDGE_TIER_THRESHOLD_UNITS)"`.'
         )
         raise UnknownEdgeTargetError(msg) from None
@@ -266,7 +268,7 @@ def __getattr__(name: str) -> Any:
 
     They are served through the module ``__getattr__`` rather than assigned at import time for the
     same reason the mapping is imported lazily: assigning them would force
-    ``backtest.corrected_cold_start_constants`` -- and with it the whole modelling stack -- into every
+    ``backtest.neutral_hfa_cold_start_constants`` -- and with it the whole modelling stack -- into every
     importer of this module, including the cache path that is built to avoid it.
 
     New code should read :data:`EDGE_TIER_TARGETS` and call :func:`edge_tier` with an explicit

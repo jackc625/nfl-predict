@@ -105,21 +105,23 @@ from backtest.bet_tracker import (
     aggregate_all_blocks,
     to_tracker_frame,
 )
+from backtest.ev_chain_constants import assign_ev_tier
 
-# THE LIVE 2026 COLD-START RULE IS THE CORRECTION (Plan 33.2-26, SPEC R14). This import and
-# ``DEFAULT_CHAIN_FIT_PATH`` below are the two halves of the live 2026 bet rule and moved in ONE
-# commit: ``_overlay_frozen_chain_fit`` applies this bias INSIDE ``load_frozen_chain_fit``, which
-# also resolves the floors from that path, so moving one without the other would judge corrected
-# floors against a superseded bias. The frozen ``backtest.cold_start_constants`` (11761c7) stays
-# importable as the record of what was frozen and when; the live path does not read it.
-from backtest.corrected_cold_start_constants import (
+# THE LIVE 2026 COLD-START RULE IS THE ROW-19 RE-MEASURE (quick task 261003-vke), superseding
+# 9bb7568 (Plan 33.2-26, SPEC R14) by the same recipe on the models re-fitted after the
+# neutral-site Elo fix. This import and ``DEFAULT_CHAIN_FIT_PATH`` below are the two halves of the
+# live 2026 bet rule and moved in ONE commit: ``_overlay_frozen_chain_fit`` applies this bias
+# INSIDE ``load_frozen_chain_fit``, which also resolves the floors from that path, so moving one
+# without the other would judge re-measured floors against a superseded bias. The 9bb7568
+# ``backtest.corrected_cold_start_constants`` and the frozen 11761c7 ``backtest.cold_start_constants``
+# stay importable as the record of what was measured and when; the live path reads neither.
+from backtest.neutral_hfa_cold_start_constants import (
     CHAIN_FIT_BIAS_2026,
     CHAIN_FIT_BIAS_SEASONS,
     CHAIN_FIT_BIAS_TARGET_SEASON,
     EDGE_TIER_THRESHOLDS_BY_TARGET,
 )
-from backtest.corrected_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
-from backtest.ev_chain_constants import assign_ev_tier
+from backtest.neutral_hfa_ev_chain_constants import CORRECTED_CHAIN_FIT_RECORD_PATH
 from backtest.ou_divergence import (
     dedupe_odds_by_book_preference,
     odds_information_time,
@@ -215,9 +217,11 @@ BET_LIST_READ_COLUMNS: tuple[str, ...] = tuple(
 # The run record carrying the tune-only fit. Gitignored (it is generator output), which is why
 # its absence RAISES a named error instead of defaulting.
 #
-# THE CORRECTED RECORD (Plan 33.2-29, superseding ee20773), repointed by Plan 33.2-26 Task 3 in
-# the SAME commit as the cold-start bias import above -- the two halves of one rule. The
-# Phase-31 record (``outputs/p31/profitability_2025_verdict.json``) is no longer read live.
+# THE ROW-19 RECORD (quick task 261003-vke, ``outputs/row19/neutral_hfa_chain_fit.json``,
+# superseding the 8c9675e ``outputs/p332/corrected_chain_fit.json``, which superseded ee20773),
+# repointed in the SAME commit as the cold-start bias import above -- the two halves of one rule.
+# Neither the 8c9675e record nor the Phase-31 record (``outputs/p31/profitability_2025_verdict.json``)
+# is read live; both stay on disk as the record of what was measured.
 DEFAULT_CHAIN_FIT_PATH: Path = Path(CORRECTED_CHAIN_FIT_RECORD_PATH)
 
 # The candidate column carrying the spread-derived market probability of a home win; the core
@@ -448,7 +452,8 @@ def load_frozen_chain_fit(
             f"the corrected tune-only fit is not on disk at {fit_path.as_posix()}; the weekly "
             "bet list cannot be selected without the per-target EV floor and residual SD. It is "
             "generator output over 2020-2024 (never the spent 2025 hold) and is regenerated "
-            "deterministically with `uv run python -m scripts.derive_corrected_ev_chain`. There "
+            "deterministically with `uv run python -m scripts.derive_corrected_ev_chain "
+            "--correction row19`. There "
             "is NO fallback: a defaulted floor would admit bets at a threshold nobody swept for."
         )
         raise FrozenChainFitError(msg)
@@ -528,7 +533,8 @@ def load_frozen_chain_fit(
 def frozen_overlay_season() -> int:
     """The season the committed corrected bias debiases -- READ from the correction, never re-typed.
 
-    The corrected bias (``backtest.corrected_cold_start_constants``, superseding 11761c7) is the
+    The corrected bias (``backtest.neutral_hfa_cold_start_constants``, the row-19 re-measure
+    superseding 9bb7568, which superseded 11761c7) is the
     pooled mean residual over the STRICTLY PRIOR seasons in ``CHAIN_FIT_BIAS_SEASONS``, and the
     season it is FOR is named beside it as ``CHAIN_FIT_BIAS_TARGET_SEASON``. It can no longer be
     derived as "the pool's last season plus one": the corrected pool ends at 2024 because no row of
@@ -551,7 +557,7 @@ def frozen_overlay_season() -> int:
             "from. No bias is invented here and there is NO fallback to the target season's own "
             "residuals: debiasing a season with its own data is the leak the walk-forward "
             "construction exists to prevent (D27-08). Check what the correction actually "
-            'records with `uv run python -c "import backtest.corrected_cold_start_constants as c; '
+            'records with `uv run python -c "import backtest.neutral_hfa_cold_start_constants as c; '
             'print(c.CHAIN_FIT_BIAS_SEASONS, c.CHAIN_FIT_BIAS_TARGET_SEASON, c.CHAIN_FIT_BIAS_2026)"`.'
         )
         raise EmptyPriorResidualPoolError(msg)
@@ -563,10 +569,10 @@ def _overlay_frozen_chain_fit(
 ) -> dict[str, WeeklyChainFit]:
     """Overlay the committed corrected bias for ONE season onto the run record's own (D33-21).
 
-    The run record REMAINS the source for the seasons it covers (the corrected record: 2020-2024,
+    The run record REMAINS the source for the seasons it covers (the row-19 record: 2020-2024,
     WP 2021-2024). This adds the single season the record does not price -- 2026 -- from
-    ``backtest.corrected_cold_start_constants``, which continues that record's own walk-forward
-    bias series (Plan 33.2-26).
+    ``backtest.neutral_hfa_cold_start_constants``, which continues that record's own walk-forward
+    bias series (quick task 261003-vke, the recipe of Plan 33.2-26).
 
     REJECTED, recorded so neither is re-proposed: copying 2021-2025 into the frozen module (two
     copies that can drift), and writing the new season into the run record (editing a spent
@@ -611,7 +617,7 @@ def _overlay_frozen_chain_fit(
                 "silently, the other value would stay on disk looking authoritative, and no one "
                 "could later say which one a published bet was struck under. Decide which is "
                 "correct and remove the other. What the correction holds: "
-                '`uv run python -c "import backtest.corrected_cold_start_constants as c; '
+                '`uv run python -c "import backtest.neutral_hfa_cold_start_constants as c; '
                 'print(c.CHAIN_FIT_BIAS_2026, c.CHAIN_FIT_BIAS_SEASONS)"`.'
             )
             raise ChainFitOverlayDisagreementError(msg)
@@ -647,11 +653,11 @@ def _require_season_covered(fits: dict[str, WeeklyChainFit], season: int) -> Non
             f"the pre-registered walk-forward bias does not cover season {season} for target(s) "
             f"{sorted(uncovered)}; the fitted seasons are {covered}. The run record prices its "
             "own seasons, and the live season's bias is already committed: "
-            "backtest/corrected_cold_start_constants.py carries CHAIN_FIT_BIAS_2026 per target "
+            "backtest/neutral_hfa_cold_start_constants.py carries CHAIN_FIT_BIAS_2026 per target "
             "for CHAIN_FIT_BIAS_TARGET_SEASON, pooled over the strictly-prior "
             "CHAIN_FIT_BIAS_SEASONS, and load_frozen_chain_fit OVERLAYS it automatically -- so "
             "seeing THAT season here means the overlay did not reach this fit. Check what is "
-            'committed with `uv run python -c "import backtest.corrected_cold_start_constants '
+            'committed with `uv run python -c "import backtest.neutral_hfa_cold_start_constants '
             "as c; print(c.CHAIN_FIT_BIAS_2026); print(c.CHAIN_FIT_BIAS_TARGET_SEASON, "
             'c.CHAIN_FIT_BIAS_SEASONS)"`. Any other season has no committed bias at all, and '
             "none is invented here: a raw biased total is exactly what the walk-forward "

@@ -47,6 +47,15 @@ beside it (``CHAIN_FIT_BIAS_TARGET_SEASON``) rather than derived as the pool's l
 one. Every assertion that used to read the 11761c7 value reads the correction now, and each
 carries a control that the ORIGINAL value is not what the live overlay applies.
 
+THE OVERLAY NOW APPLIES THE ROW-19 RE-MEASURE (quick task 261003-vke)
+------------------------------------------------------------------------
+Re-pointed in the row-19 repoint commit: the live bias is
+``backtest.neutral_hfa_cold_start_constants.CHAIN_FIT_BIAS_2026``, the same recipe re-run on the
+models re-fitted after the neutral-site Elo fix, superseding 9bb7568. The control in each
+assertion now plants the NEAREST superseded value -- 9bb7568's
+``backtest.corrected_cold_start_constants`` -- which differs from the live one for every target.
+The 11761c7 pool (2021-2025) is still named as the pool control, read from the frozen original.
+
 Run this module:  uv run pytest tests/unit/test_chain_fit_2026_overlay.py -q
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -61,9 +70,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-import backtest.cold_start_constants as superseded
+import backtest.cold_start_constants as original
+import backtest.corrected_cold_start_constants as superseded
 import backtest.weekly_bet_list as wbl
-from backtest.corrected_cold_start_constants import (
+from backtest.neutral_hfa_cold_start_constants import (
     CHAIN_FIT_BIAS_2026,
     CHAIN_FIT_BIAS_SEASONS,
     CHAIN_FIT_BIAS_TARGET_SEASON,
@@ -172,7 +182,7 @@ def test_every_target_gains_the_frozen_2026_entry(tmp_path: Path) -> None:
         assert fit.season_bias_by_season[_OVERLAY_SEASON] == pytest.approx(
             CHAIN_FIT_BIAS_2026[target]
         )
-        # The control: the superseded 11761c7 value is NOT what the live overlay applies.
+        # The control: the superseded 9bb7568 value is NOT what the live overlay applies.
         assert fit.season_bias_by_season[_OVERLAY_SEASON] != pytest.approx(
             superseded.CHAIN_FIT_BIAS_2026[target]
         ), target
@@ -348,7 +358,7 @@ def test_the_corrected_pool_is_exactly_the_strictly_prior_walk_forward_seasons()
     """
     assert CHAIN_FIT_BIAS_SEASONS == (2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024)
     assert 2025 not in CHAIN_FIT_BIAS_SEASONS
-    assert superseded.CHAIN_FIT_BIAS_SEASONS == (2021, 2022, 2023, 2024, 2025)
+    assert original.CHAIN_FIT_BIAS_SEASONS == (2021, 2022, 2023, 2024, 2025)
     assert sorted(CHAIN_FIT_BIAS_2026) == sorted(CANONICAL_TARGETS)
 
 

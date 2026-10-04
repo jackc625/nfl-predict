@@ -20,6 +20,16 @@ ancestors of HEAD, discovered by the token ``CORRECTIVE`` in the witness names.
 The chain-fit record is gitignored generator output; a checkout without it skips the end-to-end
 half by name rather than passing it vacuously.
 
+THE ROW-19 REPOINT (quick task 261003-vke)
+-------------------------------------------
+The live rule moved WHOLE again, in ONE commit, to the row-19 re-measure: the floors from
+``outputs/row19/neutral_hfa_chain_fit.json`` (``backtest.neutral_hfa_ev_chain_constants``) and the
+2026 bias from ``backtest.neutral_hfa_cold_start_constants``, superseding 9bb7568. "Corrected"
+below now means the LIVE row-19 sources. Each planted control plants the NEAREST superseded value
+(the 8c9675e floors, the 9bb7568 bias), which differs from the live one. The corrective-commit
+assertions are extended to the row-19 witness ``ROW19_BET_RULE_CORRECTIVE_COMMIT_SHA`` (it touches
+both live readers and names 9bb7568); the 9bb7568 history assertions above it stay as they were.
+
 Run this module:  uv run python -m pytest tests/unit/test_atomic_bet_rule_repoint.py -q
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -41,6 +51,7 @@ from tests import phase33_state
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUPERSEDED_SHA = "11761c7"
+ROW19_SUPERSEDED_SHA = "9bb7568"
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -50,9 +61,17 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _corrected() -> Any:
-    import backtest.corrected_cold_start_constants as corrected
+    """The LIVE cold-start module: the row-19 re-measure."""
+    import backtest.neutral_hfa_cold_start_constants as corrected
 
     return corrected
+
+
+def _superseded() -> Any:
+    """The 9bb7568 cold-start correction the row-19 re-measure supersedes (history only)."""
+    import backtest.corrected_cold_start_constants as superseded
+
+    return superseded
 
 
 def _record_floors() -> dict[str, float | None]:
@@ -90,8 +109,8 @@ def test_one_load_yields_corrected_floors_and_the_corrected_2026_bias() -> None:
 
 
 def test_corrected_bias_over_the_superseded_floors_is_caught() -> None:
-    """Planted control: the floors half fails when the floors are the Phase-31 ones."""
-    from backtest.corrected_ev_chain_constants import SUPERSEDED_EV_FLOOR_BY_TARGET
+    """Planted control: the floors half fails when the floors are the superseded 8c9675e ones."""
+    from backtest.neutral_hfa_ev_chain_constants import SUPERSEDED_EV_FLOOR_BY_TARGET
 
     fits = weekly.load_frozen_chain_fit()
     planted = {
@@ -102,7 +121,7 @@ def test_corrected_bias_over_the_superseded_floors_is_caught() -> None:
 
 
 def test_corrected_floors_under_the_superseded_bias_are_caught() -> None:
-    """Planted control: the bias half fails when the 2026 bias is the 11761c7 one."""
+    """Planted control: the bias half fails when the 2026 bias is the superseded 9bb7568 one."""
     fits = weekly.load_frozen_chain_fit()
     season = weekly.frozen_overlay_season()
     planted = {
@@ -110,7 +129,7 @@ def test_corrected_floors_under_the_superseded_bias_are_caught() -> None:
             f,
             season_bias_by_season={
                 **f.season_bias_by_season,
-                season: original.CHAIN_FIT_BIAS_2026[t],
+                season: _superseded().CHAIN_FIT_BIAS_2026[t],
             },
         )
         for t, f in fits.items()
@@ -119,14 +138,17 @@ def test_corrected_floors_under_the_superseded_bias_are_caught() -> None:
 
 
 def test_the_corrected_state_is_distinguishable_from_the_original() -> None:
-    """Non-vacuity: both corrected sources exist and differ from the superseded ones."""
-    from backtest.corrected_ev_chain_constants import (
+    """Non-vacuity: both live sources exist and differ from the superseded ones."""
+    from backtest.neutral_hfa_ev_chain_constants import (
         CORRECTED_EV_FLOOR_BY_TARGET,
         SUPERSEDED_EV_FLOOR_BY_TARGET,
     )
 
     assert CORRECTED_EV_FLOOR_BY_TARGET != SUPERSEDED_EV_FLOOR_BY_TARGET
     assert dict(_corrected().CHAIN_FIT_BIAS_2026) != dict(original.CHAIN_FIT_BIAS_2026)
+    assert dict(_corrected().CHAIN_FIT_BIAS_2026) != dict(
+        _superseded().CHAIN_FIT_BIAS_2026
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +203,7 @@ def test_both_corrective_commits_are_ancestors_of_head() -> None:
     )
     assert "EV_CHAIN_CORRECTIVE_COMMIT_SHA" in names
     assert "COLD_START_CORRECTIVE_COMMIT_SHA" in names
+    assert "ROW19_BET_RULE_CORRECTIVE_COMMIT_SHA" in names
     head = _git("rev-parse", "HEAD").stdout.strip()
     for name in names:
         assert _is_ancestor(getattr(phase33_state, name), head), name
@@ -194,4 +217,58 @@ def test_a_stale_witness_is_not_an_ancestor() -> None:
         head == sha
     ):  # pragma: no cover - the witness commit always follows the corrective one
         pytest.fail("HEAD is the corrective commit; the witness commit is missing")
+    assert not _is_ancestor(head, sha)
+
+
+# ---------------------------------------------------------------------------
+# 3. The row-19 corrective commit (quick task 261003-vke), resolved from its witness
+# ---------------------------------------------------------------------------
+
+
+def _row19_corrective_sha() -> str:
+    sha = getattr(phase33_state, "ROW19_BET_RULE_CORRECTIVE_COMMIT_SHA", None)
+    assert sha, (
+        "tests/phase33_state.py carries no ROW19_BET_RULE_CORRECTIVE_COMMIT_SHA yet"
+    )
+    return str(sha)
+
+
+def test_the_row19_corrective_commit_touches_both_repointed_modules() -> None:
+    sha = _row19_corrective_sha()
+    touched = _git("show", "--name-only", "--format=", sha).stdout.split()
+    assert touched, f"the row-19 corrective commit {sha} resolves to no files"
+    assert "backtest/weekly_bet_list.py" in touched
+    assert "utils/edge_tier.py" in touched
+
+
+def test_the_row19_corrective_and_witness_messages_name_9bb7568() -> None:
+    sha = _row19_corrective_sha()
+    corrective = _git("log", "-1", "--format=%B", sha).stdout
+    assert ROW19_SUPERSEDED_SHA in corrective
+    assert phase33_state.EV_CHAIN_CORRECTIVE_COMMIT_SHA[:7] in corrective, (
+        "the row-19 corrective commit names the 8c9675e EV-chain record it supersedes"
+    )
+    witness = _git(
+        "log",
+        "-1",
+        "--format=%B",
+        "-S",
+        "ROW19_BET_RULE_CORRECTIVE_COMMIT_SHA",
+        "--",
+        "tests/phase33_state.py",
+    ).stdout
+    assert ROW19_SUPERSEDED_SHA in witness
+    assert sha[:12] in witness
+
+
+def test_a_stale_row19_witness_is_not_an_ancestor() -> None:
+    """Control: HEAD is not an ancestor of the row-19 corrective commit."""
+    head = _git("rev-parse", "HEAD").stdout.strip()
+    sha = _row19_corrective_sha()
+    if (
+        head == sha
+    ):  # pragma: no cover - the witness commit always follows the corrective one
+        pytest.fail(
+            "HEAD is the row-19 corrective commit; the witness commit is missing"
+        )
     assert not _is_ancestor(head, sha)

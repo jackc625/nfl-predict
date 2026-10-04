@@ -37,6 +37,13 @@ reference band on the CORRECTED pair, never by calling the function they check; 
 the recorded 11761c7 labels are NOT what the live band produces. A target whose corrected pair is
 ``None`` is UNBANDED: ``edge_tier`` returns ``None``, distinct from ``"low"``.
 
+THE RULER IS NOW THE ROW-19 RE-MEASURE (quick task 261003-vke)
+-----------------------------------------------------------------
+Re-pointed in the row-19 repoint commit: ``utils.edge_tier`` reads
+``backtest.neutral_hfa_cold_start_constants``, the same recipe re-run on the models re-fitted after
+the neutral-site Elo fix, superseding 9bb7568. Every "live pair" below is read from it. WP's pair is
+still the 0.05 / 0.02 anchor; ATS's and O/U's moved again, and the 11761c7 control keeps holding.
+
 Run this module:  uv run pytest tests/unit/test_edge_tier_per_target.py -q
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -54,7 +61,7 @@ import pytest
 
 import backtest.cold_start_constants as superseded
 import utils.edge_tier as edge_tier_module
-from backtest.corrected_cold_start_constants import EDGE_TIER_THRESHOLDS_BY_TARGET
+from backtest.neutral_hfa_cold_start_constants import EDGE_TIER_THRESHOLDS_BY_TARGET
 from tests.api.test_cache_betting import _EDGE_TIER_SNAPSHOT
 from tests.phase33_state import ATS_EDGE_TIER_GRID, OU_EDGE_TIER_GRID
 from utils.edge_tier import (
