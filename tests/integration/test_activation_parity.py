@@ -184,10 +184,20 @@ def test_part_a_cache_predictions_equal_backtest_csv() -> None:
     con = duckdb.connect(str(_CACHE_DB), read_only=True)
     try:
         cache = con.execute(
-            "SELECT game_id, wp_prob, ats_prediction, ou_prediction FROM predictions"
+            "SELECT game_id, season, wp_prob, ats_prediction, ou_prediction "
+            "FROM predictions"
         ).df()
     finally:
         con.close()
+
+    # RE-SCOPED at the Phase 33 close-out to the population PART A is about. Since Plan
+    # 33.2-26 (8bac938) the cache predictions table ALSO holds the live weeks' games, added by
+    # api.cache._load_current_week_predictions from the current-week prediction CSVs for games
+    # the backtest does not carry -- a second, intended source with no backtest-CSV row. PART A
+    # is cache-load fidelity for the BACKTEST-populated surface, so it reads the cache rows of
+    # the backtest's own seasons, and every one of those must still have a CSV source.
+    # Was: every cache row.
+    cache = cache.loc[cache["season"].isin(set(df["season"]))]
 
     assert len(cache) > 0, (
         "cache predictions table is empty -- run scripts/populate_cache.py"
