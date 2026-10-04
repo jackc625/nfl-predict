@@ -39,8 +39,8 @@ information that was not available at the time.
 - **A weekly bet list.** Every game is evaluated for all three bet types. Bets that clear an
   expected-value threshold fixed before the season's first bet are ranked and sized in units, and
   every candidate that did not clear it is listed with its reason.
-- **Game pages.** Model versus market, what drives the prediction, a tale of the tape, and the
-  venue and weather.
+- **Game pages.** Model versus market, the inputs each model leans on most, a tale of the tape, and
+  the venue and weather.
 - **A live season record.** The Season page tracks the 2026 season as games are played. Past-season
   backtests are on the Track Record page, clearly labelled (see [Results, honestly](#results-honestly)).
 - **Runs on its own.** A scheduled job runs every day at 5 PM Eastern, an hour before the lock:
@@ -52,7 +52,7 @@ information that was not available at the time.
 <table>
   <tr>
     <td width="50%"><img src="docs/images/bets.png" alt="The weekly bet list"><br><sub><b>Bets</b> -- the ranked weekly list, with every rejected candidate and its reason</sub></td>
-    <td width="50%"><img src="docs/images/game-detail.png" alt="A game page"><br><sub><b>Game page</b> -- model versus market and what drives the prediction</sub></td>
+    <td width="50%"><img src="docs/images/game-detail.png" alt="A game page"><br><sub><b>Game page</b> -- model versus market, and the tale of the tape</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/images/season.png" alt="The season tracking page"><br><sub><b>Season</b> -- the 2026 season, tracked live</sub></td>
@@ -60,7 +60,7 @@ information that was not available at the time.
   </tr>
 </table>
 
-## How it works
+## How it works (architecture)
 
 ```mermaid
 flowchart LR
@@ -88,8 +88,9 @@ flowchart LR
    historical day-before forecasts from archived National Weather Service bulletins. Historical
    games use the forecast as it stood at the lock, not the weather that actually happened.
 2. **Store.** A bronze / silver / gold lakehouse in Parquet and DuckDB. Raw snapshots are kept
-   append-only, and every layer boundary is checked against a Pydantic schema: one bad row fails
-   the batch rather than slipping through.
+   append-only, and ingested rows are checked against Pydantic schemas: for games, weather, snap
+   counts and injuries one bad row fails the whole batch, while the odds ingest drops a bad row
+   with a warning.
 3. **Build features.** Elo team ratings running since 2002, recent form, rest, travel and schedule,
    the venue, and the weather forecast at the lock. Betting lines are not model inputs: the models
    never see the market.
@@ -114,7 +115,8 @@ flowchart LR
   ([`features/provenance.py`](features/provenance.py)); a `LeakageGate` scans the combined matrix
   for post-game columns and checks Elo ordering ([`features/validation.py`](features/validation.py));
   and walk-forward splits refuse to run if training and test seasons overlap
-  ([`models/temporal.py`](models/temporal.py)). There is no random cross-validation anywhere.
+  ([`models/temporal.py`](models/temporal.py)). The deployed models are tuned on season-ordered
+  folds only (see [Current limitations](#current-limitations) for the legacy trainers).
 - **Pre-registered, tamper-evident evaluation.** Decision rules -- the bet list's expected-value
   threshold, the significance tests -- are committed before the results they govern exist. Tests
   then use git history to check that the freezing commit really came first
@@ -142,6 +144,20 @@ flowchart LR
 
 This is a personal research tool, not betting advice. A bet on the list cleared a threshold fixed
 before the season; that is not a forecast that it will win.
+
+## Current limitations
+
+1. **No demonstrated edge.** No model has shown that it beats the betting market; the 2026 season
+   is the first clean test (see [Results, honestly](#results-honestly)).
+2. **One machine, on Eastern time.** The scheduled run is a Windows Task Scheduler task that
+   expects the machine to stay on Eastern time. Hosted deployment is out of scope for now.
+3. **Single-worker server.** The app shares one read-only DuckDB connection and an in-process
+   cache, so it must run as a single uvicorn worker (`--workers 1`).
+4. **Legacy trainers still in the tree.** The original `models/train_ats.py` and
+   `models/train_ou.py` remain because the prediction path imports their distribution converters,
+   and `models/train_wp.py` sits beside them. They contain k-fold grid and random search, but the
+   deployed models are trained by `models/trainers/` on season-ordered folds only. Moving the
+   converters out is a deferred refactor.
 
 ## Tech stack
 
@@ -197,6 +213,7 @@ pipeline/     the scheduled orchestrator: steps, health checks, alerts
 ratings/      Elo ratings
 scripts/      command-line entry points for every pipeline stage
 tests/        unit, integration and API tests
+utils/        the lock rule, team data, dates, probability and Kelly-sizing helpers
 web/          Jinja2 templates, Tailwind CSS, fonts
 ```
 

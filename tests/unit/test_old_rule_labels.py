@@ -175,10 +175,12 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "evidence. The 2025 results it governed are labelled in PROFITABILITY-READOUT.md."
     ),
     "README.md": (
-        "The visitor-facing front page, rewritten from scratch on 2026-10-04. It reports no "
-        "model accuracy or betting figure from before the fix: it says in words that those "
-        "results are not evidence and points at the labelled records. Its pre-rewrite text, "
-        "which commit 7b1928f labelled, survives in git history (LABELLED_THEN_REWRITTEN)."
+        "The visitor-facing front page, rewritten from scratch on 2026-10-04. Its text reports "
+        "no model accuracy or betting figure from before the fix: it says in words that those "
+        "results are not evidence and points at the labelled records. Its Track Record "
+        "screenshot does show pre-fix backtest figures, with that page's own dated old-rule "
+        "label in frame. Its pre-rewrite text, which commit 7b1928f labelled, survives in git "
+        "history (LABELLED_THEN_REWRITTEN)."
     ),
 }
 

@@ -147,6 +147,10 @@ Target ~200-250 lines, ASCII only, no emoji.
 7. Engineering highlights -- leakage protection, walk-forward only, the significance-tested
    deploy gate, pre-registered evaluation with git-anchored tamper evidence, the API/ML import
    boundary enforced by an AST test.
+   (Revised while implementing: the deploy gate is left out of the diagram and the highlights,
+   for the same reason as the About text below -- the September 2026 rebuild did not pass
+   through it. A "Current limitations" section was added after the final review, because three
+   guides point at the README's limitations and architecture sections.)
 8. Results, honestly -- no target has shown a profitable edge; results from before the
    2026-09-15 fix were built on inputs later found defective and are not evidence; the 2026
    season, recorded live, is the scorecard (Season page; the Track Record page holds the
