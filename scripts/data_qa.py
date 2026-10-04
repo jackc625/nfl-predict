@@ -425,7 +425,14 @@ class DataQualityMonitor:
                 }
             )
 
-        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+        except (
+            DataIngestionError,
+            ValueError,
+            KeyError,
+            TypeError,
+            FileNotFoundError,
+            OSError,
+        ) as e:
             result["status"] = f"error: {e!s}"
             logger.warning(
                 "Data freshness check failed", table=table_name, error=str(e)
@@ -545,7 +552,14 @@ class DataQualityMonitor:
             else:
                 result["status"] = "unknown_expected"
 
-        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+        except (
+            DataIngestionError,
+            ValueError,
+            KeyError,
+            TypeError,
+            FileNotFoundError,
+            OSError,
+        ) as e:
             result["status"] = f"error: {e!s}"
             logger.warning(
                 "Data completeness check failed", table=table_name, error=str(e)
@@ -656,7 +670,14 @@ class DataQualityMonitor:
                 df, table_name
             )
 
-        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+        except (
+            DataIngestionError,
+            ValueError,
+            KeyError,
+            TypeError,
+            FileNotFoundError,
+            OSError,
+        ) as e:
             result["checks"]["error"] = {"status": "error", "message": str(e)}
             logger.error("Data quality check failed", table=table_name, error=str(e))
 
