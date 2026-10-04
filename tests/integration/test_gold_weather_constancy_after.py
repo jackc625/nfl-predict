@@ -83,6 +83,19 @@ they are the UNRECORDED shape with ``weather_affects_game`` NULL, per the Plan 3
 ruling W1 that a game nobody observed must not be recorded as a dome; ``2026_W02_DET@BUF``
 has a record the fence could not date, so it is the ABSENT shape with applicability preserved.
 
+THE SIXTH HALF: THE LIVE SEASON IS HELD TO RULES, NOT COUNTS. The nightly daily run keeps adding
+played 2026 games to gold (63 by week 4, and more after every run), so a count over the WHOLE
+frame compared with the clean-build slot's 17-game snapshot goes stale every night. The COUNT
+assertions are therefore scoped to the corpus the step-4b record was measured on, 2002-2025
+(``RECORDED_CORPUS_SEASONS``), and compared EXACTLY with that record, the last slot describing
+that corpus alone (dome 1,030, absence 57, humidity null 1,087). The scope is the RECORD's span,
+not the moving ``LATEST_COMPLETED_SEASON``: when 2026 completes, its rows must not leak into a
+count the record never covered. The 2026 rows are still checked, but by rule
+so growth cannot break them: every dome row has zero NaN in the seven composites, the coverage
+flag takes exactly the recorded levels, and ``raw_humidity_pct`` is NaN on EXACTLY the set of rows
+that are a dome or uncovered (set equality, not a count). The recorded slots stay history: the
+clean-build slot's own arithmetic is still asserted, and no record was edited.
+
 WHAT THIS MODULE DOES NOT CLAIM (SPEC R8). That any model is more accurate. No
 model was re-fit, no gate was run, and ``artifacts/latest.json`` is unchanged.
 This is a statement about what the columns CONTAIN.
@@ -114,6 +127,9 @@ POPULATIONS = {
     "all_2002_2025": tuple(range(2002, 2026)),
 }
 
+#: The seasons the step-4b record counted. Live-gold COUNTS are scoped to these and nothing else.
+RECORDED_CORPUS_SEASONS = POPULATIONS["all_2002_2025"]
+
 BUILD_COMMAND = "uv run python scripts/build_features.py --all-seasons"
 
 #: The rung-4 AFTER record, stated beside the Phase 33.1 pair (kept as the record it is).
@@ -141,6 +157,16 @@ def _gold(matrix: str) -> pd.DataFrame:
             "ignore on a fresh checkout where data/ is legitimately empty"
         )
     return pd.read_parquet(path)
+
+
+def _completed(frame: pd.DataFrame) -> pd.DataFrame:
+    """The recorded corpus (2002-2025): the only part of gold whose counts are pinned."""
+    return frame[frame["season"].isin(RECORDED_CORPUS_SEASONS)]
+
+
+def _live_season(frame: pd.DataFrame) -> pd.DataFrame:
+    """The rows past the recorded corpus. Their number grows nightly, so only rules apply."""
+    return frame[frame["season"] > max(RECORDED_CORPUS_SEASONS)]
 
 
 def _weather_columns() -> list[str]:
@@ -334,13 +360,21 @@ class TestNoWeatherColumnCarriesAnImputedStandIn:
         # have no forecast either, and THEIR composites are rightly NULL. So the indoor
         # population is read from the applicability flag itself.
         indoor_mask = frame["weather_affects_game"] == 0.0
+        completed_indoor = indoor_mask & frame["season"].isin(RECORDED_CORPUS_SEASONS)
 
-        assert int(indoor_mask.sum()) == int(LATEST_AFTER["dome_rows"])
+        # The COUNT is pinned over the completed corpus only (the step-4b record); the live
+        # season grows nightly and is held to the zero-NaN rule below instead.
+        assert int(completed_indoor.sum()) == int(STEP4B_AFTER["dome_rows"])
+        assert int(LATEST_AFTER["dome_rows"]) == int(STEP4B_AFTER["dome_rows"])
+        # NON-VACUITY: the rule below reads indoor rows, and the live season is present.
+        assert int(indoor_mask.sum()) > 0
+        assert len(_live_season(frame)) > 0
         for column in composites:
             nan_among_indoor = int(frame.loc[indoor_mask, column].isna().sum())
             assert nan_among_indoor == 0, (
                 f"{matrix}.{column} is NaN for {nan_among_indoor} of the indoor "
-                "games. Ruling J keeps the composites at a genuine 0.0 indoors"
+                "games (every season, the live one included). Ruling J keeps the "
+                "composites at a genuine 0.0 indoors"
             )
 
     def test_the_old_default_is_reported_rather_than_asserted_to_be_absent(
@@ -414,11 +448,13 @@ class TestTheCoverageFlagSaysWhatItMeasures:
             "what an ABSENT observation reads, and it is what this column "
             "carried on all 6,499 rows before the rung-3 rebuild"
         )
-        # 74 since Plan 33.2-20's clean build, and the delta from step 4b's 57 is EXACTLY
-        # the 17 played 2026 games it added -- all 17 of which are uncovered (16 week-1
+        # 74 at Plan 33.2-20's clean build, and the delta from step 4b's 57 was EXACTLY
+        # the 17 played 2026 games it added -- all 17 of which were uncovered (16 week-1
         # games have no weather record at all; 2026_W02_DET@BUF's forecast could not be
-        # dated by the fence). 57 + 17 = 74, and no pre-2026 game changed.
-        assert int((frame[column] == 0.0).sum()) == int(LATEST_AFTER["absence_rows"])
+        # dated by the fence). 57 + 17 = 74, and no pre-2026 game changed. The nightly run
+        # has added more played 2026 games since, so the live count is no longer pinned; it
+        # is held to the record as a floor (the 17 recorded absences never disappear).
+        assert int((frame[column] == 0.0).sum()) >= int(LATEST_AFTER["absence_rows"])
         assert (
             int(LATEST_AFTER["absence_rows_before_2026"])
             + int(LATEST_AFTER["absence_rows_added_by_2026"])
@@ -426,9 +462,11 @@ class TestTheCoverageFlagSaysWhatItMeasures:
         assert int(LATEST_AFTER["absence_rows_before_2026"]) == int(
             STEP4B_AFTER["absence_rows"]
         ), "the step-4b record is superseded by a slot beside it, never edited"
-        assert int((frame.loc[frame["season"] < 2026, column] == 0.0).sum()) == int(
+        assert int((_completed(frame)[column] == 0.0).sum()) == int(
             STEP4B_AFTER["absence_rows"]
         ), "the 2002-2025 half of the corpus did not move at all"
+        # NON-VACUITY: the live season exists, so the floor above is not read off nothing.
+        assert len(_live_season(frame)) > 0
 
 
 @pytest.mark.integration
@@ -485,20 +523,28 @@ class TestTheAfterSlotIsThePairAndNotAReplacement:
         )
 
         frame = _gold("features_ou")
-        # Live gold since Plan 33.2-20's clean build: the 1,030 fixed-roof domes plus the
-        # 74 absences = 1,104. At step 4b it was 1,030 + 57 = 1,087, and the delta is
-        # exactly the 17 played 2026 games the clean build added -- no dome was added and
-        # no pre-2026 row moved. The recorded 1,652 above is Phase 33.1's figure and stays.
-        assert int(frame["raw_humidity_pct"].isna().sum()) == int(
-            LATEST_AFTER["raw_humidity_pct_null_rows"]
-        )
+        # The recorded 1,652 above is Phase 33.1's figure and stays. The clean build's record
+        # is 1,030 domes + 74 absences = 1,104 (step 4b: 1,030 + 57 = 1,087); that arithmetic
+        # is history and is still asserted. Live gold is no longer pinned to it because the
+        # nightly run adds played 2026 games, so the completed corpus is held to the step-4b
+        # count and the whole frame to a SET rule.
         assert int(LATEST_AFTER["raw_humidity_pct_null_rows"]) == int(
             LATEST_AFTER["dome_rows"]
         ) + int(LATEST_AFTER["absence_rows"])
-        assert int(
-            frame.loc[frame["season"] < 2026, "raw_humidity_pct"].isna().sum()
-        ) == (int(STEP4B_AFTER["raw_humidity_pct_null_rows"])), (
-            "the 2002-2025 half of the corpus did not move at all"
+        assert int(_completed(frame)["raw_humidity_pct"].isna().sum()) == int(
+            STEP4B_AFTER["raw_humidity_pct_null_rows"]
+        ), "the 2002-2025 half of the corpus did not move at all"
+        dome = frame["weather_affects_game"] == 0.0
+        uncovered = frame[state.WEATHER_COVERAGE_GOLD_COLUMN] == 0.0
+        # NON-VACUITY: both populations and the live season are non-empty, so the set
+        # equality below is not 'empty equals empty'.
+        assert dome.any()
+        assert uncovered.any()
+        assert len(_live_season(frame)) > 0
+        assert (frame["raw_humidity_pct"].isna() == (dome | uncovered)).all(), (
+            "raw_humidity_pct must be NaN on exactly the dome-or-uncovered rows, live season "
+            "included: a NaN anywhere else is an unexplained gap, a number on one of those "
+            "rows is a stand-in"
         )
 
     def test_the_after_slot_does_not_claim_an_accuracy_improvement(self) -> None:
