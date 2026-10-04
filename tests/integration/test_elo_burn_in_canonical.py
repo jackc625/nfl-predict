@@ -578,6 +578,7 @@ def test_the_provisional_week_one_snapshot_reads_the_carried_forward_rating(
                 "away_team": away,
                 "home_score": None,
                 "away_score": None,
+                "neutral_site": False,
             }
         ]
     )

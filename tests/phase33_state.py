@@ -19974,3 +19974,47 @@ PRE_REGISTRATION_EXTERNAL_ANCHOR_MISSED: dict[str, str] = {
     "superseded_by": "9bb7568, the corrected 2026 rule in use; 11761c7 was never used live",
     "windows_row": "50",
 }
+
+
+# ---------------------------------------------------------------------------
+# ROW 19 (quick task 261003-vke): ZERO ELO HFA AT NEUTRAL SITES
+#
+# APPENDED from 2026-10-04 under the APPEND-ONCE protocol. Nothing above this header was
+# edited; every slot below is new and assigned once. Owner ruling 2026-10-03 ~22:12 ET,
+# verbatim: "No home boost at any neutral site (Recommended)" -- zero Elo home-field
+# advantage at every game silver `games` flags neutral_site True (zero overrides the 0.54
+# divisional factor), and neutral games left out of HFA learning. The code fix is dc7c34d.
+# Its stated consequences (33-CLOSEOUT section 5) were then run in order: Elo 2002-2026
+# full rebuild, the live week's provisional rows re-emitted through the nightly path,
+# gold through the nightly path, three re-fits, a blend re-tune, and the swap. Every slot
+# below was MEASURED at execution time.
+# ---------------------------------------------------------------------------
+
+#: sha256 of artifacts/latest.json immediately before the row-19 swap -- the manifest the
+#: 2026-09-23 swap installed (P332_25_POST_SWAP_LATEST_JSON_SHA256), re-measured 2026-10-04.
+ROW19_PRE_SWAP_LATEST_JSON_SHA256: str = (
+    "3f1cbe3d9c3f8190a2ca3a4fed21b11510dcfea2159c036fb23874f32c9e8830"
+)
+
+#: The CONTENT digest of the canonical 2002-2025 Elo slice after the row-19 rebuild, taken
+#: with tests/unit/test_phase33_elo_anchors._canonical_slice_digest exactly as
+#: P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256 was. Supersedes it as the live anchor; the
+#: P332_20 value stays as the record of the pre-fix history (the forensic copy in
+#: outputs/row19_forensic/ still reproduces it, measured 2026-10-04).
+ROW19_ELO_CANONICAL_SLICE_CONTENT_SHA256: str = (
+    "b762c021a3dfbb1f584a9b4a9223f34b41dad036a20c1985ede5d68c32406937"
+)
+ROW19_ELO_CANONICAL_SLICE_ROWS: int = 6499
+
+#: Why the 2002-2025 content anchor moved: (commit, ruling, what it did).
+ROW19_ELO_ANCHOR_CAUSE: tuple[str, str, str] = (
+    "dc7c34d7e8632af66dfea4587911bfadefd43a97",
+    "owner 2026-10-03 22:12 ET: No home boost at any neutral site",
+    "`scripts/build_elo.py --all-seasons --full-rebuild` re-derived 6,548 real rows "
+    "(2002-2026) under the neutral-site rule: hfa_used 0.0 on all 93 played neutral games "
+    "and learned HFA from non-neutral games only; 6,282 of 6,548 real rows changed value "
+    "and HFA moved in 21 of 25 seasons. Then "
+    "`pipeline.steps.persist_current_season_elo` re-emitted 15 provisional rows (every "
+    "unplayed 2026 week-4 game, the WR-08 B nightly path). Store 6,563 rows; the "
+    "independent replay at 2026-10-04T04:43:48Z gave MISMATCHES 0, MISSING 0, ORPHAN 0",
+)

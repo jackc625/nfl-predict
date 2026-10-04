@@ -147,7 +147,8 @@ class TestTheVacuousReport:
         self, baseline: ReplayResult, snapshots: pd.DataFrame
     ) -> None:
         season_2002 = snapshots[snapshots["season"] == 2002]
-        assert set(season_2002["hfa_used"]) <= {48.0, 48.0 * 0.54}
+        # 0.0 since WINDOWS row 19 (dc7c34d): the 2002 Super Bowl is a neutral site.
+        assert set(season_2002["hfa_used"]) <= {48.0, 48.0 * 0.54, 0.0}
         assert baseline.vacuous_cells == len(season_2002) - baseline.vacuous
 
 

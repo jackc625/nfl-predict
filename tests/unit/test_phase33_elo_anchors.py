@@ -48,11 +48,11 @@ from tests.phase33_state import (
     ELO_RATING_BAND_OBSERVED,
     ELO_RATING_BAND_PRE_RUN_POOLED,
     ELO_REDERIVATION_EXPECTED_CHANGED_FILES,
-    P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256,
-    P332_20_ELO_CANONICAL_SLICE_ROWS,
     P332_20_ELO_SNAPSHOT_ANCHOR_CAUSES,
     P332_20_ELO_SNAPSHOT_DIGEST_AFTER_2026_CAPTURE,
     PLAN_33_2_05_ELO_DELETED_ARTIFACTS,
+    ROW19_ELO_CANONICAL_SLICE_CONTENT_SHA256,
+    ROW19_ELO_CANONICAL_SLICE_ROWS,
 )
 
 # The one surviving anchored artifact, and the ONE path whose live digest has moved since
@@ -139,6 +139,10 @@ def test_each_elo_artifact_matches_its_committed_anchor(relative_path, expected_
     generation -- so the byte pin went stale on the first live night and said nothing
     about the history it exists to protect (Plan 33-18 Task 8). The 2026 rows are
     covered value by value by ``tests/integration/test_live_2026_prediction_set.py``.
+
+    RE-ANCHORED for WINDOWS row 19 (dc7c34d, ``ROW19_ELO_ANCHOR_CAUSE``): the neutral-site
+    HFA rebuild re-derived the history, so the slice is held to the ROW19 content digest;
+    the P332_20 digest stays recorded as the pre-fix history.
     """
     path = Path(relative_path)
     if Path(relative_path).relative_to("data").as_posix() in (
@@ -153,13 +157,13 @@ def test_each_elo_artifact_matches_its_committed_anchor(relative_path, expected_
 
     if relative_path == SNAPSHOT_ARTIFACT:
         rows, slice_digest = _canonical_slice_digest(path)
-        assert rows == P332_20_ELO_CANONICAL_SLICE_ROWS, (
+        assert rows == ROW19_ELO_CANONICAL_SLICE_ROWS, (
             f"the 2002-2025 slice of {relative_path} holds {rows} rows, not "
-            f"{P332_20_ELO_CANONICAL_SLICE_ROWS}"
+            f"{ROW19_ELO_CANONICAL_SLICE_ROWS}"
         )
-        assert slice_digest == P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256, (
+        assert slice_digest == ROW19_ELO_CANONICAL_SLICE_CONTENT_SHA256, (
             f"the 2002-2025 history in {relative_path} no longer matches its anchor.\n"
-            f"  anchor   sha256 {P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256}\n"
+            f"  anchor   sha256 {ROW19_ELO_CANONICAL_SLICE_CONTENT_SHA256}\n"
             f"  on disk  sha256 {slice_digest}\n"
             "A forward append cannot move this digest, so a derived historical rating "
             "changed: find what wrote it before re-anchoring anything."
@@ -316,16 +320,20 @@ def test_the_canonical_2002_2025_slice_still_hashes_to_its_recorded_content():
     about whether the derived history changed -- and it will move again on the next
     append. The content digest of the 2002-2025 slice answers the real question, and
     MEASURED 2026-09-22 across every write this phase made, the history has not moved.
+
+    RE-ANCHORED for WINDOWS row 19 (dc7c34d, ``ROW19_ELO_ANCHOR_CAUSE``): the neutral-site
+    HFA rebuild changed derived history ratings by owner ruling, so the slice is held to
+    the ROW19 content digest; the P332_20 digest stays recorded as the pre-fix history.
     """
     path = Path(SNAPSHOT_ARTIFACT)
     _skip_if_absent(path)
     rows, digest = _canonical_slice_digest(path)
-    assert rows == P332_20_ELO_CANONICAL_SLICE_ROWS, (
-        f"the 2002-2025 slice holds {rows} rows, not {P332_20_ELO_CANONICAL_SLICE_ROWS}"
+    assert rows == ROW19_ELO_CANONICAL_SLICE_ROWS, (
+        f"the 2002-2025 slice holds {rows} rows, not {ROW19_ELO_CANONICAL_SLICE_ROWS}"
     )
-    assert digest == P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256, (
+    assert digest == ROW19_ELO_CANONICAL_SLICE_CONTENT_SHA256, (
         "the canonical 2002-2025 Elo slice no longer hashes to its recorded content.\n"
-        f"  recorded sha256 {P332_20_ELO_CANONICAL_SLICE_CONTENT_SHA256}\n"
+        f"  recorded sha256 {ROW19_ELO_CANONICAL_SLICE_CONTENT_SHA256}\n"
         f"  measured sha256 {digest}\n"
         "Unlike the byte anchor above this CANNOT be moved by a forward append or a "
         "parquet rewrite, so a move here means a derived rating in the history "
