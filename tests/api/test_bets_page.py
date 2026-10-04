@@ -465,7 +465,7 @@ _UNRECOGNISED_REASON = "reason_invented_by_a_future_plan"
 _EXPECTED_LABELS: dict[str, str] = {
     "ev_below_floor": "Expected value below the floor",
     "not_subpop": "Outside the eligible sub-population",
-    "stale_line": "Line captured after the lock",
+    "stale_line": "Line captured after the lock, or not timed",
     "missing_snapshot": "No market line for this bet type",
     "missing_prediction": "No model prediction for this game",
     "real_odds_failed": "Odds failed the real-market check",
@@ -658,7 +658,7 @@ def test_suppressed_rows_are_in_the_document_while_collapsed(tmp_path: Path) -> 
 
     assert "<details open" not in body, "the disclosure was not collapsed"
     assert "SEA @ SFO" in body
-    assert "Line captured after the lock" in body
+    assert "Line captured after the lock, or not timed" in body
     # The suppressed table's "Line as of" cell reads as Eastern time, stored text on hover.
     assert f'title="{_SNAPSHOT_TS}">{_SNAPSHOT_TS_LABEL}</time>' in body
 
@@ -791,10 +791,10 @@ def test_the_suppressed_summary_counts_each_reason_while_collapsed(
     summary = body[body.index("<summary", start) : body.index("</summary>", start)]
     assert "data-suppressed-reason-counts" in summary
     assert 'Expected value below the floor <b class="num">2</b>' in summary
-    assert 'Line captured after the lock <b class="num">1</b>' in summary
+    assert 'Line captured after the lock, or not timed <b class="num">1</b>' in summary
     # The body's per-reason headings carry the same counts.
     assert "Expected value below the floor (2)" in body
-    assert "Line captured after the lock (1)" in body
+    assert "Line captured after the lock, or not timed (1)" in body
 
 
 # ---------------------------------------------------------------------------

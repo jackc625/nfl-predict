@@ -329,7 +329,7 @@
   {% set SUPPRESSION_LABELS = {
     "ev_below_floor":     "Expected value below the floor",
     "not_subpop":         "Outside the eligible sub-population",
-    "stale_line":         "Line captured after the lock",
+    "stale_line":         "Line captured after the lock, or not timed",
     "missing_snapshot":   "No market line for this bet type",
     "missing_prediction": "No model prediction for this game",
     "real_odds_failed":   "Odds failed the real-market check",
@@ -344,7 +344,7 @@
   {% set SUPPRESSION_HELP = {
     "ev_below_floor":     "Evaluated and priced; the edge was not large enough to bet.",
     "not_subpop":         "This bet type only bets a pre-registered slice; this game is not in it.",
-    "stale_line":         "The stored line was captured after this game's lock, 6:00 PM Eastern the day before its kickoff, so the decision could not have had it.",
+    "stale_line":         "The stored line was captured after this game's lock, 6:00 PM Eastern the day before its kickoff, or it has no recorded capture time (Line as of shows --). Either way the decision cannot be shown to have had it.",
     "missing_snapshot":   "The game has odds for other bet types but not this one.",
     "missing_prediction": "The model produced no output for this game -- a pipeline gap, not a market gap.",
     "real_odds_failed":   "The stored price did not come from an accepted sportsbook source.",

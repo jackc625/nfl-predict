@@ -132,8 +132,10 @@ REJECTION_REASONS: tuple[str, ...] = (
     "real_odds_failed",  # provenance hard-fail (OUM-06) -- raised before selection
     "zero_kelly_stake",  # admitted by EV but the Kelly calculator zeroed the stake (WR-07)
     # snapshot NOT ADMISSIBLE at that game's OWN lock -- captured AFTER it (D33.2-01, Plan
-    # 33.2-02). The token is kept because it is a published rejection_reason value; its meaning
-    # moved from "before the freeze" (a staleness test) to "after the lock" (admissibility).
+    # 33.2-02), OR carrying no recorded capture time at all (owner ruling 2026-09-22, Option B).
+    # The token is kept because it is a published rejection_reason value; its meaning moved from
+    # "before the freeze" (a staleness test) to "not shown to be known at the lock". /bets names
+    # both causes, and the row's "Line as of" cell (a time, or --) tells them apart (review WR-07).
     "stale_line",
     "missing_snapshot",  # no market data for THAT target on that game (D31-19)
     "missing_prediction",  # no model output for that game -- a pipeline gap (D31-19)
