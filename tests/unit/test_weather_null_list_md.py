@@ -36,7 +36,7 @@ import pytest
 from backtest.signal_lift import _GROUP_PREDICATE, GROUPS, group_columns
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DOC = REPO_ROOT / "WEATHER-NULL-LIST.md"
+DOC = REPO_ROOT / "docs" / "records" / "WEATHER-NULL-LIST.md"
 SILVER = REPO_ROOT / "data" / "silver"
 GOLD = REPO_ROOT / "data" / "gold"
 VENUES = REPO_ROOT / "data" / "venues.json"

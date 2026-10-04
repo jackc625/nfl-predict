@@ -25,7 +25,7 @@ from pathlib import Path
 
 # Repo root resolved from this file: tests/unit/test_automation_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-AUTOMATION_MD = REPO_ROOT / "AUTOMATION.md"
+AUTOMATION_MD = REPO_ROOT / "docs" / "guides" / "AUTOMATION.md"
 
 
 def _read_automation_md() -> str:

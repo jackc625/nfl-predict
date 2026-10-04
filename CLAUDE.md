@@ -71,3 +71,5 @@ The `.planning/` directory is the single source of truth for project planning an
 - `.planning/RETROSPECTIVE.md` -- Living retrospective with lessons learned
 - `.planning/milestones/` -- Archived milestone artifacts (roadmap, requirements, phases)
 - `.planning/codebase/` -- Architecture analysis, stack details, conventions, structure mapping
+
+**Repository documents.** Guides (`PIPELINE.md`, `RUNBOOK.md`, `AUTOMATION.md`, `METHODOLOGY.md`, `STATE-OF-SYSTEM.md`) live in `docs/guides/`; readouts, audits and diagnoses live in `docs/records/`. Six history-anchored records stay at the repo root and must never be moved, because their tamper evidence reads git history at the root path: `PROFITABILITY-PREREGISTRATION.md`, `COLD-START-PREREGISTRATION.md`, `COLD-START-CORRECTION.md`, `NEUTRAL-HFA-BET-RULE-CORRECTION.md`, `EV-CHAIN-CORRECTION.md`, `MOS-DECODE-COMPARISON.md`. Tests find a document from its bare name with `tests/doc_locations.py`.

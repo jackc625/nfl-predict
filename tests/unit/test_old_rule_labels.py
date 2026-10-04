@@ -11,9 +11,10 @@ This is a PERMANENT committed test, not a throwaway ``scripts/check_*.py``, foll
 
   - a repo-root readout reporting pre-fix results is simply not on the list, so it goes unlabelled
     while a hand-maintained name list still passes. The set is therefore PARTITIONED against
-    ``git ls-files '*.md'`` at the repo root: every tracked file is either labelled or carries a
-    written reason why it needs no label, and a readout committed later fails here until someone
-    decides which side it belongs on;
+    ``git ls-files '*.md'`` at the repo root and directly inside ``docs/guides/`` and
+    ``docs/records/`` (where the 2026-10-04 facelift moved most reports): every tracked file is
+    either labelled or carries a written reason why it needs no label, and a readout committed
+    later fails here until someone decides which side it belongs on;
   - a labelled readout loses its label, its date, or its opening sentinel line;
   - non-ASCII enters a labelled file (CLAUDE.md hard constraint);
   - the addendum picks up a word from the repo's over-claim dictionary
@@ -37,6 +38,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.doc_locations import doc_path
 
 # Repo root resolved from this file: tests/unit/test_old_rule_labels.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +72,11 @@ LABELLED_READOUTS: tuple[str, ...] = (
     "SIGNAL-LIFT-READOUT.md",
     "STATE-OF-SYSTEM.md",
 )
+
+# Readouts commit 7b1928f labelled that were later rewritten from scratch and no longer carry the
+# addendum. TestTheLabellingCommitOnlyAppended compares that commit's numstat against the labelled
+# set, so these names must still be counted there.
+LABELLED_THEN_REWRITTEN: frozenset[str] = frozenset()
 
 # Tracked repo-root markdown that carries no addendum, each with the reason found on reading it.
 NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
@@ -170,8 +178,13 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
 }
 
 
-def tracked_root_markdown() -> list[str]:
-    """Return every TRACKED markdown file at the repo root (no subdirectories), sorted."""
+# The folders the 2026-10-04 facelift moved repo-root reports into. A report is a tracked markdown
+# file at the repo root or directly inside one of these.
+REPORT_DIRS: tuple[str, ...] = ("docs/guides", "docs/records")
+
+
+def tracked_report_markdown() -> list[str]:
+    """Return the bare name of every TRACKED report (repo root or REPORT_DIRS), sorted."""
     listing = subprocess.run(
         ["git", "ls-files", "*.md"],
         capture_output=True,
@@ -179,12 +192,17 @@ def tracked_root_markdown() -> list[str]:
         check=True,
         cwd=REPO_ROOT,
     ).stdout.split()
-    return sorted(path for path in listing if "/" not in path)
+    names: list[str] = []
+    for path in listing:
+        folder, _, name = path.rpartition("/")
+        if folder in ("", *REPORT_DIRS):
+            names.append(name)
+    return sorted(names)
 
 
 def _partition_problems() -> dict[str, list[str]]:
-    """Describe every way the two sets fail to partition the tracked repo-root listing."""
-    tracked = set(tracked_root_markdown())
+    """Describe every way the two sets fail to partition the tracked report listing."""
+    tracked = set(tracked_report_markdown())
     labelled = set(LABELLED_READOUTS)
     reasoned = set(NO_PREFIX_NUMBERS_REASONS)
     return {
@@ -202,14 +220,14 @@ def _partition_problems() -> dict[str, list[str]]:
 _PROBLEMS = {name: items for name, items in _partition_problems().items() if items}
 if _PROBLEMS:
     raise AssertionError(
-        "LABELLED_READOUTS and NO_PREFIX_NUMBERS_REASONS must partition the tracked repo-root "
+        "LABELLED_READOUTS and NO_PREFIX_NUMBERS_REASONS must partition the tracked report "
         f"*.md listing exactly: {_PROBLEMS}"
     )
 
 
 def _read(name: str) -> str:
-    """Read one repo-root readout as UTF-8 text."""
-    return (REPO_ROOT / name).read_text(encoding="utf-8")
+    """Read one readout as UTF-8 text, wherever it lives (see tests/doc_locations.py)."""
+    return doc_path(name).read_text(encoding="utf-8")
 
 
 class TestTheReadoutSetIsAPartition:
@@ -227,7 +245,7 @@ class TestTheReadoutSetIsAPartition:
 
     def test_the_listing_is_not_empty(self) -> None:
         """Non-vacuity control: a failed git listing must not make the partition trivially pass."""
-        assert tracked_root_markdown(), "git ls-files returned no repo-root markdown"
+        assert tracked_report_markdown(), "git ls-files returned no report markdown"
 
     @pytest.mark.parametrize(
         "sealed", ["COLD-START-PREREGISTRATION.md", "PROFITABILITY-PREREGISTRATION.md"]
@@ -371,7 +389,10 @@ class TestTheLabellingCommitOnlyAppended:
         )
 
     def test_it_touched_exactly_the_declared_labelled_set(self) -> None:
-        assert set(_labelling_numstat()) == set(LABELLED_READOUTS)
+        assert (
+            set(_labelling_numstat())
+            == set(LABELLED_READOUTS) | LABELLED_THEN_REWRITTEN
+        )
 
     def test_a_planted_deletion_would_be_caught(self) -> None:
         planted = {"README.md": (22, 0), "RUNBOOK.md": (21, 1)}

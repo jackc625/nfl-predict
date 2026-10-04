@@ -26,7 +26,7 @@ from pathlib import Path
 
 # Repo root resolved from this file: tests/unit/test_signal_lift_readout_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-READOUT_MD = REPO_ROOT / "SIGNAL-LIFT-READOUT.md"
+READOUT_MD = REPO_ROOT / "docs" / "records" / "SIGNAL-LIFT-READOUT.md"
 
 # Gold presence skip-guard: the harness-run validation needs the Plan 28-06 widened gold.
 _GOLD_OU_PATH = REPO_ROOT / "data" / "gold" / "features_ou.parquet"

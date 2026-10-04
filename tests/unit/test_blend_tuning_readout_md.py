@@ -44,7 +44,7 @@ import pytest
 from tests import phase33_state
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-READOUT_MD = REPO_ROOT / "BLEND-TUNING-READOUT.md"
+READOUT_MD = REPO_ROOT / "docs" / "records" / "BLEND-TUNING-READOUT.md"
 ARTIFACTS = REPO_ROOT / "artifacts"
 
 #: The two exclusion classes, in the order the document publishes them.

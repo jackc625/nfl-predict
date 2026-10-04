@@ -40,7 +40,7 @@ import pytest
 from tests import phase33_state
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-READOUT_MD = REPO_ROOT / "REFIT-READOUT.md"
+READOUT_MD = REPO_ROOT / "docs" / "records" / "REFIT-READOUT.md"
 ARTIFACTS = REPO_ROOT / "artifacts"
 
 #: The label every results section carries, compared whitespace-normalized so a Markdown line

@@ -83,7 +83,7 @@ from tests.phase30_state import GROUP_VERDICT_FILE_SHA256, MEASUREMENT_COMMIT
 
 # Repo root resolved from this file: tests/unit/test_gated_refit_readout_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-READOUT_MD = REPO_ROOT / "GATED-REFIT-READOUT.md"
+READOUT_MD = REPO_ROOT / "docs" / "records" / "GATED-REFIT-READOUT.md"
 
 # The FROZEN pre-registration module whose last-modifying commit IS the rule commit. Named as a
 # path rather than imported, because what is resolved from it is a git fact, not a Python value.

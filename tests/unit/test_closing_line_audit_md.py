@@ -35,8 +35,9 @@ from pathlib import Path
 
 import pytest
 
-#: The audit lives at the repository root, where a reader will find it without being told.
-AUDIT_PATH = Path("CLOSING-LINE-AUDIT.md")
+#: The audit lives with the other records in docs/records/ (moved from the repository root on
+#: 2026-10-04), where the README's documentation index points a reader to it.
+AUDIT_PATH = Path("docs/records/CLOSING-LINE-AUDIT.md")
 
 #: The CLOSED five-value vocabulary. ``OPEN_ACCEPTED`` exists because D33.2-26 measured that
 #: the gate-baseline row could not be written truthfully with four: it has a live reader, so
@@ -130,7 +131,7 @@ def _table_lines(text: str) -> list[str]:
 
 @pytest.fixture(scope="module")
 def audit_text() -> str:
-    assert AUDIT_PATH.exists(), f"{AUDIT_PATH} is missing from the repository root"
+    assert AUDIT_PATH.exists(), f"{AUDIT_PATH} is missing"
     return AUDIT_PATH.read_text(encoding="utf-8")
 
 

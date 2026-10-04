@@ -46,7 +46,7 @@ import scripts.fingerprint_gold as fg
 from scripts import scan_precoverage_constants as scan
 
 GOLD = Path("data/gold")
-DOCUMENT = Path("PRECOVERAGE-SCAN.md")
+DOCUMENT = Path("docs/records/PRECOVERAGE-SCAN.md")
 BEFORE_SECTION = "## Before rung 8"
 AFTER_SECTION = "## After rung 8"
 

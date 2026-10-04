@@ -28,7 +28,7 @@ from pathlib import Path
 
 # Repo root resolved from this file: tests/unit/test_pipeline_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PIPELINE_MD = REPO_ROOT / "PIPELINE.md"
+PIPELINE_MD = REPO_ROOT / "docs" / "guides" / "PIPELINE.md"
 
 
 def _read_pipeline_md() -> str:

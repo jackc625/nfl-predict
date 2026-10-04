@@ -31,7 +31,7 @@ from pathlib import Path
 
 # Repo root resolved from this file: tests/unit/test_runbook_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RUNBOOK_MD = REPO_ROOT / "RUNBOOK.md"
+RUNBOOK_MD = REPO_ROOT / "docs" / "guides" / "RUNBOOK.md"
 
 
 def _read_runbook_md() -> str:

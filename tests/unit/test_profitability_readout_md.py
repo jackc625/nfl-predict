@@ -89,11 +89,12 @@ from backtest.ev_chain_constants import (
     READOUT_REQUIRED_FIELDS,
     VERDICT_TOKENS,
 )
+from tests.doc_locations import doc_path
 from tests.unit.test_old_rule_labels import ADDENDUM_SENTINEL, LABEL_PHRASE
 
 # Repo root resolved from this file: tests/unit/test_profitability_readout_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-READOUT_MD = REPO_ROOT / "PROFITABILITY-READOUT.md"
+READOUT_MD = doc_path("PROFITABILITY-READOUT.md")
 VERDICT_TOML = REPO_ROOT / "config" / "profitability_2025_verdict.toml"
 
 TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
@@ -108,6 +109,9 @@ TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
 # deliberately NOT moved to the new file hashes, because that would stop protecting the originals.
 # They still hash the ORIGINAL content -- everything before the addendum -- so a whitespace-only
 # edit to the original text still fails here, and so does an addendum that lacks the label.
+#
+# 2026-10-04 (facelift): the five moved into docs/records/ byte-identical. The keys stay BARE
+# names because the readout is checked for naming them; doc_path() finds each file.
 PRIOR_READOUT_SHA256: dict[str, str] = {
     "ACTIVATION-READOUT.md": (
         "8d73a1715b454af1bb41d61ac69d74fc0482edfe7e1faee58280ab7e7ae5f7cd"
@@ -250,7 +254,7 @@ def _source_texts() -> dict[str, str | None]:
     """Map each figure source to its bytes, or to None when it is absent from this checkout."""
     texts: dict[str, str | None] = {}
     for source in FIGURE_SOURCES:
-        path = REPO_ROOT / source
+        path = doc_path(source)
         texts[source] = path.read_text(encoding="utf-8") if path.is_file() else None
     return texts
 
@@ -562,10 +566,10 @@ class TestPriorReadoutsPreserved:
     def test_all_five_prior_readouts_are_present(self) -> None:
         """The readout points at them; they have to be there to be pointed at."""
         missing = [
-            name for name in PRIOR_READOUT_SHA256 if not (REPO_ROOT / name).is_file()
+            name for name in PRIOR_READOUT_SHA256 if not doc_path(name).is_file()
         ]
         assert not missing, (
-            f"prior milestone readouts are missing from the repo root: {missing}. This readout is "
+            f"prior milestone readouts are missing: {missing}. This readout is "
             "written BESIDE them and supersedes none of them; deleting one erases the record it "
             "points at."
         )
@@ -579,7 +583,7 @@ class TestPriorReadoutsPreserved:
         drifted: dict[str, str] = {}
         sentinel = ADDENDUM_SENTINEL.encode("ascii")
         for name, expected in PRIOR_READOUT_SHA256.items():
-            path = REPO_ROOT / name
+            path = doc_path(name)
             if not path.is_file():
                 continue
             raw = path.read_bytes()

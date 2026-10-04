@@ -13,10 +13,12 @@ docs/feature_engineering.md) and CROSS-LINKS current code rather than re-asserti
   activated in Phase 11), and no "RandomizedSearchCV" claim (replaced by Optuna
   in Phase 12).
 
-This test file is ALSO the single owner of the docs/ removal assertion (D-01/D-04):
-the six stale docs/*.md are deleted and the now-empty docs/ directory is removed.
-That check lives in a separate TestStaleDocsRemoved class so it reads independently
-of the METHODOLOGY content checks.
+This test file is ALSO the single owner of the stale-docs assertion (D-01/D-04): the
+six stale v1.0 docs/*.md stay deleted. It lives in a separate TestStaleDocsRemoved
+class so it reads independently of the METHODOLOGY content checks. The companion
+"docs/ directory must not exist" check was retired by the owner on 2026-10-04, when
+docs/ became the home of the guides and records (METHODOLOGY.md now lives at
+docs/guides/METHODOLOGY.md).
 
 This is a permanent committed test, NOT a throwaway script. It intentionally FAILS
 until METHODOLOGY.md is written AND the six docs/*.md are deleted (the Wave-2 doc
@@ -27,7 +29,7 @@ from pathlib import Path
 
 # Repo root resolved from this file: tests/unit/test_methodology_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-METHODOLOGY_MD = REPO_ROOT / "METHODOLOGY.md"
+METHODOLOGY_MD = REPO_ROOT / "docs" / "guides" / "METHODOLOGY.md"
 
 
 def _read_methodology_md() -> str:
@@ -229,10 +231,9 @@ class TestMethodologyMdPhase30Method:
 
 
 class TestStaleDocsRemoved:
-    """The six stale docs/*.md and the docs/ directory must be gone (D-01/D-04).
+    """The six stale v1.0 docs/*.md must stay gone (D-01/D-04).
 
-    This class is the SINGLE owner of the docs/ removal assertion across the
-    Phase 23 doc guards.
+    This class is the SINGLE owner of that assertion across the Phase 23 doc guards.
     """
 
     def test_six_stale_docs_deleted(self):
@@ -252,10 +253,6 @@ class TestStaleDocsRemoved:
             name for name in basenames if (REPO_ROOT / "docs" / f"{name}.md").exists()
         ]
         assert not surviving, f"stale docs/*.md still present: {surviving}"
-
-    def test_docs_directory_removed(self):
-        """The now-empty docs/ directory is removed (D-04)."""
-        assert not (REPO_ROOT / "docs").exists(), "docs/ directory still present"
 
 
 class TestPhase31MethodReconciled:

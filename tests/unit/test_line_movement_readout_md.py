@@ -73,7 +73,7 @@ import pytest
 
 # Repo root resolved from this file: tests/unit/test_line_movement_readout_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-READOUT_MD = REPO_ROOT / "LINE-MOVEMENT-READOUT.md"
+READOUT_MD = REPO_ROOT / "docs" / "records" / "LINE-MOVEMENT-READOUT.md"
 
 # ---------------------------------------------------------------------------
 # The Phase-30 frozen fixture (Plan 30-03, D30-06).

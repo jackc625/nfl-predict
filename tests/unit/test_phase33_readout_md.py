@@ -37,7 +37,7 @@ from pathlib import Path
 from tests import phase33_state
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-READOUT_MD = REPO_ROOT / "LIVE-COLD-START-READOUT.md"
+READOUT_MD = REPO_ROOT / "docs" / "records" / "LIVE-COLD-START-READOUT.md"
 GATE_VERDICT_TOML = REPO_ROOT / "config" / "phase33_gate_verdict.toml"
 
 _DECIMAL_IN_TEXT = re.compile(r"[+-]?\d+\.\d{3,}")

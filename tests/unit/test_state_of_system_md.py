@@ -28,7 +28,7 @@ from pathlib import Path
 
 # Repo root resolved from this file: tests/unit/test_state_of_system_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STATE_OF_SYSTEM_MD = REPO_ROOT / "STATE-OF-SYSTEM.md"
+STATE_OF_SYSTEM_MD = REPO_ROOT / "docs" / "guides" / "STATE-OF-SYSTEM.md"
 
 
 def _read_state_of_system_md() -> str:

@@ -45,7 +45,7 @@ import pytest
 from tests import phase33_state
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-READOUT_MD = REPO_ROOT / "HISTORICAL-WEATHER-READOUT.md"
+READOUT_MD = REPO_ROOT / "docs" / "records" / "HISTORICAL-WEATHER-READOUT.md"
 
 # Required section markers. Substrings of each section heading, so a reword inside a section does
 # not trip the guard but dropping the section does.

@@ -29,7 +29,7 @@ import pytest
 
 # Repo root resolved from this file: tests/unit/test_ou_divergence_diagnosis_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DIAGNOSIS_MD = REPO_ROOT / "OU-DIVERGENCE-DIAGNOSIS.md"
+DIAGNOSIS_MD = REPO_ROOT / "docs" / "records" / "OU-DIVERGENCE-DIAGNOSIS.md"
 STATE_MD = REPO_ROOT / ".planning" / "STATE.md"
 
 # Gold presence skip-guard: the harness-run validation needs the Phase-20 rebuilt canonical gold.

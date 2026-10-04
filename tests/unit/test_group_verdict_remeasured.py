@@ -39,7 +39,7 @@ from tests.phase30_state import GROUP_VERDICT_FILE_SHA256, MEASUREMENT_COMMIT
 from tests.phase33_state import P332_20_CLEAN_BUILD_GOLD_GENERATION
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-READOUT_MD = REPO_ROOT / "GROUP-VERDICT-READOUT.md"
+READOUT_MD = REPO_ROOT / "docs" / "records" / "GROUP-VERDICT-READOUT.md"
 VERDICT_TOML = REPO_ROOT / "config" / "group_gate_verdict.toml"
 
 _GOLD_PATHS = {
