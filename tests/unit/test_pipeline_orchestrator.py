@@ -57,8 +57,8 @@ def make_mock_step(
 class TestStepRegistry:
     """Tests for build_step_registry."""
 
-    def test_build_step_registry_returns_24_steps(self):
-        """build_step_registry returns exactly 24 StepDefinition objects.
+    def test_build_step_registry_returns_23_steps(self):
+        """build_step_registry returns exactly 23 StepDefinition objects.
 
         18 through Plan 31-17; the nineteenth is the NON-CRITICAL ``populate_web_cache`` step
         Plan 31-18 registered last (SPEC R9, D31-29). Its position and non-criticality are pinned
@@ -73,18 +73,26 @@ class TestStepRegistry:
 
         The twenty-third and twenty-fourth are Plan 33.2-15's ``ingest_snaps`` and
         ``ingest_injuries`` (D33.2-16): the two feeds that ran nowhere, now DATA steps.
+
+        Then 23: the 33.2 review (``03566ec``) retired the PREDICTIONS-phase
+        ``build_market_anchors`` step outright -- the table it wrote was read by nothing and
+        existed on no disk. Was: 24.
         """
         registry = build_step_registry()
-        assert len(registry) == 24
+        assert len(registry) == 23
         assert all(isinstance(s, StepDefinition) for s in registry)
 
     def test_build_step_registry_phases_correct(self):
-        """First 11 steps are DATA, last 13 are PREDICTIONS (Plan 33.2-15 added two DATA steps)."""
+        """First 11 steps are DATA, last 12 are PREDICTIONS.
+
+        Plan 33.2-15 added two DATA steps; the 33.2 review (``03566ec``) then retired the
+        PREDICTIONS-phase ``build_market_anchors`` step. Was: 13 PREDICTIONS steps.
+        """
         registry = build_step_registry()
         data_steps = [s for s in registry if s.phase == PipelinePhase.DATA]
         pred_steps = [s for s in registry if s.phase == PipelinePhase.PREDICTIONS]
         assert len(data_steps) == 11
-        assert len(pred_steps) == 13
+        assert len(pred_steps) == 12
         # DATA steps come first
         for i, step in enumerate(registry[:11]):
             assert step.phase == PipelinePhase.DATA, f"Step {i} should be DATA"
