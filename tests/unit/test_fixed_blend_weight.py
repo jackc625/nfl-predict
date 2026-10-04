@@ -860,11 +860,11 @@ class TestTheEndToEndFit:
     def test_the_production_source_ids_are_the_recorded_refit(self) -> None:
         from backtest.tune import blend_source_artifact_ids
 
-        # Was: P332_23_REFIT_ARTIFACT_IDS. Step 25b re-fitted the models with the snap
-        # coverage flag left out; the blend is tuned on those.
-        from tests.phase33_state import P332_25B_REFIT_ARTIFACT_IDS
+        # Was: P332_23_REFIT_ARTIFACT_IDS, then P332_25B_REFIT_ARTIFACT_IDS. WINDOWS row 19
+        # re-fitted the models on the neutral-site Elo gold; the blend is tuned on those.
+        from tests.phase33_state import ROW19_REFIT_ARTIFACT_IDS
 
-        assert blend_source_artifact_ids() == dict(P332_25B_REFIT_ARTIFACT_IDS)
+        assert blend_source_artifact_ids() == dict(ROW19_REFIT_ARTIFACT_IDS)
 
 
 # ---------------------------------------------------------------------------
@@ -893,13 +893,14 @@ class TestTheBlendCliDoesNotImportTheTestsPackage:
             blend_sources.BLEND_CONVERTER_ARTIFACT_ID
             == phase33_state.P332_24B_CONVERTER_ARTIFACT_ID
         )
+        # The source ids and gold are the WINDOWS row 19 re-fits' (were P332_25B_REFIT_*).
         assert (
             blend_sources.BLEND_SOURCE_ARTIFACT_IDS
-            == phase33_state.P332_25B_REFIT_ARTIFACT_IDS
+            == phase33_state.ROW19_REFIT_ARTIFACT_IDS
         )
         assert (
             blend_sources.BLEND_SOURCE_GOLD_GENERATION
-            == phase33_state.P332_25B_REFIT_GOLD_GENERATION
+            == phase33_state.ROW19_REFIT_GOLD_GENERATION
         )
 
     def test_the_fit_refuses_without_a_supplied_live_gold_generation(

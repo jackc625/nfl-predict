@@ -17,6 +17,11 @@ flag left out. The blend is tuned on exactly those three models' walk-forward pr
 binds exactly that converter. The gold generation is the one all three were trained on; the
 tuner refuses to run if the source artifacts, or the operator-measured live gold, disagree.
 
+WINDOWS ROW 19 (quick task 261003-vke, 2026-10-04). The source models and gold generation are
+now the three re-fits on the neutral-site Elo gold (zero home-field advantage at every neutral
+site, dc7c34d): ``tests.phase33_state.ROW19_REFIT_ARTIFACT_IDS`` and
+``ROW19_REFIT_GOLD_GENERATION``. The converter is unchanged: it is market-only.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -31,16 +36,16 @@ __all__ = [
 #: The converter the blend binds (``tests.phase33_state.P332_24B_CONVERTER_ARTIFACT_ID``).
 BLEND_CONVERTER_ARTIFACT_ID: str = "market_probability_20260923_195443"
 
-#: ``(target, artifact_id)`` for the three corrected source models
-#: (``tests.phase33_state.P332_25B_REFIT_ARTIFACT_IDS``).
+#: ``(target, artifact_id)`` for the three source models
+#: (``tests.phase33_state.ROW19_REFIT_ARTIFACT_IDS``).
 BLEND_SOURCE_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
-    ("wp", "wp_20260923_172144"),
-    ("ats", "ats_20260923_172148"),
-    ("ou", "ou_20260923_172152"),
+    ("wp", "wp_20261004_050223"),
+    ("ats", "ats_20261004_050228"),
+    ("ou", "ou_20261004_050232"),
 )
 
 #: The gold generation all three source models were trained on
-#: (``tests.phase33_state.P332_25B_REFIT_GOLD_GENERATION``).
+#: (``tests.phase33_state.ROW19_REFIT_GOLD_GENERATION``).
 BLEND_SOURCE_GOLD_GENERATION: str = (
-    "484397642530db5b28c49d9234ecfb90e3860783f1b1b41766ab6151a1522597"
+    "9ba3a56885ab3b26524d2255e73b46bf674c9b18043cd7ca2bcc74a71cab9228"
 )

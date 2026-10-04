@@ -20018,3 +20018,28 @@ ROW19_ELO_ANCHOR_CAUSE: tuple[str, str, str] = (
     "unplayed 2026 week-4 game, the WR-08 B nightly path). Store 6,563 rows; the "
     "independent replay at 2026-10-04T04:43:48Z gave MISMATCHES 0, MISSING 0, ORPHAN 0",
 )
+
+# THE THREE RE-FITS. Gold was rebuilt through the nightly path
+# (pipeline.steps.build_and_save_gold with the 2026-10-03 slate lock): same game-id sets and
+# widths as before; only the 14 Elo causal columns, the 4 Elo-derived spot flags and
+# feature_timestamp moved (no second cause). Then step 25b's exact command on the new gold:
+# `uv run python -m scripts.train_models --all-targets --no-tune --no-clv --gold-generation
+# <ROW19_REFIT_GOLD_GENERATION> --thread-limit 1 --exclude-groups injury,situational,snap
+# --exclude-groups-provenance verdict` -- the already-ruled settings, no search. The ids are
+# the run's own ARTIFACT= lines. latest.json byte-unchanged by the run.
+
+#: ``(target, artifact_id)`` for the three re-fits on the neutral-site Elo gold. Supersedes
+#: P332_25B_REFIT_ARTIFACT_IDS as what the blend is tuned on and the swap installs.
+ROW19_REFIT_ARTIFACT_IDS: tuple[tuple[str, str], ...] = (
+    ("wp", "wp_20261004_050223"),
+    ("ats", "ats_20261004_050228"),
+    ("ou", "ou_20261004_050232"),
+)
+
+#: tests.gold_generation.gold_generation_key() of the rebuilt gold, measured 2026-10-04.
+ROW19_REFIT_GOLD_GENERATION: str = (
+    "9ba3a56885ab3b26524d2255e73b46bf674c9b18043cd7ca2bcc74a71cab9228"
+)
+
+#: The OpenMP thread count the re-fit was pinned to.
+ROW19_REFIT_THREAD_LIMIT: int = 1
