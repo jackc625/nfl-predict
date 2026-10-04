@@ -1,0 +1,24 @@
+name: Lint
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    name: Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      # Lint only. The test suite reads the locally built data store, which is gitignored,
+      # so it cannot run here.
+      - name: Ruff check
+        run: uv run --frozen --only-dev ruff check --no-fix --output-format=github .
