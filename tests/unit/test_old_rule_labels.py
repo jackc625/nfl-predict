@@ -148,6 +148,14 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "evidence' (D33.2-07); it rests on no pre-fix model, so the old-rule addendum does not "
         "describe it."
     ),
+    "NEUTRAL-HFA-BET-RULE-CORRECTION.md": (
+        "Quick task 261003-vke's superseding correction of the 2026 bet rule frozen at 9bb7568, "
+        "re-derived by the same recipe on the three models re-fit after the neutral-site Elo "
+        "fix (WINDOWS row 19) and on lines owned before each game's lock. It names the "
+        "superseded values only as the numbers being replaced and labels its figures 'not clean "
+        "evidence' (D33.2-07); it rests on no pre-fix model, so the old-rule addendum does not "
+        "describe it."
+    ),
     "LIVE-COLD-START-READOUT.md": (
         "Plan 33-18's closing record of Phase 33, written under the day-before lock. Its "
         "measurements are the 2026 live scheduled runs'; it names Phase 33's superseded models, "
