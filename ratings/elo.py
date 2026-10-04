@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from conf.settings import get_settings
@@ -67,6 +68,80 @@ def is_divisional_game(home_team: str, away_team: str) -> bool:
     if home_div is None or away_div is None:
         return False
     return home_div == away_div
+
+
+# ---- Neutral sites (WINDOWS row 19, owner ruling 2026-10-03) ----
+# A game silver ``games`` flags ``neutral_site == True`` gets NO home-field advantage --
+# Super Bowls, international games, relocated games, all of them -- and zero overrides the
+# divisional reduction. Such games are also left out of HFA LEARNING: a home win at a
+# neutral site says nothing about home field. The rule is spelled once, here, through the
+# three names below; every chain caller passes the raw flag and lets them validate it.
+
+
+class NeutralSiteFlagError(ValueError):
+    """A game's ``neutral_site`` flag is not a boolean.
+
+    Refused rather than coerced: ``bool(float("nan"))`` is True, so coercing a null flag
+    would silently make the game NEUTRAL and zero its home-field advantage.
+    """
+
+
+def is_neutral_site(value: object) -> bool:
+    """THE one reader of a game's neutral-site flag.
+
+    Args:
+        value: The raw ``neutral_site`` cell of one game.
+
+    Returns:
+        The flag, for a Python or numpy boolean.
+
+    Raises:
+        NeutralSiteFlagError: Quoting the value, for None, pandas NA, a float NaN or any
+            other non-boolean.
+    """
+    if isinstance(value, bool | np.bool_):
+        return bool(value)
+    raise NeutralSiteFlagError(
+        f"a game's neutral_site flag must be a boolean, got {value!r} "
+        f"({type(value).__name__}). A null or non-boolean flag is refused rather than "
+        "coerced, because bool(NaN) is True and would make the game neutral."
+    )
+
+
+def hfa_learning_mask(games_df: pd.DataFrame, season: int) -> pd.Series:
+    """THE one home-field-advantage learning filter for *season*.
+
+    Selects the PRIOR season's games (``season - 1``) that have both scores, are not tied
+    and were NOT played at a neutral site. Neutral games are excluded per the owner ruling
+    of 2026-10-03 (WINDOWS row 19): a neutral site has no home field to learn from.
+
+    Args:
+        games_df: Games frame (may span seasons); must carry ``neutral_site``.
+        season: The season HFA is being learned FOR.
+
+    Returns:
+        A boolean Series aligned to *games_df*'s index.
+
+    Raises:
+        KeyError: Naming ``neutral_site`` when the frame does not carry it.
+        NeutralSiteFlagError: When a prior-season flag is null or non-boolean.
+    """
+    if "neutral_site" not in games_df.columns:
+        raise KeyError(
+            "the frame handed to the HFA learner has no 'neutral_site' column, so neutral "
+            f"games cannot be left out of HFA learning (columns: {sorted(games_df.columns)})"
+        )
+    prior = (games_df["season"] == season - 1).to_numpy(dtype=bool)
+    flags = games_df["neutral_site"].to_numpy(dtype=object)
+    neutral = np.zeros(len(games_df), dtype=bool)
+    for position in np.flatnonzero(prior):
+        neutral[position] = is_neutral_site(flags[position])
+    decided = (
+        games_df["home_score"].notna()
+        & games_df["away_score"].notna()
+        & (games_df["home_score"] != games_df["away_score"])
+    ).to_numpy(dtype=bool)
+    return pd.Series(prior & decided & ~neutral, index=games_df.index)
 
 
 @dataclass
@@ -283,6 +358,29 @@ class EloRatingSystem:
                     new_rating=rating.rating,
                 )
 
+    def home_field_advantage(
+        self, season: int, *, neutral_site: object, is_divisional: bool
+    ) -> float:
+        """THE one home-field-advantage rule for one game (WINDOWS row 19).
+
+        0.0 at a neutral site, overriding the divisional reduction; otherwise the
+        season's learned HFA (``hfa_init`` before one is learned), times
+        ``DIVISIONAL_HFA_FACTOR`` for a divisional game.
+
+        Args:
+            season: Season year.
+            neutral_site: The game's raw neutral-site flag, read through
+                :func:`is_neutral_site` (a null or non-boolean flag is refused).
+            is_divisional: Whether this is a divisional game.
+
+        Returns:
+            The HFA in Elo points.
+        """
+        if is_neutral_site(neutral_site):
+            return 0.0
+        hfa = self.hfa_by_season.get(season, self.hfa_init)
+        return hfa * DIVISIONAL_HFA_FACTOR if is_divisional else hfa
+
     def update_ratings(
         self,
         home_team: str,
@@ -293,6 +391,7 @@ class EloRatingSystem:
         game_date: datetime,
         game_id: str | None = None,
         is_divisional: bool = False,
+        neutral_site: bool = False,
     ) -> tuple[float, float]:
         """Update Elo ratings for both teams after a game.
 
@@ -306,6 +405,9 @@ class EloRatingSystem:
             game_id: Optional game identifier.
             is_divisional: Whether this is a divisional game. Divisional
                 games get reduced HFA (multiplied by DIVISIONAL_HFA_FACTOR).
+            neutral_site: Whether the game was played at a neutral site (zero HFA,
+                overriding the divisional reduction). Defaults to False, mirroring
+                ``predict_game``; every chain caller passes the game's raw flag.
 
         Returns:
             Tuple of (home_rating_change, away_rating_change).
@@ -314,10 +416,9 @@ class EloRatingSystem:
         home_rating = self.get_or_create_rating(home_team, season)
         away_rating = self.get_or_create_rating(away_team, season)
 
-        # Get home field advantage for this season, with divisional reduction
-        hfa = self.hfa_by_season.get(season, self.hfa_init)
-        if is_divisional:
-            hfa *= DIVISIONAL_HFA_FACTOR
+        hfa = self.home_field_advantage(
+            season, neutral_site=neutral_site, is_divisional=is_divisional
+        )
 
         # Pre-game ratings
         home_pre = home_rating.rating
@@ -405,8 +506,13 @@ class EloRatingSystem:
         hfa_init (48). For subsequent seasons, learns HFA from the prior
         season's home win rate and blends with the running estimate.
 
+        The games learned from are :func:`hfa_learning_mask`'s: the prior season's
+        scored, non-tied, NON-NEUTRAL games. Neutral-site games are excluded per the
+        owner ruling of 2026-10-03 (WINDOWS row 19).
+
         Args:
-            games_df: DataFrame with game results (may span multiple seasons).
+            games_df: DataFrame with game results (may span multiple seasons); must
+                carry ``neutral_site``.
             season: Season to learn HFA for. Uses season-1 data.
 
         Returns:
@@ -414,12 +520,7 @@ class EloRatingSystem:
         """
         # Filter to PRIOR season only -- this is the key fix for the
         # lookahead bug. Never use same-season data for HFA learning.
-        prior_games = games_df[
-            (games_df["season"] == season - 1)
-            & games_df["home_score"].notna()
-            & games_df["away_score"].notna()
-            & (games_df["home_score"] != games_df["away_score"])
-        ]
+        prior_games = games_df[hfa_learning_mask(games_df, season)]
 
         if len(prior_games) == 0:
             # No prior-season data -- use initial value
@@ -508,6 +609,7 @@ class EloRatingSystem:
                 game_date=game["kickoff_et"],
                 game_id=game["game_id"],
                 is_divisional=divisional,
+                neutral_site=game["neutral_site"],
             )
 
             # Get post-game ratings
@@ -551,7 +653,8 @@ class EloRatingSystem:
             home_team: Home team abbreviation.
             away_team: Away team abbreviation.
             season: Season year.
-            neutral_site: Whether game is at neutral site.
+            neutral_site: Whether game is at neutral site (zero HFA, overriding the
+                divisional reduction).
             is_divisional: Whether this is a divisional game. Divisional
                 games get reduced HFA (multiplied by DIVISIONAL_HFA_FACTOR).
 
@@ -561,12 +664,9 @@ class EloRatingSystem:
         home_rating = self.get_or_create_rating(home_team, season)
         away_rating = self.get_or_create_rating(away_team, season)
 
-        if neutral_site:
-            hfa = 0.0
-        else:
-            hfa = self.hfa_by_season.get(season, self.hfa_init)
-            if is_divisional:
-                hfa *= DIVISIONAL_HFA_FACTOR
+        hfa = self.home_field_advantage(
+            season, neutral_site=neutral_site, is_divisional=is_divisional
+        )
 
         home_win_prob = self._expected_score(
             home_rating.rating, away_rating.rating, hfa

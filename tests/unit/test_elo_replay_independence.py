@@ -100,6 +100,7 @@ def synthetic_games(*, unplayed_final_week: bool = True) -> pd.DataFrame:
                     "away_team": away,
                     "home_score": float("nan") if unplayed else float(hs),
                     "away_score": float("nan") if unplayed else float(as_),
+                    "neutral_site": False,
                 }
             )
     frame = pd.DataFrame(rows)
@@ -630,7 +631,7 @@ games = pd.DataFrame({
     "game_id": ["2002_W01_MIA@BUF"], "season": [2002], "week": [1],
     "kickoff_et": pd.to_datetime(["2002-09-08T17:00:00Z"]),
     "home_team": ["BUF"], "away_team": ["MIA"],
-    "home_score": [24.0], "away_score": [17.0],
+    "home_score": [24.0], "away_score": [17.0], "neutral_site": [False],
 })
 snapshots = pd.DataFrame({
     "game_id": ["2002_W01_MIA@BUF"], "season": [2002], "week": [1],

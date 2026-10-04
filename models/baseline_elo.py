@@ -327,6 +327,7 @@ class BaselineEloModel:
                         game_id=game.get(
                             "game_id", f"{game['home_team']}_vs_{game['away_team']}"
                         ),
+                        neutral_site=game["neutral_site"],
                     )
 
         # Prepare training features

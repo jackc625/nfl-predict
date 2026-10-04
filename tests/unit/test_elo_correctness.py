@@ -8,16 +8,20 @@ Verifies:
 - Divisional HFA reduction at 0.54 factor
 - Chronological update ordering
 - HFA clamp range 20-80
+- Zero HFA at a neutral site, and neutral games left out of HFA learning (row 19)
 """
 
 from datetime import datetime
 
 import pandas as pd
+import pytest
 
 from ratings.elo import (
     DIVISIONAL_HFA_FACTOR,
     EloRatingSystem,
+    NeutralSiteFlagError,
     is_divisional_game,
+    is_neutral_site,
 )
 
 
@@ -55,6 +59,7 @@ def _make_season_games(
                 "home_score": home_score,
                 "away_score": away_score,
                 "kickoff_et": datetime(season, 9, 7 + i, 13, 0),
+                "neutral_site": False,
             }
         )
 
@@ -298,6 +303,7 @@ class TestChronologicalOrdering:
                     "home_score": 28,
                     "away_score": 17,
                     "kickoff_et": datetime(2024, 9, 14, 13, 0),
+                    "neutral_site": False,
                 },
                 {
                     "game_id": "EARLY_GAME",
@@ -308,6 +314,7 @@ class TestChronologicalOrdering:
                     "home_score": 24,
                     "away_score": 21,
                     "kickoff_et": datetime(2024, 9, 7, 13, 0),
+                    "neutral_site": False,
                 },
             ]
         )
@@ -340,6 +347,7 @@ class TestChronologicalOrdering:
                     "home_score": 28,
                     "away_score": 17,
                     "kickoff_et": datetime(2024, 9, 14, 13, 0),
+                    "neutral_site": False,
                 },
                 {
                     "game_id": "EARLY_GAME",
@@ -350,6 +358,7 @@ class TestChronologicalOrdering:
                     "home_score": 24,
                     "away_score": 21,
                     "kickoff_et": datetime(2024, 9, 7, 13, 0),
+                    "neutral_site": False,
                 },
             ]
         )
@@ -590,3 +599,91 @@ class TestTheLiveAndCanonicalPathsLearnHFATheSameWay:
                         "fixes one season and returns the defect for every following "
                         "one."
                     )
+
+
+# ---------------------------------------------------------------------------
+# ZERO HOME-FIELD ADVANTAGE AT A NEUTRAL SITE (WINDOWS row 19, owner ruling 2026-10-03)
+#
+# Every game silver `games` flags `neutral_site == True` gets hfa 0.0 -- overriding the
+# divisional reduction -- and is left out of HFA learning. The rule lives once in
+# `ratings.elo` (`is_neutral_site`, `hfa_learning_mask`,
+# `EloRatingSystem.home_field_advantage`); this class tests it directly and through the
+# builder chain that writes `elo_game_snapshots`.
+# ---------------------------------------------------------------------------
+
+
+class TestNeutralSite:
+    """The one neutral-site HFA rule, at every verb that applies or learns HFA."""
+
+    @staticmethod
+    def _rated_system() -> EloRatingSystem:
+        elo = EloRatingSystem()
+        elo.hfa_by_season[2024] = 48.0
+        elo.get_or_create_rating("MIA", 2024).rating = 1560.0
+        elo.get_or_create_rating("BUF", 2024).rating = 1500.0
+        return elo
+
+    def test_predict_game_at_a_neutral_site_uses_no_hfa_even_when_divisional(self):
+        elo = self._rated_system()
+
+        result = elo.predict_game(
+            "MIA", "BUF", 2024, neutral_site=True, is_divisional=True
+        )
+
+        assert result["hfa_used"] == 0.0
+        assert result["home_win_prob"] == elo._expected_score(1560.0, 1500.0, 0.0)
+
+    def test_update_ratings_records_zero_hfa_at_a_neutral_divisional_game(self):
+        neutral = self._rated_system()
+        home_field = self._rated_system()
+        game = ("MIA", "BUF", 24, 21, 2024, datetime(2024, 9, 7, 13, 0))
+
+        neutral.update_ratings(*game, is_divisional=True, neutral_site=True)
+        home_field.update_ratings(*game, is_divisional=True, neutral_site=False)
+
+        assert neutral.game_history[-1]["hfa_used"] == 0.0
+        assert home_field.game_history[-1]["hfa_used"] == 48.0 * DIVISIONAL_HFA_FACTOR
+
+    def test_the_learner_ignores_neutral_games(self):
+        prior = _make_season_games(2023, num_games=20, home_win_rate=0.6)
+        extra = _make_season_games(2023, num_games=6, home_win_rate=1.0)
+        extra["game_id"] = extra["game_id"] + "_EXTRA"
+        with_neutral = pd.concat(
+            [prior, extra.assign(neutral_site=True)], ignore_index=True
+        )
+        with_home_field = pd.concat(
+            [prior, extra.assign(neutral_site=False)], ignore_index=True
+        )
+
+        baseline = EloRatingSystem().learn_home_field_advantage(prior, 2024)
+        neutral_added = EloRatingSystem().learn_home_field_advantage(with_neutral, 2024)
+        home_added = EloRatingSystem().learn_home_field_advantage(with_home_field, 2024)
+
+        assert neutral_added == baseline
+        # Anti-vacuity: the same six home wins played at home DO move the learned HFA.
+        assert home_added != baseline
+
+    @pytest.mark.parametrize("value", [None, float("nan"), pd.NA, 0, "False"])
+    def test_a_null_or_non_boolean_flag_is_refused_by_name(self, value):
+        with pytest.raises(NeutralSiteFlagError, match="neutral_site"):
+            is_neutral_site(value)
+
+    def test_the_builder_chain_stores_zero_hfa_on_a_neutral_row(self):
+        from scripts.build_elo import EloBuilder
+        from tests.fixtures.elo_sandbox import make_season_games
+
+        games = make_season_games(2025, weeks=2, graded_weeks=(1,))
+        # BUF/MIA is divisional, so zero must override the divisional factor too.
+        neutral_ids = {"2025_W01_MIA@BUF", "2025_W02_MIA@BUF"}
+        games["neutral_site"] = games["game_id"].isin(neutral_ids)
+        builder = EloBuilder()
+
+        played = builder._process_chain([2025], games=games, learn_from=games)
+        upcoming = builder.snapshot_upcoming_week(2025, 2, games=games)
+
+        by_id = {row["game_id"]: row["hfa_used"] for row in played}
+        assert by_id["2025_W01_MIA@BUF"] == 0.0
+        assert by_id["2025_W01_DEN@KC"] == 48.0 * DIVISIONAL_HFA_FACTOR
+        provisional = dict(zip(upcoming["game_id"], upcoming["hfa_used"], strict=True))
+        assert provisional["2025_W02_MIA@BUF"] == 0.0
+        assert provisional["2025_W02_DEN@KC"] == 48.0 * DIVISIONAL_HFA_FACTOR

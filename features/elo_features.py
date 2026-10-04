@@ -33,7 +33,7 @@ from features.provenance import (
     InformationBasis,
     ProvenanceCoverageError,
 )
-from ratings.elo import EloRatingSystem
+from ratings.elo import EloRatingSystem, hfa_learning_mask, is_neutral_site
 
 # IMPORTED, never re-declared. ``scripts/build_elo`` owns the snapshot schema because it
 # WRITES it; the flag's name, the table's name and the back-compat fill therefore have one
@@ -293,8 +293,10 @@ def assert_no_provisional_training_rows(
 #     the season boundary. A team never seen before sits at the synthetic 1500 start
 #     state (``ratings.elo.EloRatingSystem.get_or_create_rating``) with NO contributor;
 #   * hfa_used / elo_prob_home -- the season's home-field advantage is LEARNED from every
-#     scored, non-tied game of the PRIOR season (``learn_home_field_advantage``), so its
-#     latest contributor is that season's last such game. The first season has none;
+#     scored, non-tied, NON-NEUTRAL game of the PRIOR season (``hfa_learning_mask``, the
+#     learner's own filter), so its latest contributor is that season's last such game.
+#     The first season has none, and a NEUTRAL-site game has none either: its hfa_used
+#     is the constant 0.0 (WINDOWS row 19), which rests on no result;
 #   * the four rank / percentile columns -- read EVERY team's latest pre-game rating at
 #     week <= this week, so their contributors are all of those teams' prior games;
 #   * the two momentum columns -- read the oldest and newest of the team's last four
@@ -317,36 +319,44 @@ def _latest(ends: list[_Contributor]) -> _Contributor:
 
 def _chain_contributors(
     history: pd.DataFrame,
-) -> tuple[_PreGame, dict[int, _Contributor]]:
+) -> tuple[_PreGame, dict[int, _Contributor], frozenset[str]]:
     """Walk the canonical chain's ORDER and record each game's pre-game contributors.
 
     Mirrors ``scripts.build_elo.EloBuilder._process_chain``: seasons in order, games in
     kickoff order within a season, a game's result applied only if it is scored. It
     applies no rating arithmetic -- it records, per game, the END of each team's latest
-    contributing game before it.
+    contributing game before it. Team contributors walk EVERY scored game, neutral ones
+    included, because a neutral-site result still updates both teams' ratings.
 
     Args:
         history: Silver ``games`` covering every season the chain has seen.
 
     Returns:
-        ``(pre, hfa)`` -- ``pre[game_id] = (home_contributor, away_contributor)`` and
-        ``hfa[season]`` = the end of the last scored, non-tied game of ``season - 1``.
+        ``(pre, hfa, neutral)`` -- ``pre[game_id] = (home_contributor, away_contributor)``;
+        ``hfa[season]`` = the end of the last game of ``season - 1`` the HFA learner
+        learns from (``ratings.elo.hfa_learning_mask``: scored, non-tied, non-neutral);
+        ``neutral`` = the ids of neutral-site games, whose hfa_used is the constant 0.0
+        and so has no contributor (WINDOWS row 19).
     """
     frame = history[
         ["game_id", "season", "home_team", "away_team", "kickoff_et"]
     ].copy()
     frame["scored"] = history["home_score"].notna() & history["away_score"].notna()
-    frame["decided"] = frame["scored"] & (
-        history["home_score"] != history["away_score"]
-    )
     frame["end"] = history["kickoff_et"] + DECLARED_GAME_DURATION
+    neutral = frozenset(
+        str(game_id)
+        for game_id, flag in zip(
+            history["game_id"], history["neutral_site"], strict=True
+        )
+        if is_neutral_site(flag)
+    )
 
     last_end: dict[str, pd.Timestamp] = {}
     pre: _PreGame = {}
     hfa: dict[int, _Contributor] = {}
 
     for season in sorted({int(s) for s in frame["season"].tolist()}):
-        learned_from = frame.loc[(frame["season"] == season - 1) & frame["decided"]]
+        learned_from = frame.loc[hfa_learning_mask(history, season)]
         hfa[season] = (
             cast(pd.Timestamp, learned_from["end"].max())
             if len(learned_from) > 0
@@ -368,7 +378,7 @@ def _chain_contributors(
             if bool(scored):
                 last_end[home] = end
                 last_end[away] = end
-    return pre, hfa
+    return pre, hfa, neutral
 
 
 def _team_contributor(pre: _PreGame, game_id: str, side: str) -> _Contributor:
@@ -919,7 +929,7 @@ class EloFeatureBuilder:
             filtered = filtered[filtered["week"] == target_week]
 
         snapshots = self._load_snapshots()
-        pre, hfa = _chain_contributors(self._load_history())
+        pre, hfa, neutral = _chain_contributors(self._load_history())
 
         snap_ids = {str(g) for g in snapshots["game_id"]}
         team_rows: dict[tuple[int, str], list[tuple[int, str, str]]] = {}
@@ -974,7 +984,8 @@ class EloFeatureBuilder:
                 [
                     pre[gid][0],
                     pre[gid][1],
-                    hfa.get(key[0]),
+                    # A neutral game's hfa_used is the constant 0.0: no contributor.
+                    None if gid in neutral else hfa.get(key[0]),
                     rank_cache[key],
                     _momentum_contributor(
                         team_rows.get((key[0], home), []), key[1], pre
@@ -1008,8 +1019,9 @@ class EloFeatureBuilder:
 
         ``elo_prob_home`` is NOT pinned: it is DERIVED from those four plus ``hfa_used``,
         and pinning it would restate the formula in a second place. ``hfa_used`` is NOT
-        pinned: 2002's is the 48 init for the WHOLE season (D33.2-06), a rule-derived
-        constant spanning dated and undated rows alike, so it marks nothing.
+        pinned: 2002's is the 48 init for the WHOLE season (D33.2-06) -- 0.0 at a neutral
+        site, as for every neutral game (row 19) -- a rule-derived constant spanning dated
+        and undated rows alike, so it marks nothing.
 
         Returns:
             Source-frame column -> declared start-state value.

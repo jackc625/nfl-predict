@@ -108,7 +108,8 @@ def make_season_games(
 
     Returns:
         DataFrame with ``game_id``, ``season``, ``week``, ``home_team``, ``away_team``,
-        ``stadium_id``, ``home_score``, ``away_score`` and ``kickoff_et``.
+        ``stadium_id``, ``home_score``, ``away_score``, ``kickoff_et`` and
+        ``neutral_site`` (False on every row).
     """
     graded = tuple(range(1, weeks + 1)) if graded_weeks is None else graded_weeks
 
@@ -128,6 +129,9 @@ def make_season_games(
                     "away_score": float(away_points) if is_graded else None,
                     "kickoff_et": _SEASON_OPENER.replace(year=season)
                     + timedelta(days=7 * (week - 1), hours=index),
+                    # Every sandbox game is at its home venue. The Elo verbs read this
+                    # flag strictly (WINDOWS row 19), as silver `games` carries it.
+                    "neutral_site": False,
                 }
             )
 

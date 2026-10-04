@@ -398,9 +398,14 @@ class EloBuilder:
 
                 divisional = is_divisional_game(home, away)
 
-                # Get prediction using current (pre-game) state
+                # Get prediction using current (pre-game) state. The RAW neutral flag
+                # goes to both verbs; ``ratings.elo`` reads and validates it (row 19).
                 prediction = elo.predict_game(
-                    home, away, season, is_divisional=divisional
+                    home,
+                    away,
+                    season,
+                    neutral_site=game["neutral_site"],
+                    is_divisional=divisional,
                 )
 
                 # Step 2: Record snapshot
@@ -434,6 +439,7 @@ class EloBuilder:
                     game_date=game["kickoff_et"],
                     game_id=game["game_id"],
                     is_divisional=divisional,
+                    neutral_site=game["neutral_site"],
                 )
                 games_processed += 1
 
@@ -706,7 +712,13 @@ class EloBuilder:
             home = str(game["home_team"])
             away = str(game["away_team"])
             divisional = is_divisional_game(home, away)
-            prediction = view.predict_game(home, away, season, is_divisional=divisional)
+            prediction = view.predict_game(
+                home,
+                away,
+                season,
+                neutral_site=game["neutral_site"],
+                is_divisional=divisional,
+            )
             rows.append(
                 {
                     "game_id": game["game_id"],

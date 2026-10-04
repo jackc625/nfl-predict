@@ -120,6 +120,8 @@ _GAME_COLUMNS: tuple[str, ...] = (
     "away_team",
     "home_score",
     "away_score",
+    # Carried through so the rating verbs apply the one neutral-site HFA rule (row 19).
+    "neutral_site",
 )
 _SNAPSHOT_KEY_COLUMNS: tuple[str, ...] = ("game_id", "season", "week")
 
@@ -139,8 +141,8 @@ class VacuousRowPolicy:
     In the chain's first season, week 1, every team sits at the 1500 initial rating and the
     350 initial uncertainty, and the win probability is a function of home-field advantage
     alone: those rows agree trivially. Every first-season ``hfa_used`` is the 48-point
-    initial value (times the divisional factor), because there is no prior season to learn
-    from. Both are still COMPARED -- a mismatch there is still a mismatch -- but they are
+    initial value (times the divisional factor), or 0.0 at a neutral site, because there
+    is no prior season to learn from. Both are still COMPARED -- a mismatch there is still a mismatch -- but they are
     reported separately and excluded from the evidence count, so a headline "N rows
     matched" is N rows that could have disagreed.
     """
@@ -335,6 +337,7 @@ class _Chain:
             game_date=game.kickoff_et,
             game_id=str(game.game_id),
             is_divisional=is_divisional_game(home, away),
+            neutral_site=game.neutral_site,
         )
 
     def pre_game(self, game: Any) -> dict[str, Any]:
@@ -344,10 +347,15 @@ class _Chain:
         home, away = str(game.home_team), str(game.away_team)
         home_rating = self.system.get_or_create_rating(home, season)
         away_rating = self.system.get_or_create_rating(away, season)
-        # The chain being replayed predicts every game WITHOUT a neutral-site adjustment;
-        # matching it is a property of the rating model, not of information timing.
+        # The game's raw neutral flag goes to the library's one HFA rule (zero at a
+        # neutral site, row 19), exactly as the chain being replayed passes it; matching
+        # it is a property of the rating model, not of information timing.
         prediction = self.system.predict_game(
-            home, away, season, is_divisional=is_divisional_game(home, away)
+            home,
+            away,
+            season,
+            neutral_site=game.neutral_site,
+            is_divisional=is_divisional_game(home, away),
         )
         return {
             "game_id": str(game.game_id),
