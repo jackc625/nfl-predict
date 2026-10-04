@@ -166,9 +166,8 @@ def test_the_commit_that_added_the_corrected_module_names_11761c7() -> None:
 
 def test_the_corrected_module_carries_every_symbol_the_original_carries() -> None:
     """Nothing silently dropped in the re-render (T-33.2-26-06)."""
-    import backtest.corrected_cold_start_constants as corrected
-
     import backtest.cold_start_constants as original
+    import backtest.corrected_cold_start_constants as corrected
 
     original_symbols = {name for name in dir(original) if name.isupper()}
     corrected_symbols = {name for name in dir(corrected) if name.isupper()}
@@ -177,9 +176,8 @@ def test_the_corrected_module_carries_every_symbol_the_original_carries() -> Non
 
 def test_the_corrected_values_are_not_the_superseded_ones() -> None:
     """Non-vacuity: a correction whose values equal the originals would supersede nothing."""
-    import backtest.corrected_cold_start_constants as corrected
-
     import backtest.cold_start_constants as original
+    import backtest.corrected_cold_start_constants as corrected
 
     assert corrected.CHAIN_FIT_BIAS_2026 != original.CHAIN_FIT_BIAS_2026
     assert (

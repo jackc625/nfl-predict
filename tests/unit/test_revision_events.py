@@ -28,6 +28,8 @@ import json
 from pathlib import Path
 
 import pytest
+
+from data import revision_events
 from data.revision_events import (
     CORRECTION_OWED,
     CORRECTION_OWED_SCOPE,
@@ -38,8 +40,6 @@ from data.revision_events import (
     RevisionSeverity,
     severity_rank,
 )
-
-from data import revision_events
 
 # The seven event classes D32-12 fixes, and nothing else. Written out as literals rather
 # than derived from the enum so that a member SILENTLY renamed in the module fails here.

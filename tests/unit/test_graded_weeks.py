@@ -29,13 +29,6 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from data.graded_weeks import (
-    GRADED_WEEKS_SOURCE,
-    TERMINAL_GRADING_STATUSES,
-    GradedWeeksUnavailable,
-    graded_weeks,
-    graded_weeks_record,
-)
 
 from api.cache import (
     BET_LIST_COLUMNS,
@@ -44,6 +37,13 @@ from api.cache import (
 )
 from backtest.weekly_bet_list import BET_LIST_ARTIFACT_NAME
 from data import graded_weeks as graded_weeks_module
+from data.graded_weeks import (
+    GRADED_WEEKS_SOURCE,
+    TERMINAL_GRADING_STATUSES,
+    GradedWeeksUnavailable,
+    graded_weeks,
+    graded_weeks_record,
+)
 
 # The four grading statuses, taken from the ONE source rather than re-typed here either.
 _WIN, _LOSS, _PUSH = (
