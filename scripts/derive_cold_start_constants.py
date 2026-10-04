@@ -68,6 +68,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import subprocess
 import sys
@@ -2272,8 +2273,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print the measured canonical input digests and exit without emitting anything.",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "Reproduce the frozen pre-registration WITHOUT writing anything: read the artifact "
+            "ids and input digests it records, verify them, render both files in memory and "
+            "compare them with the committed ones. Exits 1 on a difference."
+        ),
+    )
     parser.add_argument("--repo-root", default=str(REPO_ROOT))
     args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.check and args.corrected:
+        parser.error(
+            "--check reproduces the original pre-registration; drop --corrected"
+        )
     missing = [
         flag
         for flag, value in (
@@ -2283,7 +2297,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         )
         if value is None
     ]
-    if missing and not args.corrected:
+    if missing and not (args.corrected or args.check):
         parser.error(f"the following arguments are required: {', '.join(missing)}")
     return args
 
@@ -2352,12 +2366,69 @@ def main_corrected(args: argparse.Namespace, repo_root: Path) -> int:
     return 0
 
 
+def _frozen_literal(module_path: Path, name: str) -> dict[str, str]:
+    """The literal value the committed module assigns to *name*, read without importing it."""
+    for node in ast.parse(module_path.read_text(encoding="utf-8")).body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+            and node.value is not None
+        ):
+            return dict(ast.literal_eval(node.value))
+    msg = f"{module_path} records no {name}, so there is nothing to reproduce against."
+    raise SystemExit(msg)
+
+
+def main_check(repo_root: Path) -> int:
+    """Reproduce the frozen pre-registration in memory and compare it; write NOTHING.
+
+    THE COMMAND THE FROZEN DOCUMENT NAMES (review WR-15). ``COLD-START-PREREGISTRATION.md``
+    section 6 tells a reviewer to run ``--check``, and until this existed the only way to
+    reproduce the numbers was the emitting path, whose default destinations ARE the frozen
+    files. This path takes the artifact ids and input digests from the committed module itself,
+    refuses on any moved input exactly as an emitting run does (naming the input and both
+    digests), and compares the rendered texts with the committed ones. A CRLF checkout is
+    normalised to the LF this program writes before the comparison.
+
+    Returns:
+        0 when both files reproduce, 1 when either differs.
+    """
+    module_path = repo_root / MODULE_PATH
+    artifacts = _frozen_literal(module_path, "DERIVATION_ARTIFACTS")
+    declared = _frozen_literal(module_path, "DERIVATION_INPUT_DIGESTS")
+    missing = sorted(set(default_input_keys(artifacts)) - set(declared))
+    if missing:
+        msg = (
+            f"the committed record declares no digest for {missing}; cannot reproduce."
+        )
+        raise SystemExit(msg)
+    derivation = measure(artifacts, _verify_digests(declared, repo_root), repo_root)
+    rendered = (
+        (ruff_format(render_module(derivation), MODULE_PATH), MODULE_PATH),
+        (render_document(derivation), DOCUMENT_PATH),
+    )
+    differing = [
+        name
+        for text, name in rendered
+        if (repo_root / name).read_bytes().replace(b"\r\n", b"\n")
+        != text.encode("utf-8")
+    ]
+    if differing:
+        sys.stdout.write(f"DIFFERS from the committed file(s): {differing}\n")
+        return 1
+    sys.stdout.write(f"reproduced {MODULE_PATH} and {DOCUMENT_PATH}; nothing written\n")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Verify the inputs, derive both quantities, and emit the two rule files."""
     args = parse_args(argv)
     repo_root = Path(args.repo_root).resolve()
     if args.corrected:
         return main_corrected(args, repo_root)
+    if args.check:
+        return main_check(repo_root)
     # parse_args refused a missing id outside --corrected, so all three are present here.
     artifacts = {
         "wp": str(args.wp_artifact),
