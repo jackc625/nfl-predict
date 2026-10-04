@@ -20302,3 +20302,16 @@ ROW19_CHAIN_FIT_BIAS_2026: tuple[tuple[str, float], ...] = (
     ("ats", -0.4754073948548693),
     ("ou", 0.0974858578219975),
 )
+
+# THE ROW-19 CORRECTIVE COMMIT OF THE 2026 BET RULE (quick task 261003-vke, Task 3).
+# APPENDED in the WITNESS commit strictly after the corrective commit it records (a commit cannot
+# record its own sha). The token CORRECTIVE in the name is the ancestry test's discovery contract.
+# The corrective commit repointed BOTH halves of the live 2026 bet rule together, superseding
+# 9bb7568 (edge thresholds, 2026 chain-fit bias) and the 8c9675e EV-chain record (EV floor,
+# frozen residual SD): DEFAULT_CHAIN_FIT_PATH to ROW19_CHAIN_FIT_PATH, and the bias and the edge
+# thresholds to backtest.neutral_hfa_cold_start_constants, in backtest/weekly_bet_list.py and
+# utils/edge_tier.py. The staged values are ROW19_EV_FLOOR, ROW19_FROZEN_SD,
+# ROW19_EDGE_THRESHOLDS and ROW19_CHAIN_FIT_BIAS_2026 (staging commit 55de53a).
+
+#: The corrective commit that repointed the live 2026 bet rule to the row-19 re-measure.
+ROW19_BET_RULE_CORRECTIVE_COMMIT_SHA: str = "83453c6cfc0a7405b0076b99c78492f72e5b1301"
