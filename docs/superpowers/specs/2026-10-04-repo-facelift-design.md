@@ -149,7 +149,8 @@ Target ~200-250 lines, ASCII only, no emoji.
    boundary enforced by an AST test.
 8. Results, honestly -- no target has shown a profitable edge; results from before the
    2026-09-15 fix were built on inputs later found defective and are not evidence; the 2026
-   season, recorded live, is the scorecard (Track Record page). Quotes NO pre-fix number. Every
+   season, recorded live, is the scorecard (Season page; the Track Record page holds the
+   labelled past-season backtests). Quotes NO pre-fix number. Every
    claim checked against `docs/records/LIVE-COLD-START-READOUT.md` and
    `docs/records/PROFITABILITY-READOUT.md` and current code.
 9. Tech stack table, quickstart (PowerShell, `uv`), short folder map.
@@ -178,8 +179,11 @@ Action versions and syntax are looked up from current docs at implementation tim
 
 Proposed description (<= 350 chars):
 "Pre-game NFL win probability, spread and total forecasts: walk-forward models, a leakage-proof
-day-before lock, a significance-tested deploy gate, and a broadcast-style FastAPI + HTMX
+day-before information lock, pre-registered evaluation, and a broadcast-style FastAPI + HTMX
 dashboard."
+(Revised while planning: the September 2026 rebuild replaced the models outright without a gate
+comparison, so "a significance-tested deploy gate" would imply a step that did not put today's
+models in place.)
 
 Proposed topics: keep duckdb, fastapi, htmx, machine-learning, nfl, python, sports-analytics,
 xgboost; add scikit-learn, sports-betting, elo-rating, walk-forward-validation, tailwindcss,
