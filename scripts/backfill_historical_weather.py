@@ -1963,6 +1963,35 @@ def promote_corpus_to_silver(base_path: Any = None) -> dict[str, Any]:
     validated = promote_weather_bronze_to_silver(combined)
     validated["created_at"] = datetime.now(UTC)
 
+    # NEVER REPLACE A ROW THIS CORPUS DID NOT WRITE (review WR-21). Silver `weather` history
+    # is now the archived day-before forecast bulletin (`historical_forecast`), and the live
+    # rows are `forecast`. This corpus is ERA5 `archive` observations, which the gold weather
+    # fence refuses, so a latest-wins upsert over those rows would leave every outdoor game it
+    # touched with its weather unknown at the next rebuild. Refused by count, before any write.
+    silver_weather = _resolve_data_root(base_path) / "silver" / "weather.parquet"
+    stored = (
+        pd.read_parquet(silver_weather, engine="pyarrow")
+        if silver_weather.exists()
+        else pd.DataFrame()
+    )
+    # A table that predates the column holds archive rows only (see
+    # stamp_weather_source_on_existing_rows), so it has nothing to protect here.
+    if "weather_source" in stored.columns:
+        replaced = stored.loc[
+            stored["game_id"].isin(validated["game_id"])
+            & stored["weather_source"].notna()
+            & (stored["weather_source"] != WEATHER_SOURCE_ARCHIVE)
+        ]
+        if len(replaced) > 0:
+            sources = replaced["weather_source"].value_counts().to_dict()
+            raise DataIngestionError(
+                f"refusing to promote: {len(replaced)} silver weather row(s) this ERA5 "
+                f"archive corpus would replace are not archive rows ({sources}). Silver "
+                "history is the day-before forecast bulletin the deployed models were built "
+                "on; the gold weather fence refuses archive observations, so replacing them "
+                "would leave those games' weather unknown. Nothing was written."
+            )
+
     silver_path = upsert_silver(validated, "weather", base_path=base_path)
 
     log_data_operation(
@@ -2694,7 +2723,8 @@ def main():
         action="store_true",
         help=(
             "Validate the weather_backfill bronze corpus and upsert silver "
-            "`weather`. Fetches nothing."
+            "`weather`. Fetches nothing. Refuses, writing nothing, if it would replace "
+            "any non-archive silver row (the deployed forecast-bulletin history)."
         ),
     )
     parser.add_argument(
