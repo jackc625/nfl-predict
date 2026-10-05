@@ -694,6 +694,38 @@ def test_verify_parses_readbacks_mismatch(
     assert line_for(lines, "SETUP_READBACK_MATCH") == "SETUP_READBACK_MATCH= False"
 
 
+@pytest.mark.parametrize(
+    ("update_rule", "verdict"),
+    [
+        ({"type": "update"}, "MATCH"),
+        (
+            {"type": "update", "parameters": {"update_allows_fetch_and_merge": True}},
+            "MISMATCH",
+        ),
+    ],
+    ids=["default-parameter-omitted", "fetch-and-merge-allowed"],
+)
+def test_verify_reads_omitted_rule_parameters_as_githubs_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    update_rule: dict,
+    verdict: str,
+) -> None:
+    """GitHub's read-back drops ``update_allows_fetch_and_merge`` when it is false (observed live)."""
+    runner, paths = good_world(tmp_path)
+    detail = ruleset_detail(setup.master_ruleset_payload(), MASTER_RULESET_ID, "always")
+    detail["rules"] = [update_rule, {"type": "deletion"}, {"type": "non_fast_forward"}]
+    runner.reply_json(
+        ["gh", "api", f"repos/{PUBLIC_REPO_SLUG}/rulesets/{MASTER_RULESET_ID}"], detail
+    )
+
+    run_cli(monkeypatch, runner, paths, "verify")
+
+    lines = output_lines(capsys)
+    assert line_for(lines, "MASTER_RULESET_RULES").endswith(f"| {verdict}"), lines
+
+
 @pytest.mark.parametrize("count", [0, 2])
 def test_verify_finds_rulesets_by_exact_name(
     tmp_path: Path,

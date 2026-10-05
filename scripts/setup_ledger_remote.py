@@ -661,12 +661,23 @@ def create_ruleset(payload: dict[str, Any], *, slug: str = PUBLIC_REPO_SLUG) -> 
     return int(json.loads(created)["id"])
 
 
+# GitHub's read-back omits a rule parameter that holds its default (observed: an ``update`` rule
+# POSTed with ``update_allows_fetch_and_merge: false`` reads back with no ``parameters``), so an
+# omitted parameter is read as this default, and an explicit non-default value still mismatches.
+_RULE_PARAMETER_DEFAULTS: dict[str, dict[str, Any]] = {
+    "update": {"update_allows_fetch_and_merge": False},
+}
+
+
 def _rules_signature(rules: Sequence[dict] | None) -> str:
     if rules is None:
         return "unreported"
     parts = []
     for rule in rules:
-        parameters = rule.get("parameters") or {}
+        parameters = {
+            **_RULE_PARAMETER_DEFAULTS.get(str(rule.get("type")), {}),
+            **(rule.get("parameters") or {}),
+        }
         detail = ",".join(f"{k}={json.dumps(v)}" for k, v in sorted(parameters.items()))
         parts.append(
             f"{rule.get('type')}({detail})" if detail else str(rule.get("type"))
