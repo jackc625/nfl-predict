@@ -57,6 +57,25 @@ file's declaration stood the guard down for nobody else.
    WHICH instrument catches it. This case is unchanged in substance and is the backstop
    the whole speed/attribution trade rests on.
 
+THE THIRD ROOT, ``ledger`` (Plan 34-02, D-10)
+--------------------------------------------
+Phase 34 stores the forward bet ledger as JSON lines under a new top-level ``ledger/``
+directory, which is itself a git repository pushed to a private backup (D-01). Two more
+nested sessions prove the guard watches it, with every root redirected onto ``tmp_path``:
+
+6. ``test_6_ledger_store_write.py`` -- an unmarked module appends to
+   ``forward_2026.jsonl``. The session FAILS and the report names the module, the test
+   and the ``.jsonl`` file. ``.jsonl`` is tracked under the ledger root ONLY; the data and
+   artifacts roots keep the old suffix set so existing digest documents keep their
+   meaning.
+7. ``test_7_ledger_git_internals.py`` -- in the SAME session, a module creates a new file
+   under ``.git/objects/`` and rewrites an existing file under ``.git/``. Both carry
+   tracked suffixes on purpose, so only the ``.git`` exclusion -- not the suffix filter --
+   can be what keeps them out. Nothing is reported, by the per-module pass or by the
+   closing sweep: the backup repository's internals are not the store.
+8. A separate session whose one module writes nothing exits 0 -- the third root adds no
+   false positive.
+
 TEST CLASS: **integration**. It spawns a real pytest process. It writes nothing outside
 ``tmp_path``; the ``data_boundary_guard`` request on every test is the belt-and-braces
 control that says so, the same request the already-sandboxed
@@ -220,6 +239,82 @@ markers =
 """
 
 
+LEDGER_STORE_MODULE = "test_6_ledger_store_write.py"
+LEDGER_GIT_MODULE = "test_7_ledger_git_internals.py"
+LEDGER_STORE_TEST = "test_an_unmarked_append_to_the_forward_ledger_is_rejected"
+CLEAN_MODULE = "test_8_writes_nothing.py"
+
+# Two generated tests in two generated modules; one of them is reported.
+EXPECTED_LEDGER_CHILD_TESTS = 2
+
+_LEDGER_CHILD_MODULES: dict[str, str] = {
+    LEDGER_STORE_MODULE: f'''\
+"""An unmarked append to the forward ledger store. NO marker anywhere in this file."""
+
+import os
+import pathlib
+
+LEDGER = pathlib.Path(os.environ["NFL_GUARD_LEDGER_ROOT"])
+
+
+def {LEDGER_STORE_TEST}():
+    with open(LEDGER / "forward_2026.jsonl", "ab") as handle:
+        handle.write(b'{{"seq": 2, "row": "APPENDED-BY-A-TEST"}}\\n')
+''',
+    LEDGER_GIT_MODULE: '''\
+"""Writes inside the backup repository's .git directory only. Must not be reported."""
+
+import os
+import pathlib
+
+LEDGER = pathlib.Path(os.environ["NFL_GUARD_LEDGER_ROOT"])
+
+
+def test_new_and_modified_files_under_dot_git_are_not_the_store():
+    (LEDGER / ".git" / "objects" / "ab" / "cd.jsonl").write_bytes(b"NEW-GIT-OBJECT")
+    (LEDGER / ".git" / "packed.json").write_bytes(b'{"refs": "REWRITTEN"}')
+''',
+}
+
+_CLEAN_CHILD_MODULES: dict[str, str] = {
+    CLEAN_MODULE: '''\
+"""Writes nothing under any guarded root."""
+
+
+def test_a_test_that_writes_nothing():
+    assert 1 + 1 == 2
+''',
+}
+
+
+def _build_store(root: Path) -> tuple[Path, Path, Path]:
+    """Lay down a stand-in production tree under *root*/store: data, artifacts, ledger."""
+    store = root / "store"
+    data = store / "data"
+    artifacts = store / "artifacts"
+    ledger = store / "ledger"
+    (data / "gold").mkdir(parents=True)
+    (data / "silver").mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    (ledger / ".git" / "objects" / "ab").mkdir(parents=True)
+    (ledger / "forward_2026.jsonl").write_bytes(b'{"seq": 1, "row": "v1"}\n')
+    (ledger / ".git" / "packed.json").write_bytes(b'{"refs": "v1"}')
+    return data, artifacts, ledger
+
+
+def _write_suite(root: Path, modules: dict[str, str]) -> Path:
+    """Write a generated mini-suite (conftest, ini, modules) under *root*/suite."""
+    suite = root / "suite"
+    suite.mkdir()
+    (suite / "conftest.py").write_text(
+        _CHILD_CONFTEST.format(repo_root=str(REPO_ROOT)), encoding="utf-8"
+    )
+    for name, source in modules.items():
+        (suite / name).write_text(source, encoding="utf-8")
+    (suite / "pytest.ini").write_text(_CHILD_INI, encoding="utf-8")
+    return suite
+
+
 def _build_sandbox(root: Path) -> tuple[Path, Path]:
     """Lay down a stand-in production tree and the mini-suite that writes into it."""
     store = root / "store"
@@ -228,6 +323,7 @@ def _build_sandbox(root: Path) -> tuple[Path, Path]:
     (data / "gold").mkdir(parents=True)
     (data / "silver").mkdir(parents=True)
     artifacts.mkdir(parents=True)
+    (store / "ledger").mkdir(parents=True)
 
     # The three production gold matrices the Wave-6 incident overwrote.
     (data / "gold" / "features_wp.parquet").write_bytes(b"WP-COLUMN-BYTES-v1")
@@ -243,21 +339,17 @@ def _build_sandbox(root: Path) -> tuple[Path, Path]:
     (data / "nfl_predictions.duckdb").write_bytes(b"DUCKDB-PAGES-v1")
     (artifacts / "latest.json").write_bytes(b'{"wp": "v1"}')
 
-    suite = root / "suite"
-    suite.mkdir()
-    (suite / "conftest.py").write_text(
-        _CHILD_CONFTEST.format(repo_root=str(REPO_ROOT)), encoding="utf-8"
-    )
-    for name, source in _CHILD_MODULES.items():
-        (suite / name).write_text(source, encoding="utf-8")
-    (suite / "pytest.ini").write_text(_CHILD_INI, encoding="utf-8")
-    return suite, data
+    return _write_suite(root, _CHILD_MODULES), data
 
 
-def _run_child(suite: Path, data: Path, artifacts: Path) -> subprocess.CompletedProcess:
+def _run_child(
+    suite: Path, data: Path, artifacts: Path, ledger: Path
+) -> subprocess.CompletedProcess:
+    """Run the generated mini-suite with EVERY guarded root redirected into tmp."""
     env = os.environ.copy()
     env["NFL_GUARD_DATA_ROOT"] = str(data)
     env["NFL_GUARD_ARTIFACTS_ROOT"] = str(artifacts)
+    env["NFL_GUARD_LEDGER_ROOT"] = str(ledger)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(REPO_ROOT), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
@@ -320,7 +412,9 @@ def nested_session(tmp_path_factory) -> dict[str, object]:
     """Run the generated mini-suite ONCE; every assertion below reads this one run."""
     root = tmp_path_factory.mktemp("guard_arming")
     suite, data = _build_sandbox(root)
-    completed = _run_child(suite, data, root / "store" / "artifacts")
+    completed = _run_child(
+        suite, data, root / "store" / "artifacts", root / "store" / "ledger"
+    )
     output = completed.stdout + completed.stderr
     return {
         "completed": completed,
@@ -328,6 +422,27 @@ def nested_session(tmp_path_factory) -> dict[str, object]:
         "blocks": _blocks(output),
         "data": data,
     }
+
+
+@pytest.fixture(scope="module")
+def ledger_session(tmp_path_factory) -> dict[str, object]:
+    """Run the two ledger modules ONCE in their own nested session."""
+    root = tmp_path_factory.mktemp("guard_arming_ledger")
+    data, artifacts, ledger = _build_store(root)
+    suite = _write_suite(root, _LEDGER_CHILD_MODULES)
+    completed = _run_child(suite, data, artifacts, ledger)
+    output = completed.stdout + completed.stderr
+    return {"completed": completed, "output": output, "blocks": _blocks(output)}
+
+
+@pytest.fixture(scope="module")
+def clean_session(tmp_path_factory) -> dict[str, object]:
+    """Run a nested session whose one module writes nothing anywhere."""
+    root = tmp_path_factory.mktemp("guard_arming_clean")
+    data, artifacts, ledger = _build_store(root)
+    suite = _write_suite(root, _CLEAN_CHILD_MODULES)
+    completed = _run_child(suite, data, artifacts, ledger)
+    return {"completed": completed, "output": completed.stdout + completed.stderr}
 
 
 class TestTheChildSessionIsTheEvidenceItClaimsToBe:
@@ -601,3 +716,144 @@ class TestTheHarnessIsTheOneTheRulingNamed:
             "pytester is not enabled in this repository and enabling it to serve one "
             "module would change every session's plugin set."
         )
+
+
+# ---------------------------------------------------------------------------
+# Plan 34-02 / D-10: the third guarded root, `ledger`.
+# ---------------------------------------------------------------------------
+
+# The suffix set the data and artifacts roots were guarded under before Phase 34,
+# spelled out so a widening of the global set fails here by value.
+_PRE_PHASE34_TRACKED_SUFFIXES = (
+    ".parquet",
+    ".duckdb",
+    ".db",
+    ".json",
+    ".csv",
+    ".pkl",
+    ".joblib",
+)
+
+
+def _ledger_root_with_git_internals(root: Path) -> Path:
+    """A stand-in ledger root: the store, plus .git files with and without suffixes."""
+    ledger = root / "ledger"
+    (ledger / ".git" / "objects" / "ab").mkdir(parents=True)
+    (ledger / "forward_2026.jsonl").write_bytes(b'{"seq": 1}\n')
+    (ledger / ".git" / "objects" / "ab" / "cd").write_bytes(b"GIT-OBJECT")
+    (ledger / ".git" / "objects" / "ab" / "cd.jsonl").write_bytes(b"GIT-OBJECT")
+    (ledger / ".git" / "packed.json").write_bytes(b'{"refs": "v1"}')
+    return ledger
+
+
+class TestTheLedgerRootIsTheThirdGuardedRoot:
+    """Direct checks on the root list and the per-root policy. No nested session."""
+
+    def test_guarded_roots_returns_three_roots_with_the_ledger_last(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from tests.conftest import GUARD_LEDGER_ROOT_ENV, _guarded_roots
+        from tests.data_boundary import PRODUCTION_LEDGER_ROOT
+
+        assert GUARD_LEDGER_ROOT_ENV == "NFL_GUARD_LEDGER_ROOT"
+        monkeypatch.delenv(GUARD_LEDGER_ROOT_ENV, raising=False)
+        roots = _guarded_roots()
+        assert [label for label, _ in roots] == ["data", "artifacts", "ledger"]
+        assert roots[2][1] == PRODUCTION_LEDGER_ROOT == Path("ledger")
+
+        monkeypatch.setenv(GUARD_LEDGER_ROOT_ENV, str(tmp_path))
+        assert _guarded_roots()[2] == ("ledger", tmp_path)
+
+    def test_the_data_and_artifacts_suffixes_are_the_pre_phase34_set(self) -> None:
+        from tests.data_boundary import (
+            LEDGER_EXTRA_SUFFIXES,
+            TRACKED_SUFFIXES,
+            root_policy,
+        )
+
+        assert TRACKED_SUFFIXES == _PRE_PHASE34_TRACKED_SUFFIXES
+        for label in ("data", "artifacts"):
+            assert root_policy(label) == (_PRE_PHASE34_TRACKED_SUFFIXES, frozenset())
+        assert LEDGER_EXTRA_SUFFIXES == (".jsonl",)
+        assert root_policy("ledger") == (
+            (*_PRE_PHASE34_TRACKED_SUFFIXES, ".jsonl"),
+            frozenset({".git"}),
+        )
+
+    def test_both_sweeps_use_the_ledger_root_policy(self, tmp_path) -> None:
+        """The pre-test stat pass and the content-digest pass read ONE policy.
+
+        Exercised separately, so neither pass can silently keep the old global
+        suffix set. The .git files carry tracked suffixes on purpose: only the
+        directory exclusion can be what keeps them out.
+        """
+        from tests.conftest import _content_sweep, _stat_sweep
+
+        ledger = _ledger_root_with_git_internals(tmp_path)
+
+        assert set(_stat_sweep(ledger, "ledger")) == {"forward_2026.jsonl"}
+        assert set(_content_sweep("ledger", ledger)) == {"forward_2026.jsonl"}
+
+        # Control: under the data policy the .git file IS visible and the .jsonl
+        # is not, so the ledger result above is the policy's doing.
+        assert set(_stat_sweep(ledger, "data")) == {".git/packed.json"}
+        assert set(_content_sweep("data", ledger)) == {".git/packed.json"}
+
+
+class TestALedgerStoreWriteIsCaughtAndDotGitIsNot:
+    """Nested session: the .jsonl append trips the guard; the .git writes do not."""
+
+    def test_the_ledger_session_failed_with_exactly_one_report(
+        self, ledger_session, data_boundary_guard
+    ) -> None:
+        output = str(ledger_session["output"])
+        assert ledger_session["completed"].returncode != 0, (
+            "the nested session exited 0, so an unmarked append to the forward ledger "
+            f"store went unreported.\n\n{output}"
+        )
+        assert re.search(rf"\b{EXPECTED_LEDGER_CHILD_TESTS} passed\b", output), output
+        errors = re.search(r"\b(\d+) errors?\b", output)
+        assert errors and int(errors.group(1)) == 1, (
+            "exactly one module -- the store append -- must be reported; the .git "
+            f"module must not be.\n\n{output}"
+        )
+
+    def test_the_report_names_the_module_the_test_and_the_jsonl_file(
+        self, ledger_session, data_boundary_guard
+    ) -> None:
+        output = str(ledger_session["output"])
+        block = ledger_session["blocks"].get(LEDGER_STORE_MODULE)
+        assert block, f"the ledger store write was NOT reported.\n\n{output}"
+        assert f"ERROR at teardown of {LEDGER_STORE_TEST}" in output, output
+        assert "forward_2026.jsonl" in block, block
+        assert "REWRITTEN:" in block, block
+        assert len(_SHA256_RE.findall(block)) >= 2, block
+        assert (
+            'writes_production_store(paths=["ledger/forward_2026.jsonl"])' in block
+        ), f"the suggested marker must route the path to the ledger label.\n\n{block}"
+
+    def test_new_and_modified_files_under_dot_git_are_not_reported(
+        self, ledger_session, data_boundary_guard
+    ) -> None:
+        output = str(ledger_session["output"])
+        assert LEDGER_GIT_MODULE not in ledger_session["blocks"], output
+        assert ".git/" not in output, (
+            f"a file inside the backup repository's .git was reported.\n\n{output}"
+        )
+        assert CLOSING_SWEEP_HEADER not in output, (
+            "the closing sweep found something no per-module pass saw; under the "
+            f"ledger policy it must find nothing here.\n\n{output}"
+        )
+
+
+class TestANestedSessionThatWritesNothingPasses:
+    """No false positive: three guarded roots, nothing written, exit 0."""
+
+    def test_the_clean_session_exits_zero(
+        self, clean_session, data_boundary_guard
+    ) -> None:
+        output = str(clean_session["output"])
+        assert clean_session["completed"].returncode == 0, output
+        assert re.search(r"\b1 passed\b", output), output
+        assert not re.search(r"\b\d+ errors?\b", output), output
+        assert CLOSING_SWEEP_HEADER not in output, output
