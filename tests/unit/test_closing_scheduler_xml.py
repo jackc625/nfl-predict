@@ -30,8 +30,8 @@ CLOSING_PATH = pathlib.Path("deployment") / "windows_closing_scheduler.xml"
 DAILY_PATH = pathlib.Path("deployment") / "windows_scheduler.xml"
 
 # PINNED by Plan 34-11 Task 1 (2026-10-05): the template as first committed.
-EXPECTED_SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
-EXPECTED_BYTES = 0
+EXPECTED_SHA256 = "c41646ce580deedf334f6f58269d3822f79dbfb110d159b732ce553e2d3145bd"
+EXPECTED_BYTES = 7758
 
 #: The one Settings field the closing task deliberately does NOT share with the daily task: a
 #: closing reading is one small odds request, so 20 minutes bounds a hung run well inside the
