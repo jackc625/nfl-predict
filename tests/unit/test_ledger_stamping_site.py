@@ -34,6 +34,8 @@ from typing import Any
 
 import pandas as pd
 import pytest
+
+from backtest.recipe_registry import RECIPE_REGISTRY
 from forward_ledger.artifacts_copy import (
     ARTIFACT_COPIES_DIRNAME,
     RECIPE_COPIES_DIRNAME,
@@ -42,13 +44,6 @@ from forward_ledger.artifacts_copy import (
     ensure_recipe_record_copy,
     tree_digest,
 )
-from forward_ledger.stamps import (
-    IN_FORCE_RECIPE_ID,
-    RecipeArtifactMismatchError,
-    stamp_ledger_rows,
-)
-
-from backtest.recipe_registry import RECIPE_REGISTRY
 from forward_ledger.canonical import IMMUTABLE_COLUMNS_V1
 from forward_ledger.declarations import (
     VerdictScope,
@@ -61,6 +56,11 @@ from forward_ledger.schema import (
     BET_LIST_COLUMNS,
     REGIME_LABEL_BOOTSTRAP,
     VERDICT_SCOPE_PRE_VERDICT,
+)
+from forward_ledger.stamps import (
+    IN_FORCE_RECIPE_ID,
+    RecipeArtifactMismatchError,
+    stamp_ledger_rows,
 )
 from forward_ledger.store import MissingStampError
 from models.artifacts import ResolvedArtifacts
