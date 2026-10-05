@@ -87,6 +87,7 @@ __all__ = [
     "integrity_preamble",
     "name_survivable_subpopulation",
     "odds_information_time",
+    "order_by_book_preference",
     "run_ou_divergence_diagnosis",
     "throwaway_ev_preview",
 ]
@@ -165,6 +166,79 @@ def odds_information_time(odds: pd.DataFrame) -> pd.Series:
     return _aware_instants(odds, "created_at")
 
 
+# THE ONE BOOK ORDERING (Phase 34, LDGR-07 / LDGR-11). Helper columns and their directions, most
+# significant first: latest information time, then SPORTSBOOK_PREFERENCE rank (a book outside it
+# ranks after every named book), then book name, then the later ``created_at``. Both
+# :func:`order_by_book_preference` and :func:`dedupe_odds_by_book_preference` sort on exactly this
+# list, so the decision path and the closing path cannot choose books differently.
+_BOOK_ORDER_KEYS: tuple[tuple[str, bool], ...] = (
+    ("_information_time", False),
+    ("_book_rank", True),
+    ("_book_name", True),
+    ("_captured", False),
+)
+
+
+def _with_book_order_keys(rows: pd.DataFrame) -> pd.DataFrame:
+    """A copy of *rows* carrying the :data:`_BOOK_ORDER_KEYS` helper columns."""
+    ranked = rows.copy()
+    ranked["_information_time"] = odds_information_time(ranked)
+    ranks = {book: index for index, book in enumerate(SPORTSBOOK_PREFERENCE)}
+    books = (
+        ranked["sportsbook"].astype(str)
+        if "sportsbook" in ranked.columns
+        else pd.Series("", index=ranked.index)
+    )
+    ranked["_book_rank"] = (
+        books.map(ranks).fillna(len(SPORTSBOOK_PREFERENCE)).astype(int)
+    )
+    ranked["_book_name"] = books
+    ranked["_captured"] = _aware_instants(ranked, "created_at")
+    return ranked
+
+
+def _sort_best_first(
+    ranked: pd.DataFrame, leading: tuple[tuple[str, bool], ...] = ()
+) -> pd.DataFrame:
+    """*ranked* sorted best-first within each ``game_id``: *leading* keys, then the book order."""
+    keys = (("game_id", True), *leading, *_BOOK_ORDER_KEYS)
+    return ranked.sort_values(
+        [column for column, _ascending in keys],
+        ascending=[ascending for _column, ascending in keys],
+        na_position="last",
+        kind="mergesort",
+    )
+
+
+def order_by_book_preference(rows: pd.DataFrame) -> pd.DataFrame:
+    """Every row, sorted best-first within each ``game_id`` by the one book ordering.
+
+    The order, most significant first: the latest information time
+    (:func:`odds_information_time`), then the :data:`SPORTSBOOK_PREFERENCE` rank (a book outside
+    the preference ranks after every named book rather than being dropped), then the book name
+    ascending, then the later ``created_at``. A row with no information time sorts last (NaT
+    last). The sort is a stable mergesort, so a full tie keeps the frame's own order.
+
+    It ranks and NEVER filters: no admissibility test is applied here. Its consumers:
+
+    - :func:`dedupe_odds_by_book_preference`, the decision-time choice, which puts its own
+      admissibility partition in front of this order and keeps each game's first row;
+    - the Phase-34 closing-line selection (Plan 34-07), which applies it to the in-window captures,
+      so decision-versus-close CLV always compares the same book;
+    - ``backtest/fill_conventions.py`` records this order as ``fill-v1``; changing it without a
+      new convention id fails ``tests/unit/test_fill_conventions.py``.
+
+    Returns:
+        The rows with the frame's original columns only and a reset index; games grouped together
+        in ``game_id`` order.
+    """
+    if rows.empty:
+        return rows.reset_index(drop=True)
+    ranked = _with_book_order_keys(rows)
+    helper_columns = [column for column, _ascending in _BOOK_ORDER_KEYS]
+    return _sort_best_first(ranked).drop(columns=helper_columns).reset_index(drop=True)
+
+
 def dedupe_odds_by_book_preference(
     odds: pd.DataFrame,
     locks: Mapping[str, Any] | pd.Series | None = None,
@@ -201,8 +275,7 @@ def dedupe_odds_by_book_preference(
     if odds.empty:
         return odds.reset_index(drop=True)
 
-    ranked = odds.copy()
-    ranked["_information_time"] = odds_information_time(ranked)
+    ranked = _with_book_order_keys(odds)
     ranked["_admissible"] = True
     if locks is not None:
         lock = pd.to_datetime(ranked["game_id"].astype(str).map(locks), utc=True)
@@ -213,32 +286,13 @@ def dedupe_odds_by_book_preference(
         if not keep_inadmissible:
             ranked = ranked.loc[ranked["_admissible"]]
 
-    ranks = {book: index for index, book in enumerate(SPORTSBOOK_PREFERENCE)}
-    has_book = "sportsbook" in ranked.columns
-    books = (
-        ranked["sportsbook"].astype(str)
-        if has_book
-        else pd.Series("", index=ranked.index)
-    )
-    ranked["_book_rank"] = (
-        books.map(ranks).fillna(len(SPORTSBOOK_PREFERENCE)).astype(int)
-    )
-    ranked["_book_name"] = books
-    ranked["_captured"] = _aware_instants(ranked, "created_at")
+    # Admissible rows first, then THE book ordering (order_by_book_preference's keys).
+    admissible_first = (("_admissible", False),)
     helper_columns = [
-        "_admissible",
-        "_information_time",
-        "_book_rank",
-        "_book_name",
-        "_captured",
+        column for column, _ascending in (*admissible_first, *_BOOK_ORDER_KEYS)
     ]
     return (
-        ranked.sort_values(
-            ["game_id", *helper_columns],
-            ascending=[True, False, False, True, True, False],
-            na_position="last",
-            kind="mergesort",
-        )
+        _sort_best_first(ranked, leading=admissible_first)
         .drop_duplicates(subset=["game_id"], keep="first")
         .drop(columns=helper_columns)
         .reset_index(drop=True)
