@@ -14,7 +14,13 @@ What it checks (``forward_ledger.verify`` holds the rules):
 * the committed verdict-scope declaration (LDGR-10, LDGR-11): every live row of the declared
   season must carry the label its week is given, and every row in weeks W..end must carry every
   stamp, a registered recipe and the declared fill convention. No declaration yet is a warning;
-* every correction entry must name an existing ledger row.
+* every correction entry must name an existing ledger row;
+* D-19: every settled row (win/loss/push) is re-graded from the silver scores through the one
+  grader and compared with its in-force outcome (its latest correction entry, else its own
+  grade). A different status, payout or realized units, a settled row with no recorded score, or
+  a missing silver store or chain-fit record while settled rows exist, fails by name. On a
+  machine restored from the backup alone, pass the ledger's own chain-fit copy under
+  ``ledger/recipes/`` as ``--chain-fit-path``.
 
 Output is one ``FIELD= value`` line each, then ``LOCAL_RESULT=`` (every local check),
 ``EXTERNAL_RESULT=`` (the GitHub anchor: VERIFIED, BEHIND, UNREACHABLE, SKIPPED or DISAGREES) and
@@ -27,6 +33,7 @@ Usage:
     uv run python -m scripts.verify_ledger
     uv run python -m scripts.verify_ledger --skip-remote
     uv run python -m scripts.verify_ledger --ledger-dir path/to/ledger --repo-dir path/to/repo
+    uv run python -m scripts.verify_ledger --silver-dir data/silver --chain-fit-path path/to/fit.json
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -37,8 +44,10 @@ import argparse
 import sys
 from pathlib import Path
 
+from backtest.weekly_bet_list import DEFAULT_CHAIN_FIT_PATH
 from forward_ledger.declarations import VERDICT_SCOPE_MODULE
 from forward_ledger.remote_config import ANCHOR_REMOTE_HTTPS_URL
+from forward_ledger.settle import DEFAULT_SILVER_DIR
 from forward_ledger.store import LEDGER_DIR, LedgerFormatError
 from forward_ledger.verify import (
     REMOTE_BEHIND,
@@ -77,6 +86,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-remote",
         action="store_true",
         help="Do not read the remote anchor (reported as EXTERNAL_RESULT= SKIPPED)",
+    )
+    parser.add_argument(
+        "--silver-dir",
+        type=Path,
+        default=DEFAULT_SILVER_DIR,
+        help=(
+            "The silver store whose games.parquet the settled rows are re-graded from "
+            f"(default: {DEFAULT_SILVER_DIR.as_posix()})"
+        ),
+    )
+    parser.add_argument(
+        "--chain-fit-path",
+        type=Path,
+        default=DEFAULT_CHAIN_FIT_PATH,
+        help=(
+            "The chain-fit record the grading strategies are built from (default: "
+            f"{DEFAULT_CHAIN_FIT_PATH.as_posix()}; on a machine restored from the backup "
+            "alone, the ledger's own copy under ledger/recipes/)"
+        ),
     )
     return parser
 
@@ -139,6 +167,19 @@ def _verdict_lines(report: VerifyReport) -> list[str]:
     ]
 
 
+def _regrade_lines(report: VerifyReport) -> list[str]:
+    regrade = report.regrade
+    status = "unavailable" if regrade.unavailable is not None else str(regrade.ok)
+    lines = [f"REGRADE_CHECKED= {regrade.checked}", f"REGRADE_OK= {status}"]
+    lines += [
+        f"REGRADE_MISMATCH= {mismatch.seq} {'|'.join(str(part) for part in mismatch.key)} "
+        f"{mismatch.field} stored={mismatch.stored} regraded={mismatch.regraded} "
+        f"{mismatch.reason}"
+        for mismatch in regrade.mismatches
+    ]
+    return lines
+
+
 def report_lines(report: VerifyReport) -> list[str]:
     """Every output line for *report*, ``VERIFY_RESULT=`` last."""
     lines = [
@@ -146,6 +187,7 @@ def report_lines(report: VerifyReport) -> list[str]:
         *_anchor_lines(report),
         *_backup_lines(report),
         *_verdict_lines(report),
+        *_regrade_lines(report),
     ]
     lines += [f"WARNING= {warning}" for warning in report.warnings]
     lines += [f"FAILURE= {failure}" for failure in report.failures]
@@ -173,6 +215,8 @@ def main(
             remote_url=args.remote_url,
             check_remote=not args.skip_remote,
             module_name=verdict_scope_module,
+            silver_dir=args.silver_dir,
+            chain_fit_path=args.chain_fit_path,
         )
     except LedgerFormatError as error:
         print(f"LEDGER_UNREADABLE= {error}")

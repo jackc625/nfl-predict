@@ -15,6 +15,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import struct
@@ -50,6 +51,7 @@ from forward_ledger.store import (
     verify_chain,
     write_entries,
 )
+from tests.fixtures.decision_frame import chain_fit_record
 from tests.unit.test_ledger_anchor import make_repo
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -145,12 +147,19 @@ def _two_row_ledger(ledger_dir: Path) -> list:
     Week 1 and ``pre_verdict``: the verify CLI (Plan 34-10) checks every row's verdict label
     against the COMMITTED declaration, which these real-subprocess runs load. Week 1 precedes any
     possible verdict start week, so these rows are correct whether or not it has been committed.
+    The settled row bets the home cover, so its stored win is what the CLI's D-19 re-grade of the
+    ``_verify_inputs`` score (a home win by 7 against a slipped -3.0) reproduces.
     """
     first = build_entry(
         GENESIS_HASH,
         0,
         ENTRY_KIND_ROW,
-        _row(game_id="2026_W01_KC@BUF", week=1, verdict_scope="pre_verdict"),
+        _row(
+            game_id="2026_W01_KC@BUF",
+            week=1,
+            verdict_scope="pre_verdict",
+            bet_side="home_cover",
+        ),
         grading=_settled_grading(),
     )
     second = build_entry(
@@ -183,7 +192,30 @@ def _anchored_repo(path: Path, entries: list) -> Path:
     return repo
 
 
+def _verify_inputs(base: Path) -> tuple[Path, Path]:
+    """The D-19 re-grade's inputs under *base*: a silver games store and a chain-fit record.
+
+    Never the production ``data/silver/`` or ``outputs/row19/``. The settled seq-0 row's game is
+    a home win by 7.
+    """
+    silver = base / "silver"
+    silver.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "game_id": ["2026_W01_KC@BUF"],
+            "season": [2026],
+            "week": [1],
+            "home_score": [24.0],
+            "away_score": [17.0],
+        }
+    ).to_parquet(silver / "games.parquet")
+    chain_fit = base / "chain_fit.json"
+    chain_fit.write_text(json.dumps(chain_fit_record(0.0)), encoding="utf-8")
+    return silver, chain_fit
+
+
 def _run_cli(ledger_dir: Path, repo_dir: Path) -> subprocess.CompletedProcess:
+    silver, chain_fit = _verify_inputs(repo_dir.parent / "verify_inputs")
     return subprocess.run(
         [
             sys.executable,
@@ -194,6 +226,10 @@ def _run_cli(ledger_dir: Path, repo_dir: Path) -> subprocess.CompletedProcess:
             "--repo-dir",
             str(repo_dir),
             "--skip-remote",
+            "--silver-dir",
+            str(silver),
+            "--chain-fit-path",
+            str(chain_fit),
         ],
         cwd=REPO_ROOT,
         capture_output=True,

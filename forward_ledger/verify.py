@@ -1,4 +1,4 @@
-"""Verifying the forward ledger: chain, anchors and backup (Phase 34, Plan 34-10; LDGR-05, LDGR-06).
+"""Verifying the forward ledger: chain, anchors, backup, verdict weeks and settled results (Plan 34-10).
 
 WHAT A CHAIN ALONE CANNOT SEE
 -----------------------------
@@ -19,6 +19,26 @@ but a ledger with its last k entries removed still verifies. The head committed 
   commits it is ahead of its last successful push and how many files are uncommitted. Backup lag
   is always a warning.
 
+THE VERDICT WEEKS (LDGR-10, LDGR-11)
+------------------------------------
+Once the verdict-scope declaration is committed, every live row of its season must carry the label
+the declaration gives its week, and every row in weeks W..end must carry every stamp, a recipe that
+resolves in the committed registry and the declared fill convention. Every correction entry must
+name an existing row. No declaration yet is a warning, never a default scope.
+
+SETTLED RESULTS ARE RE-GRADED (D-19)
+------------------------------------
+The chain covers only the immutable half (LDGR-05 as locked), so an edited ``grading_status`` or
+``payout_flat`` would still verify. A result is fully determined by the chained pick plus the public
+score, so :func:`settled_result_check` re-grades EVERY terminal row (win/loss/push, any arm,
+migrated rows included) from the silver scores through the one re-grade path
+(``forward_ledger.settle.regrade_row`` -- no second grader) and compares it with the outcome IN
+FORCE (the latest correction entry, else the row's own grade; D-05/D-06). A difference, a terminal
+row whose game has no recorded score, or a store that cannot be read while terminal rows exist is a
+failure naming the row. Fill and closing columns are never checked (D-19). Nothing is repaired: a
+mismatch with no correction entry means a score changed without its owed correction or a stored
+grade was edited, and both are the owner's to look at.
+
 LOCAL AND EXTERNAL EVIDENCE STAY SEPARATE
 -----------------------------------------
 :attr:`VerifyReport.local_ok` covers every check made against the files and refs on this machine;
@@ -28,9 +48,9 @@ the local checks pass and the remote does not disagree.
 ONLY THE CLI CALLS THIS
 -----------------------
 Verification is a linear pass over the season, so it runs only in ``scripts/verify_ledger.py``,
-never in a route (D-18, UIAP-01) and never in the daily run. It writes nothing to the ledger; the
-remote read fetches the anchor into the local mirror ref ``refs/ledger/remote-anchor`` only. Every
-git call goes through the injectable runner.
+never in a route (D-18, UIAP-01) and never in the daily run. It writes nothing to the ledger or the
+silver store; the remote read fetches the anchor into the local mirror ref
+``refs/ledger/remote-anchor`` only. Every git call goes through the injectable runner.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -42,6 +62,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
+from api.cache import GRADING_STATUS_PENDING, GRADING_STATUSES
+from backtest.weekly_bet_list import DEFAULT_CHAIN_FIT_PATH, FrozenChainFitError
 from forward_ledger.anchor import (
     AnchorFormatError,
     RemoteAnchorUnreachableError,
@@ -50,6 +74,7 @@ from forward_ledger.anchor import (
 )
 from forward_ledger.backup import backup_repo_exists
 from forward_ledger.canonical import ENTRY_KIND_CORRECTION, ENTRY_KIND_ROW, GENESIS_HASH
+from forward_ledger.corrections import InForce, in_force_outcomes
 from forward_ledger.declarations import (
     VERDICT_SCOPE_MODULE,
     UnknownRecipeError,
@@ -62,6 +87,13 @@ from forward_ledger.declarations import (
 )
 from forward_ledger.remote_config import ANCHOR_REMOTE_HTTPS_URL, BACKUP_PUSHED_REF
 from forward_ledger.schema import ARM_LIVE, LEDGER_ROW_KEY
+from forward_ledger.settle import (
+    DEFAULT_SILVER_DIR,
+    live_strategies,
+    load_silver_games,
+    realized_values_from_scores,
+    regrade_row,
+)
 from forward_ledger.store import (
     LEDGER_STAMP_COLUMNS,
     ChainVerdict,
@@ -79,6 +111,7 @@ from forward_ledger.transport import (
 )
 
 __all__ = [
+    "REGRADE_TOLERANCE",
     "REMOTE_BEHIND",
     "REMOTE_DISAGREES",
     "REMOTE_SKIPPED",
@@ -86,9 +119,12 @@ __all__ = [
     "REMOTE_VERIFIED",
     "AnchorCheck",
     "BackupCheck",
+    "RegradeCheck",
+    "RegradeMismatch",
     "RemoteCheck",
     "VerdictCheck",
     "VerifyReport",
+    "settled_result_check",
     "verify_ledger",
 ]
 
@@ -101,6 +137,20 @@ REMOTE_DISAGREES = "disagrees"
 
 # The reason a truncated tail is reported with (LDGR-06 acceptance).
 TRUNCATED_REASON = "ledger shorter than the anchored row count"
+
+# The replay tolerance: a re-graded payout or realized-units value within this of the stored one
+# is equal. Re-grading is the same arithmetic on the same doubles, so it is exact in practice.
+REGRADE_TOLERANCE: float = 1e-9
+
+# A row whose own grade is one of these is re-graded (D-19); a pending row is the settle pass's.
+_TERMINAL_GRADING_STATUSES: frozenset[str] = frozenset(
+    status for status in GRADING_STATUSES if status != GRADING_STATUS_PENDING
+)
+
+# The mismatch reasons a re-grade can name besides a value difference.
+NO_RECORDED_SCORE = "no_recorded_score"
+NO_STRATEGY = "no_strategy_for_target"
+REGRADE_UNAVAILABLE = "regrade_unavailable"
 
 
 @dataclass(frozen=True)
@@ -169,6 +219,37 @@ class VerdictCheck:
 
 
 @dataclass(frozen=True)
+class RegradeMismatch:
+    """One settled row whose in-force outcome the re-grade does not reproduce (D-19).
+
+    ``seq`` is the ROW entry's seq; ``key`` its ``LEDGER_ROW_KEY`` values. ``reason`` is
+    ``regrade_differs`` / ``correction_differs`` for a value difference (the latter when a
+    correction entry is in force), ``no_recorded_score``, ``no_strategy_for_target``, or the
+    class name of the exception the re-grade raised.
+    """
+
+    seq: int
+    key: tuple[Any, ...]
+    field: str
+    stored: Any
+    regraded: Any
+    reason: str
+
+
+@dataclass(frozen=True)
+class RegradeCheck:
+    """The D-19 settled-result check. ``unavailable`` names a store or record that could not be read."""
+
+    checked: int
+    mismatches: tuple[RegradeMismatch, ...]
+    unavailable: str | None
+
+    @property
+    def ok(self) -> bool:
+        return self.unavailable is None and not self.mismatches
+
+
+@dataclass(frozen=True)
 class VerifyReport:
     """Everything one verification found. ``failures`` and ``warnings`` are owner-readable lines."""
 
@@ -180,13 +261,19 @@ class VerifyReport:
     remote: RemoteCheck
     backup: BackupCheck
     verdict: VerdictCheck
+    regrade: RegradeCheck
     failures: tuple[str, ...]
     warnings: tuple[str, ...]
 
     @property
     def local_ok(self) -> bool:
         """Every check against this machine's files and refs passed."""
-        return self.chain.ok and self.local_anchor.ok and self.verdict.ok
+        return (
+            self.chain.ok
+            and self.local_anchor.ok
+            and self.verdict.ok
+            and self.regrade.ok
+        )
 
     @property
     def ok(self) -> bool:
@@ -316,6 +403,146 @@ def _check_verdict(
         declaration_error=declaration_error,
     )
     return check, failures, warnings
+
+
+def _is_terminal(entry: LedgerEntry) -> bool:
+    return (
+        entry.kind == ENTRY_KIND_ROW
+        and (entry.grading or {}).get("grading_status") in _TERMINAL_GRADING_STATUSES
+    )
+
+
+def _same_value(stored: Any, regraded: Any) -> bool:
+    """Equal within ``REGRADE_TOLERANCE``; None equals only None."""
+    if stored is None or regraded is None:
+        return stored is None and regraded is None
+    return abs(float(stored) - float(regraded)) <= REGRADE_TOLERANCE
+
+
+def _value_mismatches(
+    seq: int, key: tuple[Any, ...], in_force: InForce, regraded: Mapping[str, Any]
+) -> list[RegradeMismatch]:
+    """Every field on which the in-force outcome differs from the re-grade."""
+    reason = "correction_differs" if in_force.corrected else "regrade_differs"
+    mismatches: list[RegradeMismatch] = []
+    if in_force.grading_status != regraded["grading_status"]:
+        mismatches.append(
+            RegradeMismatch(
+                seq,
+                key,
+                "grading_status",
+                in_force.grading_status,
+                regraded["grading_status"],
+                reason,
+            )
+        )
+    for field in ("payout_flat", "realized_units"):
+        stored = getattr(in_force, field)
+        if not _same_value(stored, regraded[field]):
+            mismatches.append(
+                RegradeMismatch(seq, key, field, stored, regraded[field], reason)
+            )
+    return mismatches
+
+
+def settled_result_check(
+    entries: Sequence[LedgerEntry],
+    games: pd.DataFrame,
+    strategies: Mapping[str, Any],
+) -> tuple[int, list[RegradeMismatch]]:
+    """Re-grade every terminal row from *games* scores; compare with its in-force outcome (D-19).
+
+    Pure: nothing is written, and no row is mutated (``regrade_row`` grades an in-memory copy).
+
+    Args:
+        entries: The ledger, in file order.
+        games: The silver ``games`` table (``forward_ledger.settle.load_silver_games``).
+        strategies: ``{target -> strategy}`` (``forward_ledger.settle.live_strategies``).
+
+    Returns:
+        ``(rows checked, mismatches)``. Every terminal row is checked -- any arm, migrated
+        pre-verdict rows included; pending rows are not, and fill and closing columns never are.
+    """
+    in_force = in_force_outcomes(entries)
+    realized = realized_values_from_scores(games)
+    checked = 0
+    mismatches: list[RegradeMismatch] = []
+    for entry in entries:
+        if not _is_terminal(entry):
+            continue
+        checked += 1
+        row = {**entry.immutable, **(entry.grading or {})}
+        key = tuple(row[name] for name in LEDGER_ROW_KEY)
+        force = in_force[key]
+        target = str(row["target"])
+        value = realized.get(target, {}).get(str(row["game_id"]))
+        strategy = strategies.get(target)
+        if value is None or strategy is None:
+            reason = NO_RECORDED_SCORE if value is None else NO_STRATEGY
+            mismatches.append(
+                RegradeMismatch(
+                    entry.seq, key, "grading_status", force.grading_status, None, reason
+                )
+            )
+            continue
+        # The row's own settlement instant, carried through unchanged; it is never compared.
+        own_graded_at: Any = row.get("graded_at")
+        try:
+            regraded = regrade_row(row, strategy, value, graded_at=own_graded_at)
+        except Exception as error:  # noqa: BLE001 - any re-grade failure is named, never skipped
+            mismatches.append(
+                RegradeMismatch(
+                    entry.seq,
+                    key,
+                    "grading_status",
+                    force.grading_status,
+                    None,
+                    type(error).__name__,
+                )
+            )
+            continue
+        mismatches += _value_mismatches(entry.seq, key, force, regraded)
+    return checked, mismatches
+
+
+def _check_regrade(
+    entries: Sequence[LedgerEntry],
+    silver_dir: Path,
+    chain_fit_path: Path,
+    strategies: Mapping[str, Any] | None,
+) -> RegradeCheck:
+    """Load the scores and strategies only when a terminal row exists; never skip silently."""
+    if not any(_is_terminal(entry) for entry in entries):
+        return RegradeCheck(0, (), None)
+    try:
+        games = load_silver_games(silver_dir)
+    except (OSError, ValueError) as error:
+        return RegradeCheck(0, (), f"{REGRADE_UNAVAILABLE}: {error}")
+    if strategies is None:
+        try:
+            strategies = live_strategies(chain_fit_path)
+        except FrozenChainFitError as error:
+            return RegradeCheck(0, (), f"{REGRADE_UNAVAILABLE}: {error}")
+    try:
+        checked, mismatches = settled_result_check(entries, games, strategies)
+    except KeyError as error:
+        reason = (
+            f"{REGRADE_UNAVAILABLE}: the silver games store under {silver_dir.as_posix()} "
+            f"lacks the column {error}"
+        )
+        return RegradeCheck(0, (), reason)
+    return RegradeCheck(checked, tuple(mismatches), None)
+
+
+def _regrade_failures(regrade: RegradeCheck) -> list[str]:
+    if regrade.unavailable is not None:
+        return [regrade.unavailable]
+    return [
+        f"settled result: seq {mismatch.seq} {'|'.join(str(part) for part in mismatch.key)} "
+        f"{mismatch.field} is {mismatch.stored!r} in force but re-grades to "
+        f"{mismatch.regraded!r} ({mismatch.reason})"
+        for mismatch in regrade.mismatches
+    ]
 
 
 def _check_local_anchor(
@@ -460,6 +687,9 @@ def verify_ledger(
     remote_url: str = ANCHOR_REMOTE_HTTPS_URL,
     check_remote: bool = True,
     module_name: str = VERDICT_SCOPE_MODULE,
+    silver_dir: Path | str = DEFAULT_SILVER_DIR,
+    chain_fit_path: Path | str = DEFAULT_CHAIN_FIT_PATH,
+    strategies: Mapping[str, Any] | None = None,
 ) -> VerifyReport:
     """Verify the ledger in *ledger_dir* against the anchors in *repo_dir* and its backup.
 
@@ -470,6 +700,9 @@ def verify_ledger(
         remote_url: Where the remote anchor is read from (the public repository over HTTPS).
         check_remote: False skips the remote read (reported as ``skipped``, a warning).
         module_name: The verdict-scope declaration module (tests inject a fixture module).
+        silver_dir: The silver store whose ``games.parquet`` holds the scores (D-19).
+        chain_fit_path: The chain-fit record the strategies are built from.
+        strategies: ``{target -> strategy}``; built from *chain_fit_path* when None.
 
     Returns:
         The report; nothing is written to the ledger.
@@ -493,6 +726,9 @@ def verify_ledger(
     )
     backup = _check_backup(ledger, runner)
     verdict, verdict_failures, verdict_warnings = _check_verdict(entries, module_name)
+    regrade = _check_regrade(
+        entries, Path(silver_dir), Path(chain_fit_path), strategies
+    )
 
     failures: list[str] = []
     warnings: list[str] = []
@@ -503,7 +739,12 @@ def verify_ledger(
         )
     anchor_failures, anchor_warnings = _anchor_messages(local_anchor, unanchored)
     remote_failures, remote_warnings = _remote_messages(remote)
-    failures += anchor_failures + verdict_failures + remote_failures
+    failures += (
+        anchor_failures
+        + verdict_failures
+        + _regrade_failures(regrade)
+        + remote_failures
+    )
     warnings += (
         anchor_warnings + verdict_warnings + remote_warnings + _backup_messages(backup)
     )
@@ -517,6 +758,7 @@ def verify_ledger(
         remote=remote,
         backup=backup,
         verdict=verdict,
+        regrade=regrade,
         failures=tuple(failures),
         warnings=tuple(warnings),
     )
