@@ -33,12 +33,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
-from forward_ledger.replay import (
-    REPLAY_TOLERANCE,
-    ReplayResult,
-    replay_ledger,
-    replay_snapshot_rows,
-)
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LinearRegression, LogisticRegression
 
@@ -51,6 +45,12 @@ from forward_ledger.artifacts_copy import (
     ensure_recipe_record_copy,
 )
 from forward_ledger.canonical import ENTRY_KIND_ROW, IMMUTABLE_COLUMNS_V1
+from forward_ledger.replay import (
+    REPLAY_TOLERANCE,
+    ReplayResult,
+    replay_ledger,
+    replay_snapshot_rows,
+)
 from forward_ledger.repro_key import ReproKey
 from forward_ledger.schema import (
     ARM_LIVE,
@@ -154,7 +154,8 @@ def _train_models() -> dict[str, tuple[Any, Any]]:
     wins = (margin > 0).astype(int)
 
     wp = LogisticRegression().fit(features, wins)
-    calibrator = IsotonicRegression(out_of_bounds="clip").fit(
+    # Bounded inside (0, 1): the Kelly sizer refuses a probability of exactly 0 or 1.
+    calibrator = IsotonicRegression(y_min=0.02, y_max=0.98, out_of_bounds="clip").fit(
         wp.predict_proba(features)[:, 1], wins
     )
     return {
