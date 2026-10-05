@@ -907,7 +907,7 @@ def test_a_slate_outside_the_elo_season_is_refused_by_name(monkeypatch):
 
 
 def _cut_over(monkeypatch, on: bool = True) -> None:
-    """Set the committed switch for this test only (the constant stays OFF in the tree)."""
+    """Set the committed switch for this test only (the constant is ON since Plan 34-19)."""
     from forward_ledger import cutover
 
     monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", on)
@@ -931,6 +931,7 @@ def test_recommend_switch_off_unchanged(monkeypatch, tmp_path):
     from backtest import weekly_bet_list
     from forward_ledger import runner
 
+    _cut_over(monkeypatch, on=False)
     slate = _slate(30)
     outside = _recommend_env(monkeypatch, tmp_path, slate)
     calls: list[dict] = []

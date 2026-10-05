@@ -214,8 +214,11 @@ def _dirs(tmp_path: Path) -> dict[str, Path]:
     }
 
 
-def test_switch_off_sources_equal_today(tmp_path: Path) -> None:
+def test_switch_off_sources_equal_today(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Switch off: today's three frames, no corrections, an undeclared verdict context."""
+    monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", False)
     dirs = _dirs(tmp_path)
     _write_outputs(dirs["output_dir"], [*_replay_rows(), _forward_output_row()])
     # A ledger present on disk is not read while the switch is off.

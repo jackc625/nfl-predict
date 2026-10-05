@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -138,9 +139,13 @@ def test_bootstrap_weeks() -> None:
     assert BOOTSTRAP_REGIME_WEEKS == (2, 3, 4)
 
 
-def test_cutover_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert cutover.FORWARD_ROWS_GO_TO_LEDGER is False
-    assert cutover.forward_rows_go_to_ledger() is False
+def test_cutover_committed_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Was: the committed default was OFF; Plan 34-19 flipped it in commit 300e44e. Read the
+    # committed source, since tests/conftest.py pins the in-memory switch OFF for every test.
+    source = Path(cutover.__file__).read_text(encoding="utf-8")
+    assert "FORWARD_ROWS_GO_TO_LEDGER: bool = True" in source
     # The accessor reads the module constant at call time, so the ONE flip is the constant.
     monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", True)
     assert cutover.forward_rows_go_to_ledger() is True
+    monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", False)
+    assert cutover.forward_rows_go_to_ledger() is False

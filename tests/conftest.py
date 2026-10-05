@@ -194,6 +194,19 @@ def artifacts_boundary_guard():
     )
 
 
+@pytest.fixture(autouse=True)
+def _ledger_cutover_off_unless_a_test_turns_it_on(monkeypatch):
+    """Every test sees the forward-ledger cutover switch OFF unless it sets it on itself.
+
+    The committed switch is ON since Plan 34-19's cutover. The suite was written against the
+    OFF default, and every test that exercises the ledger path already sets the switch with
+    ``monkeypatch`` -- so the production value never decides which path a test runs.
+    """
+    from forward_ledger import cutover
+
+    monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", False)
+
+
 # ---------------------------------------------------------------------------
 # Plan 33-01 / COLD-05: the production stores are guarded BY DEFAULT
 # ---------------------------------------------------------------------------
