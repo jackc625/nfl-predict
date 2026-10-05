@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
+
 from forward_ledger.canonical import (
     CORRECTION_COLUMN_TYPES_V1,
     CORRECTION_COLUMNS_V1,
