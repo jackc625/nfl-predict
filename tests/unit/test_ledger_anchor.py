@@ -282,7 +282,7 @@ def test_push_to_local_bare_remote(tmp_path: Path) -> None:
     assert ref_sha(repo, ANCHOR_PUSHED_REF) == written.sha
     pushes = [call for call in spy.calls if call[0] == "push"]
     assert len(pushes) == 1
-    assert not any(arg.startswith("-f") or "force" in arg for arg in pushes[0])
+    assert [arg for arg in pushes[0] if arg.startswith("-")] == ["--porcelain"]
     assert pushes[0][-1] == "refs/heads/ledger-anchor:refs/heads/ledger-anchor"
     assert read_remote_anchor(repo, url=remote.as_posix()) == (HEAD_ONE, 3)
 

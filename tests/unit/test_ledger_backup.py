@@ -100,7 +100,7 @@ def test_backup_push_never_forces(tmp_path: Path) -> None:
     assert outcome.ok, outcome.error
     pushes = [call for call in spy.calls if call[0] == "push"]
     assert len(pushes) == 1
-    assert not any(arg.startswith("-f") or "force" in arg for arg in pushes[0])
+    assert [arg for arg in pushes[0] if arg.startswith("-")] == ["--porcelain"]
     assert not any(arg.startswith("+") for arg in pushes[0])
     assert pushes[0][-1] == "HEAD:refs/heads/main"
     local_head = git_out(ledger, "rev-parse", "HEAD")
@@ -116,7 +116,7 @@ def test_restore_round_trip_is_byte_identical(tmp_path: Path) -> None:
     original = ledger_path(ledger).read_bytes()
     assert b"\r\n" not in original
 
-    clone = git(tmp_path, "clone", remote.as_posix(), "restored")
+    clone = git(tmp_path, "clone", "--branch", "main", remote.as_posix(), "restored")
     assert clone.returncode == 0, clone.stderr
 
     restored = tmp_path / "restored"
