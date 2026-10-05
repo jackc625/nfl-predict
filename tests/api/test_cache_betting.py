@@ -461,9 +461,14 @@ def test_no_call_site_feeds_a_per_bet_expected_value_into_the_edge_band() -> Non
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
-                text = ast.unparse(node)
-                if "edge_tier" not in text:
+                # Match a reference to the band itself, not the substring: a keyword such as
+                # ``edge_tier_thresholds=`` (backtest/recipe_registry.py) is not a call site.
+                referenced = {
+                    n.id for n in ast.walk(node) if isinstance(n, ast.Name)
+                } | {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+                if not referenced & {"edge_tier", "edge_tier_series"}:
                     continue
+                text = ast.unparse(node)
                 if "_edge" not in text:
                     offenders.append(f"{path.as_posix()}:{node.lineno} {text}")
 
