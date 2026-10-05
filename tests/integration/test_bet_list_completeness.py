@@ -604,7 +604,10 @@ class TestTheStoredReplayRowsAreNeverBackfilled:
             DECIDED_AT_COLUMN,
             read_bet_list_with_schema_shim,
         )
-        from tests.phase33_state import BET_LIST_COLUMN_COUNT_BEFORE
+        from tests.phase33_state import (
+            BET_LIST_COLUMN_COUNT_AFTER,
+            BET_LIST_COLUMN_COUNT_BEFORE,
+        )
 
         path = self._artifact()
         before = path.read_bytes()
@@ -623,8 +626,15 @@ class TestTheStoredReplayRowsAreNeverBackfilled:
         # (BET_LIST_COLUMN_COUNT_BEFORE) with no DECIDED_AT_COLUMN. Since 2026-09-26 the
         # scheduled daily run writes the bumped schema when it appends forward rows, so
         # the column is on disk -- and on every stored replay row it is still NULL.
+        # Was: ``in (BET_LIST_COLUMN_COUNT_BEFORE, len(BET_LIST_COLUMNS))``. Phase 34 (Plan 34-01
+        # Task 2) widened the locked schema to 51 while the stored file is still the 29-column
+        # Phase-33 width until the daily run next writes it, so all three widths are honest.
         raw = pd.read_parquet(path)
-        assert raw.shape[1] in (BET_LIST_COLUMN_COUNT_BEFORE, len(BET_LIST_COLUMNS))
+        assert raw.shape[1] in (
+            BET_LIST_COLUMN_COUNT_BEFORE,
+            BET_LIST_COLUMN_COUNT_AFTER,
+            len(BET_LIST_COLUMNS),
+        )
         if DECIDED_AT_COLUMN in raw.columns:
             stored_replay = raw.loc[raw["provenance"] == "backtest_replay"]
             assert stored_replay[DECIDED_AT_COLUMN].isna().all()

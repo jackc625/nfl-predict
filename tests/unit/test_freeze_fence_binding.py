@@ -414,9 +414,20 @@ class TestTheBackCompatReadShim:
         and the shim would then be handed a frame that needs no shimming -- a test that passes by
         no longer exercising the thing it names.
         """
-        from backtest.weekly_bet_list import BET_LIST_READ_COLUMNS, DECIDED_AT_COLUMN
+        from backtest.weekly_bet_list import (
+            BET_LIST_READ_COLUMNS,
+            DECIDED_AT_COLUMN,
+            PHASE34_ADDED_COLUMNS,
+        )
 
-        return [c for c in BET_LIST_READ_COLUMNS if c != DECIDED_AT_COLUMN]
+        # Was: ``BET_LIST_READ_COLUMNS`` minus ``decided_at_utc`` alone. Phase 34 (Plan 34-01
+        # Task 2) widened the read order to 51, so the pre-Phase-33 file is that order minus
+        # BOTH bumps' columns -- still 28, still the order a stored file carried.
+        return [
+            c
+            for c in BET_LIST_READ_COLUMNS
+            if c != DECIDED_AT_COLUMN and c not in PHASE34_ADDED_COLUMNS
+        ]
 
     def _stored_28_column_parquet(self, tmp_path: Path) -> Path:
         from backtest.weekly_bet_list import BET_LIST_ARTIFACT_NAME
@@ -446,7 +457,9 @@ class TestTheBackCompatReadShim:
         shimmed = read_bet_list_with_schema_shim(path)
 
         assert list(shimmed.columns) == list(BET_LIST_READ_COLUMNS)
-        assert len(shimmed.columns) == 29
+        # Was: 29. Phase 34 (Plan 34-01 Task 2) widened the read order to 51; the shim fills
+        # every Phase-34 column NULL as well (tests/unit/test_bet_list_schema.py, section m).
+        assert len(shimmed.columns) == 51
         assert shimmed[DECIDED_AT_COLUMN].isna().all(), (
             "the shim invented an observation time for a row that was never observed"
         )

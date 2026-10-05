@@ -527,6 +527,29 @@ def test_all_three_bet_list_ddl_sites_produce_the_locked_column_order() -> None:
     assert standalone == list(BET_LIST_COLUMNS)
     assert embedded == list(BET_LIST_COLUMNS)
     assert standalone == embedded
+    # Phase 34 (Plan 34-01 Task 2) widened every site from 29 to 51 columns. Was: the width was
+    # pinned only through ``BET_LIST_COLUMNS`` (29). Pinned here too, so a site that drops the
+    # whole Phase-34 block cannot pass by agreeing with a list that dropped it as well.
+    assert len(standalone) == 51
+
+
+def test_the_two_ddl_literals_build_the_same_column_types() -> None:
+    """Names agreeing is not enough: a column typed differently at one site is a second schema.
+
+    Phase 34 (Plan 34-01 Task 2) added 22 columns to BOTH literals; each is BUILT and its
+    ``(name, type)`` pairs compared, so a VARCHAR at one site and a DOUBLE at the other fails.
+    """
+    from api.cache import BET_LIST_SCHEMA
+
+    def _typed(statement: str) -> list[tuple[str, str]]:
+        conn = duckdb.connect(":memory:")
+        conn.execute(statement)
+        return [
+            (row[1], row[2])
+            for row in conn.execute("PRAGMA table_info('bet_list')").fetchall()
+        ]
+
+    assert _typed(BET_LIST_SCHEMA) == _typed(_embedded_bet_list_statement())
 
 
 def test_the_full_cache_build_yields_the_same_bet_list_table() -> None:
@@ -573,16 +596,29 @@ def test_the_explicit_column_insert_names_every_ddl_column() -> None:
             "freeze_ts": "2026-09-18T18:00:00-04:00",
             "decided_at_utc": "2026-09-18T17:59:00-04:00",
             "grading_status": "pending",
+            # Phase 34 (Plan 34-01 Task 2): one column from each new block, so a Phase-34 column
+            # present in the DDL but absent from the INSERT's name list reads back NULL here.
+            # Was: the row stopped at ``grading_status``.
+            "arm": "live",
+            "fill_convention_id": "fill-v1",
+            "fill_line": 44.5,
+            "closing_null_reason": "capture_missed",
         }
     )
 
     conn = duckdb.connect(":memory:")
     assert materialize_bet_list(conn, pd.DataFrame([row])) == 1
     stored = conn.execute(
-        "SELECT decided_at_utc, freeze_ts, provenance FROM bet_list"
+        "SELECT decided_at_utc, freeze_ts, provenance, arm, fill_convention_id, fill_line, "
+        "closing_null_reason FROM bet_list"
     ).fetchone()
+    # Was: the first three fields only.
     assert stored == (
         "2026-09-18T17:59:00-04:00",
         "2026-09-18T18:00:00-04:00",
         "forward",
+        "live",
+        "fill-v1",
+        44.5,
+        "capture_missed",
     )

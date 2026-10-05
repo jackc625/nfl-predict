@@ -94,6 +94,11 @@ def _row(
         "realized_units": None,
         "graded_at": None,
     }
+    # Phase 34 (Plan 34-01 Task 2) widened the locked schema from 29 to 51. Was: the literal above
+    # was the whole width. The 22 Phase-34 columns are NULL, as on every row the pre-ledger writer
+    # produced; the drift check below still proves the row spans the locked width exactly.
+    for column in BET_LIST_COLUMNS:
+        row.setdefault(column, None)
     row.update(overrides)
     assert set(row) == set(BET_LIST_COLUMNS), (
         "the fixture row drifted from BET_LIST_COLUMNS; the marker tests would be exercising a "

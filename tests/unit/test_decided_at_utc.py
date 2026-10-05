@@ -195,19 +195,26 @@ def test_the_locked_order_is_twenty_nine_with_decided_at_last_in_the_immutable_h
     the immutable half -- so that Phase 34's own bump (D33-06) appends against a known base
     rather than against a column set whose order was never written down.
     """
+    # The Phase-33 witness values are history and stay pinned as recorded.
     assert BET_LIST_COLUMN_COUNT_BEFORE == 28
     assert BET_LIST_COLUMN_COUNT_AFTER == 29
 
-    assert len(BET_LIST_IMMUTABLE_COLUMNS) == 23
+    # Phase 34 (Plan 34-01 Task 2) appended 11 stamps after ``decided_at_utc`` and the FILL and
+    # CLOSING classes after the grading half (D33-06: it appended against this written base).
+    # Was: 23 immutable, ``len(BET_LIST_COLUMNS) == BET_LIST_COLUMN_COUNT_AFTER`` (29), and
+    # ``IMMUTABLE + GRADING == BET_LIST_COLUMNS``. The Phase-33 prefix is what is still asserted.
+    assert len(BET_LIST_IMMUTABLE_COLUMNS) == 34
     assert len(BET_LIST_GRADING_COLUMNS) == 6
-    assert len(BET_LIST_COLUMNS) == BET_LIST_COLUMN_COUNT_AFTER
+    assert len(BET_LIST_COLUMNS) == 51
 
     assert BET_LIST_COLUMNS.index(DECIDED_AT_COLUMN) == 22
     assert BET_LIST_IMMUTABLE_COLUMNS[21] == "validation_type"
     assert BET_LIST_IMMUTABLE_COLUMNS[22] == DECIDED_AT_COLUMN
     assert BET_LIST_GRADING_COLUMNS[0] == "grading_status"
     assert DECIDED_AT_COLUMN not in BET_LIST_GRADING_COLUMNS
-    assert BET_LIST_IMMUTABLE_COLUMNS + BET_LIST_GRADING_COLUMNS == BET_LIST_COLUMNS
+    assert (
+        BET_LIST_COLUMNS[:40] == BET_LIST_IMMUTABLE_COLUMNS + BET_LIST_GRADING_COLUMNS
+    )
 
 
 def test_all_three_ddl_sites_build_the_same_twenty_nine_columns_in_the_same_order() -> (
@@ -226,7 +233,10 @@ def test_all_three_ddl_sites_build_the_same_twenty_nine_columns_in_the_same_orde
     assert standalone == list(BET_LIST_COLUMNS)
     assert embedded == list(BET_LIST_COLUMNS)
     assert standalone == embedded
-    assert len(standalone) == BET_LIST_COLUMN_COUNT_AFTER
+    # Was: ``== BET_LIST_COLUMN_COUNT_AFTER`` (29). Phase 34 (Plan 34-01 Task 2) widened all three
+    # sites to 51 and its own suite pins that width; here the Phase-33 column keeps its index.
+    assert len(standalone) == 51
+    assert standalone.index(DECIDED_AT_COLUMN) == 22
 
 
 def test_decided_at_is_a_varchar_not_a_timestamp() -> None:
