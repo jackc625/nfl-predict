@@ -67,7 +67,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
@@ -132,6 +132,9 @@ from backtest.ou_ev_chain import american_to_payout
 from backtest.selector_strategies import default_strategies
 from utils import get_logger
 
+if TYPE_CHECKING:
+    from models.artifacts import ResolvedArtifacts
+
 logger = get_logger(__name__)
 
 __all__ = [
@@ -146,6 +149,7 @@ __all__ = [
     "BetListCacheSources",
     "ChainFitOverlayDisagreementError",
     "DecidedAfterFreezeError",
+    "DecisionBundle",
     "EmptyPriorResidualPoolError",
     "FrozenChainFitError",
     "LockPassedError",
@@ -156,6 +160,7 @@ __all__ = [
     "build_bet_week_schedule",
     "build_freeze_instant_candidates",
     "build_weekly_candidates",
+    "build_weekly_decision_bundle",
     "build_weekly_decision_frame",
     "edge_admission_thresholds",
     "frozen_overlay_season",
@@ -777,8 +782,14 @@ def build_weekly_candidates(
     gold_dir: Path = Path("data/gold"),
     silver_dir: Path = Path("data/silver"),
     excluded_game_ids: frozenset[str] = frozenset(),
+    resolved: ResolvedArtifacts | None = None,
+    gold_inputs_sink: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Score the deployed artifacts over one week and join the stored odds snapshot. READ ONLY.
+
+    A thin wrapper over :func:`_build_weekly_candidates_with_inputs`, which holds the body and
+    also returns the gold rows each scorer received; this keeps the long-standing 2-tuple
+    contract every caller and test stub relies on.
 
     Mirrors ``backtest.profitability_2025._load_candidate_frames`` one week at a time, with one
     deliberate difference: the market side comes from ``data/silver/odds_snapshot.parquet``,
@@ -795,6 +806,13 @@ def build_weekly_candidates(
             are removed from the schedule SPINE before anything else reads it, so an excluded
             game is never scored, never priced and never written -- not even as a suppressed
             row. Empty by default, so every existing caller is unchanged.
+        resolved: The production ids resolved ONCE for this decision (LDGR-03). When given,
+            every scorer and the blend loader receive their explicit version from it and
+            ``latest.json`` is not read here at all; None keeps today's behaviour exactly.
+        gold_inputs_sink: When given, receives each target's gold rows exactly as handed to
+            the scorer -- the decision-input snapshot's gold half (LDGR-09). An out-parameter
+            rather than a third return value because callers and test stubs inject THIS
+            function by name and every one of them returns the 2-tuple.
 
     Returns:
         ``(candidates, schedule)``. ``candidates`` carries one row per (game, target) for which a
@@ -803,8 +821,40 @@ def build_weekly_candidates(
         all-skipped, which is a different fact from a week with no scheduled games (still
         refused by ``_load_week_schedule``).
     """
+    candidates, schedule, gold_inputs = _build_weekly_candidates_with_inputs(
+        season,
+        week,
+        artifacts_dir=artifacts_dir,
+        gold_dir=gold_dir,
+        silver_dir=silver_dir,
+        excluded_game_ids=excluded_game_ids,
+        resolved=resolved,
+    )
+    if gold_inputs_sink is not None:
+        gold_inputs_sink.update(gold_inputs)
+    return candidates, schedule
+
+
+def _build_weekly_candidates_with_inputs(
+    season: int,
+    week: int,
+    *,
+    artifacts_dir: Path,
+    gold_dir: Path,
+    silver_dir: Path,
+    excluded_game_ids: frozenset[str],
+    resolved: ResolvedArtifacts | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame]]:
+    """The body of :func:`build_weekly_candidates`, also returning the gold rows it scored.
+
+    Returns:
+        ``(candidates, schedule, gold_inputs)`` where ``gold_inputs[target]`` is that target's
+        gold frame AFTER the exclusion drop, the very object handed to the scorer. Empty when
+        every scheduled game is excluded, because nothing was scored.
+    """
     from backtest.diagnose import score_deployed_artifacts
 
+    gold_inputs: dict[str, pd.DataFrame] = {}
     schedule = _load_week_schedule(season, week, silver_dir)
     # THE EXCLUSION LANDS ON THE SPINE, HERE, AND NOWHERE LATER (D33.2-05, T-33.2-02-14). The
     # schedule -- not the odds join -- is the universe's spine (D31-19, `_load_week_schedule`):
@@ -823,7 +873,11 @@ def build_weekly_candidates(
             week=week,
             n_excluded=len(excluded_game_ids),
         )
-        return pd.DataFrame(columns=pd.Index(["game_id", "target"])), schedule
+        return (
+            pd.DataFrame(columns=pd.Index(["game_id", "target"])),
+            schedule,
+            gold_inputs,
+        )
     game_ids = set(schedule["game_id"])
 
     odds_path = silver_dir / "odds_snapshot.parquet"
@@ -847,7 +901,13 @@ def build_weekly_candidates(
     # review C1 CR-02; owner ruling 2026-09-22). A row with none is a stale line, never priced.
     odds["snapshot_ts"] = odds_information_time(odds)
 
-    slope = _bound_spread_slope(artifacts_dir)
+    # Two call shapes, not one with version=None, here and for the scorer below: an
+    # unresolved call stays byte-for-byte the call this builder has always made, which
+    # existing stand-ins for both functions rely on.
+    if resolved is None:
+        slope = _bound_spread_slope(artifacts_dir)
+    else:
+        slope = _bound_spread_slope(artifacts_dir, version=resolved.blend)
     frames: list[pd.DataFrame] = []
     for target in CANONICAL_TARGETS:
         gold_path = gold_dir / f"features_{target}.parquet"
@@ -867,10 +927,19 @@ def build_weekly_candidates(
         # refuse as outside the schedule. Applied after the week-emptiness check, so that check
         # keeps meaning "gold carries this week at all".
         gold = _drop_excluded(cast("pd.DataFrame", gold), excluded_game_ids)
+        gold_inputs[target] = gold
 
-        scored = score_deployed_artifacts(
-            target, gold_df=gold, artifacts_dir=artifacts_dir
-        )
+        if resolved is None:
+            scored = score_deployed_artifacts(
+                target, gold_df=gold, artifacts_dir=artifacts_dir
+            )
+        else:
+            scored = score_deployed_artifacts(
+                target,
+                gold_df=gold,
+                artifacts_dir=artifacts_dir,
+                version=resolved.model_id_for(target),
+            )
         keep = ["game_id", "snapshot_ts", "ml_home", "ml_away", "spread", "total"]
         keep += [c for c in ("sportsbook", "is_live") if c in odds.columns]
         keep += [
@@ -901,11 +970,16 @@ def build_weekly_candidates(
         n_scheduled=len(schedule),
         n_candidates=len(candidates),
     )
-    return candidates, schedule
+    return candidates, schedule, gold_inputs
 
 
-def _bound_spread_slope(artifacts_dir: Path) -> float | None:
+def _bound_spread_slope(
+    artifacts_dir: Path, version: str | None = None
+) -> float | None:
     """The serving slope the LIVE blend binds, or None when no blend binds a converter.
+
+    *version* is the blend id the decision resolved once (LDGR-03); None resolves the blend
+    through ``latest.json`` as before.
 
     SERVING, not history: a live 2026 game is converted with the bound ``slope_beta``, which was
     never fitted on it. Read through the one blend loader, the same way the current-week
@@ -917,7 +991,7 @@ def _bound_spread_slope(artifacts_dir: Path) -> float | None:
     from models.blending import MarketBlender
 
     try:
-        blender = MarketBlender.from_artifacts(artifacts_dir)
+        blender = MarketBlender.from_artifacts(artifacts_dir, version=version)
     except (KeyError, FileNotFoundError) as exc:
         logger.warning(
             "No blend binds a spread converter; win bets cannot take their second test",
@@ -1065,6 +1139,7 @@ def build_freeze_instant_candidates(
     gold_dir: Path = Path("data/gold"),
     silver_dir: Path = Path("data/silver"),
     excluded_game_ids: frozenset[str] = frozenset(),
+    resolved: ResolvedArtifacts | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Candidates for every game sharing ONE lock instant, across the weeks it spans.
 
@@ -1089,6 +1164,8 @@ def build_freeze_instant_candidates(
         excluded_game_ids: Games the run has decided not to bet, passed to BOTH the selection
             fence (removed before its check) and the week-scoped builder (removed from its
             spine), so no row of any kind is produced for them.
+        resolved: The production ids resolved ONCE (LDGR-03), handed to EVERY week-scoped
+            build, so an instant spanning two weeks scores both with the same models.
 
     Returns:
         ``(candidates, schedule)`` -- the same 2-tuple shape :func:`build_weekly_candidates`
@@ -1146,6 +1223,7 @@ def build_freeze_instant_candidates(
             gold_dir=gold_dir,
             silver_dir=silver_dir,
             excluded_game_ids=excluded_game_ids,
+            resolved=resolved,
         )
         candidate_frames.append(
             cast(
@@ -1610,6 +1688,137 @@ def _require_run_mode(run_mode: str) -> None:
         raise ValueError(msg)
 
 
+@dataclass(frozen=True)
+class DecisionBundle:
+    """One week's decision TOGETHER WITH the exact inputs that produced it (LDGR-03, LDGR-09).
+
+    Captured at the one decision seam, never rebuilt afterwards: a snapshot rebuilt later from
+    the lake would describe the lake at rebuild time, not what the decision saw.
+
+    Nothing here is stamped onto the frame. ``records_to_bet_list_frame`` still emits the
+    Phase-34 columns NULL; stamping happens at the ledger's one stamping site.
+
+    Attributes:
+        frame: The stamped ``BET_LIST_COLUMNS`` frame -- exactly what
+            :func:`build_weekly_decision_frame` returns.
+        candidates: The candidates frame as handed to :func:`select_weekly_bets` (the
+            builder's own frame when the week is all-skipped and nothing was selected).
+        schedule: The week's schedule spine.
+        gold_inputs: Each target's gold rows exactly as handed to the scorer, after the
+            exclusion drop.
+        fits: The per-target frozen fits the selection used.
+        resolved: The production ids every scorer and blend load received, resolved ONCE.
+            None only when ``artifacts_dir`` holds no ``latest.json`` at all.
+        chain_fit_path: The tune-only fit path the decision was configured with.
+        run_instant: The run's one instant -- the forward stamp's source.
+    """
+
+    frame: pd.DataFrame
+    candidates: pd.DataFrame
+    schedule: pd.DataFrame
+    gold_inputs: dict[str, pd.DataFrame]
+    fits: dict[str, WeeklyChainFit]
+    resolved: ResolvedArtifacts | None
+    chain_fit_path: Path | str
+    run_instant: datetime
+
+
+def build_weekly_decision_bundle(
+    season: int,
+    week: int,
+    *,
+    artifacts_dir: Path = Path("artifacts"),
+    gold_dir: Path = Path("data/gold"),
+    silver_dir: Path = Path("data/silver"),
+    chain_fit_path: Path | str = DEFAULT_CHAIN_FIT_PATH,
+    run_mode: str = RUN_MODE_FORWARD,
+    bankroll: float = DEFAULT_BANKROLL,
+    now: datetime | None = None,
+    fits: dict[str, WeeklyChainFit] | None = None,
+    strategies: list[Any] | None = None,
+    excluded_game_ids: frozenset[str] = frozenset(),
+    resolved: ResolvedArtifacts | None = None,
+) -> DecisionBundle:
+    """THE decision path: one week's decision and the exact inputs it was made from. NO write.
+
+    :func:`build_weekly_decision_frame` delegates here and returns ``bundle.frame``, so there is
+    one decision path; this function only additionally hands back what that path consumed.
+
+    RESOLVE ONCE (LDGR-03). When *resolved* is None the production manifest is read here ONCE
+    (``models.artifacts.resolve_production_artifacts``) and its ids are handed to every scorer
+    and blend load, so a ``latest.json`` swap landing mid-run cannot change which models scored
+    this decision. A caller deciding several builds at one instant resolves once itself and
+    passes *resolved* in. An ABSENT manifest is not resolved -- there is nothing to read, the
+    unresolved path is today's, and the scorer then refuses by name as it always has -- while a
+    PRESENT one must name all four pointers.
+
+    Args:
+        season, week, artifacts_dir, gold_dir, silver_dir, chain_fit_path, run_mode, bankroll,
+            now, fits, strategies, excluded_game_ids: as :func:`build_weekly_decision_frame`.
+        resolved: Pre-resolved production ids; resolved here from *artifacts_dir* when None.
+
+    Returns:
+        The :class:`DecisionBundle`.
+
+    Raises:
+        Everything :func:`build_weekly_decision_frame` raises, plus
+        ``models.artifacts.IncompleteManifestError`` for a manifest missing a pointer.
+    """
+    _require_run_mode(run_mode)
+
+    resolved_fits = load_frozen_chain_fit(chain_fit_path) if fits is None else fits
+    _require_season_covered(resolved_fits, season)
+    registry = build_strategies(resolved_fits) if strategies is None else strategies
+
+    if resolved is None and (Path(artifacts_dir) / "latest.json").exists():
+        from models.artifacts import resolve_production_artifacts
+
+        resolved = resolve_production_artifacts(Path(artifacts_dir))
+
+    gold_inputs: dict[str, pd.DataFrame] = {}
+    candidates, schedule = build_weekly_candidates(
+        season,
+        week,
+        artifacts_dir=artifacts_dir,
+        gold_dir=gold_dir,
+        silver_dir=silver_dir,
+        excluded_game_ids=excluded_game_ids,
+        resolved=resolved,
+        gold_inputs_sink=gold_inputs,
+    )
+    if schedule.empty:
+        # Every scheduled game was excluded: the week is all-skipped (SPEC R3). There is no
+        # universe to select over, so the honest frame is empty -- not a refusal, and not a
+        # suppressed row for a game the run chose not to bet.
+        frame = pd.DataFrame(columns=pd.Index(BET_LIST_COLUMNS))
+        run_instant = now if now is not None else datetime.now(tz=UTC)
+    else:
+        result = select_weekly_bets(
+            candidates, schedule, resolved_fits, strategies=registry, bankroll=bankroll
+        )
+        # ONE run instant, so the caller's fence and this stamp cannot disagree by whatever
+        # the selection took on a slow week.
+        run_instant = now if now is not None else datetime.now(tz=UTC)
+        frame = records_to_bet_list_frame(
+            result,
+            resolved_fits,
+            run_mode=run_mode,
+            bankroll=bankroll,
+            decided_at=run_instant if run_mode == RUN_MODE_FORWARD else None,
+        )
+
+    return DecisionBundle(
+        frame=frame,
+        candidates=candidates,
+        schedule=schedule,
+        gold_inputs=gold_inputs,
+        fits=resolved_fits,
+        resolved=resolved,
+        chain_fit_path=chain_fit_path,
+        run_instant=run_instant,
+    )
+
+
 def build_weekly_decision_frame(
     season: int,
     week: int,
@@ -1676,39 +1885,23 @@ def build_weekly_decision_frame(
             or a gold matrix carrying no rows for the week.
         FrozenChainFitError: when the pre-registered fit cannot be resolved.
     """
-    _require_run_mode(run_mode)
-
-    resolved_fits = load_frozen_chain_fit(chain_fit_path) if fits is None else fits
-    _require_season_covered(resolved_fits, season)
-    registry = build_strategies(resolved_fits) if strategies is None else strategies
-
-    candidates, schedule = build_weekly_candidates(
+    # Delegation by CALL (Plan 34-05): the bundle is the decision path, and this seam returns
+    # its frame, so the frame and the inputs stored beside it can never come from two paths.
+    bundle = build_weekly_decision_bundle(
         season,
         week,
         artifacts_dir=artifacts_dir,
         gold_dir=gold_dir,
         silver_dir=silver_dir,
-        excluded_game_ids=excluded_game_ids,
-    )
-    if schedule.empty:
-        # Every scheduled game was excluded: the week is all-skipped (SPEC R3). There is no
-        # universe to select over, so the honest frame is empty -- not a refusal, and not a
-        # suppressed row for a game the run chose not to bet.
-        return pd.DataFrame(columns=pd.Index(BET_LIST_COLUMNS))
-    result = select_weekly_bets(
-        candidates, schedule, resolved_fits, strategies=registry, bankroll=bankroll
-    )
-
-    # ONE run instant, so the caller's fence and this stamp cannot disagree by whatever the
-    # selection took on a slow week.
-    run_instant = now if now is not None else datetime.now(tz=UTC)
-    return records_to_bet_list_frame(
-        result,
-        resolved_fits,
+        chain_fit_path=chain_fit_path,
         run_mode=run_mode,
         bankroll=bankroll,
-        decided_at=run_instant if run_mode == RUN_MODE_FORWARD else None,
+        now=now,
+        fits=fits,
+        strategies=strategies,
+        excluded_game_ids=excluded_game_ids,
     )
+    return bundle.frame
 
 
 # ---------------------------------------------------------------------------
