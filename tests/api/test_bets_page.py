@@ -4248,3 +4248,286 @@ def test_no_ranked_count_header_without_a_current_week(tmp_path: Path) -> None:
 
     assert _NO_CURRENT_WEEK_HEADING in body
     assert "ranked by expected value &middot;" not in body
+
+
+# ---------------------------------------------------------------------------
+# Every betting record wears its label; the verdict excludes pre-verdict rows (Plan 34-20 Task 2)
+# ---------------------------------------------------------------------------
+#
+# LDGR-08 / D-06 / D-16 on RENDERED pages. The /bets caches below are built through
+# ``api.cache.populate_cache`` with the Plan-34-16 frames -- the tracker blocks, the result-strip
+# rows and the corrections all produced by ``backtest.bet_tracker`` from the same bet rows -- so the
+# page is tested against the cache shape production builds, not a hand-assembled one.
+
+_LEDGER_LOCK = datetime(
+    2026, 9, 20, 22, 0, 0, tzinfo=UTC
+)  # in the past: every game is built
+_START_WEEK_SENTENCE = "Counting starts with week 6 of the 2026 season"
+_UNDECLARED_SENTENCE = "The start week has not been declared yet."
+_DECLARED_W6 = {"declared": True, "season": _LEDGER_SEASON, "start_week": 6}
+
+
+def _forward_row(
+    game_id: str, week: int, grading_status: str, *, verdict_scope: str
+) -> dict[str, Any]:
+    """One live 2026 forward ledger row of the live arm, graded as given."""
+    row = _graded_row(game_id, grading_status, pair=_FORWARD_CLASS, week=week)
+    row.update(
+        {"season": _LEDGER_SEASON, "arm": "live", "verdict_scope": verdict_scope}
+    )
+    return row
+
+
+def _ledger_client(
+    tmp_path: Path,
+    name: str,
+    rows: list[dict[str, Any]],
+    *,
+    corrections: list[dict[str, Any]] | None = None,
+    verdict: dict[str, Any] | None = None,
+) -> Any:
+    """Build a cache through populate_cache with the Plan-34-16 frames; return a client for it."""
+    from api.cache import populate_cache
+
+    clear_cache()
+    bet_list = pd.DataFrame(rows)
+    corrections_df = (
+        pd.DataFrame(corrections, columns=BET_LIST_CORRECTIONS_COLUMNS)
+        if corrections
+        else None
+    )
+    schedule = pd.DataFrame(
+        [
+            {
+                "game_id": r["game_id"],
+                "season": r["season"],
+                "week": r["week"],
+                "game_freeze_ts": _LEDGER_LOCK,
+            }
+            for r in rows
+        ]
+    )
+    db_path = tmp_path / f"{name}.duckdb"
+    populate_cache(
+        db_path=db_path,
+        artifacts_dir=tmp_path / "artifacts",
+        outputs_dir=tmp_path / "outputs",
+        gold_dir=tmp_path / "gold",
+        silver_dir=tmp_path / "silver",
+        bet_list_df=bet_list,
+        bet_tracker_df=to_tracker_frame(
+            aggregate_all_blocks(bet_list, corrections=corrections_df)
+        ),
+        bet_schedule_df=schedule,
+        bet_corrections_df=corrections_df,
+        bet_graded_outcomes_df=graded_outcome_rows(
+            bet_list, corrections=corrections_df
+        ),
+        forward_verdict_context=verdict,
+    )
+    return contextmanager(_client)(db_path)
+
+
+def _slip_badges(body: str) -> list[str]:
+    """The provenance slot of every live bet slip, in rank order."""
+    return re.findall(
+        r"<span data-slip-provenance>(.*?)</span></span>\s*</span>", body, re.S
+    )
+
+
+def test_track_record_betting_sim_has_badge(
+    test_db: Path, request: pytest.FixtureRequest
+) -> None:
+    """The simulation section carries the stamped pair, on the page AND in the scope swap.
+
+    The badge sits inside the ``betting_content`` block, so ``/fragments/betting`` -- the swap that
+    replaces ``#betting-content`` -- re-renders it rather than leaving it behind.
+    """
+    from api.cache import stamp_betting_sim_evidence_pair
+
+    conn = duckdb.connect(str(test_db))
+    try:
+        # The populate_cache stamp, over the fixture's own 2021-2023 simulation seasons.
+        assert stamp_betting_sim_evidence_pair(conn, datetime.now(tz=UTC)) == (
+            "backtest_replay",
+            "contaminated",
+        )
+    finally:
+        conn.close()
+    client: TestClient = request.getfixturevalue("test_client")
+
+    page = client.get("/track-record")
+    fragment = client.get("/fragments/betting", headers={"HX-Request": "true"})
+    assert page.status_code == 200
+    assert fragment.status_code == 200
+
+    pair = 'data-provenance="backtest_replay" data-validation-type="contaminated"'
+    swapped = page.text.split('id="betting-sim"', 1)[1].split(
+        'id="betting-content"', 1
+    )[1]
+    assert pair in swapped, "the betting simulation renders no evidence badge"
+    assert "Contaminated split" in swapped
+    assert pair in fragment.text, "the scope swap drops the evidence badge"
+    assert "<html" not in fragment.text
+
+
+def test_track_record_renders_no_badge_without_a_stamped_pair(
+    request: pytest.FixtureRequest,
+) -> None:
+    """No stamp, no badge: a pair nothing established is never rendered."""
+    client: TestClient = request.getfixturevalue("test_client")
+    page = client.get("/track-record")
+    assert page.status_code == 200
+    section = page.text.split('id="betting-sim"', 1)[1]
+    assert "data-provenance=" not in section
+
+
+def test_bets_forward_section_has_badge(tmp_path: Path) -> None:
+    """With no forward row at all, the forward section still wears the verdict class's badge."""
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=4,
+            wins=2,
+            losses=2,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=-0.02,
+        )
+    ]
+    with _client_with_tracker(tmp_path, blocks, "forward_badge_empty") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    sections = _tracker_sections(body)
+    forward = [key for key in sections if key.startswith("forward")]
+    assert forward == ["forward:forward_realized"], (
+        f"the forward section is not the verdict class: {sorted(sections)}"
+    )
+    header = sections["forward:forward_realized"]
+    header = header[: header.index("</div>")]
+    assert 'data-provenance="forward"' in header
+    assert 'data-validation-type="forward_realized"' in header
+    # The replay block keeps its own badge beside it (SPEC LDGR-08 adjacency).
+    replay = sections["backtest_replay:contaminated"]
+    assert 'data-validation-type="contaminated"' in replay[: replay.index("</div>")]
+
+
+def test_pre_verdict_row_label_and_exclusion(tmp_path: Path) -> None:
+    """A pre-verdict win sits in its own block; the verdict record holds only the verdict loss."""
+    rows = [
+        _forward_row("2026_W03_NYJ@NE", 3, "win", verdict_scope="pre_verdict"),
+        _forward_row("2026_W06_BUF@MIA", 6, "loss", verdict_scope="verdict"),
+    ]
+    with _ledger_client(tmp_path, "pre_verdict", rows, verdict=_DECLARED_W6) as client:
+        body = client.get(f"/bets?season={_LEDGER_SEASON}&week=3").text
+
+    slips = _slip_badges(body)
+    assert len(slips) == 1, f"expected the one week-3 slip: {slips}"
+    assert f">{_PRE_VERDICT_LABEL}<" in slips[0]
+    assert 'data-validation-type="pre_verdict"' in slips[0]
+
+    sections = _tracker_sections(body)
+    assert [k for k in sections if k.startswith("forward")] == [
+        "forward:pre_verdict",
+        "forward:forward_realized",
+    ], f"the forward blocks are not before-counting then verdict: {sorted(sections)}"
+    before = sections["forward:pre_verdict"]
+    verdict = sections["forward:forward_realized"]
+    assert '<span aria-hidden="true">1-0-0</span>' in before
+    assert '<span aria-hidden="true">0-1-0</span>' in verdict
+    assert 'data-validation-type="pre_verdict"' in before[: before.index("</div>")]
+    assert (
+        'data-validation-type="forward_realized"' in verdict[: verdict.index("</div>")]
+    )
+    assert "never counted" in before
+    assert "Live forward record" in verdict[: verdict.index("</div>")]
+
+
+def test_result_strip_partitions_verdict_and_pre_verdict(tmp_path: Path) -> None:
+    """The verdict strip shows verdict rows at their in-force grade; no pre-verdict mark joins it."""
+    corrected_game = "2026_W06_DAL@CHI"
+    rows = [
+        _forward_row("2026_W03_NYJ@NE", 3, "win", verdict_scope="pre_verdict"),
+        _forward_row("2026_W06_BUF@MIA", 6, "loss", verdict_scope="verdict"),
+        _forward_row(corrected_game, 6, "win", verdict_scope="verdict"),
+    ]
+    corrections = [
+        _correction_row(corrected_game, week=6, original="win", corrected="loss")
+    ]
+    with _ledger_client(
+        tmp_path, "strip_split", rows, corrections=corrections, verdict=_DECLARED_W6
+    ) as client:
+        body = client.get(f"/bets?season={_LEDGER_SEASON}&week=6").text
+
+    sections = _tracker_sections(body)
+    verdict = sections["forward:forward_realized"]
+    before = sections["forward:pre_verdict"]
+    assert verdict.count("data-result-mark") == 2
+    assert _mark_colours(verdict) == ["bg-red-500", "bg-red-500"], (
+        "the corrected verdict row is not drawn at its corrected grade"
+    )
+    assert before.count("data-result-mark") == 1
+    assert _mark_colours(before) == ["bg-green-500"]
+
+
+def test_start_week_message_declared(tmp_path: Path) -> None:
+    """Zero verdict rows and a declared W: the verdict block names the week counting starts."""
+    rows = [_forward_row("2026_W03_NYJ@NE", 3, "win", verdict_scope="pre_verdict")]
+    with _ledger_client(
+        tmp_path, "start_declared", rows, verdict=_DECLARED_W6
+    ) as client:
+        body = client.get(f"/bets?season={_LEDGER_SEASON}&week=3").text
+
+    verdict = _tracker_sections(body)["forward:forward_realized"]
+    assert _START_WEEK_SENTENCE in verdict
+    assert _NOTHING_GRADED_HEADING not in verdict, (
+        "an empty record replaced the start week"
+    )
+    assert "Hit rate" not in verdict
+
+
+def test_start_week_message_undeclared(tmp_path: Path) -> None:
+    """Zero verdict rows and nothing declared: the page says so rather than inventing a week."""
+    rows = [_forward_row("2026_W03_NYJ@NE", 3, "win", verdict_scope="pre_verdict")]
+    with _ledger_client(tmp_path, "start_undeclared", rows) as client:
+        body = client.get(f"/bets?season={_LEDGER_SEASON}&week=3").text
+
+    verdict = _tracker_sections(body)["forward:forward_realized"]
+    assert _UNDECLARED_SENTENCE in verdict
+    assert "Counting starts with week" not in verdict
+    assert _NOTHING_GRADED_HEADING not in verdict
+
+
+def test_corrected_row_marked(tmp_path: Path) -> None:
+    """A corrected slip is marked, names its counted grade and keeps the original one visible."""
+    corrected_game = "2026_W06_DAL@CHI"
+    rows = [
+        _forward_row("2026_W06_BUF@MIA", 6, "loss", verdict_scope="verdict"),
+        _forward_row(corrected_game, 6, "win", verdict_scope="verdict"),
+    ]
+    corrections = [
+        _correction_row(corrected_game, week=6, original="win", corrected="loss")
+    ]
+    with _ledger_client(
+        tmp_path, "corrected_mark", rows, corrections=corrections, verdict=_DECLARED_W6
+    ) as client:
+        body = client.get(f"/bets?season={_LEDGER_SEASON}&week=6").text
+
+    assert body.count('data-corrected="true"') == 1, (
+        "exactly the corrected slip is marked"
+    )
+    marked = body[body.index('data-corrected="true"') :]
+    marked = marked[: marked.index("</li>")]
+    assert "DAL @ CHI" in marked
+    assert "Score corrected after grading: counted as loss (originally win)" in marked
+
+
+def test_templates_ascii_only() -> None:
+    """Both page templates and the badge component encode as ASCII (no emoji, no smart quotes)."""
+    templates_dir = Path(__file__).resolve().parents[2] / "web" / "templates"
+    for relative in (
+        "pages/bets.html",
+        "pages/track_record.html",
+        "components/_provenance_badge.html",
+    ):
+        (templates_dir / relative).read_text(encoding="utf-8").encode("ascii")
