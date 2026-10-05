@@ -20,7 +20,7 @@ from __future__ import annotations
 
 __all__ = ["FORWARD_ROWS_GO_TO_LEDGER", "forward_rows_go_to_ledger"]
 
-FORWARD_ROWS_GO_TO_LEDGER: bool = False
+FORWARD_ROWS_GO_TO_LEDGER: bool = True
 
 
 def forward_rows_go_to_ledger() -> bool:
