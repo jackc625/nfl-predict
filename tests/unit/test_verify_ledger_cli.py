@@ -18,6 +18,8 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 import sys
 import types
@@ -36,6 +38,7 @@ from forward_ledger.canonical import (
     GENESIS_HASH,
 )
 from forward_ledger.remote_config import BACKUP_PUSHED_REF
+from forward_ledger.settle import SILVER_GAMES_FILENAME
 from forward_ledger.store import (
     LEDGER_STAMP_COLUMNS,
     LedgerEntry,
@@ -46,8 +49,10 @@ from forward_ledger.store import (
 from forward_ledger.transport import run_git
 from forward_ledger.verify import verify_ledger
 from scripts.verify_ledger import main, report_lines
+from tests.fixtures.decision_frame import chain_fit_record
 from tests.unit.test_forward_ledger_store import key_of, make_row
 from tests.unit.test_ledger_anchor import git_out, make_bare, make_repo
+from tests.unit.test_ledger_settle import games_frame
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -181,9 +186,38 @@ def bare_remote(
     return remote
 
 
+def write_regrade_inputs(
+    base: Path,
+    scores: Sequence[tuple[str, int, float | None, float | None]] = SCORES,
+) -> None:
+    """The D-19 re-grade's inputs under *base*: silver ``games.parquet`` and a chain-fit record.
+
+    Never the production ``data/silver/`` or ``outputs/row19/``: both live in ``tmp_path``.
+    """
+    silver = base / "silver"
+    silver.mkdir(parents=True, exist_ok=True)
+    games_frame(*scores).to_parquet(silver / SILVER_GAMES_FILENAME)
+    (base / "chain_fit.json").write_text(
+        json.dumps(chain_fit_record(0.0)), encoding="utf-8"
+    )
+
+
 def cli_args(ledger_dir: Path, repo: Path, *, remote: Path | None = None) -> list[str]:
-    """The argv the owner would type; a missing *remote* means ``--skip-remote``."""
-    args = ["--ledger-dir", str(ledger_dir), "--repo-dir", str(repo)]
+    """The argv the owner would type; a missing *remote* means ``--skip-remote``.
+
+    The re-grade inputs are named beside the ledger directory (``write_regrade_inputs``).
+    """
+    base = ledger_dir.parent
+    args = [
+        "--ledger-dir",
+        str(ledger_dir),
+        "--repo-dir",
+        str(repo),
+        "--silver-dir",
+        str(base / "silver"),
+        "--chain-fit-path",
+        str(base / "chain_fit.json"),
+    ]
     if remote is None:
         args.append("--skip-remote")
     else:
@@ -217,11 +251,16 @@ def two_week_setup(
     ledger = tmp_path / "ledger"
     entries = write_ledger(ledger, two_week_items())
     repo = anchored_repo(tmp_path / "public", entries, anchored)
+    write_regrade_inputs(tmp_path)
     return ledger, repo, entries
 
 
 def key_text(row: Mapping[str, Any]) -> str:
     return "|".join(str(part) for part in key_of(dict(row)))
+
+
+def sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +456,8 @@ def test_remote_unreachable_warns(tmp_path: Path) -> None:
         runner=fetch_fails,
         remote_url=remote.as_posix(),
         module_name=ABSENT_DECLARATION,
+        silver_dir=tmp_path / "silver",
+        chain_fit_path=tmp_path / "chain_fit.json",
     )
     lines = report_lines(report)
 
@@ -434,6 +475,7 @@ def test_missing_local_anchor_with_rows_fails(
 ) -> None:
     ledger = tmp_path / "ledger"
     write_ledger(ledger, two_week_items())
+    write_regrade_inputs(tmp_path)
     repo = make_repo(tmp_path / "public")
 
     code, out = run_cli(capsys, cli_args(ledger, repo))
@@ -455,6 +497,7 @@ def test_backup_lag_reported(
     entries = write_ledger(ledger, two_week_items())
     assert commit_backup(ledger, message="ledger: 5 entries") is not None
     repo = anchored_repo(tmp_path / "public", entries)
+    write_regrade_inputs(tmp_path)
 
     code, out = run_cli(capsys, cli_args(ledger, repo))
 
@@ -679,3 +722,211 @@ def test_correction_must_reference_a_row(
         "seq 1" in line and key_text(orphan) in line for line in failure_lines(out)
     ), out
     assert "LOCAL_RESULT= FAIL" in out
+
+
+# ---------------------------------------------------------------------------
+# Task 3: D-19 settled-result check -- every terminal row re-graded from silver scores
+# ---------------------------------------------------------------------------
+
+
+def regrade_setup(
+    tmp_path: Path,
+    items: Sequence[tuple[str, Mapping[str, Any], Any]],
+    scores: Sequence[tuple[str, int, float | None, float | None]] = SCORES,
+) -> tuple[list[str], Path]:
+    """Write *items*, anchor them, write the silver scores; return the argv and the ledger dir."""
+    ledger = tmp_path / "ledger"
+    entries = write_ledger(ledger, items)
+    repo = anchored_repo(tmp_path / "public", entries)
+    write_regrade_inputs(tmp_path, scores)
+    return cli_args(ledger, repo), ledger
+
+
+def mismatch_lines(out: str) -> list[str]:
+    return [line for line in out.splitlines() if line.startswith("REGRADE_MISMATCH=")]
+
+
+def corrected_items() -> list[tuple[str, Mapping[str, Any], Any]]:
+    """A week-6 row graded win and the correction entry that put a loss in force."""
+    row = ats_row(WEEK6_WIN)
+    return [
+        (ENTRY_KIND_ROW, row, WIN),
+        (ENTRY_KIND_CORRECTION, correction_for(row), None),
+    ]
+
+
+def with_score(
+    game_id: str, home: float | None, away: float | None
+) -> tuple[tuple[str, int, float | None, float | None], ...]:
+    """``SCORES`` with *game_id*'s score replaced."""
+    return tuple(
+        (gid, week, home, away) if gid == game_id else (gid, week, h, a)
+        for gid, week, h, a in SCORES
+    )
+
+
+def test_regrade_clean_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger, repo, _ = two_week_setup(tmp_path)
+
+    code, out = run_cli(capsys, cli_args(ledger, repo))
+
+    assert code == 0, out
+    assert "REGRADE_CHECKED= 3" in out
+    assert "REGRADE_OK= True" in out
+    assert mismatch_lines(out) == []
+    assert "VERIFY_RESULT= PASS" in out
+
+
+def test_edited_grading_status_fails_naming_row(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger, repo, _ = two_week_setup(tmp_path)
+    path = ledger_path(ledger)
+    lines = path.read_bytes().split(b"\n")
+    assert lines[0].count(b'"grading_status":"win"') == 1
+    lines[0] = lines[0].replace(b'"grading_status":"win"', b'"grading_status":"loss"')
+    path.write_bytes(b"\n".join(lines))
+
+    code, out = run_cli(capsys, cli_args(ledger, repo))
+
+    assert code == 1, out
+    # The grading half is outside the chain: only the re-grade can see this edit.
+    assert "CHAIN_OK= True" in out
+    assert "REGRADE_OK= False" in out
+    (line,) = mismatch_lines(out)
+    assert line.startswith(
+        f"REGRADE_MISMATCH= 0 {key_text(ats_row(WEEK6_WIN))} grading_status "
+    ), line
+    assert "stored=loss" in line and "regraded=win" in line
+    assert "LOCAL_RESULT= FAIL" in out
+
+
+def test_edited_payout_fails_naming_row(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger, repo, _ = two_week_setup(tmp_path)
+    path = ledger_path(ledger)
+    lines = path.read_bytes().split(b"\n")
+    assert lines[0].count(b'"payout_flat":0.9090909090909091') == 1
+    lines[0] = lines[0].replace(
+        b'"payout_flat":0.9090909090909091', b'"payout_flat":0.95'
+    )
+    path.write_bytes(b"\n".join(lines))
+
+    code, out = run_cli(capsys, cli_args(ledger, repo))
+
+    assert code == 1, out
+    assert "CHAIN_OK= True" in out
+    (line,) = mismatch_lines(out)
+    assert line.startswith(
+        f"REGRADE_MISMATCH= 0 {key_text(ats_row(WEEK6_WIN))} payout_flat "
+    ), line
+    assert "VERIFY_RESULT= FAIL" in out
+
+
+def test_corrected_row_matching_its_correction_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The official score was restated to a home loss by 10: the in-force correction (loss) holds.
+    args, _ = regrade_setup(
+        tmp_path, corrected_items(), with_score(WEEK6_WIN, 10.0, 20.0)
+    )
+
+    code, out = run_cli(capsys, args)
+
+    assert code == 0, out
+    assert "REGRADE_CHECKED= 1" in out
+    assert "REGRADE_OK= True" in out
+    assert "VERIFY_RESULT= PASS" in out
+
+
+def test_corrected_row_disagreeing_with_the_score_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The score says win, but the correction in force says loss.
+    args, _ = regrade_setup(tmp_path, corrected_items())
+
+    code, out = run_cli(capsys, args)
+
+    assert code == 1, out
+    assert "REGRADE_OK= False" in out
+    lines = mismatch_lines(out)
+    assert lines, out
+    assert all(
+        line.startswith(f"REGRADE_MISMATCH= 0 {key_text(ats_row(WEEK6_WIN))} ")
+        for line in lines
+    ), lines
+    assert any(" grading_status " in line for line in lines), lines
+
+
+def test_settled_row_without_a_score_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    unscored = ats_row(WEEK7_A, week=7)
+    args, _ = regrade_setup(tmp_path, [(ENTRY_KIND_ROW, unscored, WIN)])
+
+    code, out = run_cli(capsys, args)
+
+    assert code == 1, out
+    (line,) = mismatch_lines(out)
+    assert line.startswith(f"REGRADE_MISMATCH= 0 {key_text(unscored)} "), line
+    assert line.endswith("no_recorded_score"), line
+
+
+def test_regrade_unavailable_fails_by_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settled = tmp_path / "settled"
+    ledger, repo, _ = two_week_setup(settled)
+    missing = settled / "silver" / "games.parquet"
+    missing.unlink()
+
+    code, out = run_cli(capsys, cli_args(ledger, repo))
+
+    assert code == 1, out
+    assert "REGRADE_OK= unavailable" in out
+    assert any(missing.as_posix() in line for line in failure_lines(out)), out
+
+    # A ledger with no terminal row needs no silver store at all.
+    pending_only = tmp_path / "pending"
+    entries = write_ledger(
+        pending_only / "ledger", [(ENTRY_KIND_ROW, ats_row(WEEK7_A, week=7), None)]
+    )
+    pending_repo = anchored_repo(pending_only / "public", entries)
+
+    code, out = run_cli(capsys, cli_args(pending_only / "ledger", pending_repo))
+
+    assert code == 0, out
+    assert not (pending_only / "silver").exists()
+    assert "REGRADE_CHECKED= 0" in out
+    assert "REGRADE_OK= True" in out
+
+
+def test_pending_rows_not_checked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The game is already scored; grading it is the settle pass's job, not a verify failure.
+    args, _ = regrade_setup(tmp_path, [(ENTRY_KIND_ROW, ats_row(WEEK6_WIN), None)])
+
+    code, out = run_cli(capsys, args)
+
+    assert code == 0, out
+    assert "REGRADE_CHECKED= 0" in out
+    assert "REGRADE_OK= True" in out
+
+
+def test_regrade_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger, repo, _ = two_week_setup(tmp_path)
+    store = ledger_path(ledger)
+    games = tmp_path / "silver" / "games.parquet"
+    before = (sha256_of(store), sha256_of(games))
+
+    code, out = run_cli(capsys, cli_args(ledger, repo))
+
+    assert code == 0, out
+    assert "REGRADE_CHECKED= 3" in out
+    assert (sha256_of(store), sha256_of(games)) == before
