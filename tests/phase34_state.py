@@ -29,6 +29,7 @@ measured when it was written.
 
 * Plan 34-02 Task 1 (this file's author) -- ``P34_EXPECTED_FAILURE_BASELINE``.
 * Plan 34-18 Task 3 -- ``P34_S4U_PUSH_SMOKE``.
+* Plan 34-19 Task 3 -- ``P34_CUTOVER``.
 """
 
 from __future__ import annotations
@@ -163,4 +164,97 @@ P34_S4U_PUSH_SMOKE: dict[str, object] = {
         "(schtasks /create of an S4U + HighestAvailable task is refused otherwise); "
         "the in-task pushes and the dummy-task probe ran unelevated under S4U."
     ),
+}
+
+# ---------------------------------------------------------------------------
+# Plan 34-19 Task 3 -- the ledger cutover (go-live), MEASURED 2026-10-05 (ET,
+# read via PowerShell Get-Date). Every value below is quoted from
+# logs/34-19-golive-outputs.txt, which holds each step's output word for word.
+#
+# Order, as the plan requires: pre-migration copy (17:46:09 ET) -> migrate
+# --apply (17:46:15) -> sync with the switch OFF (17:46:27; ANCHOR_PUSHED= True,
+# BACKUP_PUSHED= True) -> remote read-backs (17:46:41) -> anchor ruleset +
+# setup verify (17:46:49; SETUP_READBACK_MATCH= True) -> verify_ledger with the
+# switch off (17:47:09; VERIFY_RESULT= PASS, REGRADE_OK= True over 17 settled
+# rows) -> the one-file cutover commit (17:47:37) -> cache rebuild (17:47:47;
+# 87 forward rows in the cache, none in outputs). The first anchor commit time
+# (1791236790) precedes the cutover commit time (1791236857).
+#
+# The closing wake task was installed BY THE OWNER from an elevated terminal at
+# 17:52 ET (an agent session cannot register an S4U task; see
+# P34_S4U_PUSH_SMOKE). A later non-elevated `--verify-installed` agreed.
+#
+# Data-dependent nodes re-measured at 17:48:56 ET after the cache rebuild: the
+# two completeness nodes and the activation-parity node PASSED; the health node
+# FAILED ('ok' == 'degraded'). It reads the real daily-run log, which the
+# 17:00 ET run of the same evening had just made fresh, so it fails for
+# time-of-day reasons, not because of the cutover.
+# ---------------------------------------------------------------------------
+
+P34_CUTOVER: dict[str, object] = {
+    "measured_on": "2026-10-05",
+    "migrated_at_et": "2026-10-05 17:46:15",
+    "cutover_committed_at_et": "2026-10-05 17:47:37",
+    "cutover_commit": "300e44ea9b53facc8200cd056d4c23ac75b30d4f",
+    "cutover_commit_files": ("forward_ledger/cutover.py",),
+    "migrated_rows_by_week": ((2026, 3, 42), (2026, 4, 45)),
+    "migrated_rows_total": 87,
+    "migrated_status_counts": {"live": 25, "suppressed": 62},
+    "migrated_rows_null_stamps": True,
+    "outputs_replay_rows_after": 234,
+    "forward_rows_in_outputs_after": 0,
+    "ledger_path": "ledger/forward_2026.jsonl",
+    "ledger_head_hash": "edadf04ea89bf5b64a81f0c9ffedde5d666111bafd7c5d9aaef313e13953a6a4",
+    "ledger_entries": 87,
+    "anchor_commit": "ec71c421b793b505ccfa70c475198199ce84436d",
+    "anchor_content": (
+        "head_hash=edadf04ea89bf5b64a81f0c9ffedde5d666111bafd7c5d9aaef313e13953a6a4",
+        "row_count=87",
+    ),
+    "anchor_remote_equals_local": True,
+    "anchor_ruleset_id": 24536696,
+    "backup_head": "53b9d383525546d706bc6f157fd3e44e41d4863e",
+    "backup_remote_equals_local": True,
+    "public_master_unchanged": "664d8fbe5e230bf051b884e083b6de556518e875",
+    "verify_ledger": {
+        "VERIFY_RESULT": "PASS",
+        "EXTERNAL_RESULT": "VERIFIED",
+        "REMOTE_ANCHOR_BEHIND_BY": 0,
+        "VERDICT_DECLARED": False,
+        "REGRADE_CHECKED": 17,
+        "REGRADE_OK": True,
+    },
+    "pre_migration_copy": {
+        "dir": "outputs/bet_list_pre_migration",
+        "bet_list.parquet": "4465d0586d6db45ea2743c2055c5b3a7e44c6a4ee7094db24ab2d33e24e63133",
+        "bet_tracker.json": "feeb5572c96a9606501ea0414f27087246c30c422d9a26fa7cf61247965a7f09",
+    },
+    "cache_forward_rows": 87,
+    "data_dependent_nodes": (
+        (
+            "tests/api/test_health_endpoint.py::TestHealthDegraded::test_health_stale_pipeline_log",
+            "failed",
+        ),
+        (
+            "tests/integration/test_activation_parity.py::test_part_a_cache_predictions_equal_backtest_csv",
+            "passed",
+        ),
+        (
+            "tests/integration/test_bet_list_completeness.py::TestTheStoredReplayRowsAreNeverBackfilled::test_the_stored_artifact_is_all_replay_and_carries_no_observation_time",
+            "passed",
+        ),
+        (
+            "tests/integration/test_bet_list_completeness.py::TestTheStoredReplayRowsAreNeverBackfilled::test_reading_through_the_shim_does_not_write_the_column_back",
+            "passed",
+        ),
+    ),
+    "closing_task": {
+        "name": "NFL_Predict_Closing",
+        "installed_at_et": "2026-10-05 17:52",
+        "installed_by": "owner, elevated terminal",
+        "triggers": 7,
+        "CLOSING_READBACK_MATCH": True,
+        "READBACK_MATCH": True,
+        "nfl_tasks": ("NFL_Predict_Closing", "NFL_Predict_Pipeline"),
+    },
 }
