@@ -140,15 +140,31 @@ def _settled_grading() -> dict[str, Any]:
 
 
 def _two_row_ledger(ledger_dir: Path) -> list:
-    """A settled seq-0 row and a pending seq-1 row, written to *ledger_dir*."""
+    """A settled seq-0 row and a pending seq-1 row, written to *ledger_dir*.
+
+    Week 1 and ``pre_verdict``: the verify CLI (Plan 34-10) checks every row's verdict label
+    against the COMMITTED declaration, which these real-subprocess runs load. Week 1 precedes any
+    possible verdict start week, so these rows are correct whether or not it has been committed.
+    """
     first = build_entry(
-        GENESIS_HASH, 0, ENTRY_KIND_ROW, _row(), grading=_settled_grading()
+        GENESIS_HASH,
+        0,
+        ENTRY_KIND_ROW,
+        _row(game_id="2026_W01_KC@BUF", week=1, verdict_scope="pre_verdict"),
+        grading=_settled_grading(),
     )
     second = build_entry(
         first.chain_hash,
         1,
         ENTRY_KIND_ROW,
-        _row(game_id="2026_W06_DAL@PHI", model_value=4.75, line=3.5, slipped_line=4.0),
+        _row(
+            game_id="2026_W01_DAL@PHI",
+            week=1,
+            verdict_scope="pre_verdict",
+            model_value=4.75,
+            line=3.5,
+            slipped_line=4.0,
+        ),
     )
     entries = [first, second]
     write_entries(ledger_dir, entries)
@@ -424,7 +440,7 @@ def test_verify_cli_names_first_broken_row(tmp_path: Path) -> None:
     assert completed.returncode == 1, completed.stdout + completed.stderr
     assert "CHAIN_OK= False" in completed.stdout
     assert "FIRST_BROKEN_SEQ= 0" in completed.stdout
-    assert "FIRST_BROKEN_KEY= 2026_W06_KC@BUF|2026|6|ats|live" in completed.stdout
+    assert "FIRST_BROKEN_KEY= 2026_W01_KC@BUF|2026|1|ats|live" in completed.stdout
 
 
 def test_malformed_line_is_refused_by_name(tmp_path: Path) -> None:

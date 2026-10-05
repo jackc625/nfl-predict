@@ -37,9 +37,10 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from forward_ledger.anchor import (
     AnchorFormatError,
@@ -48,9 +49,21 @@ from forward_ledger.anchor import (
     read_remote_anchor,
 )
 from forward_ledger.backup import backup_repo_exists
-from forward_ledger.canonical import GENESIS_HASH
+from forward_ledger.canonical import ENTRY_KIND_CORRECTION, ENTRY_KIND_ROW, GENESIS_HASH
+from forward_ledger.declarations import (
+    VERDICT_SCOPE_MODULE,
+    UnknownRecipeError,
+    VerdictScope,
+    VerdictScopeMalformedError,
+    VerdictScopeUndeclaredError,
+    load_verdict_scope,
+    resolve_recipe,
+    verdict_scope_label,
+)
 from forward_ledger.remote_config import ANCHOR_REMOTE_HTTPS_URL, BACKUP_PUSHED_REF
+from forward_ledger.schema import ARM_LIVE, LEDGER_ROW_KEY
 from forward_ledger.store import (
+    LEDGER_STAMP_COLUMNS,
     ChainVerdict,
     LedgerEntry,
     read_entries,
@@ -74,6 +87,7 @@ __all__ = [
     "AnchorCheck",
     "BackupCheck",
     "RemoteCheck",
+    "VerdictCheck",
     "VerifyReport",
     "verify_ledger",
 ]
@@ -129,6 +143,32 @@ class BackupCheck:
 
 
 @dataclass(frozen=True)
+class VerdictCheck:
+    """The verdict-week rules against the committed declaration, and the corrections' keys.
+
+    ``stamps_ok`` / ``labels_ok`` are None when no declaration exists (nothing to check them
+    against). ``declaration_error`` names a declaration that exists but is malformed.
+    """
+
+    declared: bool
+    start_week: int | None
+    end_week: int | None
+    stamps_ok: bool | None
+    labels_ok: bool | None
+    corrections_ok: bool
+    declaration_error: str | None
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.declaration_error is None
+            and self.stamps_ok is not False
+            and self.labels_ok is not False
+            and self.corrections_ok
+        )
+
+
+@dataclass(frozen=True)
 class VerifyReport:
     """Everything one verification found. ``failures`` and ``warnings`` are owner-readable lines."""
 
@@ -139,13 +179,14 @@ class VerifyReport:
     unanchored: int
     remote: RemoteCheck
     backup: BackupCheck
+    verdict: VerdictCheck
     failures: tuple[str, ...]
     warnings: tuple[str, ...]
 
     @property
     def local_ok(self) -> bool:
         """Every check against this machine's files and refs passed."""
-        return self.chain.ok and self.local_anchor.ok
+        return self.chain.ok and self.local_anchor.ok and self.verdict.ok
 
     @property
     def ok(self) -> bool:
@@ -156,6 +197,125 @@ class VerifyReport:
 def head_at(entries: Sequence[LedgerEntry], count: int) -> str:
     """The stored chain head after the first *count* entries (``GENESIS_HASH`` for none)."""
     return GENESIS_HASH if count == 0 else entries[count - 1].chain_hash
+
+
+def key_text(values: Mapping[str, Any]) -> str:
+    """An entry's ``LEDGER_ROW_KEY`` as ``game_id|season|week|target|arm``."""
+    return "|".join(str(values.get(name)) for name in LEDGER_ROW_KEY)
+
+
+def _stamp_problems(row: Mapping[str, Any], scope: VerdictScope) -> list[str]:
+    """Why a verdict-week row's stamps fail: NULL stamps, an unregistered recipe, a foreign fill."""
+    problems: list[str] = []
+    missing = [name for name in LEDGER_STAMP_COLUMNS if row.get(name) is None]
+    if missing:
+        problems.append(f"NULL {', '.join(missing)}")
+    recipe_id = row.get("recipe_id")
+    if recipe_id is not None:
+        try:
+            resolve_recipe(recipe_id)
+        except UnknownRecipeError:
+            problems.append(
+                f"recipe_id {recipe_id!r} does not resolve in the committed recipe registry"
+            )
+    fill_id = row.get("fill_convention_id")
+    if fill_id is not None and fill_id != scope.fill_convention_id:
+        problems.append(
+            f"fill_convention_id {fill_id!r} is not the declaration's "
+            f"{scope.fill_convention_id!r}"
+        )
+    return problems
+
+
+def _verdict_week_failures(
+    entries: Sequence[LedgerEntry], scope: VerdictScope
+) -> tuple[list[str], list[str]]:
+    """``(label failures, stamp failures)`` for every live row of the declared season.
+
+    Every row's ``verdict_scope`` must be the label the declaration gives its week (Pitfall 13);
+    every row inside ``start_week..end_week`` must carry every stamp, a registered recipe and the
+    declaration's fill convention (LDGR-10, LDGR-11). Rows before W -- migrated rows with NULL
+    stamps among them -- carry ``pre_verdict`` and need no stamp.
+    """
+    label_failures: list[str] = []
+    stamp_failures: list[str] = []
+    for entry in entries:
+        row = entry.immutable
+        if (
+            entry.kind != ENTRY_KIND_ROW
+            or row.get("season") != scope.season
+            or row.get("arm") != ARM_LIVE
+        ):
+            continue
+        where = f"seq {entry.seq} {key_text(row)}"
+        expected = verdict_scope_label(row["season"], row["week"], scope)
+        if row.get("verdict_scope") != expected:
+            label_failures.append(
+                f"verdict label: {where} is labelled {row.get('verdict_scope')!r}; the "
+                f"declaration gives week {row['week']} the label {expected!r}"
+            )
+        if scope.start_week <= row["week"] <= scope.end_week:
+            problems = _stamp_problems(row, scope)
+            if problems:
+                stamp_failures.append(f"verdict stamps: {where}: {'; '.join(problems)}")
+    return label_failures, stamp_failures
+
+
+def _orphan_correction_failures(entries: Sequence[LedgerEntry]) -> list[str]:
+    """A correction entry whose key names no ledger row (the writer refuses one; verify re-checks)."""
+    row_keys = {
+        key_text(entry.immutable) for entry in entries if entry.kind == ENTRY_KIND_ROW
+    }
+    return [
+        f"correction: seq {entry.seq} {key_text(entry.immutable)} names no ledger row"
+        for entry in entries
+        if entry.kind == ENTRY_KIND_CORRECTION
+        and key_text(entry.immutable) not in row_keys
+    ]
+
+
+def _check_verdict(
+    entries: Sequence[LedgerEntry], module_name: str
+) -> tuple[VerdictCheck, list[str], list[str]]:
+    """The verdict section: ``(check, failures, warnings)``.
+
+    No declaration is a warning, never a default scope: before Plan 34-22 commits it there is
+    legitimately none, and rows written then are labelled ``pre_verdict`` and never count.
+    """
+    failures: list[str] = []
+    warnings: list[str] = []
+    scope: VerdictScope | None = None
+    declaration_error: str | None = None
+    try:
+        scope = load_verdict_scope(module_name)
+    except VerdictScopeUndeclaredError:
+        warnings.append(
+            f"no verdict-scope declaration ({module_name}); the verdict-week stamp and label "
+            "rules are not checked until it is committed"
+        )
+    except VerdictScopeMalformedError as error:
+        declaration_error = str(error)
+        failures.append(f"verdict scope declaration: {error}")
+
+    stamps_ok: bool | None = None
+    labels_ok: bool | None = None
+    if scope is not None:
+        label_failures, stamp_failures = _verdict_week_failures(entries, scope)
+        labels_ok, stamps_ok = not label_failures, not stamp_failures
+        failures += label_failures + stamp_failures
+
+    orphans = _orphan_correction_failures(entries)
+    failures += orphans
+    check = VerdictCheck(
+        declared=scope is not None,
+        start_week=None if scope is None else scope.start_week,
+        end_week=None if scope is None else scope.end_week,
+        stamps_ok=stamps_ok,
+        labels_ok=labels_ok,
+        corrections_ok=not orphans,
+        declaration_error=declaration_error,
+    )
+    return check, failures, warnings
 
 
 def _check_local_anchor(
@@ -299,6 +459,7 @@ def verify_ledger(
     runner: GitRunner = run_git,
     remote_url: str = ANCHOR_REMOTE_HTTPS_URL,
     check_remote: bool = True,
+    module_name: str = VERDICT_SCOPE_MODULE,
 ) -> VerifyReport:
     """Verify the ledger in *ledger_dir* against the anchors in *repo_dir* and its backup.
 
@@ -308,6 +469,7 @@ def verify_ledger(
         runner: The git runner.
         remote_url: Where the remote anchor is read from (the public repository over HTTPS).
         check_remote: False skips the remote read (reported as ``skipped``, a warning).
+        module_name: The verdict-scope declaration module (tests inject a fixture module).
 
     Returns:
         The report; nothing is written to the ledger.
@@ -330,18 +492,21 @@ def verify_ledger(
         entries, repo, url=remote_url, runner=runner, check_remote=check_remote
     )
     backup = _check_backup(ledger, runner)
+    verdict, verdict_failures, verdict_warnings = _check_verdict(entries, module_name)
 
     failures: list[str] = []
     warnings: list[str] = []
     if not chain.ok:
         failures.append(
-            f"chain broken at seq {chain.first_broken_seq} (key {chain.first_broken_key}): "
-            f"{chain.reason}"
+            f"chain broken at seq {chain.first_broken_seq} "
+            f"{'|'.join(str(part) for part in chain.first_broken_key or ())}: {chain.reason}"
         )
     anchor_failures, anchor_warnings = _anchor_messages(local_anchor, unanchored)
     remote_failures, remote_warnings = _remote_messages(remote)
-    failures += anchor_failures + remote_failures
-    warnings += anchor_warnings + remote_warnings + _backup_messages(backup)
+    failures += anchor_failures + verdict_failures + remote_failures
+    warnings += (
+        anchor_warnings + verdict_warnings + remote_warnings + _backup_messages(backup)
+    )
 
     return VerifyReport(
         entries=len(entries),
@@ -351,6 +516,7 @@ def verify_ledger(
         unanchored=unanchored,
         remote=remote,
         backup=backup,
+        verdict=verdict,
         failures=tuple(failures),
         warnings=tuple(warnings),
     )

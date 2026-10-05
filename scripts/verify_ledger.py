@@ -10,7 +10,11 @@ What it checks (``forward_ledger.verify`` holds the rules):
   rows newer than the anchor are a warning;
 * the GitHub anchor, read anonymously over HTTPS: unreachable or behind is a warning, a remote
   that DISAGREES with the ledger fails;
-* the private backup's lag (commits not yet pushed, files not yet committed), a warning.
+* the private backup's lag (commits not yet pushed, files not yet committed), a warning;
+* the committed verdict-scope declaration (LDGR-10, LDGR-11): every live row of the declared
+  season must carry the label its week is given, and every row in weeks W..end must carry every
+  stamp, a registered recipe and the declared fill convention. No declaration yet is a warning;
+* every correction entry must name an existing ledger row.
 
 Output is one ``FIELD= value`` line each, then ``LOCAL_RESULT=`` (every local check),
 ``EXTERNAL_RESULT=`` (the GitHub anchor: VERIFIED, BEHIND, UNREACHABLE, SKIPPED or DISAGREES) and
@@ -33,6 +37,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from forward_ledger.declarations import VERDICT_SCOPE_MODULE
 from forward_ledger.remote_config import ANCHOR_REMOTE_HTTPS_URL
 from forward_ledger.store import LEDGER_DIR, LedgerFormatError
 from forward_ledger.verify import (
@@ -118,9 +123,30 @@ def _backup_lines(report: VerifyReport) -> list[str]:
     ]
 
 
+def _flag(value: bool | None) -> str:
+    return "n/a" if value is None else str(value)
+
+
+def _verdict_lines(report: VerifyReport) -> list[str]:
+    verdict = report.verdict
+    start = "none" if verdict.start_week is None else verdict.start_week
+    return [
+        f"VERDICT_DECLARED= {verdict.declared}",
+        f"VERDICT_START_WEEK= {start}",
+        f"VERDICT_STAMPS_OK= {_flag(verdict.stamps_ok)}",
+        f"VERDICT_LABELS_OK= {_flag(verdict.labels_ok)}",
+        f"CORRECTIONS_OK= {verdict.corrections_ok}",
+    ]
+
+
 def report_lines(report: VerifyReport) -> list[str]:
     """Every output line for *report*, ``VERIFY_RESULT=`` last."""
-    lines = [*_chain_lines(report), *_anchor_lines(report), *_backup_lines(report)]
+    lines = [
+        *_chain_lines(report),
+        *_anchor_lines(report),
+        *_backup_lines(report),
+        *_verdict_lines(report),
+    ]
     lines += [f"WARNING= {warning}" for warning in report.warnings]
     lines += [f"FAILURE= {failure}" for failure in report.failures]
     lines += [
@@ -131,8 +157,14 @@ def report_lines(report: VerifyReport) -> list[str]:
     return lines
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point."""
+def main(
+    argv: list[str] | None = None, *, verdict_scope_module: str = VERDICT_SCOPE_MODULE
+) -> int:
+    """CLI entry point.
+
+    *verdict_scope_module* is not a command-line flag: the owner always verifies against the
+    committed declaration. Tests pass a fixture module name.
+    """
     args = build_parser().parse_args(argv)
     try:
         report = verify_ledger(
@@ -140,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
             args.repo_dir,
             remote_url=args.remote_url,
             check_remote=not args.skip_remote,
+            module_name=verdict_scope_module,
         )
     except LedgerFormatError as error:
         print(f"LEDGER_UNREADABLE= {error}")
