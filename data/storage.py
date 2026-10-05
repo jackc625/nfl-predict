@@ -15,8 +15,18 @@ import pyarrow.parquet as pq
 from conf.settings import get_settings
 from data.write_sink import current_sink
 from utils import DataIngestionError, get_logger
+from utils.file_lock import exclusive_file_lock
 
 logger = get_logger(__name__)
+
+# THE ODDS STORE'S ONE WRITER LOCK (Phase 34, LDGR-07, D-08). The daily decision capture and the
+# near-kickoff closing capture both write silver ``odds_snapshot`` by read-merge-replace, so two
+# interleaved writes would silently lose one capture. ``append_odds_captures`` holds this OS lock
+# (``utils.file_lock``) on a dedicated file beside the store for the whole upsert, waiting at most
+# ``ODDS_STORE_LOCK_WAIT_SECONDS`` for another writer before refusing by name. The ``.lock`` suffix
+# is not a data suffix the test-write guard digests.
+ODDS_STORE_LOCK_NAME = ".odds_snapshot.lock"
+ODDS_STORE_LOCK_WAIT_SECONDS = 120.0
 
 # pyarrow is a hard dependency of this module (pa.Table.from_pandas,
 # pq.write_table, etc.) so ``pyarrow.lib`` should always be importable.
@@ -1697,6 +1707,12 @@ def append_odds_captures(new_df: pd.DataFrame, base_path: Path | None = None) ->
     ``created_at`` must be tz-aware: it is a key column, and a naive capture instant is refused
     rather than relabelled UTC, exactly as ``snapshot_ts`` is.
 
+    ONE WRITER AT A TIME (Phase 34, D-08). The upsert runs under the odds store's OS lock
+    (:data:`ODDS_STORE_LOCK_NAME` beside the file), so the daily decision capture and a closing
+    capture serialize instead of interleaving. A held lock is waited for, up to
+    :data:`ODDS_STORE_LOCK_WAIT_SECONDS` (read at call time); past that the write is refused with
+    ``utils.file_lock.FileLockHeldError`` naming the lock, and nothing is written.
+
     Args:
         new_df: Validated ``OddsSchema`` rows from one capture.
         base_path: Data root. Defaults to the root ``load_dataframe`` reads, so a sandboxed
@@ -1704,6 +1720,9 @@ def append_odds_captures(new_df: pd.DataFrame, base_path: Path | None = None) ->
 
     Returns:
         Path to the silver file.
+
+    Raises:
+        utils.file_lock.FileLockHeldError: another writer held the odds lock for the whole wait.
     """
     from data.schemas import LIVE_ODDS_CAPTURE_KEY
 
@@ -1717,12 +1736,18 @@ def append_odds_captures(new_df: pd.DataFrame, base_path: Path | None = None) ->
     ):
         return silver_path
     frame = _canonicalize_snapshot_ts_utc(new_df, column="created_at")
-    return upsert_silver_composite(
-        frame,
-        "odds_snapshot",
-        key_columns=list(LIVE_ODDS_CAPTURE_KEY),
-        base_path=base_path,
-    )
+    # The lock file lives beside the store, so its directory must exist before it is opened.
+    silver_path.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive_file_lock(
+        silver_path.parent / ODDS_STORE_LOCK_NAME,
+        wait_seconds=ODDS_STORE_LOCK_WAIT_SECONDS,
+    ):
+        return upsert_silver_composite(
+            frame,
+            "odds_snapshot",
+            key_columns=list(LIVE_ODDS_CAPTURE_KEY),
+            base_path=base_path,
+        )
 
 
 def get_latest_bronze_file(

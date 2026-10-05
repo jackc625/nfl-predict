@@ -20,12 +20,22 @@ jobs. They are kept apart now, and the plumbing names each one:
 All three stored values already have ``OddsSchema`` columns, so there is no schema
 change.
 
-A CAPTURE AFTER A GAME'S LOCK IS NEVER WRITTEN (33.2 review C1 CR-02). The ``snapshot_ts``
-label says "known at the lock", so a game whose lock had passed when the response was
-observed -- including a game in progress -- is left out and named in
-``LiveOddsMatchReport.post_lock_games``. Every stored live row therefore has
+A DECISION CAPTURE AFTER A GAME'S LOCK IS NEVER WRITTEN (33.2 review C1 CR-02). The
+``snapshot_ts`` label says "known at the lock", so a game whose lock had passed when the
+response was observed -- including a game in progress -- is left out and named in
+``LiveOddsMatchReport.post_lock_games``. Every stored DECISION row therefore has
 ``created_at <= snapshot_ts``, and ``created_at`` is its real capture time. The public input is the slate's ``schedule``: the lock map is keyed by game ids
 that only exist after the match, so no caller could supply it.
+
+THE CLOSING KIND (Phase 34, LDGR-07, Plan 34-14). A near-kickoff closing capture is post-lock
+by definition, so it is transformed with ``capture_kind="closing"``: every other step is the
+same (team normalization, game-id check, commence-time warning, ``snapshot_ts = lock`` -- the
+column's documented meaning -- and ``created_at`` = the true capture instant), but the lock
+refusal is replaced by a refusal of any capture AT OR AFTER the game's scheduled kickoff (an
+in-play line, named in ``LiveOddsMatchReport.in_play_games``); a matched game with no scheduled
+kickoff is refused by name (``no_kickoff_games``). Such a row has ``created_at`` after its lock,
+and every decision reader judges admissibility on ``created_at``, so it can never enter a
+decision. The default and every decision caller stay ``"decision"``.
 """
 
 import argparse
@@ -33,7 +43,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import httpx
 import pandas as pd
@@ -75,6 +85,15 @@ COMMENCE_WINDOW_MARGIN = timedelta(hours=12)
 # reported by game id as a possible schedule move (R8 / D33.2-04). The schedule kickoff
 # is used either way; resolving a move is not an ingest script's job.
 COMMENCE_TIME_TOLERANCE = timedelta(hours=1)
+
+# The two transform kinds (Plan 34-14). "decision" refuses every capture after the game's lock;
+# "closing" keeps post-lock captures and refuses every capture at or after the scheduled kickoff.
+CaptureKind = Literal["decision", "closing"]
+CAPTURE_KINDS: tuple[str, ...] = ("decision", "closing")
+
+# The Odds API response header carrying the credits left this month. Read from the FREE
+# ``/v4/sports`` endpoint, which "does not count against the usage quota".
+REMAINING_CREDITS_HEADER = "x-requests-remaining"
 
 # The silver ``games`` columns the per-game match and the lock need.
 SCHEDULE_COLUMNS: tuple[str, ...] = (
@@ -123,6 +142,14 @@ def _parse_upstream_instant(value: Any) -> datetime | None:
     except (ValueError, TypeError):
         return None
     return parsed if parsed.tzinfo is not None else None
+
+
+def _scheduled_kickoff(matched: pd.Series) -> datetime | None:
+    """The matched schedule row's ``kickoff_et`` as a datetime, or None when it has none."""
+    value = cast("Any", matched["kickoff_et"])
+    if pd.isna(value):
+        return None
+    return cast("datetime", pd.Timestamp(value).to_pydatetime())
 
 
 def latest_market_update(bookmaker: Mapping[str, Any]) -> datetime | None:
@@ -176,11 +203,20 @@ class LiveOddsMatchReport:
         post_lock_games: Game ids whose lock had already passed at the capture instant
             (which includes every game in progress). NOTHING was written for them: a row
             stamped ``snapshot_ts = lock`` must be a line that was known at the lock.
+            Decision kind only.
+        in_play_games: Game ids whose scheduled kickoff had arrived at the capture instant.
+            NOTHING was written for them: an in-play line is never a closing line. Closing
+            kind only.
+        no_kickoff_games: Game ids whose matched schedule row has no kickoff. NOTHING was
+            written for them: a closing capture is never judged against a guessed kickoff.
+            Closing kind only.
     """
 
     unmatched_games: tuple[str, ...] = ()
     kickoff_disagreements: tuple[str, ...] = ()
     post_lock_games: tuple[str, ...] = ()
+    in_play_games: tuple[str, ...] = ()
+    no_kickoff_games: tuple[str, ...] = ()
 
 
 # Sentinel substituted for the live API key in any logged params dict so the
@@ -562,6 +598,39 @@ class OddsAPIClient:
         logger.info("Fetched NFL odds", total_games=len(games))
         return games
 
+    def remaining_credits(self) -> int | None:
+        """The credits left this month, read WITHOUT spending any (Phase 34, LDGR-07, D-08).
+
+        Calls the free ``/v4/sports`` endpoint ("does not count against the usage quota") and
+        reads :data:`REMAINING_CREDITS_HEADER`. Never the odds endpoint. The parameters are
+        logged only through ``_redact_api_key`` (inside ``_make_request``), so the key never
+        reaches a log.
+
+        Returns:
+            The remaining count; None when it cannot be read: mock mode (no real quota), a
+            failed request, or an absent, non-integer or negative header. The caller fails
+            closed on None (``forward_ledger.credits.closing_capture_allowed``).
+        """
+        if self.mock_mode:
+            return None
+        try:
+            _body, headers = cast(
+                "tuple[Any, httpx.Headers]",
+                self._make_request("sports", {}, with_headers=True),
+            )
+        except ExternalAPIError as error:
+            logger.warning(
+                "Odds API credit read failed; remaining credits unknown",
+                error_type=type(error).__name__,
+            )
+            return None
+        raw = headers.get(REMAINING_CREDITS_HEADER)
+        try:
+            remaining = int(str(raw).strip())
+        except ValueError:
+            return None
+        return remaining if remaining >= 0 else None
+
     def get_historical_nfl_odds(
         self,
         date_iso: str,
@@ -836,6 +905,34 @@ class OddsDataIngester:
         gaps = (pd.to_datetime(candidates["kickoff_et"], utc=True) - commence).abs()
         return candidates.loc[gaps.idxmin()]
 
+    def _closing_capture_admissible(
+        self, game_id: str, scheduled: datetime | None, captured_at: datetime
+    ) -> bool:
+        """Whether a CLOSING capture of *game_id* may be written, recording a refusal by name.
+
+        Refused: a game whose matched schedule row has no kickoff (never judged against a
+        guessed one), and a capture AT OR AFTER the scheduled kickoff -- the /odds endpoint
+        also returns in-play lines, and an in-play line is never a closing line.
+        """
+        if scheduled is None:
+            self._no_kickoff.append(game_id)
+            logger.warning(
+                "Closing odds for a game with no scheduled kickoff are not written",
+                game_id=game_id,
+                captured_at=captured_at.isoformat(),
+            )
+            return False
+        if captured_at >= scheduled:
+            self._in_play.append(game_id)
+            logger.warning(
+                "Closing odds captured at or after the scheduled kickoff are not written",
+                game_id=game_id,
+                scheduled_kickoff=scheduled.isoformat(),
+                captured_at=captured_at.isoformat(),
+            )
+            return False
+        return True
+
     def _process_game_odds(
         self,
         game_data: dict[str, Any],
@@ -843,6 +940,7 @@ class OddsDataIngester:
         schedule: pd.DataFrame,
         locks: Mapping[str, datetime],
         captured_at: datetime,
+        capture_kind: CaptureKind = "decision",
     ) -> list[dict[str, Any]]:
         """Process odds for a single game, stamping each row with that game's OWN lock.
 
@@ -851,11 +949,14 @@ class OddsDataIngester:
             schedule: The slate's silver ``games`` rows.
             locks: ``game_id -> lock`` from ``utils.game_lock.lock_frame(schedule)``.
             captured_at: The instant the response was observed; becomes ``created_at``.
+            capture_kind: ``"decision"`` refuses a capture after the game's lock;
+                ``"closing"`` refuses one at or after the game's scheduled kickoff, or for a
+                game with no scheduled kickoff. Everything else is identical.
 
         Returns:
             One record per bookmaker, or ``[]`` when the game matches no schedule row --
             a game with no kickoff has no lock, and guessing one is the failure this
-            interface exists to end.
+            interface exists to end -- or when the kind's admissibility check refuses it.
         """
         matched = self._match_schedule_row(game_data, schedule)
         if matched is None:
@@ -886,13 +987,20 @@ class OddsDataIngester:
             )
             return []
         lock = locks[game_id]
+        # The matched schedule row's kickoff, derived BEFORE either kind's admissibility check
+        # (Plan 34-14): the closing kind's in-play refusal is judged against it. None when the
+        # row carries no kickoff.
+        scheduled = _scheduled_kickoff(matched)
 
+        if capture_kind == "closing":
+            if not self._closing_capture_admissible(game_id, scheduled, captured_at):
+                return []
         # NO CAPTURE AFTER THE LOCK (33.2 review C1 CR-02). Every row below is stamped
         # snapshot_ts = lock, which every `snapshot_ts <= lock` fence reads as "known at the
         # lock". A line observed after the lock -- or during the game, which the /odds
         # endpoint also returns -- would be a post-lock line wearing a pre-lock label, so it is
         # refused by name and never written. At-lock is admissible (<=), as in the one rule.
-        if not lock_rule.is_admissible(captured_at, lock):
+        elif not lock_rule.is_admissible(captured_at, lock):
             self._post_lock.append(game_id)
             logger.warning(
                 "Odds captured after the game's lock are not written",
@@ -903,10 +1011,11 @@ class OddsDataIngester:
             return []
 
         commence = _parse_commence_time(game_data.get("commence_time"))
-        scheduled = cast(
-            "datetime", pd.Timestamp(cast("Any", matched["kickoff_et"])).to_pydatetime()
-        )
-        if commence is not None and abs(commence - scheduled) > COMMENCE_TIME_TOLERANCE:
+        if (
+            commence is not None
+            and scheduled is not None
+            and abs(commence - scheduled) > COMMENCE_TIME_TOLERANCE
+        ):
             self._kickoff_disagreements.append(game_id)
             logger.warning(
                 "Payload commence_time disagrees with the schedule kickoff; possible "
@@ -945,7 +1054,8 @@ class OddsDataIngester:
                 "last_update": last_update,
                 "market_last_update": latest_market_update(bookmaker),
                 "created_at": captured_at,
-                # Pre-game by construction: a capture after the lock never reaches here.
+                # Pre-game by construction: a decision capture after the lock, and a closing
+                # capture at or after the scheduled kickoff, never reach here.
                 "is_live": False,
                 **h2h_odds,
                 **spread_odds,
@@ -963,28 +1073,50 @@ class OddsDataIngester:
         schedule: pd.DataFrame,
         locks: Mapping[str, datetime],
         captured_at: datetime,
+        capture_kind: CaptureKind = "decision",
     ) -> pd.DataFrame:
         """Transform raw odds data to schema format, one lock per matched game.
 
         Records what could not be matched, and where payload and schedule disagreed, on
         ``self.last_match_report`` (:class:`LiveOddsMatchReport`).
+
+        Args:
+            raw_odds: The Odds API events.
+            schedule: The slate's silver ``games`` rows.
+            locks: ``game_id -> lock``.
+            captured_at: The observed capture instant; becomes ``created_at``.
+            capture_kind: ``"decision"`` (the default, and the only kind the daily decision
+                capture uses) or ``"closing"`` (the near-kickoff closing capture, Plan 34-14).
+
+        Raises:
+            ValueError: *capture_kind* is not one of :data:`CAPTURE_KINDS`.
         """
+        if capture_kind not in CAPTURE_KINDS:
+            msg = f"capture_kind {capture_kind!r} is not one of {CAPTURE_KINDS}"
+            raise ValueError(msg)
         logger.info(
             "Transforming odds data",
             input_games=len(raw_odds),
             scheduled_games=len(schedule),
             captured_at=captured_at.isoformat(),
+            capture_kind=capture_kind,
         )
 
         self._unmatched: list[str] = []
         self._kickoff_disagreements: list[str] = []
         self._post_lock: list[str] = []
+        self._in_play: list[str] = []
+        self._no_kickoff: list[str] = []
         all_odds_records = []
 
         for game_data in raw_odds:
             try:
                 game_odds = self._process_game_odds(
-                    game_data, schedule=schedule, locks=locks, captured_at=captured_at
+                    game_data,
+                    schedule=schedule,
+                    locks=locks,
+                    captured_at=captured_at,
+                    capture_kind=capture_kind,
                 )
                 all_odds_records.extend(game_odds)
 
@@ -1003,6 +1135,8 @@ class OddsDataIngester:
             unmatched_games=tuple(self._unmatched),
             kickoff_disagreements=tuple(self._kickoff_disagreements),
             post_lock_games=tuple(self._post_lock),
+            in_play_games=tuple(self._in_play),
+            no_kickoff_games=tuple(self._no_kickoff),
         )
 
         logger.info(
@@ -1012,6 +1146,8 @@ class OddsDataIngester:
             unmatched_games=len(self._unmatched),
             kickoff_disagreements=len(self._kickoff_disagreements),
             post_lock_games=len(self._post_lock),
+            in_play_games=len(self._in_play),
+            no_kickoff_games=len(self._no_kickoff),
         )
 
         return odds_df
