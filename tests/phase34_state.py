@@ -30,6 +30,8 @@ measured when it was written.
 * Plan 34-02 Task 1 (this file's author) -- ``P34_EXPECTED_FAILURE_BASELINE``.
 * Plan 34-18 Task 3 -- ``P34_S4U_PUSH_SMOKE``.
 * Plan 34-19 Task 3 -- ``P34_CUTOVER``.
+* Plan 34-22 Task 3 -- ``P34_PREREGISTRATION_WITNESS``, ``P34_W``,
+  ``P34_W_FIRST_LOCK_UTC``, ``P34_W_FIRST_DECISION_RUN_UTC``.
 """
 
 from __future__ import annotations
@@ -258,3 +260,44 @@ P34_CUTOVER: dict[str, object] = {
         "nfl_tasks": ("NFL_Predict_Closing", "NFL_Predict_Pipeline"),
     },
 }
+
+# ---------------------------------------------------------------------------
+# Plan 34-22 Task 3 -- the Phase-34 pre-registration witness, MEASURED
+# 2026-10-05 (ET, read via PowerShell Get-Date; step 0 at 18:38 ET).
+#
+# W was RE-COMPUTED immediately before the declaration commit with
+# forward_ledger.verdict.compute_start_week over the live ledger (87 rows:
+# week 3 = 42, week 4 = 45, none of week 5) and the recorded 2026 schedule, at
+# Task 1's computation instant 2026-10-05T22:32:07Z: "W_RECOMPUTED= 5",
+# "W_APPROVED= 5". Week 5's earliest game is 2026_W05_TB@DAL (Thu 2026-10-08
+# 20:15 ET), so its first lock is Wed 2026-10-07 18:00 ET and its first
+# decision run Wed 2026-10-07 17:00 ET. The owner approved the declaration
+# text, W = 5 and the push at the Plan 34-22 checkpoint (~18:40 ET).
+#
+# Each commit below is `git log -1 --format=%H -- <path>` and touches ONLY that
+# path; each digest is sha256 of the file's bytes with CRLF -> LF, equal for
+# the working tree and the committed blob. The declaration was committed at
+# 2026-10-05T18:38:59-04:00, alone, as c3a3399. This slot lands in a LATER
+# commit than all three records, so no record carries its own witness.
+# ---------------------------------------------------------------------------
+
+P34_PREREGISTRATION_WITNESS: dict[str, dict[str, str]] = {
+    "backtest/fill_conventions.py": {
+        "commit": "b14471ca4fbffc9b32344111d44e04573625d115",
+        "normalized_sha256": "4db6f84bf9db75d083f736ef20772119eeef58e053180ea5610be93fcef721b1",
+    },
+    "backtest/recipe_registry.py": {
+        "commit": "c939862c5aaa6b4d278018b757c761ff21a4331d",
+        "normalized_sha256": "742593bc5340610b9b34ae5ff5842218df843b7837ee8247c6300f3db15e88dc",
+    },
+    "backtest/verdict_scope_2026.py": {
+        "commit": "c3a33993160769b2ab9a8c2cf7cd2a24ad19be10",
+        "normalized_sha256": "c77eb858ff5248a0abcc79dda4b8bf40ca1d247f4ed1ff5a88fde3cb698c62e9",
+    },
+}
+
+P34_W: int = 5
+
+P34_W_FIRST_LOCK_UTC: str = "2026-10-07T22:00:00+00:00"
+
+P34_W_FIRST_DECISION_RUN_UTC: str = "2026-10-07T21:00:00+00:00"
