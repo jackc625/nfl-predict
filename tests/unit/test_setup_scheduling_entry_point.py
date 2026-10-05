@@ -13,14 +13,18 @@ from __future__ import annotations
 
 import ast
 import sys
-from datetime import date
+import xml.etree.ElementTree as ET
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 import deployment.setup_scheduling as scheduling
 from deployment.setup_scheduling import SchedulingSetup
+from forward_ledger import closing_schedule
+from forward_ledger.closing_windows import windows_for_schedule
 
 _MODULE_PATH = Path(scheduling.__file__)
 
@@ -370,3 +374,191 @@ def test_the_read_back_needs_every_field_and_exactly_one_nfl_task(
     out = capsys.readouterr().out
     assert f"READBACK_MATCH= {expected}" in out
     assert "StartWhenAvailable= false | false | MATCH" in out
+
+
+# ---------------------------------------------------------------------------
+# The closing-line wake task (Plan 34-11, D-07): a SECOND allowed NFL task, read back on its
+# settings AND on its full (StartBoundary, EndBoundary, Enabled) trigger set. Every schtasks call
+# below is a fake: no test registers, queries or deletes a real scheduled task.
+# ---------------------------------------------------------------------------
+
+_CLOSING_NOW = datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
+_PIPELINE_ROW = '"\\NFL_Predict_Pipeline","9/24/2026 5:00:00 PM","Ready"\n'
+_CLOSING_ROW = '"\\NFL_Predict_Closing","10/11/2026 12:50:00 PM","Ready"\n'
+_OTHER_ROW = '"\\NFL_Predict_Predictions","N/A","Ready"\n'
+
+
+def _closing_games(kickoffs: list[datetime]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "game_id": [f"game_{n}" for n in range(len(kickoffs))],
+            "kickoff_et": pd.to_datetime(kickoffs, utc=True),
+            "home_score": [float("nan")] * len(kickoffs),
+        }
+    )
+
+
+_SUNDAY_GAMES = [
+    datetime(2026, 10, 11, 17, 0, tzinfo=UTC),  # 1:00 PM ET
+    datetime(2026, 10, 12, 0, 20, tzinfo=UTC),  # 8:20 PM ET
+]
+
+
+def _closing_export(edit=lambda text: text) -> bytes:
+    windows = windows_for_schedule(
+        _closing_games(_SUNDAY_GAMES), _CLOSING_NOW, days=closing_schedule.HORIZON_DAYS
+    )
+    built = closing_schedule.build_closing_task_xml(
+        closing_schedule.CLOSING_TEMPLATE_PATH.read_bytes(), windows
+    )
+    return b"\xff\xfe" + edit(built.decode("utf-16")).encode("utf-16-le")
+
+
+def _fake_two_tasks(listing: str, closing_export: bytes):
+    def _run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        if "/xml" in cmd:
+            if cmd[cmd.index("/tn") + 1] == closing_schedule.CLOSING_TASK_NAME:
+                return MagicMock(returncode=0, stdout=closing_export)
+            return MagicMock(returncode=0, stdout=_daily_export().encode("ascii"))
+        return MagicMock(returncode=0, stdout=listing)
+
+    return _run
+
+
+_DRIFTED_END = (
+    "<EndBoundary>2026-10-11T13:20:00</EndBoundary>",
+    "<EndBoundary>2026-10-11T13:50:00</EndBoundary>",
+)
+
+
+@pytest.mark.parametrize(
+    ("listing", "closing_export", "expected", "closing_lines"),
+    [
+        (_PIPELINE_ROW, _closing_export(), True, []),
+        (
+            _PIPELINE_ROW + _CLOSING_ROW,
+            _closing_export(),
+            True,
+            ["CLOSING_TRIGGERS= 2 | 2 | MATCH", "CLOSING_READBACK_MATCH= True"],
+        ),
+        (
+            _PIPELINE_ROW + _CLOSING_ROW,
+            _closing_export(lambda text: text.replace(*_DRIFTED_END)),
+            False,
+            ["CLOSING_TRIGGERS= 2 | 2 | MISMATCH", "CLOSING_READBACK_MATCH= False"],
+        ),
+        (_PIPELINE_ROW + _CLOSING_ROW + _OTHER_ROW, _closing_export(), False, []),
+    ],
+    ids=["pipeline-only", "both-tasks", "closing-end-drifted", "a-third-nfl-task"],
+)
+def test_verify_installed_accepts_both_tasks(
+    capsys: pytest.CaptureFixture[str],
+    listing: str,
+    closing_export: bytes,
+    expected: bool,
+    closing_lines: list[str],
+) -> None:
+    setup = _bare_setup(Path(scheduling.__file__).resolve().parents[1])
+    with patch.object(
+        scheduling.subprocess,
+        "run",
+        side_effect=_fake_two_tasks(listing, closing_export),
+    ):
+        assert (
+            setup.verify_installed(
+                games=_closing_games(_SUNDAY_GAMES), now=_CLOSING_NOW
+            )
+            is expected
+        )
+    out = capsys.readouterr().out
+    assert f"READBACK_MATCH= {expected}" in out
+    for line in closing_lines:
+        assert line in out
+    if _CLOSING_ROW not in listing:
+        assert "CLOSING_READBACK_MATCH" not in out
+
+
+class _RecordingRunner:
+    """A fake schtasks for --install-closing: registers in memory, exports what it registered."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.registered: bytes | None = None
+
+    def __call__(self, args) -> closing_schedule.SchtasksResult:
+        args = list(args)
+        self.calls.append(args)
+        if args[0] == "/create":
+            self.registered = Path(args[args.index("/xml") + 1]).read_bytes()
+            return closing_schedule.SchtasksResult(0, b"SUCCESS", b"")
+        assert self.registered is not None
+        return closing_schedule.SchtasksResult(0, self.registered, b"")
+
+
+def _closing_home(tmp_path: Path) -> Path:
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "daily_lock_pipeline.py").write_text("# the daily entry")
+    (tmp_path / "deployment").mkdir()
+    (tmp_path / "deployment" / "windows_closing_scheduler.xml").write_bytes(
+        closing_schedule.CLOSING_TEMPLATE_PATH.read_bytes()
+    )
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    ("zone", "expected_exit"),
+    [("Eastern Standard Time", 0), ("Pacific Standard Time", 1)],
+)
+def test_install_closing_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, zone: str, expected_exit: int
+) -> None:
+    home = _closing_home(tmp_path)
+    now = datetime.now(UTC)
+    games = _closing_games(
+        [now + timedelta(days=1), now + timedelta(days=3), now + timedelta(days=9)]
+    )
+    loads: list[tuple[tuple, dict]] = []
+
+    def _load(*args, **kwargs):
+        loads.append((args, kwargs))
+        return games
+
+    runner = _RecordingRunner()
+    monkeypatch.setattr(scheduling, "read_windows_time_zone", lambda: zone)
+    monkeypatch.setattr(scheduling, "load_dataframe", _load)
+    monkeypatch.setattr(closing_schedule, "run_schtasks", runner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "setup_scheduling.py",
+            "--platform",
+            "windows",
+            "--install-closing",
+            "--project-home",
+            str(home),
+        ],
+    )
+
+    assert scheduling.main() == expected_exit
+    if expected_exit == 1:
+        assert runner.calls == []
+        assert loads == []
+        return
+
+    assert loads == [(("games",), {"layer": "silver"})]
+    (create,) = [call for call in runner.calls if call[0] == "/create"]
+    generated = home / "logs" / "closing_task_generated.xml"
+    assert create == [
+        "/create",
+        "/tn",
+        closing_schedule.CLOSING_TASK_NAME,
+        "/xml",
+        str(generated),
+        "/f",
+    ]
+    # Two kickoffs inside the 8-day horizon, two days apart: two windows. The day-9 game is
+    # registered by a later run, when the horizon has rolled forward.
+    root = ET.fromstring(generated.read_bytes().decode("utf-16"))
+    triggers = root.find(f"{scheduling._TASK_NS}Triggers")
+    assert triggers is not None
+    assert [t.tag.split("}")[-1] for t in triggers] == ["TimeTrigger", "TimeTrigger"]
