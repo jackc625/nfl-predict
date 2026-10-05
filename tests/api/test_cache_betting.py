@@ -627,3 +627,197 @@ def test_the_explicit_column_insert_names_every_ddl_column() -> None:
         44.5,
         "capture_missed",
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 34 (Plan 34-16): the corrections and graded-outcome tables, and the verdict / evidence meta
+# ---------------------------------------------------------------------------
+#
+# Two new cache tables carry the forward record's corrected outcomes (D-06) and the /bets result
+# strip's per-bet marks (review finding 4). Each is spelled at THREE sites exactly like bet_list:
+# the CACHE_SCHEMA literal, a standalone schema constant, and an explicit-column INSERT. They are
+# BUILT and compared, and a full row is driven through the writer and read back by name.
+
+
+def _embedded_statement(table: str) -> str:
+    statements = [s.strip() for s in CACHE_SCHEMA.strip().split(";") if s.strip()]
+    matches = [s for s in statements if f"CREATE TABLE IF NOT EXISTS {table} " in s]
+    assert len(matches) == 1, (
+        f"expected exactly one embedded {table} CREATE in CACHE_SCHEMA, found {len(matches)}"
+    )
+    return matches[0]
+
+
+def _typed_columns(statement: str, table: str) -> list[tuple[str, str]]:
+    conn = duckdb.connect(":memory:")
+    conn.execute(statement)
+    return [
+        (row[1], row[2])
+        for row in conn.execute(f"PRAGMA table_info('{table}')").fetchall()
+    ]
+
+
+def test_corrections_table_three_sites() -> None:
+    """CACHE_SCHEMA, the standalone schema and the explicit INSERT agree on the column list."""
+    from api.cache import (
+        BET_LIST_CORRECTIONS_COLUMNS,
+        BET_LIST_CORRECTIONS_SCHEMA,
+        materialize_bet_list_corrections,
+    )
+
+    standalone = _typed_columns(BET_LIST_CORRECTIONS_SCHEMA, "bet_list_corrections")
+    embedded = _typed_columns(
+        _embedded_statement("bet_list_corrections"), "bet_list_corrections"
+    )
+    assert standalone == embedded
+    assert [name for name, _type in standalone] == list(BET_LIST_CORRECTIONS_COLUMNS)
+
+    row = {
+        "game_id": "2026_06_KC_BUF",
+        "season": 2026,
+        "week": 6,
+        "target": "ats",
+        "arm": "live",
+        "original_grading_status": "win",
+        "corrected_grading_status": "loss",
+        "corrected_outcome": False,
+        "corrected_payout_flat": -1.0,
+        "corrected_realized_units": -0.5,
+        "realized_value": -3.0,
+        "detected_at_utc": "2026-10-20T12:00:00+00:00",
+        "corrected_at_utc": "2026-10-20T21:00:00+00:00",
+    }
+    conn = duckdb.connect(":memory:")
+    # Shuffled column order: the INSERT is by name, never positional.
+    shuffled = pd.DataFrame([row])[list(reversed(BET_LIST_CORRECTIONS_COLUMNS))]
+    assert materialize_bet_list_corrections(conn, shuffled) == 1
+    stored = conn.execute(
+        f"SELECT {', '.join(BET_LIST_CORRECTIONS_COLUMNS)} FROM bet_list_corrections"
+    ).fetchone()
+    assert stored == tuple(row[name] for name in BET_LIST_CORRECTIONS_COLUMNS)
+
+
+def test_graded_outcomes_table_three_sites(tmp_path: Path) -> None:
+    """The strip table agrees at all three sites; ``None`` leaves it present and empty."""
+    from api.cache import (
+        BET_GRADED_OUTCOMES_COLUMNS,
+        BET_GRADED_OUTCOMES_SCHEMA,
+        materialize_bet_graded_outcomes,
+        populate_cache,
+    )
+
+    standalone = _typed_columns(BET_GRADED_OUTCOMES_SCHEMA, "bet_graded_outcomes")
+    embedded = _typed_columns(
+        _embedded_statement("bet_graded_outcomes"), "bet_graded_outcomes"
+    )
+    assert standalone == embedded
+    assert [name for name, _type in standalone] == list(BET_GRADED_OUTCOMES_COLUMNS)
+
+    row = {
+        "provenance": "forward",
+        "validation_type": "pre_verdict",
+        "season": 2026,
+        "week": 4,
+        "game_id": "2026_04_DAL_NYG",
+        "target": "ou",
+        "arm": "live",
+        "grading_status": "win",
+        "corrected": True,
+    }
+    conn = duckdb.connect(":memory:")
+    shuffled = pd.DataFrame([row])[list(reversed(BET_GRADED_OUTCOMES_COLUMNS))]
+    assert materialize_bet_graded_outcomes(conn, shuffled) == 1
+    stored = conn.execute(
+        f"SELECT {', '.join(BET_GRADED_OUTCOMES_COLUMNS)} FROM bet_graded_outcomes"
+    ).fetchone()
+    assert stored == tuple(row[name] for name in BET_GRADED_OUTCOMES_COLUMNS)
+
+    db_path = tmp_path / "cache.duckdb"
+    populate_cache(
+        db_path=db_path,
+        artifacts_dir=tmp_path / "artifacts",
+        outputs_dir=tmp_path / "outputs",
+        gold_dir=tmp_path / "gold",
+        silver_dir=tmp_path / "silver",
+        bet_graded_outcomes_df=None,
+    )
+    built = duckdb.connect(str(db_path), read_only=True)
+    try:
+        count = built.execute("SELECT COUNT(*) FROM bet_graded_outcomes").fetchone()
+        corrections = built.execute(
+            "SELECT COUNT(*) FROM bet_list_corrections"
+        ).fetchone()
+    finally:
+        built.close()
+    assert count == (0,)
+    assert corrections == (0,)
+
+
+def _meta(db_path: Path) -> dict[str, str | None]:
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        return dict(conn.execute("SELECT key, value FROM cache_meta").fetchall())
+    finally:
+        conn.close()
+
+
+def test_verdict_context_and_betting_sim_pair_stamped(tmp_path: Path) -> None:
+    """The verdict context and the betting-sim evidence pair are stamped at cache build."""
+    from api.cache import (
+        BETTING_SIM_PROVENANCE_KEY,
+        BETTING_SIM_VALIDATION_TYPE_KEY,
+        FORWARD_VERDICT_DECLARED_KEY,
+        FORWARD_VERDICT_SEASON_KEY,
+        FORWARD_VERDICT_START_WEEK_KEY,
+        REPLAY_VALIDATION_TYPE_SEASONS,
+        betting_simulation_evidence_pair,
+        populate_cache,
+    )
+
+    outputs_dir = tmp_path / "outputs"
+    outputs_dir.mkdir()
+    _write_betting_csv(outputs_dir)  # seasons 2021, 2022, 2023
+
+    declared_db = tmp_path / "declared.duckdb"
+    populate_cache(
+        db_path=declared_db,
+        artifacts_dir=tmp_path / "artifacts",
+        outputs_dir=outputs_dir,
+        gold_dir=tmp_path / "gold",
+        silver_dir=tmp_path / "silver",
+        forward_verdict_context={"declared": True, "season": 2026, "start_week": 6},
+    )
+    meta = _meta(declared_db)
+    assert meta[FORWARD_VERDICT_DECLARED_KEY] == "true"
+    assert meta[FORWARD_VERDICT_SEASON_KEY] == "2026"
+    assert meta[FORWARD_VERDICT_START_WEEK_KEY] == "6"
+    assert meta[BETTING_SIM_PROVENANCE_KEY] == "backtest_replay"
+    assert meta[BETTING_SIM_VALIDATION_TYPE_KEY] == "contaminated"
+
+    undeclared_db = tmp_path / "undeclared.duckdb"
+    populate_cache(
+        db_path=undeclared_db,
+        artifacts_dir=tmp_path / "artifacts",
+        outputs_dir=tmp_path / "no_outputs",
+        gold_dir=tmp_path / "gold",
+        silver_dir=tmp_path / "silver",
+    )
+    meta = _meta(undeclared_db)
+    assert meta[FORWARD_VERDICT_DECLARED_KEY] == "false"
+    assert meta[FORWARD_VERDICT_SEASON_KEY] is None
+    assert meta[FORWARD_VERDICT_START_WEEK_KEY] is None
+    # No simulation rows: no evidence pair is claimed.
+    assert BETTING_SIM_PROVENANCE_KEY not in meta
+    assert BETTING_SIM_VALIDATION_TYPE_KEY not in meta
+
+    # The pair is derived through the replay season map, not re-typed.
+    contaminated = REPLAY_VALIDATION_TYPE_SEASONS["contaminated"]
+    assert betting_simulation_evidence_pair(contaminated) == (
+        "backtest_replay",
+        "contaminated",
+    )
+    assert betting_simulation_evidence_pair(
+        REPLAY_VALIDATION_TYPE_SEASONS["clean_holdout"]
+    ) == ("backtest_replay", "clean_holdout")
+    assert betting_simulation_evidence_pair({2024, 2025}) is None
+    assert betting_simulation_evidence_pair(set()) is None
