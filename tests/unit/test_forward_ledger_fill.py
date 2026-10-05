@@ -18,13 +18,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from forward_ledger.transitions import (
-    CLOSING_SET,
-    FILL_SET,
-    GRADING_SET,
-    ClosingAlreadySetError,
-    FillAlreadyRecordedError,
-)
 
 from forward_ledger.canonical import canonical_entry_bytes
 from forward_ledger.schema import BET_LIST_FILL_COLUMNS
@@ -35,6 +28,13 @@ from forward_ledger.store import (
     entries_to_frame,
     ledger_path,
     read_entries,
+)
+from forward_ledger.transitions import (
+    CLOSING_SET,
+    FILL_SET,
+    GRADING_SET,
+    ClosingAlreadySetError,
+    FillAlreadyRecordedError,
 )
 from tests.unit.test_forward_ledger_store import graded, key_of, week_rows
 

@@ -109,6 +109,15 @@ from forward_ledger.schema import (
     REGIME_LABEL_BOOTSTRAP,
     VERDICT_SCOPES,
 )
+from forward_ledger.transitions import (
+    UPDATE_KIND_CLOSING,
+    UPDATE_KIND_FILL,
+    UPDATE_KIND_GRADING,
+    ColumnSetViolationError,
+    assert_closing_transition,
+    assert_fill_transition,
+    assert_update_confined,
+)
 from utils.file_lock import FileLockHeldError, exclusive_file_lock
 
 __all__ = [
@@ -556,10 +565,6 @@ class MissingStampError(Exception):
     """A row this path writes carries a NULL stamp (LDGR-03, LDGR-09, LDGR-11)."""
 
 
-class ColumnSetViolationError(Exception):
-    """An update names a column outside its own mutability class (LDGR-04)."""
-
-
 class LedgerEntryRefusedError(Exception):
     """A row or correction breaks a ledger rule not covered by a more specific refusal."""
 
@@ -584,6 +589,8 @@ class CommitResult:
     appended_rows: int
     appended_corrections: int
     grading_changed: int
+    fill_changed: int
+    closing_changed: int
     wrote: bool
     head_hash: str
     entry_count: int
@@ -713,16 +720,6 @@ def _mutable_value(column: str, value: Any) -> Any:
     return coerce_canonical_value(column, declared, value)
 
 
-def _confine(update_kind: str, columns: Sequence[str], allowed: Sequence[str]) -> None:
-    extra = sorted(set(columns) - set(allowed))
-    if extra:
-        msg = (
-            f"a {update_kind} update may write only {list(allowed)}; it names {extra}, which "
-            "belong to another write path"
-        )
-        raise ColumnSetViolationError(msg)
-
-
 def _apply_grading(entry: LedgerEntry, update: Mapping[str, Any]) -> LedgerEntry:
     """*entry* with its grading half moved one way by *update*; the same object when unchanged.
 
@@ -730,7 +727,7 @@ def _apply_grading(entry: LedgerEntry, update: Mapping[str, Any]) -> LedgerEntry
     ``api.cache.assert_grading_transition``. A settled row accepts only an identical
     re-application -- a later run cannot restate a result (``AlreadyGradedError``).
     """
-    _confine("grading", list(update), BET_LIST_GRADING_COLUMNS)
+    assert_update_confined(UPDATE_KIND_GRADING, update)
     current = {
         name: (entry.grading or {}).get(name) for name in BET_LIST_GRADING_COLUMNS
     }
@@ -750,6 +747,60 @@ def _apply_grading(entry: LedgerEntry, update: Mapping[str, Any]) -> LedgerEntry
         )
         raise AlreadyGradedError(msg)
     return dataclasses.replace(entry, grading=merged)
+
+
+def _apply_fill(entry: LedgerEntry, update: Mapping[str, Any]) -> LedgerEntry:
+    """*entry* with each named fill column moved from NULL to a value (D-17); never restated."""
+    assert_update_confined(UPDATE_KIND_FILL, update)
+    current = {name: (entry.fill or {}).get(name) for name in BET_LIST_FILL_COLUMNS}
+    normalized = {name: _mutable_value(name, value) for name, value in update.items()}
+    assert_fill_transition(current, normalized)
+    merged = {**current, **normalized}
+    return entry if merged == current else dataclasses.replace(entry, fill=merged)
+
+
+def _apply_closing(entry: LedgerEntry, update: Mapping[str, Any]) -> LedgerEntry:
+    """*entry* with its closing half set once (LDGR-07); an identical re-application is a no-op."""
+    assert_update_confined(UPDATE_KIND_CLOSING, update)
+    current = {
+        name: (entry.closing or {}).get(name) for name in BET_LIST_CLOSING_COLUMNS
+    }
+    normalized = {name: _mutable_value(name, value) for name, value in update.items()}
+    assert_closing_transition(current, normalized)
+    merged = {**current, **normalized}
+    return entry if merged == current else dataclasses.replace(entry, closing=merged)
+
+
+_APPLY_BY_KIND: dict[str, Callable[[LedgerEntry, Mapping[str, Any]], LedgerEntry]] = {
+    UPDATE_KIND_GRADING: _apply_grading,
+    UPDATE_KIND_FILL: _apply_fill,
+    UPDATE_KIND_CLOSING: _apply_closing,
+}
+
+
+def _apply_updates(
+    working: list[LedgerEntry],
+    row_index: Mapping[tuple[Any, ...], int],
+    update_kind: str,
+    updates: Mapping[tuple[Any, ...], Mapping[str, Any]],
+) -> int:
+    """Apply *updates* of one kind to *working* in place; return how many rows changed.
+
+    Each update replaces only its own half of the entry; the immutable half and the chain hash
+    are carried as the same objects, which the write-time proof then checks.
+    """
+    apply = _APPLY_BY_KIND[update_kind]
+    changed = 0
+    for key, update in updates.items():
+        position = row_index.get(tuple(key))
+        if position is None:
+            msg = f"{update_kind} update names {tuple(key)}, which is not a ledger row"
+            raise LedgerEntryRefusedError(msg)
+        updated = apply(working[position], update)
+        if updated is not working[position]:
+            working[position] = updated
+            changed += 1
+    return changed
 
 
 def _new_row_halves() -> dict[str, dict[str, Any]]:
@@ -838,6 +889,8 @@ def commit_changes(
     new_rows: Sequence[Mapping[str, Any]] = (),
     new_corrections: Sequence[Mapping[str, Any]] = (),
     grading_updates: Mapping[tuple[Any, ...], Mapping[str, Any]] | None = None,
+    fill_updates: Mapping[tuple[Any, ...], Mapping[str, Any]] | None = None,
+    closing_updates: Mapping[tuple[Any, ...], Mapping[str, Any]] | None = None,
     publish_by: datetime | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> CommitResult:
@@ -847,7 +900,11 @@ def commit_changes(
         ledger_dir: The ledger directory (``LEDGER_DIR`` in production; ``tmp_path`` in tests).
         new_rows: Immutable halves (exactly the 34 v1 columns) of newly decided rows.
         new_corrections: Correction entries (exactly the 22 v1 correction columns).
-        grading_updates: ``LEDGER_ROW_KEY`` values -> grading columns to set.
+        grading_updates: ``LEDGER_ROW_KEY`` values -> grading columns to set (one way, out of
+            ``pending``).
+        fill_updates: ``LEDGER_ROW_KEY`` values -> real-fill columns to record (NULL -> value
+            once).
+        closing_updates: ``LEDGER_ROW_KEY`` values -> the closing half to set (once).
         publish_by: When given, nothing is written once ``clock()`` is past it.
         clock: The instant source for *publish_by*; ``datetime.now(UTC)`` by default.
 
@@ -860,7 +917,8 @@ def commit_changes(
         backtest.weekly_bet_list.PublishDeadlinePassedError, and the refusals of the checks this
         path reuses (``UnknownRecipeError``, ``UnknownFillConventionError``,
         ``DecidedAfterFreezeError``, ``CanonicalValueError``, ``AlreadyGradedError``, the
-        grading transition's ``ValueError``). Every refusal happens before anything is written.
+        grading transition's ``ValueError``, ``FillAlreadyRecordedError``,
+        ``ClosingAlreadySetError``). Every refusal happens before anything is written.
 
     A refused first pick is reported by :class:`FirstPickStandsError` carrying the key and fields;
     recording it in the run log is the caller's job.
@@ -881,7 +939,11 @@ def commit_changes(
             directory,
             new_rows=new_rows,
             new_corrections=new_corrections,
-            grading_updates=grading_updates or {},
+            updates={
+                UPDATE_KIND_GRADING: grading_updates or {},
+                UPDATE_KIND_FILL: fill_updates or {},
+                UPDATE_KIND_CLOSING: closing_updates or {},
+            },
             publish_by=publish_by,
             clock=clock,
         )
@@ -892,7 +954,7 @@ def _commit_under_lock(
     *,
     new_rows: Sequence[Mapping[str, Any]],
     new_corrections: Sequence[Mapping[str, Any]],
-    grading_updates: Mapping[tuple[Any, ...], Mapping[str, Any]],
+    updates: Mapping[str, Mapping[tuple[Any, ...], Mapping[str, Any]]],
     publish_by: datetime | None,
     clock: Callable[[], datetime] | None,
 ) -> CommitResult:
@@ -924,16 +986,10 @@ def _commit_under_lock(
         for position, entry in enumerate(working)
         if entry.kind == ENTRY_KIND_ROW
     }
-    grading_changed = 0
-    for key, update in grading_updates.items():
-        position = row_index.get(tuple(key))
-        if position is None:
-            msg = f"grading update names {tuple(key)}, which is not a ledger row"
-            raise LedgerEntryRefusedError(msg)
-        updated = _apply_grading(working[position], update)
-        if updated is not working[position]:
-            working[position] = updated
-            grading_changed += 1
+    changed = {
+        kind: _apply_updates(working, row_index, kind, kind_updates)
+        for kind, kind_updates in updates.items()
+    }
 
     appended_corrections = 0
     for correction in new_corrections:
@@ -947,7 +1003,9 @@ def _commit_under_lock(
     result = CommitResult(
         appended_rows=len(classification.new),
         appended_corrections=appended_corrections,
-        grading_changed=grading_changed,
+        grading_changed=changed[UPDATE_KIND_GRADING],
+        fill_changed=changed[UPDATE_KIND_FILL],
+        closing_changed=changed[UPDATE_KIND_CLOSING],
         wrote=False,
         head_hash=head_hash,
         entry_count=entry_count,

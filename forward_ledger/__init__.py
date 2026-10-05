@@ -15,6 +15,8 @@ WHAT LIVES HERE
   ``commit_changes``, the ONE guarded write path (writer lock, first pick stands, write-time
   append-only proof, atomic replace).
 * :mod:`forward_ledger.run_log` -- the closed-vocabulary ledger event log.
+* :mod:`forward_ledger.transitions` -- the one-way transitions of the grading, fill and closing
+  halves, each confined to its own column set.
 * :mod:`forward_ledger.schema` -- the ledger row key and the import-time proof that the four
   mutability classes of ``api.cache``'s bet-list schema are disjoint and covering.
 * :mod:`forward_ledger.declarations` -- the one loader for the verdict-scope declaration, the
