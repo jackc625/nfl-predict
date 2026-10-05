@@ -49,7 +49,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.cache import (
+    BET_GRADED_OUTCOMES_COLUMNS,
     BET_LIST_COLUMNS,
+    BET_LIST_CORRECTIONS_COLUMNS,
+    BETTING_SIM_PROVENANCE_KEY,
+    BETTING_SIM_VALIDATION_TYPE_KEY,
     CACHE_SCHEMA,
     GRADING_STATUS_LOSS,
     GRADING_STATUS_PENDING,
@@ -57,9 +61,12 @@ from api.cache import (
     bet_list_populated_at_key,
     classify_row_provenance,
     materialize_available_bet_weeks,
+    materialize_bet_graded_outcomes,
     materialize_bet_list,
+    materialize_bet_list_corrections,
     materialize_bet_tracker_blocks,
     materialize_bet_week_freeze,
+    stamp_forward_verdict_context,
 )
 from api.dependencies import templates as app_templates
 from api.services import DataService, clear_cache
@@ -68,6 +75,7 @@ from backtest.bet_tracker import (
     EmptyTrackerBlock,
     TrackerBlock,
     aggregate_all_blocks,
+    graded_outcome_rows,
     to_tracker_frame,
 )
 from backtest.ev_chain_constants import assign_ev_tier
@@ -2093,6 +2101,9 @@ _FORWARD_WITHHELD_MESSAGE = "The forward record is withheld -- this week&#39;s l
 _CONTAMINATED = ("backtest_replay", "contaminated")
 _CLEAN_HOLDOUT = ("backtest_replay", "clean_holdout")
 _FORWARD_CLASS = ("forward", "forward_realized")
+_PRE_VERDICT_CLASS = ("forward", "pre_verdict")
+# The grading statuses a result-strip mark can carry; ``pending`` is ungraded.
+_GRADED_STATUSES = ("win", "loss", "push")
 
 
 def _block(
@@ -2144,6 +2155,14 @@ def _client_with_tracker(
     try:
         if bet_rows:
             materialize_bet_list(conn, pd.DataFrame(bet_rows))
+        # The result strip's rows, built the way population builds them (Plan 34-20). Was: the
+        # strip read graded rows straight out of bet_list, so no second write was needed here.
+        # Skipped when nothing is graded: the strip is empty either way, and a row carrying a label
+        # outside the vocabulary (the raw-code tests) would be refused by the producer.
+        if any(r["grading_status"] in _GRADED_STATUSES for r in bet_rows):
+            materialize_bet_graded_outcomes(
+                conn, graded_outcome_rows(pd.DataFrame(bet_rows))
+            )
         materialize_available_bet_weeks(conn, pd.DataFrame(schedule))
         materialize_bet_tracker_blocks(conn, to_tracker_frame(blocks))
         if freeze is not None:
@@ -2225,13 +2244,19 @@ def _graded_fixture_rows() -> list[dict[str, Any]]:
 
 
 def _graded_cache(tmp_path: Path, name: str) -> Path:
-    """A cache whose bet_list carries the graded fixture rows and their schedule."""
+    """A cache whose bet_list carries the graded fixture rows, their strip rows and schedule.
+
+    Was: bet_list and the schedule only, because the strip getter selected the graded rows out of
+    bet_list. Since Plan 34-20 it reads the cache-built ``bet_graded_outcomes`` table, so the
+    fixture materializes it from the SAME rows through the production producer.
+    """
     clear_cache()
     rows = _graded_fixture_rows()
     db_path = tmp_path / f"{name}.duckdb"
     conn = _build_bare_cache(db_path)
     try:
         materialize_bet_list(conn, pd.DataFrame(rows))
+        materialize_bet_graded_outcomes(conn, graded_outcome_rows(pd.DataFrame(rows)))
         materialize_available_bet_weeks(
             conn,
             pd.DataFrame(
@@ -2267,15 +2292,23 @@ def test_the_graded_outcomes_are_the_live_graded_rows_in_a_fixed_order(
         ("backtest_replay", "contaminated", "2023_W02_AAA@BBB", "win"),
         ("forward", "forward_realized", "2023_W01_DEN@LVR", "win"),
     ]
-    assert set(rows[0]) == {
-        "provenance",
-        "validation_type",
-        "season",
-        "week",
-        "game_id",
-        "target",
-        "grading_status",
-    }
+    # Was: the seven bet_list columns, without ``arm`` and ``corrected``. The strip now reads the
+    # cache-built bet_graded_outcomes table (Plan 34-20), which carries both.
+    assert (
+        set(rows[0])
+        == set(BET_GRADED_OUTCOMES_COLUMNS)
+        == {
+            "provenance",
+            "validation_type",
+            "season",
+            "week",
+            "game_id",
+            "target",
+            "arm",
+            "grading_status",
+            "corrected",
+        }
+    )
 
 
 def test_the_graded_outcomes_count_exactly_what_the_tracker_aggregates(
@@ -2305,15 +2338,19 @@ def test_the_graded_outcomes_count_exactly_what_the_tracker_aggregates(
         assert len(statuses) == block.bets_graded
 
 
-def test_the_graded_outcomes_tolerate_a_cache_without_a_bet_list(
+def test_the_graded_outcomes_tolerate_a_cache_without_the_strip_table(
     tmp_path: Path,
 ) -> None:
-    """A cache that predates the bet list returns no outcomes rather than raising."""
-    clear_cache()
-    db_path = tmp_path / "graded_no_table.duckdb"
-    conn = _build_bare_cache(db_path)
+    """A cache that predates the strip table returns no outcomes rather than raising.
+
+    Was: ``..._without_a_bet_list``, dropping ``bet_list`` -- the table the strip read before
+    Plan 34-20. The strip now reads ``bet_graded_outcomes``, so that is the table dropped, while
+    bet_list keeps graded rows to prove the getter no longer falls back to them.
+    """
+    db_path = _graded_cache(tmp_path, "graded_no_table")
+    conn = duckdb.connect(str(db_path))
     try:
-        conn.execute("DROP TABLE bet_list")
+        conn.execute("DROP TABLE bet_graded_outcomes")
     finally:
         conn.close()
     probe = duckdb.connect(str(db_path), read_only=True)
@@ -2339,6 +2376,211 @@ def test_the_bets_context_partitions_the_outcomes_by_honesty_class(
     assert context["graded_outcomes"] == {
         "backtest_replay:contaminated": ["loss", "push", "win", "win"],
         "forward:forward_realized": ["win"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# The forward ledger's display inputs, read from the cache (Plan 34-20, LDGR-08, D-06, D-16)
+# ---------------------------------------------------------------------------
+#
+# Everything /bets and Track Record need to label the forward record -- the pre-verdict class, the
+# counting start week, the in-force corrections and the betting simulation's evidence pair -- was
+# built at population time (Plan 34-16). These tests pin that the request path only READS it.
+
+_PRE_VERDICT_LABEL = "Before counting started"
+_LEDGER_SEASON = 2026
+_LEDGER_START_WEEK = 6
+_CORRECTED_GAME = "2026_W06_BUF@MIA"
+_LEDGER_STAMPED_AT = datetime(2026, 10, 20, 12, 0, 0)
+
+
+def _render_badge(provenance: str, validation_type: str) -> str:
+    """Render the single-source badge on its own, through the app's template environment."""
+    template = app_templates.env.get_template("components/_provenance_badge.html")
+    return template.render(provenance=provenance, validation_type=validation_type)
+
+
+def _correction_row(
+    game_id: str, *, week: int, original: str, corrected: str
+) -> dict[str, Any]:
+    """One in-force correction row, in the column set the cache stores."""
+    row: dict[str, Any] = dict.fromkeys(BET_LIST_CORRECTIONS_COLUMNS)
+    row.update(
+        {
+            "game_id": game_id,
+            "season": _LEDGER_SEASON,
+            "week": week,
+            "target": "ou",
+            "arm": "live",
+            "original_grading_status": original,
+            "corrected_grading_status": corrected,
+            "corrected_outcome": {"win": True, "loss": False}.get(corrected),
+            "corrected_payout_flat": {"win": 0.909, "loss": -1.0}.get(corrected, 0.0),
+            "corrected_realized_units": {"win": 0.909, "loss": -1.0}.get(
+                corrected, 0.0
+            ),
+            "realized_value": {"win": 0.909, "loss": -1.0}.get(corrected, 0.0),
+            "detected_at_utc": "2026-10-20T12:00:00+00:00",
+            "corrected_at_utc": "2026-10-20T12:00:00+00:00",
+        }
+    )
+    return row
+
+
+def _ledger_meta_cache(tmp_path: Path, name: str) -> Path:
+    """A cache carrying a declared start week, two corrections and the betting-sim pair."""
+    clear_cache()
+    db_path = tmp_path / f"{name}.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        stamp_forward_verdict_context(
+            conn,
+            {
+                "declared": True,
+                "season": _LEDGER_SEASON,
+                "start_week": _LEDGER_START_WEEK,
+            },
+            _LEDGER_STAMPED_AT,
+        )
+        materialize_bet_list_corrections(
+            conn,
+            pd.DataFrame(
+                [
+                    _correction_row(
+                        _CORRECTED_GAME, week=6, original="win", corrected="loss"
+                    ),
+                    _correction_row(
+                        "2026_W07_DAL@CHI", week=7, original="loss", corrected="win"
+                    ),
+                ]
+            ),
+        )
+        conn.executemany(
+            "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+            [
+                (BETTING_SIM_PROVENANCE_KEY, "backtest_replay", _LEDGER_STAMPED_AT),
+                (BETTING_SIM_VALIDATION_TYPE_KEY, "contaminated", _LEDGER_STAMPED_AT),
+            ],
+        )
+    finally:
+        conn.close()
+    return db_path
+
+
+def test_badge_has_pre_verdict_pair() -> None:
+    """The pre-verdict label is a pair under ``forward`` in the ONE badge component (D-16)."""
+    badge = _render_badge(*_PRE_VERDICT_CLASS)
+    assert f">{_PRE_VERDICT_LABEL}<" in badge
+    assert 'data-provenance="forward"' in badge
+    assert 'data-validation-type="pre_verdict"' in badge
+    assert 'class="evidence-chip" data-provenance="forward"' in badge
+    assert "never counted in the verdict" in badge
+    # Keyed on the PAIR: a replay row carrying the forward-only class renders its raw code.
+    replay = _render_badge("backtest_replay", "pre_verdict")
+    assert _PRE_VERDICT_LABEL not in replay
+    assert ">pre_verdict<" in replay
+
+
+def test_getters_read_meta_and_table(tmp_path: Path) -> None:
+    """The three ledger getters read cache_meta and bet_list_corrections as stored."""
+    db_path = _ledger_meta_cache(tmp_path, "ledger_getters")
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        service = DataService(probe)
+        verdict = service.get_forward_verdict_context()
+        corrections = service.get_bet_list_corrections(_LEDGER_SEASON, 6)
+        other_week = service.get_bet_list_corrections(_LEDGER_SEASON, 8)
+        pair = service.get_betting_sim_evidence_pair()
+    finally:
+        probe.close()
+
+    assert verdict == {
+        "declared": True,
+        "season": _LEDGER_SEASON,
+        "start_week": _LEDGER_START_WEEK,
+    }
+    key = (_CORRECTED_GAME, _LEDGER_SEASON, 6, "ou", "live")
+    assert list(corrections) == [key], (
+        "the corrections are not keyed by the ledger row key"
+    )
+    assert corrections[key]["original_grading_status"] == "win"
+    assert corrections[key]["corrected_grading_status"] == "loss"
+    assert set(corrections[key]) == set(BET_LIST_CORRECTIONS_COLUMNS)
+    assert other_week == {}
+    assert pair == ("backtest_replay", "contaminated")
+
+
+def test_getters_tolerate_a_cache_that_predates_the_ledger(tmp_path: Path) -> None:
+    """No meta and no corrections table: undeclared, empty and None -- never an exception."""
+    clear_cache()
+    db_path = tmp_path / "ledger_absent.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        conn.execute("DROP TABLE bet_list_corrections")
+    finally:
+        conn.close()
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        service = DataService(probe)
+        assert service.get_forward_verdict_context() == {
+            "declared": False,
+            "season": None,
+            "start_week": None,
+        }
+        assert service.get_bet_list_corrections(_LEDGER_SEASON, 6) == {}
+        assert service.get_betting_sim_evidence_pair() is None
+    finally:
+        probe.close()
+
+
+def test_graded_outcomes_read_the_materialized_table(tmp_path: Path) -> None:
+    """The strip reads bet_graded_outcomes AS STORED: display class and in-force grade (finding 4).
+
+    bet_list is left EMPTY, so a getter still selecting from it would return nothing.
+    """
+    from api.routes.pages import _graded_outcomes_by_class
+
+    stored = [
+        {
+            "provenance": "forward",
+            "validation_type": "forward_realized",
+            "season": _LEDGER_SEASON,
+            "week": 6,
+            "game_id": _CORRECTED_GAME,
+            "target": "ou",
+            "arm": "live",
+            "grading_status": "loss",
+            "corrected": True,
+        },
+        {
+            "provenance": "forward",
+            "validation_type": "pre_verdict",
+            "season": _LEDGER_SEASON,
+            "week": 3,
+            "game_id": "2026_W03_NYJ@NE",
+            "target": "ou",
+            "arm": "live",
+            "grading_status": "win",
+            "corrected": False,
+        },
+    ]
+    clear_cache()
+    db_path = tmp_path / "strip_table.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_bet_graded_outcomes(conn, pd.DataFrame(stored))
+    finally:
+        conn.close()
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        rows = DataService(probe).get_graded_bet_outcomes()
+    finally:
+        probe.close()
+
+    assert rows == stored
+    assert _graded_outcomes_by_class(rows) == {
+        "forward:pre_verdict": ["win"],
+        "forward:forward_realized": ["loss"],
     }
 
 
@@ -2980,11 +3222,15 @@ _VALIDATION_LABELS: dict[str, str] = {
     "contaminated": "Contaminated split",
     "clean_holdout": "Old rule -- 2025, not evidence",
     "forward_realized": "Live forward record",
+    # Plan 34-20 (D-16): the pre-verdict pair under forward, so the no-second-source test below
+    # covers it too.
+    "pre_verdict": "Before counting started",
 }
 _VALIDATION_CLASSES: dict[str, str] = {
     "contaminated": "evidence-chip",
     "clean_holdout": "evidence-chip",  # review WR-06: "not evidence" takes the plain chip
     "forward_realized": "evidence-chip",
+    "pre_verdict": "evidence-chip",
 }
 _UNKNOWN_VALIDATION_TYPE = "validation_type_invented_by_a_future_plan"
 

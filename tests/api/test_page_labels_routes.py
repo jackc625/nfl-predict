@@ -42,8 +42,11 @@ from api.cache import (
     materialize_available_bet_weeks,
     materialize_bet_list,
     materialize_bet_tracker_blocks,
+    stamp_betting_sim_evidence_pair,
+    stamp_forward_verdict_context,
     stamp_old_rule_season_ranges,
 )
+from api.services import DataService, clear_cache
 from tests.unit.test_page_labels import EXPECTED_PREFIX_BLOCKS, LABEL_MARKER
 
 PRE_2026 = "pre_2026"
@@ -311,3 +314,55 @@ class TestTheSummaryIgnoresTheSelectedSeason:
         response = pre_2026_client.get("/track-record?season=2023")
         assert response.status_code == 200
         assert _labels(response.text) == 4
+
+
+# ---------------------------------------------------------------------------
+# The forward ledger's display context (Plan 34-20, LDGR-08)
+# ---------------------------------------------------------------------------
+
+
+class TestTheLedgerContext:
+    """The route contexts carry the cache-stamped verdict context, corrections and evidence pair."""
+
+    def test_routes_pass_context(self, test_db: Path) -> None:
+        """/bets gets the verdict context and corrections; the shared betting builder the pair.
+
+        ``_build_betting_context`` feeds both /track-record and ``/fragments/betting``, so carrying
+        the pair there is what lets the badge survive a scope swap.
+        """
+        from api.routes.pages import _build_bets_context, _build_betting_context
+
+        _seed(test_db, PRE_2026)
+        stamped_at = datetime.now(tz=UTC)
+        conn = duckdb.connect(str(test_db))
+        try:
+            # The populate_cache stamps, over the fixture's own 2021-2023 simulation seasons.
+            assert stamp_betting_sim_evidence_pair(conn, stamped_at) == (
+                "backtest_replay",
+                "contaminated",
+            )
+            stamp_forward_verdict_context(
+                conn,
+                {"declared": True, "season": _NEW_RULE_SEASON, "start_week": 6},
+                stamped_at,
+            )
+        finally:
+            conn.close()
+
+        clear_cache()
+        probe = duckdb.connect(str(test_db), read_only=True)
+        try:
+            service = DataService(probe)
+            bets = _build_bets_context(service, _FIXTURE_SEASON, _BET_WEEK, None)  # pyright: ignore[reportArgumentType]
+            betting = _build_betting_context(service, "recommended", None)  # pyright: ignore[reportArgumentType]
+        finally:
+            probe.close()
+
+        assert bets["forward_verdict"] == {
+            "declared": True,
+            "season": _NEW_RULE_SEASON,
+            "start_week": 6,
+        }
+        assert bets["bet_corrections"] == {}
+        assert betting["betting_sim_provenance"] == "backtest_replay"
+        assert betting["betting_sim_validation_type"] == "contaminated"
