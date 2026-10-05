@@ -179,6 +179,19 @@
      the fragment swap re-renders it with the figures. #}
   {% with scope=betting_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
 
+  {# The simulation's evidence class from the single-source badge (LDGR-08): the pair population
+     stamped from the seasons the simulation covers. Inside the block for the reason the label
+     above is, so a scope swap re-renders it. No stamp renders no badge -- never a pair nothing
+     established. #}
+  {% if betting_sim_provenance and betting_sim_validation_type %}
+  <div class="mb-4 flex flex-wrap items-center gap-2" data-betting-sim-evidence>
+    <span class="label">Evidence class</span>
+    {% with provenance=betting_sim_provenance, validation_type=betting_sim_validation_type %}
+      {% include "components/_provenance_badge.html" %}
+    {% endwith %}
+  </div>
+  {% endif %}
+
   {# KPI scoreboard (D-06). Simulated profit and loss are realised outcomes of the simulation,
      so the ROI and profit tiles may carry green/red. #}
   {% set roi_flat = kpis.roi_flat|default(0) %}

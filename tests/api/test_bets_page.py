@@ -3319,8 +3319,12 @@ def test_an_unknown_validation_type_renders_the_raw_code(tmp_path: Path) -> None
     assert any(f">{_UNKNOWN_VALIDATION_TYPE}<" in badge for badge in badges), (
         f"the unknown validation type did not render its raw code: {badges}"
     )
+    # Was: no label anywhere in the body. Since Plan 34-20 the forward verdict section always
+    # renders with its own "Live forward record" badge (LDGR-08), so the check is scoped to the
+    # live slip that carries the unknown type.
+    (slip,) = _slip_badges(body)
     for label in _VALIDATION_LABELS.values():
-        assert label not in body, (
+        assert label not in slip, (
             f"an unknown validation type fell back to the {label!r} label"
         )
 
@@ -3442,10 +3446,13 @@ def test_the_badge_renders_on_every_displayed_row(tmp_path: Path) -> None:
     )
     # Two rows, two badges -- and both rows are in the document even though the disclosure is
     # collapsed, so the suppressed row's labels survive into an HTML export too.
-    assert len(_badges(body)) == 2, (
-        f"expected one badge per displayed row: {_badges(body)}"
+    # Was: counted over the whole body. Since Plan 34-20 the forward verdict section always
+    # carries its own class badge (LDGR-08), so the rows are counted above the tracker.
+    rows_region = body[: body.index("data-tracker-block=")]
+    assert len(_badges(rows_region)) == 2, (
+        f"expected one badge per displayed row: {_badges(rows_region)}"
     )
-    assert body.count("Contaminated split") == 2
+    assert rows_region.count("Contaminated split") == 2
 
 
 def test_exactly_one_partial_owns_the_validation_type_vocabulary() -> None:
