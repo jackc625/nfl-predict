@@ -233,6 +233,9 @@ def refresh_env(monkeypatch, tmp_path):
     monkeypatch.setattr(steps, "step_capture_live_season", _capture)
     monkeypatch.setattr(ingest_games, "GameDataIngester", _Ingester)
     monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
+    # Plan 34-15: a refreshed day re-registers the closing wake triggers through the real Task
+    # Scheduler and logs to logs/ledger_runs.jsonl; neither is what these tests are about.
+    monkeypatch.setattr(daily, "_regenerate_closing_triggers", lambda *_a: None)
     return asked
 
 

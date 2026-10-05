@@ -222,6 +222,9 @@ def _install_stand_ins(rehearsal: Rehearsal) -> None:
         return SEASON
 
     monkeypatch.setattr(daily, "_refresh_schedule", _refresh)
+    # Plan 34-15: a refreshed day re-registers the closing wake triggers through the REAL Task
+    # Scheduler; a rehearsal must never touch it.
+    monkeypatch.setattr(daily, "_regenerate_closing_triggers", lambda *_a: None)
 
     real_registry = daily.build_daily_step_registry
 

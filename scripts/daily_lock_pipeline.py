@@ -55,6 +55,8 @@ from data.write_sink import (
     active_sink,
     append_jsonl,
 )
+from forward_ledger.cutover import forward_rows_go_to_ledger
+from forward_ledger.run_log import bound_run_id, new_run_id
 from pipeline import daily_steps
 from pipeline.daily_steps import (
     COLLECTION_STEP_NAMES,
@@ -68,6 +70,8 @@ from utils.logging_config import get_logger
 
 if TYPE_CHECKING:
     import pandas as pd
+
+    from forward_ledger.runner import SettleOutcome
 
 logger = get_logger(__name__)
 
@@ -475,8 +479,114 @@ def _report_skips(skipped_games: list[str], start_time: str) -> None:
             print(f"SKIPPED {game_id}: {record['reason']} (source {record['source']})")
 
 
+# ---------------------------------------------------------------------------
+# The forward ledger's daily passes (Phase 34, Plan 34-15). Every one is NON-FATAL: it prints its
+# outcome, records a failure and lets the run go on. Only the forward write itself -- inside the
+# recommend step -- is critical, exactly as the bet-list write it replaces was.
+# ---------------------------------------------------------------------------
+
+
+def _regenerate_closing_triggers(games: pd.DataFrame, start: datetime) -> None:
+    """Re-register the closing wake task's triggers from the refreshed schedule (D-07).
+
+    Runs every non-dry day the refresh returns a season, before the no-games return, so a day
+    with no game tomorrow still keeps the next eight days' kickoff windows registered.
+    ``register_closing_triggers`` itself skips when the closing task is not installed.
+    """
+    from forward_ledger import closing_schedule
+    from forward_ledger.run_log import record_event
+
+    try:
+        registration = closing_schedule.register_closing_triggers(games, start)
+        print(
+            f"CLOSING_TRIGGERS= {registration.outcome} {registration.reason or 'none'}"
+        )
+        record_event(
+            "closing_triggers",
+            outcome=registration.outcome,
+            reason=registration.reason,
+            readback_match=registration.readback_match,
+            trigger_count=len(registration.expected_starts),
+        )
+    except Exception as exc:  # noqa: BLE001 - the previous registration still covers the week
+        print(f"CLOSING_TRIGGERS= failed {type(exc).__name__}: {exc}")
+        logger.error("Closing trigger regeneration failed", error=str(exc))
+
+
+def _settle_ledger(start: datetime) -> SettleOutcome | None:
+    """Grade, correct and finalize the ledger from refreshed silver data. Never raises.
+
+    Its failure is printed and recorded, and NEVER stops the decision run (34-RESEARCH
+    Pitfall 11): tonight's decisions do not wait on last week's results.
+    """
+    from forward_ledger import runner
+    from forward_ledger.run_log import record_event
+
+    try:
+        outcome = runner.settle_ledger(now=start)
+    except Exception as exc:  # noqa: BLE001 - recorded; the decision run goes on
+        reason = f"{type(exc).__name__}: {exc}"
+        print(f"LEDGER_SETTLE= failed {reason}")
+        logger.error("Ledger settle pass failed", error=reason)
+        try:
+            record_event("settle", ok=False, error=reason)
+        except Exception as log_error:  # noqa: BLE001 - nor does a failing run log
+            logger.error(
+                "Ledger run log refused the settle failure", error=str(log_error)
+            )
+        return None
+    state = "changed" if outcome.changed else "unchanged"
+    print(
+        f"LEDGER_SETTLE= {state} graded={outcome.graded} corrections={outcome.corrections} "
+        f"closing_finalized={outcome.closing_finalized} observations={outcome.observations}"
+    )
+    return outcome
+
+
+def _rebuild_cache_after_settle() -> None:
+    """Rebuild the web cache after a settle that changed the ledger on a no-games day.
+
+    Without it the Super Bowl's grade -- settled on a day with no game tomorrow -- would never
+    reach ``/bets``. A failure is printed and recorded, never propagated.
+    """
+    from pipeline import steps
+
+    try:
+        steps.step_populate_web_cache()
+        print("WEB_CACHE_AFTER_SETTLE= rebuilt")
+    except Exception as exc:  # noqa: BLE001 - the cache is a convenience, never a run failure
+        print(f"WEB_CACHE_AFTER_SETTLE= failed {type(exc).__name__}: {exc}")
+        logger.error("Web cache rebuild after settle failed", error=str(exc))
+
+
+def _sync_ledger() -> None:
+    """Anchor the ledger head and back up the ledger directory. Never raises (LDGR-05, D-01)."""
+    try:
+        from forward_ledger import runner
+
+        outcome = runner.sync_after_run()
+        if outcome is None:
+            print("LEDGER_SYNC= failed (recorded in logs/ledger_runs.jsonl)")
+            return
+        print(
+            f"LEDGER_SYNC= anchor_committed={outcome.anchor_committed} "
+            f"anchor_pushed={outcome.anchor_pushed} "
+            f"backup_committed={outcome.backup_committed} "
+            f"backup_pushed={outcome.backup_pushed} "
+            f"refused={outcome.refused_reason or 'none'}"
+        )
+    except Exception as exc:  # noqa: BLE001 - a sync never alters the run's exit code
+        print(f"LEDGER_SYNC= failed {type(exc).__name__}: {exc}")
+        logger.error("Ledger sync failed", error=str(exc))
+
+
 def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
     """One daily run as of *run_date_et*, started at *start*. Returns the exit code.
+
+    With the cutover switch on, ONE run id is bound around the whole day (printed as
+    ``LEDGER_RUN_ID=``), so every ledger event it writes -- the append, the settle pass and the
+    end-of-run sync's pushes -- names this run (review finding 8); and a non-dry run ends with
+    the ledger sync, whether the day returned or raised.
 
     Raises:
         RunDateRefusedError: *run_date_et* cannot be run at *start*; nothing was written.
@@ -509,13 +619,24 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
         # Everything after the lock check: a run that cannot finish records tomorrow's games
         # as getting no predictions, then re-raises (33.2 review C1 CR-05 = B WR-05).
         progress: dict[str, DailySlate] = {}
-        try:
-            return _run_the_day(
-                run_date_et, start=start, dry_run=dry_run, sink=sink, progress=progress
-            )
-        except BaseException as exc:
-            _record_run_failure(run_date_et, progress.get("slate"), exc)
-            raise
+        cut_over = forward_rows_go_to_ledger()
+        with bound_run_id(new_run_id()) as run_id:
+            if cut_over:
+                print(f"LEDGER_RUN_ID= {run_id}")
+            try:
+                return _run_the_day(
+                    run_date_et,
+                    start=start,
+                    dry_run=dry_run,
+                    sink=sink,
+                    progress=progress,
+                )
+            except BaseException as exc:
+                _record_run_failure(run_date_et, progress.get("slate"), exc)
+                raise
+            finally:
+                if cut_over and not dry_run:
+                    _sync_ledger()
 
 
 def _run_the_day(
@@ -537,11 +658,20 @@ def _run_the_day(
     from data.storage import load_dataframe
 
     games = load_dataframe("games", layer="silver")
+    # Every refreshed day, slate or not, before the no-games return (Plan 34-15): the closing
+    # wake triggers follow the schedule, and the ledger settles from the refreshed scores.
+    settle: SettleOutcome | None = None
+    if not dry_run:
+        _regenerate_closing_triggers(games, start)
+        if forward_rows_go_to_ledger():
+            settle = _settle_ledger(start)
     slate = select_slate(
         games.loc[games["season"] == season], run_date_et, decided_at=start
     )
     if slate.schedule.empty:
         logger.info("No games tomorrow; no-op", run_date_et=run_date_et.isoformat())
+        if settle is not None and settle.changed:
+            _rebuild_cache_after_settle()
         _record_no_prediction(run_date_et, "no_games", [])
         _print_contract(sink, dry_run=dry_run, lock_passed=0, next_day_games=0)
         return 0

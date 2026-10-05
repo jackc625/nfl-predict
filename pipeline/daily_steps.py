@@ -587,11 +587,19 @@ def recommend_slate(slate: DailySlate) -> None:
     real clock is still at or before the slate's lock when the write happens
     (``publish_by``). A list that was ready too late writes nothing, and its games are refused
     by name through the same passed-lock refusal as a late decision.
+
+    WHERE THE ROWS GO (Phase 34, Plan 34-15): the committed cutover switch
+    (``forward_ledger.cutover.forward_rows_go_to_ledger``) decides. OFF -- until Plan 34-19 --
+    the old writer ``generate_weekly_bet_list`` runs exactly as before. ON, the rows go to the
+    forward ledger through ``forward_ledger.runner.record_forward_slate`` with the same decision
+    instant, exclusions and deadline, and never to ``outputs/bet_list``. Both branches share the
+    late-publish refusal below.
     """
     from backtest.weekly_bet_list import (
         PublishDeadlinePassedError,
         generate_weekly_bet_list,
     )
+    from forward_ledger.cutover import forward_rows_go_to_ledger
     from pipeline import live_skip
     from pipeline.steps import _bet_list_output_dir, _week_schedule
 
@@ -604,14 +612,24 @@ def recommend_slate(slate: DailySlate) -> None:
     outside_slate = frozenset(week_ids - slate.game_ids)
     in_scope = sorted(slate.game_ids - excluded)
     try:
-        generate_weekly_bet_list(
-            season=slate.season,
-            week=slate.week,
-            output_dir=_bet_list_output_dir(),
-            now=decided_at,
-            excluded_game_ids=live_skip.excluded_games() | outside_slate,
-            publish_by=slate.lock if in_scope else None,
-        )
+        if forward_rows_go_to_ledger():
+            from forward_ledger import runner
+
+            runner.record_forward_slate(
+                slate,
+                decided_at=decided_at,
+                excluded_game_ids=live_skip.excluded_games() | outside_slate,
+                publish_by=slate.lock if in_scope else None,
+            )
+        else:
+            generate_weekly_bet_list(
+                season=slate.season,
+                week=slate.week,
+                output_dir=_bet_list_output_dir(),
+                now=decided_at,
+                excluded_game_ids=live_skip.excluded_games() | outside_slate,
+                publish_by=slate.lock if in_scope else None,
+            )
     except PublishDeadlinePassedError as late:
         published_at = datetime.now(UTC).isoformat()
         raise live_skip.GamesLockPassedError(

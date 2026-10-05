@@ -151,6 +151,7 @@ __all__ = [
     "DecidedAfterFreezeError",
     "DecisionBundle",
     "EmptyPriorResidualPoolError",
+    "ForwardRowsMovedToLedgerError",
     "FrozenChainFitError",
     "LockPassedError",
     "MissingDecidedAtError",
@@ -387,6 +388,21 @@ class PublishDeadlinePassedError(RuntimeError):
 
     Nothing was written (33.2 review C2 WR-08 / C1 WR-05): a bet row decided before a game's
     lock must not be PUBLISHED after it either. The caller names the games it could not publish.
+    """
+
+
+class ForwardRowsMovedToLedgerError(Exception):
+    """A FORWARD bet list was asked for after the cutover sent forward rows to the ledger.
+
+    Forward rows may live in exactly ONE store (34-RESEARCH Pitfalls 2 and 3). Once
+    ``forward_ledger.cutover.forward_rows_go_to_ledger()`` is True, the daily run's recommend
+    step is the only forward writer, through ``forward_ledger.runner.record_forward_slate``; the
+    manual Friday pipeline and ``scripts/generate_bet_list.py`` still reach this function in
+    forward mode and would otherwise recreate a second forward store under ``outputs/bet_list``.
+    Replay mode is unaffected.
+
+    Inherits bare ``Exception``, outside the ``ValueError`` / ``RuntimeError`` handlers that
+    degrade elsewhere: a refused forward write must never read as "nothing to write".
     """
 
 
@@ -2654,6 +2670,21 @@ def grade_pending_rows(
 # ---------------------------------------------------------------------------
 
 
+def _refuse_forward_mode_after_cutover(run_mode: str) -> None:
+    """Refuse a forward bet list once forward rows go to the ledger (Plan 34-15)."""
+    from forward_ledger.cutover import forward_rows_go_to_ledger
+
+    if run_mode == RUN_MODE_FORWARD and forward_rows_go_to_ledger():
+        msg = (
+            "forward bet rows go to the forward ledger since the cutover "
+            "(forward_ledger.cutover); the daily run's recommend step "
+            "(scripts/daily_lock_pipeline.py) is their only writer. A forward bet list here "
+            "would recreate a second forward store under outputs/bet_list. Replay mode is "
+            "unaffected."
+        )
+        raise ForwardRowsMovedToLedgerError(msg)
+
+
 def generate_weekly_bet_list(
     season: int,
     week: int,
@@ -2729,8 +2760,13 @@ def generate_weekly_bet_list(
 
     Returns:
         The merged, graded bet list -- the same frame both artifacts were written from.
+
+    Raises:
+        ForwardRowsMovedToLedgerError: *run_mode* is forward and the cutover switch sends
+            forward rows to the ledger; nothing is selected or written.
     """
     _require_run_mode(run_mode)
+    _refuse_forward_mode_after_cutover(run_mode)
 
     fits = load_frozen_chain_fit(chain_fit_path)
     _require_season_covered(fits, season)
