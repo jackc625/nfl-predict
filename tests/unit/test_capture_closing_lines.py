@@ -348,7 +348,8 @@ class TestTheCapture:
         with pytest.raises(SystemExit) as shown:
             capture_module.main(["--help"])
         assert shown.value.code == 0
-        assert "no required arguments" in capsys.readouterr().out
+        # argparse wraps to the terminal width, so compare with whitespace collapsed.
+        assert "no required arguments" in " ".join(capsys.readouterr().out.split())
 
 
 class TestTheDecisionCaptureIgnoresTheCreditRule:
