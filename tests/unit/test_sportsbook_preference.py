@@ -37,6 +37,7 @@ from backtest.ou_divergence import (
     _ALLOWED_SPORTSBOOKS,
     SPORTSBOOK_PREFERENCE,
     dedupe_odds_by_book_preference,
+    order_by_book_preference,
 )
 
 _GAME = "2025_W01_DAL@PHI"
@@ -270,3 +271,88 @@ def test_the_serving_market_line_reads_the_latest_pre_lock_capture(
 
     market = load_market_data([_LIVE_GAME])
     assert market.set_index("game_id").loc[_LIVE_GAME, "spread"] == pytest.approx(-4.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 34 (LDGR-07 / LDGR-11): ONE book ordering, shared by the decision dedupe and the
+# closing-line selection, and recorded as fill-v1. It ranks; it never filters.
+# ---------------------------------------------------------------------------
+
+
+def test_order_puts_latest_capture_first() -> None:
+    """Information time outranks the book: a later non-preferred capture beats DraftKings."""
+    frame = pd.DataFrame(
+        [
+            _capture("draftkings", "2026-09-26T20:00:00Z", -3.0),
+            _capture("betmgm", "2026-09-26T21:00:00Z", -4.0),
+        ]
+    )
+
+    ordered = order_by_book_preference(frame)
+
+    assert list(ordered["sportsbook"]) == ["betmgm", "draftkings"]
+
+
+def test_order_ties_on_time_by_preference_then_name() -> None:
+    """Same instant: the preferred book first, then the others by name, never by file order."""
+    same_instant = "2026-09-26T21:00:00Z"
+    frame = pd.DataFrame(
+        [
+            _capture("betmgm", same_instant, -6.0),
+            _capture("draftkings", same_instant, -7.0),
+            _capture("bovada", same_instant, -5.0),
+        ]
+    )
+
+    ordered = order_by_book_preference(frame)
+
+    assert list(ordered["sportsbook"]) == ["draftkings", "betmgm", "bovada"]
+    assert list(order_by_book_preference(frame.iloc[::-1])["sportsbook"]) == [
+        "draftkings",
+        "betmgm",
+        "bovada",
+    ]
+
+
+def test_order_is_per_game_and_stable() -> None:
+    """Interleaved games keep their own ordering; every row survives with only its own columns."""
+    other_game = "2026_W04_AAA@BBB"
+    frame = pd.DataFrame(
+        [
+            _capture("betmgm", "2026-09-26T21:00:00Z", -6.0),
+            {**_capture("bovada", "2026-09-26T21:00:00Z", 1.0), "game_id": other_game},
+            _capture("draftkings", "2026-09-26T21:00:00Z", -7.0),
+            {**_capture("betmgm", "2026-09-26T22:00:00Z", 2.0), "game_id": other_game},
+            _capture("fanduel", "2026-09-25T21:00:00Z", -1.0),
+        ]
+    )
+
+    ordered = order_by_book_preference(frame)
+
+    assert list(ordered.columns) == list(frame.columns)
+    assert len(ordered) == len(frame)
+    assert list(ordered.index) == list(range(len(frame)))
+    by_game = {
+        game: list(rows["sportsbook"])
+        for game, rows in ordered.groupby("game_id", sort=False)
+    }
+    assert by_game[_LIVE_GAME] == ["draftkings", "betmgm", "fanduel"]
+    assert by_game[other_game] == ["betmgm", "bovada"]
+    # Each game's rows are contiguous, so a consumer can take the head of each group.
+    assert ordered["game_id"].ne(ordered["game_id"].shift()).sum() == 2
+
+
+def test_order_applies_no_admissibility_filter_and_the_dedupe_keeps_its_head() -> None:
+    """The helper ranks every row; the dedupe's answer is the helper's first admissible row."""
+    frame = pd.DataFrame(
+        [
+            _capture("draftkings", "2026-09-26T21:00:00Z", -4.0),
+            _capture("betmgm", "2026-09-26T23:00:00Z", -9.0),  # after the lock
+        ]
+    )
+
+    ordered = order_by_book_preference(frame)
+    deduped = dedupe_odds_by_book_preference(frame, locks={_LIVE_GAME: _LOCK})
+
+    assert list(ordered["sportsbook"]) == ["betmgm", "draftkings"]
+    assert deduped.iloc[0]["sportsbook"] == "draftkings"
