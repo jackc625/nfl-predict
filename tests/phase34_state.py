@@ -28,6 +28,7 @@ plan, the task and the measurement date; the old slot stays as the record of wha
 measured when it was written.
 
 * Plan 34-02 Task 1 (this file's author) -- ``P34_EXPECTED_FAILURE_BASELINE``.
+* Plan 34-18 Task 3 -- ``P34_S4U_PUSH_SMOKE``.
 """
 
 from __future__ import annotations
@@ -123,5 +124,43 @@ P34_EXPECTED_FAILURE_BASELINE: dict[str, object] = {
             "green when measured here (c31b3a9 re-scoped them to the replay rows), so the "
             "prediction is that they STAY green. Re-measure at cutover; do not assume.",
         ),
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Plan 34-18 Task 3 -- the S4U push smoke, MEASURED 2026-10-05 (ET, read via
+# PowerShell Get-Date; the S4U run itself was 2026-10-05T21:27:15Z to
+# 21:27:19Z, i.e. 17:27 ET).
+#
+# Source: logs/ledger_push_smoke.json (written BY the S4U task) and the
+# owner's `--readback` output, which printed "SMOKE_RESULT= PASS". Both ssh -T
+# greetings named the REPOSITORY (deploy key), each with GitHub's normal
+# no-shell exit 1. The smoke commit landed on refs/heads/ledger-anchor-smoke and
+# matched the remote; the backup's first commit is now main on the private
+# repository (by design, it stays). The public master read
+# 664d8fbe5e230bf051b884e083b6de556518e875 before and after. `--cleanup`
+# confirmed the smoke branch, the local smoke ref and both tasks gone, and a
+# later read-only re-check (git ls-remote, gh api, schtasks /query) agreed.
+#
+# Registration (`--register`: schtasks /create of an S4U + HighestAvailable
+# task) and `--cleanup` need an ELEVATED owner session; from a non-elevated
+# session /create answers "ERROR: Access is denied.". The in-task pushes and
+# the dummy-task create/export/delete ran UNELEVATED under S4U.
+# ---------------------------------------------------------------------------
+
+P34_S4U_PUSH_SMOKE: dict[str, object] = {
+    "measured_on": "2026-10-05",
+    "whoami": "jackslaptop\\jackc",
+    "anchor_identity_ok": True,
+    "backup_identity_ok": True,
+    "anchor_push_ok": True,
+    "backup_push_ok": True,
+    "schtasks_from_s4u_ok": True,
+    "smoke_commit": "23f56a7a684bf28c1f7179a6ef3ef6b98ad9f824",
+    "backup_commit": "4dbaebaf2133439b3f87ab1b4204bd54bf7c52cf",
+    "note": (
+        "Registering and cleaning up the smoke task need an elevated owner session "
+        "(schtasks /create of an S4U + HighestAvailable task is refused otherwise); "
+        "the in-task pushes and the dummy-task probe ran unelevated under S4U."
     ),
 }
