@@ -10,8 +10,15 @@ definition in place: the weekly trigger cannot survive beside the daily one. It 
 5:00 PM local, which is 5:00 PM ET only on an Eastern machine -- so an install refuses any other
 Windows time zone.
 
+A SECOND task, NFL_Predict_Closing (Phase 34, D-07), wakes the laptop for closing-line readings
+at real kickoff windows. Its committed template carries no trigger: ``--install-closing`` generates
+one TimeTrigger per reading window over the next 8 days from the silver schedule
+(``forward_ledger.closing_schedule``), and the daily run re-registers them every day. The
+read-back accepts exactly the daily task alone, or the daily task and the closing task.
+
 Usage:
     python deployment/setup_scheduling.py --platform windows --install
+    python deployment/setup_scheduling.py --platform windows --install-closing
     python deployment/setup_scheduling.py --platform windows --dry-run
     python deployment/setup_scheduling.py --platform windows --test [--rehearsal-date YYYY-MM-DD]
     python deployment/setup_scheduling.py --platform windows --verify-installed
@@ -25,9 +32,24 @@ import platform
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
+import pandas as pd
+
+from data.storage import load_dataframe
+from forward_ledger.closing_schedule import (
+    CLOSING_TASK_NAME,
+    CLOSING_TEMPLATE_PATH,
+    GENERATED_TASK_XML_PATH,
+    HORIZON_DAYS,
+    ClosingReadback,
+    build_closing_task_xml,
+    expected_triggers,
+    install_closing_task,
+    read_back_closing_task,
+)
+from forward_ledger.closing_windows import windows_for_schedule
 from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -37,6 +59,12 @@ OLD_TASK_NAMES = ["NFL_Predict_DataUpdate", "NFL_Predict_Predictions"]
 
 #: The one scheduled task. Kept from the weekly era so /f overwrites that definition in place.
 TASK_NAME = "NFL_Predict_Pipeline"
+
+#: The NFL task sets the read-back accepts: the daily task alone, or with the closing task.
+ALLOWED_NFL_TASK_SETS: tuple[frozenset[str], ...] = (
+    frozenset({TASK_NAME}),
+    frozenset({TASK_NAME, CLOSING_TASK_NAME}),
+)
 
 #: The entry point the committed XML schedules, relative to the project home.
 DAILY_ENTRY_POINT = "scripts/daily_lock_pipeline.py"
@@ -470,13 +498,70 @@ class SchedulingSetup:
         except Exception as e:
             logger.error(f"Error checking scheduled tasks: {e}")
 
-    def verify_installed(self) -> bool:
-        """Compare the INSTALLED task with the committed XML, field by field. Read-only.
+    def install_closing(self, games: pd.DataFrame, now: datetime) -> bool:
+        """Install (or replace) the closing task with the triggers due at *now*; read it back.
+
+        Prints the closing task's settings fields, ``CLOSING_TRIGGERS= <n expected> | <n
+        installed> | MATCH|MISMATCH`` and ``CLOSING_READBACK_MATCH= True|False``.
+        """
+        registration = install_closing_task(
+            games,
+            now,
+            template_path=self.nfl_predict_home / CLOSING_TEMPLATE_PATH,
+            generated_path=self.nfl_predict_home / GENERATED_TASK_XML_PATH,
+        )
+        _emit(f"TASK_NAME= {CLOSING_TASK_NAME}")
+        _emit(f"CLOSING_REGISTRATION= {registration.outcome} ({registration.reason})")
+        if registration.readback is not None:
+            self._emit_closing_readback(registration.readback)
+        _emit(registration.readback_line)
+        return registration.outcome == "registered" and registration.readback_match
+
+    @staticmethod
+    def _emit_closing_readback(readback: ClosingReadback) -> None:
+        for name, want, got, match in readback.rows:
+            _emit(
+                f"CLOSING_{name}= {want} | {got} | {'MATCH' if match else 'MISMATCH'}"
+            )
+        _emit(readback.triggers_line)
+
+    def _verify_closing(self, games: pd.DataFrame | None, now: datetime | None) -> bool:
+        """Read back the installed closing task against the triggers the schedule implies now."""
+        _emit(f"TASK_NAME= {CLOSING_TASK_NAME}")
+        export = subprocess.run(
+            ["schtasks", "/query", "/tn", CLOSING_TASK_NAME, "/xml"],
+            capture_output=True,
+        )
+        if export.returncode != 0:
+            _emit(f"CLOSING_EXPORT= {CLOSING_TASK_NAME} could not be exported")
+            _emit("CLOSING_READBACK_MATCH= False")
+            return False
+        if games is None:
+            games = load_dataframe("games", layer="silver")
+        now = now or datetime.now(UTC)
+        template = (self.nfl_predict_home / CLOSING_TEMPLATE_PATH).read_bytes()
+        windows = windows_for_schedule(games, now, days=HORIZON_DAYS)
+        readback = read_back_closing_task(
+            build_closing_task_xml(template, windows).decode("utf-16"),
+            _decode_task_export(export.stdout),
+            expected_triggers(games, now),
+        )
+        self._emit_closing_readback(readback)
+        _emit(f"CLOSING_READBACK_MATCH= {readback.match}")
+        return readback.match
+
+    def verify_installed(
+        self, games: pd.DataFrame | None = None, now: datetime | None = None
+    ) -> bool:
+        """Compare the INSTALLED tasks with the committed definitions, field by field. Read-only.
 
         Prints one ``FIELD= committed | installed | MATCH`` line per compared field, the NFL
         tasks installed on this machine, and ``READBACK_MATCH= True|False``. True needs every
-        field to match AND exactly one NFL task installed -- this one -- so no weekly task can be
-        left firing beside the daily one.
+        field to match AND the installed NFL tasks to be exactly the daily task, or the daily
+        task and the closing task (:data:`ALLOWED_NFL_TASK_SETS`) -- so no weekly task can be
+        left firing beside the daily one. When the closing task is installed it is compared on
+        its settings fields and on its full ``(StartBoundary, EndBoundary, Enabled)`` trigger set
+        against the triggers the silver schedule (or *games*) implies at *now*.
         """
         committed = (
             (self.nfl_predict_home / "deployment" / "windows_scheduler.xml")
@@ -500,7 +585,13 @@ class SchedulingSetup:
         for name, want, got, match in rows:
             _emit(f"{name}= {want} | {got} | {'MATCH' if match else 'MISMATCH'}")
         _emit(f"NFL_TASKS= {installed_tasks}")
-        matched = all(match for *_row, match in rows) and installed_tasks == [TASK_NAME]
+        allowed = frozenset(installed_tasks) in ALLOWED_NFL_TASK_SETS
+        closing_matched = (
+            self._verify_closing(games, now)
+            if CLOSING_TASK_NAME in installed_tasks
+            else True
+        )
+        matched = all(match for *_row, match in rows) and allowed and closing_matched
         _emit(f"READBACK_MATCH= {matched}")
         return matched
 
@@ -543,6 +634,14 @@ def main():
         help="Compare the installed task with the committed XML (read-only)",
     )
     parser.add_argument(
+        "--install-closing",
+        action="store_true",
+        help=(
+            "Install the closing-line wake task with triggers for the next 8 days of the "
+            "silver schedule, then read it back"
+        ),
+    )
+    parser.add_argument(
         "--project-home", default=".", help="Path to NFL prediction project root"
     )
 
@@ -577,6 +676,15 @@ def main():
 
     if args.verify_installed:
         return 0 if setup.verify_installed() else 1
+
+    if args.install_closing:
+        try:
+            require_eastern_time_zone(read_windows_time_zone())
+        except NonEasternTimeZoneError as exc:
+            logger.error(str(exc))
+            return 1
+        games = load_dataframe("games", layer="silver")
+        return 0 if setup.install_closing(games, datetime.now(UTC)) else 1
 
     if args.test:
         success = setup.test_scripts(rehearsal_date=args.rehearsal_date)

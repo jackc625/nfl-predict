@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+
 from forward_ledger.closing_schedule import (
     CLOSING_TASK_NAME,
     CLOSING_TEMPLATE_PATH,
@@ -28,7 +29,6 @@ from forward_ledger.closing_schedule import (
     expected_triggers,
     register_closing_triggers,
 )
-
 from forward_ledger.closing_windows import ReadingWindow
 
 _NS = "{http://schemas.microsoft.com/windows/2004/02/mit/task}"
