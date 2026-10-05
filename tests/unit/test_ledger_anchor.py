@@ -11,7 +11,7 @@ with exactly two lines -- the head hash and the row count. These tests prove, wi
 * every push pins the deploy key, and a missing key is refused before git runs (D-03).
 
 Every repository here is built under ``tmp_path``, and every "remote" is a local bare repository.
-Nothing touches GitHub, the project's own refs, or ``C:/Users/jackc/.ssh``: the key and the
+Nothing touches GitHub, the project's own refs, or the owner's ssh directory: the key and the
 known_hosts file are empty placeholder files in ``tmp_path`` (a local path remote never runs ssh).
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
