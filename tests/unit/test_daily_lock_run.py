@@ -30,6 +30,29 @@ from pipeline.daily_steps import DailySlate, slate_lock
 RUN_DATE = date(2026, 9, 26)
 
 
+@pytest.fixture(autouse=True)
+def trigger_calls(monkeypatch, tmp_path) -> list[datetime]:
+    """No run here touches the real Task Scheduler or the production ledger run log (Plan 34-15).
+
+    Every non-dry daily run now regenerates the closing wake triggers through ``schtasks``; the
+    stand-in records the instant it was asked for instead. The ledger run log is redirected into
+    ``tmp_path``.
+    """
+    from forward_ledger import closing_schedule, run_log
+
+    calls: list[datetime] = []
+
+    def _register(_games, now, **_kwargs):
+        calls.append(now)
+        return closing_schedule.TriggerRegistration(
+            "skipped", "test_stand_in", (), False
+        )
+
+    monkeypatch.setattr(closing_schedule, "register_closing_triggers", _register)
+    monkeypatch.setattr(run_log, "LEDGER_RUN_LOG", tmp_path / "ledger_runs.jsonl")
+    return calls
+
+
 def _schedule() -> pd.DataFrame:
     """A Saturday (today), two Sunday games (tomorrow) and a Monday game."""
     rows = [
@@ -876,3 +899,376 @@ def test_a_slate_outside_the_elo_season_is_refused_by_name(monkeypatch):
     monkeypatch.setattr(build_elo, "EloBuilder", _OtherSeasonElo)
     with pytest.raises(ValueError, match="2026_W03_LAC@BUF"):
         persist_current_season_elo(frozenset({"2026_W03_LAC@BUF"}))
+
+
+# ---------------------------------------------------------------------------
+# The ledger behind the cutover switch (Plan 34-15): recommend, settle, triggers, sync, run id
+# ---------------------------------------------------------------------------
+
+
+def _cut_over(monkeypatch, on: bool = True) -> None:
+    """Set the committed switch for this test only (the constant stays OFF in the tree)."""
+    from forward_ledger import cutover
+
+    monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", on)
+
+
+def _recommend_env(monkeypatch, tmp_path, slate: DailySlate) -> str:
+    """Route ``recommend_slate``'s reads into fixtures; return the week game outside the slate."""
+    import pipeline.steps as steps_mod
+
+    outside = "2026_W03_PHI@CHI"
+    week = pd.concat(
+        [slate.schedule, pd.DataFrame({"game_id": [outside]})], ignore_index=True
+    )
+    monkeypatch.setattr(steps_mod, "_week_schedule", lambda _s, _w: week)
+    monkeypatch.setattr(steps_mod, "_bet_list_output_dir", lambda: tmp_path)
+    live_skip.reset_excluded_games()
+    return outside
+
+
+def test_recommend_switch_off_unchanged(monkeypatch, tmp_path):
+    from backtest import weekly_bet_list
+    from forward_ledger import runner
+
+    slate = _slate(30)
+    outside = _recommend_env(monkeypatch, tmp_path, slate)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        weekly_bet_list,
+        "generate_weekly_bet_list",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    def _no_ledger(*_a, **_k):
+        raise AssertionError("the ledger was written with the switch off")
+
+    monkeypatch.setattr(runner, "record_forward_slate", _no_ledger)
+
+    daily_steps.recommend_slate(slate)
+
+    (call,) = calls
+    assert set(call) == {
+        "season",
+        "week",
+        "output_dir",
+        "now",
+        "excluded_game_ids",
+        "publish_by",
+    }
+    assert (call["season"], call["week"]) == (2026, 3)
+    assert call["output_dir"] == tmp_path
+    assert call["excluded_game_ids"] == frozenset({outside})
+    assert call["publish_by"] == slate.lock
+
+
+def test_recommend_switch_on_uses_runner(monkeypatch, tmp_path):
+    from backtest import weekly_bet_list
+    from backtest.weekly_bet_list import PublishDeadlinePassedError
+    from forward_ledger import runner
+
+    _cut_over(monkeypatch)
+    slate = _slate(30)
+    outside = _recommend_env(monkeypatch, tmp_path, slate)
+
+    def _no_bet_list(**_k):
+        raise AssertionError("the old writer ran after the cutover")
+
+    monkeypatch.setattr(weekly_bet_list, "generate_weekly_bet_list", _no_bet_list)
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        runner,
+        "record_forward_slate",
+        lambda slate_arg, **kwargs: calls.append((slate_arg, kwargs)),
+    )
+
+    daily_steps.recommend_slate(slate)
+
+    ((slate_arg, kwargs),) = calls
+    assert slate_arg is slate
+    assert set(kwargs) == {"decided_at", "excluded_game_ids", "publish_by"}
+    assert kwargs["decided_at"].tzinfo is not None
+    assert kwargs["excluded_game_ids"] == frozenset({outside})
+    assert kwargs["publish_by"] == slate.lock
+
+    def _late(*_a, **_k):
+        raise PublishDeadlinePassedError("ready after the deadline")
+
+    monkeypatch.setattr(runner, "record_forward_slate", _late)
+    with pytest.raises(live_skip.GamesLockPassedError) as refused:
+        daily_steps.recommend_slate(slate)
+    assert sorted(refused.value.details["game_ids"]) == sorted(slate.game_ids)
+    assert "2026_W03_LAC@BUF" in str(refused.value)
+
+
+def _no_games_env(monkeypatch, tmp_path) -> list[str]:
+    """A run date whose tomorrow has no game; returns the ordered record of what happened."""
+    from forward_ledger import runner
+
+    order: list[str] = []
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
+    monkeypatch.setattr(daily, "_refresh_schedule", lambda *_a, **_k: 2026)
+    schedule = _schedule()
+    schedule = schedule.loc[schedule["game_id"] == "2026_W03_PHI@CHI"]
+    monkeypatch.setattr(
+        "data.storage.load_dataframe", lambda *_a, **_k: schedule.copy()
+    )
+    real_record = daily._record_no_prediction
+
+    def _recording(run_date_et, outcome, game_ids, **kwargs):
+        order.append(outcome)
+        real_record(run_date_et, outcome, game_ids, **kwargs)
+
+    monkeypatch.setattr(daily, "_record_no_prediction", _recording)
+
+    def _settle(**_kwargs):
+        order.append("settle")
+        return runner.SettleOutcome(False, 0, 0, 0, 0)
+
+    monkeypatch.setattr(runner, "settle_ledger", _settle)
+    monkeypatch.setattr(
+        runner, "sync_after_run", lambda **_k: order.append("sync") or None
+    )
+    monkeypatch.setattr(daily, "_write_census", dict)
+    return order
+
+
+def _start() -> datetime:
+    return slate_lock(RUN_DATE).astimezone(UTC) - timedelta(hours=8)
+
+
+def test_settle_runs_on_no_game_day_when_cut_over(monkeypatch, tmp_path, capsys):
+    _cut_over(monkeypatch)
+    order = _no_games_env(monkeypatch, tmp_path)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert order[:2] == ["settle", "no_games"]
+    assert "LEDGER_SETTLE= unchanged" in capsys.readouterr().out
+
+    _cut_over(monkeypatch, on=False)
+    order.clear()
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+    assert order == ["no_games"], "the settle pass ran with the switch off"
+
+
+def test_settle_failure_does_not_stop_the_run(monkeypatch, tmp_path, capsys):
+    from forward_ledger import runner
+
+    _cut_over(monkeypatch)
+    order = _no_games_env(monkeypatch, tmp_path)
+
+    def _broken(**_kwargs):
+        raise RuntimeError("silver games unreadable")
+
+    monkeypatch.setattr(runner, "settle_ledger", _broken)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    out = capsys.readouterr().out
+    assert "LEDGER_SETTLE= failed" in out
+    assert "silver games unreadable" in out
+    assert "no_games" in order, "the run stopped before slate selection"
+
+
+def test_cache_rebuilt_after_changing_settle_on_no_game_day(
+    monkeypatch, tmp_path, capsys
+):
+    import pipeline.steps as steps_mod
+    from forward_ledger import runner
+
+    _cut_over(monkeypatch)
+    order = _no_games_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        runner, "settle_ledger", lambda **_k: runner.SettleOutcome(True, 1, 0, 1, 0)
+    )
+    monkeypatch.setattr(
+        steps_mod, "step_populate_web_cache", lambda: order.append("cache")
+    )
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+    assert order.count("cache") == 1
+    assert order.index("cache") < order.index("no_games")
+
+    def _cache_down():
+        raise OSError("the cache file is locked")
+
+    monkeypatch.setattr(steps_mod, "step_populate_web_cache", _cache_down)
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+    assert "the cache file is locked" in capsys.readouterr().out
+
+
+def test_triggers_regenerated_before_no_games_return(
+    monkeypatch, tmp_path, capsys, trigger_calls
+):
+    from forward_ledger import closing_schedule
+
+    order = _no_games_env(monkeypatch, tmp_path)
+    start = _start()
+
+    def _register(_games, now, **_kwargs):
+        order.append("triggers")
+        trigger_calls.append(now)
+        return closing_schedule.TriggerRegistration("skipped", "probe", (), False)
+
+    monkeypatch.setattr(closing_schedule, "register_closing_triggers", _register)
+
+    assert daily.run_daily(RUN_DATE, start=start, dry_run=False) == 0
+    assert trigger_calls == [start]
+    assert order.index("triggers") < order.index("no_games")
+    assert "CLOSING_TRIGGERS= skipped probe" in capsys.readouterr().out
+
+    trigger_calls.clear()
+    assert daily.run_daily(RUN_DATE, start=start, dry_run=True) == 0
+    assert trigger_calls == [], "the dry run regenerated the triggers"
+
+    def _broken(*_a, **_k):
+        raise RuntimeError("schtasks is not on PATH")
+
+    monkeypatch.setattr(closing_schedule, "register_closing_triggers", _broken)
+    assert daily.run_daily(RUN_DATE, start=start, dry_run=False) == 0
+    assert "CLOSING_TRIGGERS= failed" in capsys.readouterr().out
+
+
+def test_sync_at_end_when_cut_over(monkeypatch, tmp_path):
+    import pipeline.steps as steps_mod
+    from pipeline import orchestrator
+
+    _cut_over(monkeypatch)
+    order = _no_games_env(monkeypatch, tmp_path)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+    assert order.count("sync") == 1
+    assert order[-1] == "sync"
+
+    # A run that raises still syncs, and the raise is unchanged.
+    order.clear()
+    monkeypatch.setattr(
+        "data.storage.load_dataframe", lambda *_a, **_k: _schedule().copy()
+    )
+    monkeypatch.setattr(daily, "_require_slate_is_current_week", lambda *_a: None)
+    monkeypatch.setattr(daily, "build_daily_step_registry", lambda _slate: [])
+    monkeypatch.setattr(steps_mod, "_predictions_output_dir", lambda: tmp_path)
+
+    class _Refused:
+        def __init__(self, **_k):
+            pass
+
+        def run(self):
+            raise RuntimeError("Pre-flight staleness checks failed")
+
+    monkeypatch.setattr(orchestrator, "FridayPipeline", _Refused)
+    with pytest.raises(RuntimeError, match="staleness"):
+        daily.run_daily(RUN_DATE, start=_start(), dry_run=False)
+    assert order.count("sync") == 1
+
+    order.clear()
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=True) == 0
+    assert "sync" not in order, "a dry run synced the ledger"
+
+    _cut_over(monkeypatch, on=False)
+    order.clear()
+    with pytest.raises(RuntimeError, match="staleness"):
+        daily.run_daily(RUN_DATE, start=_start(), dry_run=False)
+    assert "sync" not in order, "the ledger synced with the switch off"
+
+
+def test_one_run_id_per_daily_run(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+
+    from forward_ledger import run_log, runner
+    from forward_ledger.sync import SyncOutcome
+    from pipeline import orchestrator
+
+    _cut_over(monkeypatch)
+    slate = _slate(30)
+    _recommend_env(monkeypatch, tmp_path, slate)
+    run_date = slate.run_date_et
+    start = slate.lock.astimezone(UTC) - timedelta(hours=8)
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
+    monkeypatch.setattr(daily, "_refresh_schedule", lambda *_a, **_k: 2026)
+    monkeypatch.setattr(daily, "_refuse_an_unrunnable_date", lambda *_a, **_k: None)
+    monkeypatch.setattr(daily, "_require_slate_is_current_week", lambda *_a: None)
+    monkeypatch.setattr(daily, "_report_skips", lambda *_a: None)
+    monkeypatch.setattr(
+        "data.storage.load_dataframe", lambda *_a, **_k: slate.schedule.copy()
+    )
+
+    def _record(_slate, **_kwargs):
+        run_log.record_event("append", appended_rows=2)
+
+    def _settle(**_kwargs):
+        run_log.record_event("settle", graded=0)
+        return runner.SettleOutcome(False, 0, 0, 0, 0)
+
+    def _publish(*, ledger_dir, repo_dir, log):
+        log("anchor_push", ok=True, head_hash="h", entry_count=2)
+        return SyncOutcome(False, True, None, False, False, None, None)
+
+    monkeypatch.setattr(runner, "record_forward_slate", _record)
+    monkeypatch.setattr(runner, "settle_ledger", _settle)
+    monkeypatch.setattr(runner, "publish_ledger_state", _publish)
+
+    class _RecommendOnly:
+        def __init__(self, *, steps, deadline):
+            self.steps = steps
+
+        def run(self):
+            step = next(s for s in self.steps if s.name == "generate_recommendations")
+            step.callable()
+            return SimpleNamespace(
+                status="success", skipped_games=[], start_time=start.isoformat()
+            )
+
+    monkeypatch.setattr(orchestrator, "FridayPipeline", _RecommendOnly)
+
+    def _one_run() -> tuple[str, list[dict]]:
+        log_path = run_log.LEDGER_RUN_LOG
+        before = len(run_log.read_events(log_path))
+        assert daily.run_daily(run_date, start=start, dry_run=False) == 0
+        printed = [
+            line.split("= ", 1)[1]
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("LEDGER_RUN_ID= ")
+        ]
+        assert len(printed) == 1, printed
+        return printed[0], run_log.read_events(log_path)[before:]
+
+    first_id, first_events = _one_run()
+    names = {event["event"] for event in first_events}
+    assert {"append", "settle", "anchor_push"} <= names
+    assert {event["run_id"] for event in first_events} == {first_id}
+
+    second_id, second_events = _one_run()
+    assert second_id != first_id
+    assert {event["run_id"] for event in second_events} == {second_id}
+
+    _cut_over(monkeypatch, on=False)
+    _no_games_env(monkeypatch, tmp_path)
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+    assert "LEDGER_RUN_ID=" not in capsys.readouterr().out
+
+
+def test_generate_refuses_forward_mode_after_cutover(monkeypatch):
+    from backtest import weekly_bet_list
+
+    class _Reached(Exception):
+        pass
+
+    def _selection_started(*_a, **_k):
+        raise _Reached
+
+    monkeypatch.setattr(weekly_bet_list, "load_frozen_chain_fit", _selection_started)
+
+    _cut_over(monkeypatch)
+    with pytest.raises(
+        getattr(weekly_bet_list, "ForwardRowsMovedToLedgerError", _Reached),
+        match="daily",
+    ):
+        weekly_bet_list.generate_weekly_bet_list(2026, 6, run_mode="forward")
+    with pytest.raises(_Reached):
+        weekly_bet_list.generate_weekly_bet_list(2025, 6, run_mode="replay")
+
+    _cut_over(monkeypatch, on=False)
+    with pytest.raises(_Reached):
+        weekly_bet_list.generate_weekly_bet_list(2026, 6, run_mode="forward")
