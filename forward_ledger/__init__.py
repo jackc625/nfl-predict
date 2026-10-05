@@ -11,8 +11,10 @@ WHAT LIVES HERE
 ---------------
 * :mod:`forward_ledger.canonical` -- the frozen v1 column lists, the one schema-typed canonical
   serialization, the published genesis constant and the chain-hash formula.
-* :mod:`forward_ledger.store` -- the one-file JSON-lines store, its reader and atomic writer, and
-  the chain verifier.
+* :mod:`forward_ledger.store` -- the one-file JSON-lines store, its reader, the chain verifier, and
+  ``commit_changes``, the ONE guarded write path (writer lock, first pick stands, write-time
+  append-only proof, atomic replace).
+* :mod:`forward_ledger.run_log` -- the closed-vocabulary ledger event log.
 * :mod:`forward_ledger.schema` -- the ledger row key and the import-time proof that the four
   mutability classes of ``api.cache``'s bet-list schema are disjoint and covering.
 * :mod:`forward_ledger.declarations` -- the one loader for the verdict-scope declaration, the
