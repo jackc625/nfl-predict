@@ -283,3 +283,34 @@ class TestPipelineMdPhase31CacheBoundary:
             "PIPELINE.md does not record that the style compile has no make target, which is the "
             "omission that lets compiled-style drift happen unnoticed"
         )
+
+
+class TestPipelineMdPhase34DailyLedgerSteps:
+    """Plan 34-21: the daily run's ledger steps sit in the canonical run sequence.
+
+    After the 2026-10-05 cutover the daily run regenerates the closing triggers, settles the
+    ledger, writes the forward rows in its recommend step and ends with the sync. A run sequence
+    that omits them sends a reader looking for forward rows in a store that no longer holds them.
+    """
+
+    def test_the_daily_run_section_is_present(self):
+        """The scheduled daily run and its entry point are documented."""
+        content = _read_pipeline_md()
+        assert "### The daily run and its ledger steps (the scheduled path)" in content
+        assert "scripts/daily_lock_pipeline.py" in content
+
+    def test_the_ledger_steps_are_named_in_order(self):
+        """Trigger regeneration, settle, the ledger write and the sync appear in run order."""
+        content = _read_pipeline_md()
+        steps = (
+            "**Closing-trigger regeneration**",
+            "**Settle pass**",
+            "**ledger write**",
+            "**End-of-run sync**",
+        )
+        missing = [step for step in steps if step not in content]
+        assert not missing, f"PIPELINE.md daily run missing ledger steps: {missing}"
+        positions = [content.index(step) for step in steps]
+        assert positions == sorted(positions), (
+            "PIPELINE.md lists the daily run's ledger steps out of run order"
+        )

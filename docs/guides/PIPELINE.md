@@ -308,3 +308,43 @@ uv run python scripts/friday_pipeline.py --log-level INFO
   run instead of discarding prediction work that already succeeded. Running stage 7 by
   hand remains the recovery path, and it is the exact command the `/bets` stale-cache
   refusal tells the reader to re-run. See `AUTOMATION.md` section 4.
+
+### The daily run and its ledger steps (the scheduled path)
+
+Since Plan 33.2-28 the scheduled task runs the DAILY run at 5 PM ET, not the Friday
+orchestrator; `AUTOMATION.md` section 1 explains it. Since the forward-ledger cutover on
+2026-10-05 (Phase 34) the daily run also keeps the ledger. Its sequence, in order:
+
+```powershell
+uv run python scripts/daily_lock_pipeline.py
+```
+
+1. **Passed-lock refusal**, before any request (at or after 18:00 ET it records `lock_passed`
+   and stops).
+2. **Run id.** One id is bound for the whole run and printed as `LEDGER_RUN_ID=`; every ledger
+   event below carries it.
+3. **Schedule refresh** -- results, moved games and new playoff rounds arrive here.
+4. **Closing-trigger regeneration** -- the `NFL_Predict_Closing` wake task is re-registered with
+   triggers for the next 8 days of real kickoffs (`CLOSING_TRIGGERS=`). Every refreshed day,
+   whether or not tomorrow has games; a skip or failure is recorded and never fails the run.
+5. **Settle pass** -- one ledger write that grades settled rows from the refreshed scores,
+   appends any correction entry a corrected score is owed, and finalizes closing-line columns
+   (`LEDGER_SETTLE=`). A failed settle is recorded and never stops tonight's decisions.
+6. **Select tomorrow's games.** None: if the settle pass changed the ledger, the web cache is
+   rebuilt so the new grades reach `/bets` (`WEB_CACHE_AFTER_SETTLE=`); then a `no_games` record
+   and on to step 8.
+7. **The run proper** -- collection, the full-history gold build, prediction -- through the
+   daily step registry. Its recommend step is the **ledger write**: tomorrow's forward bets are
+   stamped and appended to `ledger/forward_2026.jsonl` (first pick stands: a re-run that decides
+   a stored row differently is refused and printed as `LEDGER_REFUSED=`), and the web cache is
+   then rebuilt from the ledger.
+8. **End-of-run sync**, whether the day returned or raised: a new anchor commit on
+   `ledger-anchor` when the head moved, pushed to GitHub, then the private backup committed and
+   pushed (`LEDGER_SYNC=`). A failed push is recorded in `logs/ledger_runs.jsonl` and retried by
+   the next sync; it never changes the run's exit code.
+
+Forward rows now come ONLY from this run. `scripts/generate_bet_list.py` (sub-step 6a) and the
+Friday orchestrator's `generate_recommendations` step refuse to write forward rows after the
+cutover (`ForwardRowsMovedToLedgerError`). The script has no replay mode, so 6a is refused
+outright; `outputs/bet_list/` keeps only the 2025 replay rows. The owner procedures -- verify, replay, restore, recording a real bet and
+a manual `uv run python -m scripts.sync_ledger` -- are in `RUNBOOK.md`, "Forward ledger".

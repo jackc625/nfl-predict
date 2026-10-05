@@ -165,3 +165,45 @@ class TestAutomationMdAnchors:
         content = _read_automation_md()
         assert "AUDIT-REPORT.md" in content
         assert "PIPELINE.md" in content
+
+
+class TestPhase34LedgerAutomation:
+    """Plan 34-21: the forward ledger's scheduled side is documented where the owner looks first.
+
+    The closing wake task, the written Odds API credit budget (LDGR-07), the two deploy keys with
+    the rulesets -- including the plain statement that the private backup has none -- and the
+    ledger run log each have a section, pinned by its heading.
+    """
+
+    def test_documents_every_ledger_section(self):
+        """The four Phase-34 sections are present, named in the drift message."""
+        content = _read_automation_md()
+        headings = (
+            "## Closing-line wake task (NFL_Predict_Closing)",
+            "## Odds API credit budget",
+            "## Ledger pushes and credentials",
+            "## Ledger run log",
+        )
+        missing = [heading for heading in headings if heading not in content]
+        assert not missing, f"AUTOMATION.md missing ledger sections: {missing}"
+
+    def test_the_credit_budget_table_keeps_every_month_under_the_quota(self):
+        """The published table is present and every month's total and worst case is under 500."""
+        content = _read_automation_md()
+        rows = [
+            [cell.strip() for cell in line.strip("|").split("|")]
+            for line in content.splitlines()
+            if line.startswith("| 202")
+        ]
+        assert len(rows) >= 5, (
+            f"AUTOMATION.md credit budget table has {len(rows)} months"
+        )
+        over = [row[0] for row in rows if int(row[5]) >= 500 or int(row[6]) >= 500]
+        assert not over, f"AUTOMATION.md budget months at or over 500 credits: {over}"
+
+    def test_states_the_private_backup_has_no_ruleset(self):
+        """The backup's only protection is never forcing a push; the doc must not imply more."""
+        content = _read_automation_md()
+        assert "The private backup repository has NO ruleset." in content, (
+            "AUTOMATION.md does not state plainly that the private backup has no ruleset"
+        )

@@ -5,6 +5,12 @@
 > lock (section 1). The weekly Friday run is retired as a scheduled job;
 > `scripts/friday_pipeline.py` remains as a manual tool. Sections 2-7 still describe the
 > orchestrator both runs share; sections 8-9 are the Phase 21 record and are kept as history.
+>
+> **Added 2026-10-05 (Phase 34):** the forward bet ledger went live. Four sections after
+> section 10 explain its scheduled side: the closing-line wake task `NFL_Predict_Closing`, the
+> Odds API credit budget, the ledger's push credentials and rulesets, and its run log. The daily
+> run's ledger steps are listed in `PIPELINE.md`; the owner procedures (restore, re-adding the
+> deploy keys, recording a real bet, verify and replay) are in `RUNBOOK.md`, "Forward ledger".
 
 This is the single source of truth for HOW the Friday automation runs and how to
 tell whether a run succeeded. It explains what fires, when, what each of the 18
@@ -728,6 +734,186 @@ Section 10 -- it is NOT a matter of populating config keys.
 For the broader deferred robustness/hygiene catalog (D-11-B SQL-string-build,
 silent in-memory-DB fallback, the `20-REVIEW.md` WR-05..07 / IN-01..04 items, etc.) see
 `AUDIT-REPORT.md`'s "Non-correctness findings (deferred)" section.
+
+---
+
+## Closing-line wake task (NFL_Predict_Closing)
+
+Added 2026-10-05 (Phase 34). A second scheduled task, beside `NFL_Predict_Pipeline`, takes the
+closing-line reading every forward bet is later compared against (forward closing-line value,
+which is report-only).
+
+- **What it runs:** `uv run python -m scripts.capture_closing_lines` (the absolute `uv.exe` path,
+  working directory the repository). It takes no arguments. It picks the unplayed games kicking
+  off in the next 60 minutes; with none it records `no_games` and makes no request, so it spends
+  nothing. Otherwise it reads the remaining credits (free), applies the credit rule below, requests
+  ONE odds board and appends it to `data/silver/odds_snapshot.parquet` as closing rows. It prints
+  one `CLOSING_CAPTURE=` line and writes exactly one `closing_capture` event: `no_games`,
+  `skipped` (with the reason), `captured` or `failed`. The odds store has one lock,
+  `data/silver/.odds_snapshot.lock`, shared with the daily run's capture, so the two never write at
+  once. A closing row never decides a bet: every decision reader judges a row by its capture time
+  against the lock, and closing rows are captured after it.
+- **When it wakes:** only at real kickoff windows taken from the schedule, never on a repeating
+  timer. A window opens 10 minutes before the earliest kickoff it serves and covers every kickoff
+  within 60 minutes of that start, so 4:05 and 4:25 PM games share one reading. Each window is one
+  `TimeTrigger` whose `EndBoundary` is 30 minutes after its start, so a trigger that did not fire
+  in time never fires late, and `StartWhenAvailable` is false, so a missed window is simply missed,
+  never run on wake.
+- **AC power only:** `WakeToRun` is true, and Windows allows wake timers on AC power only, so a
+  reading is taken only while the laptop is plugged in. The principal and settings are the daily
+  task's (S4U logon as `jackc`, `HighestAvailable`, `IgnoreNew`, both battery flags false); the
+  one difference is a 20-minute `ExecutionTimeLimit`.
+- **Triggers regenerated every day from real kickoffs:** the committed template,
+  `deployment/windows_closing_scheduler.xml`, carries no trigger. Every day the 5 PM daily run
+  refreshes the schedule, it re-registers the task with one trigger per window over the next 8
+  days (`schtasks /create /xml logs/closing_task_generated.xml /f`) and reads it back. It does so
+  whether or not tomorrow has games, and it never fails the run: the outcome is printed as
+  `CLOSING_TRIGGERS= <outcome> <reason>` and recorded as a `closing_triggers` event. It skips with
+  `closing_task_not_installed`, `closing_task_running` or `machine_not_eastern`. Each registration
+  covers 8 days, so one missed or failed daily run loses nothing.
+- **The S4U task regenerates the triggers itself (measured).** The S4U push smoke on 2026-10-05
+  (`tests/phase34_state.py`, `P34_S4U_PUSH_SMOKE`) showed the S4U context can create, read back
+  and delete a scheduled task. So no owner-run weekly install is needed; the fallback planned for
+  an S4U context that could not register tasks is not in use.
+- **Install and read back:** the first install, or any re-install, is an owner step in an ELEVATED
+  terminal: `uv run python deployment/setup_scheduling.py --install-closing`. It refuses a machine
+  that is not on Eastern time, reads the silver schedule, registers the next 8 days and reads the
+  task back. Read it back at any time with
+  `uv run python deployment/setup_scheduling.py --verify-installed`, which works unelevated and
+  prints `NFL_TASKS=`, `CLOSING_TRIGGERS= <expected> | <installed> | MATCH`,
+  `CLOSING_READBACK_MATCH= True` and `READBACK_MATCH= True`. The trigger comparison is against the
+  windows due at the moment you run it, so a `MISMATCH` shortly after a window opened only means
+  that window has passed; the next daily run re-registers. Remove the task with
+  `schtasks /delete /tn NFL_Predict_Closing /f` (elevated).
+- **Elevation, stated once:** registering or deleting an S4U + `HighestAvailable` task -- `--install`,
+  `--install-closing`, any S4U smoke task, `schtasks /delete` -- needs an elevated ("Run as
+  administrator") terminal; an agent or normal session gets "Access is denied". Nothing INSIDE
+  the running tasks needs elevation: both deploy-key pushes and the daily trigger regeneration run
+  under S4U with no owner action.
+- **Installed** by the owner from an elevated terminal on 2026-10-05 at 17:52 ET, read back with 7
+  triggers and `CLOSING_READBACK_MATCH= True`; its first wake was that evening at 20:05 ET.
+
+A game whose reading was skipped or missed keeps NULL closing columns with a recorded reason
+(`credit_reserve`, `credit_header_unreadable`, `capture_failed`, else `capture_missed`); the settle
+pass finalizes them once, after the game's result is recorded.
+
+## Odds API credit budget
+
+The Odds API key is the free Starter plan: 500 credits a month. One board (moneyline, spread and
+total, one region) costs 3 credits. The daily decision capture spends one board on every decision
+day -- a day whose next ET day has a game -- and each closing reading window spends one more.
+
+The written budget, measured by `tests/unit/test_credit_budget.py` on the recorded 2026 schedule
+(272 games, weeks 1-18; run it with `-rP` to print the table):
+
+| Month | Decision days | Decision credits | Closing windows | Closing credits | Total | Worst case (decision x3 + closing) |
+|---|---|---|---|---|---|---|
+| 2026-09 | 11 | 33 | 16 | 48 | 81 | 147 |
+| 2026-10 | 13 | 39 | 25 | 75 | 114 | 192 |
+| 2026-11 | 15 | 45 | 30 | 90 | 135 | 225 |
+| 2026-12 | 15 | 45 | 26 | 78 | 123 | 213 |
+| 2027-01 | 3 | 9 | 5 | 15 | 24 | 42 |
+
+Every month is under 500, worst case included, with at least 2.2x margin. The worst case assumes
+every decision day spends its full 3-board retry bound. The busiest month is November: 135 credits
+planned, 225 at worst.
+
+**Playoffs are not in the table.** The recorded schedule held weeks 1-18 only, because playoff
+weeks 19-22 were not yet seeded, so the January row covers weeks 17-18 alone and February is
+absent. The research estimate for the full January is about 93 credits, plus about 6 for the Super
+Bowl in February -- both far under the quota.
+
+**The reserve rule: the decision capture always comes first.** Before each closing board, the
+reading checks that the credits left after it still cover every remaining decision capture this
+calendar month at the retry bound: reserve = 3 credits x 3 boards x the month's remaining decision
+days, today included. When `remaining - 3` is below the reserve, the reading is skipped with
+`credit_reserve`. The decision capture never consults this rule.
+
+**The credit count is read, never computed, and reading it costs 0 credits.** The remaining count
+comes from the `x-requests-remaining` header of the free `/v4/sports` endpoint, read just before
+each board. It is never worked out from our own spending, because the provider resets the quota
+"on the first of every month" without saying at what hour or in what time zone. An absent or
+unreadable header skips the reading with `credit_header_unreadable`: it fails closed and spends
+nothing.
+
+## Ledger pushes and credentials
+
+The ledger is published to two places, each with its own SSH deploy key (GitHub refuses one deploy
+key on two repositories):
+
+| Key file (owner-only, outside the repo) | Registered on | What the code pushes with it | Public fingerprint |
+|---|---|---|---|
+| `C:/Users/jackc/.ssh/nfl_ledger_anchor_ed25519` | `jackc625/nfl-predict` (public), write access | only `ledger-anchor`, by the one refspec `refs/heads/ledger-anchor:refs/heads/ledger-anchor`, never forced | `SHA256:xsqcWlikkdWs9BMB/BwTwIPCdO8wGbbDbav2ueMg8n4` |
+| `C:/Users/jackc/.ssh/nfl_ledger_backup_ed25519` | `jackc625/nfl-predict-ledger` (private), write access | only the backup's `main` (`HEAD:refs/heads/main`), never forced | `SHA256:SYq1qgchjEPGiE7AeHC2E1WjF3jt0uzjdfmf9SoTCDQ` |
+
+- **The push can only use that key.** Each push runs Windows OpenSSH by absolute path
+  (`C:/Windows/System32/OpenSSH/ssh.exe`) with that one key and no agent (`IdentitiesOnly`),
+  `BatchMode`, and `StrictHostKeyChecking=yes` against GitHub's host keys pinned in
+  `C:/Users/jackc/.ssh/nfl_ledger_github_known_hosts`. It cannot fall back to the owner's own
+  credentials. `origin` stays HTTPS for the owner's normal work; ledger pushes name the SSH URL
+  explicitly. Measured from the real S4U context on 2026-10-05: GitHub greeted each key as its
+  repository, not as the owner, and both pushes landed.
+- **The keys have no passphrase,** because a scheduled task cannot type one, so their file
+  permissions are the protection: `JACKSLAPTOP\jackc` alone has access. They are never committed
+  or printed.
+- **The keys are tied to the owner's `gh` login.** They were added with `gh repo deploy-key add
+  --allow-write`, and GitHub deletes keys added by `gh` when that login is revoked, so logging `gh`
+  out removes them. The symptom is a growing `REMOTE_ANCHOR_BEHIND_BY=` / `BACKUP_BEHIND_BY=` in
+  verify; `RUNBOOK.md`, "If pushes start failing", re-adds them.
+- **The `master` ruleset** (`master: owner-only updates (ledger deploy key refused)`, id 24502158)
+  puts update, deletion and non-fast-forward rules on the public `master`, with only the repository
+  admin role allowed to bypass. No deploy key is on the bypass list, so GitHub itself refuses a
+  deploy-key push to `master`; the owner's normal pushes go through as admin (GitHub prints
+  "Bypassed rule violations"). It was verified by reading it back from the API, never by a test
+  push.
+- **The `ledger-anchor` ruleset** (id 24536696, created right after the first anchor push) forbids
+  deleting or force-pushing that branch, with no bypass actor at all, so the published history of
+  heads cannot be rewritten.
+- **The private backup repository has NO ruleset.** GitHub Free offers none on private
+  repositories. That is NOT the same protection as the public branches have: the backup's only
+  protection is that no ledger push ever forces, so every earlier backup commit stays reachable on
+  `main`. The public anchor is the outside check on it -- a backup that had been rewritten would
+  disagree with the published head, and verify after a restore would fail.
+- **Failures are recorded and retried, never fatal.** Every push outcome is a run-log event
+  (`anchor_push`, `backup_push`, with `ok` and the error). A failed push, an unreachable GitHub or a
+  missing or locked backup repository never fails the daily run; the next sync carries the current
+  head. Retry by hand with `uv run python -m scripts.sync_ledger`; audit with
+  `uv run python -m scripts.verify_ledger`. Only a broken chain refuses a sync (`sync_refused`),
+  because nothing is ever published from a broken chain.
+- **Read the whole setup back** with `uv run python -m scripts.setup_ledger_remote verify`: keys,
+  file permissions, pinned host keys, the backup's visibility, both deploy keys, both rulesets and
+  the nested `ledger/` repository. It ends `SETUP_READBACK_MATCH= True`.
+
+## Ledger run log
+
+`logs/ledger_runs.jsonl` (gitignored) gets one JSON line per ledger event, appended and never
+rewritten. Each line carries `event`, `at_utc` and `run_id`, plus the event's own facts --
+outcomes, counts, row keys and hashes, never a key or a secret. The event names are a closed list;
+a name outside it is refused, so a typo cannot create a second spelling a reader would miss:
+
+| Event | Written when |
+|-------|--------------|
+| `append` | the daily run's recommend step appended forward rows (counts of appended, identical and refused rows) |
+| `first_pick_refusal` | a re-run decided a row differently from the stored one; the first pick stands (also printed as `LEDGER_REFUSED=`) |
+| `settle` | the settle pass wrote grades, corrections or closing values (with the counts), or failed (`ok` false, with the error); a pass with nothing owed writes nothing |
+| `correction_appended` | a score corrected after grading changed a row's outcome, so a correction entry was appended |
+| `correction_label_withdrawn` | a graded game's corrected score is now missing; recorded for the owner, nothing appended |
+| `closing_finalized` | a row's closing columns were set: the closing values, or NULL with a reason |
+| `anchor_commit`, `anchor_push` | the sync committed a new anchor (only when the head moved) and pushed it |
+| `backup_commit`, `backup_push` | the sync committed the changed `ledger/` directory and pushed the backup |
+| `sync_refused` | the sync refused to publish (broken chain or unreadable ledger) |
+| `closing_triggers` | the daily run re-registered (or skipped re-registering) the closing wake task |
+| `closing_capture` | one closing wake ran: `no_games`, `skipped`, `captured` or `failed` |
+| `fill_recorded` | the owner recorded a real bet's fill (`scripts.record_fill`) |
+| `migration` | the one-time migration of the old writer's rows (2026-10-05) |
+| `cutover` | reserved in the list for the go-live switch; nothing writes it today (the switch was a commit) |
+
+**`run_id` ties one daily run together.** The daily run binds one id for its whole run, prints it
+as `LEDGER_RUN_ID=`, and every ledger event it writes -- the append, the settle pass and the
+end-of-run sync's anchor and backup events -- carries that id. So "did this run's rows reach
+GitHub?" is answered by finding the run's `append` and then its `anchor_push` and `backup_push`
+with the same `run_id`. Events written outside a daily run (an owner CLI, a closing wake) carry
+`run_id` null. Every sync event also carries the `head_hash` and `entry_count` it published.
 
 ---
 
