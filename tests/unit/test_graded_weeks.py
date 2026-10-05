@@ -39,10 +39,13 @@ from backtest.weekly_bet_list import BET_LIST_ARTIFACT_NAME
 from data import graded_weeks as graded_weeks_module
 from data.graded_weeks import (
     GRADED_WEEKS_SOURCE,
+    GRADED_WEEKS_SOURCE_BET_LIST,
+    GRADED_WEEKS_SOURCE_LEDGER,
     TERMINAL_GRADING_STATUSES,
     GradedWeeksUnavailable,
     graded_weeks,
     graded_weeks_record,
+    graded_weeks_source,
 )
 
 # The four grading statuses, taken from the ONE source rather than re-typed here either.
@@ -105,8 +108,10 @@ class TestAnAbsentStoreIsARecordedEmptySet:
     def test_the_record_carries_the_source_on_the_absent_path(
         self, tmp_path: Path
     ) -> None:
+        # Was: ``== GRADED_WEEKS_SOURCE``. Phase 34 repointed that constant at the ledger; with
+        # the cutover switch off the record reports the store it actually read, the bet list.
         record = graded_weeks_record(2026, output_dir=tmp_path)
-        assert record["source"] == GRADED_WEEKS_SOURCE
+        assert record["source"] == GRADED_WEEKS_SOURCE_BET_LIST
 
     def test_an_existing_store_with_no_graded_rows_has_no_reason(
         self, tmp_path: Path
@@ -288,11 +293,113 @@ class TestTheRecordSerialisesStraightIntoAManifest:
         directory = _write_bet_list(tmp_path, [_row(2026, 2, _WIN)])
         record = graded_weeks_record(2026, output_dir=directory)
         assert record["season"] == 2026
-        assert record["source"] == GRADED_WEEKS_SOURCE
+        # Was: ``== GRADED_WEEKS_SOURCE`` (see the absent-path test above).
+        assert record["source"] == GRADED_WEEKS_SOURCE_BET_LIST
 
     def test_the_source_names_where_the_answer_came_from(self) -> None:
-        assert "weekly_bet_list" in GRADED_WEEKS_SOURCE
-        assert "bet_list.parquet" in GRADED_WEEKS_SOURCE
+        # Was: asserted on ``GRADED_WEEKS_SOURCE``, which now names the ledger (Phase 34).
+        assert "weekly_bet_list" in GRADED_WEEKS_SOURCE_BET_LIST
+        assert "bet_list.parquet" in GRADED_WEEKS_SOURCE_BET_LIST
+        assert GRADED_WEEKS_SOURCE == GRADED_WEEKS_SOURCE_LEDGER
+        assert "forward_2026.jsonl" in GRADED_WEEKS_SOURCE_LEDGER
+        assert graded_weeks_source() == GRADED_WEEKS_SOURCE_BET_LIST
+
+
+def _ledger_row(week: int, *, arm: str = "live") -> dict[str, object]:
+    """One ledger-written forward row's immutable half for *week* (every stamp set)."""
+    from tests.unit.test_forward_ledger_store import make_row
+
+    return make_row(game_id=f"2026_{week:02d}_HOME_AWAY", week=week, arm=arm)
+
+
+def _write_ledger(tmp_path: Path, rows: list[tuple[dict[str, object], str]]) -> Path:
+    """A forward ledger under *tmp_path* holding *rows*, each graded to its status."""
+    from datetime import UTC, datetime
+
+    from forward_ledger.schema import LEDGER_ROW_KEY
+    from forward_ledger.store import append_rows, apply_updates
+
+    directory = tmp_path / "ledger"
+    append_rows(directory, [row for row, _ in rows])
+    settled = {
+        tuple(row[name] for name in LEDGER_ROW_KEY): {
+            "grading_status": status,
+            "outcome": status == _WIN,
+            "payout_flat": 0.9 if status == _WIN else -1.0,
+            "realized_units": 1.0,
+            "graded_at": datetime(2026, 10, 19, 21, 0, tzinfo=UTC),
+        }
+        for row, status in rows
+        if status != GRADING_STATUS_PENDING
+    }
+    apply_updates(directory, grading_updates=settled)
+    return directory
+
+
+class TestTheSeamFollowsTheCutoverSwitch:
+    """Phase 34 (Plan 34-15): with the switch ON the seam reads the forward ledger, and says so."""
+
+    @pytest.fixture(autouse=True)
+    def _cut_over(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from forward_ledger import cutover
+
+        monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", True)
+
+    def test_switch_on_reads_ledger_graded_weeks(self, tmp_path: Path) -> None:
+        directory = _write_ledger(
+            tmp_path,
+            [
+                (_ledger_row(3), _WIN),
+                (_ledger_row(4), _LOSS),
+                (_ledger_row(5), GRADING_STATUS_PENDING),
+            ],
+        )
+
+        assert graded_weeks(2026, output_dir=directory) == {3, 4}
+        record = graded_weeks_record(2026, output_dir=directory)
+        assert record["weeks"] == [3, 4]
+        assert record["source"] == GRADED_WEEKS_SOURCE_LEDGER
+        assert record["reason"] is None
+        assert graded_weeks_source() == GRADED_WEEKS_SOURCE_LEDGER
+
+    def test_switch_on_absent_ledger_is_recorded_empty(self, tmp_path: Path) -> None:
+        record = graded_weeks_record(2026, output_dir=tmp_path / "ledger")
+        assert record["weeks"] == []
+        assert record["resolved"] is True
+        assert "forward_2026.jsonl" in str(record["reason"])
+
+    def test_switch_on_broken_chain_raises(self, tmp_path: Path) -> None:
+        from forward_ledger.store import ledger_path
+
+        directory = _write_ledger(tmp_path, [(_ledger_row(3), _WIN)])
+        path = ledger_path(directory)
+        tampered = path.read_bytes().replace(
+            b'"market_value":-2.5', b'"market_value":-1.5'
+        )
+        assert tampered != path.read_bytes()
+        path.write_bytes(tampered)
+
+        with pytest.raises(GradedWeeksUnavailable, match="chain"):
+            graded_weeks(2026, output_dir=directory)
+        assert not issubclass(
+            GradedWeeksUnavailable, (RuntimeError, ValueError, ImportError)
+        )
+
+        path.write_bytes(b"not one json line\n")
+        with pytest.raises(GradedWeeksUnavailable) as malformed:
+            graded_weeks_record(2026, output_dir=directory)
+        assert malformed.value.__cause__ is not None
+
+    def test_both_arms_count(self, tmp_path: Path) -> None:
+        directory = _write_ledger(
+            tmp_path,
+            [
+                (_ledger_row(6), GRADING_STATUS_PENDING),
+                (_ledger_row(6, arm="shadow"), _PUSH),
+                (_ledger_row(7, arm="shadow"), GRADING_STATUS_PENDING),
+            ],
+        )
+        assert graded_weeks(2026, output_dir=directory) == {6}
 
 
 class TestTheSeamKeepsItsDependenciesOutOfImportPosition:
