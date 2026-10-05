@@ -831,8 +831,6 @@ def test_arm_vocabulary() -> None:
     ``BET_STATUS_LIVE`` means "a bet was placed"; ``ARM_LIVE`` means "the production arm decided
     this row". Same word, different column (34-RESEARCH Pitfall 1).
     """
-    from forward_ledger.schema import LEDGER_ROW_KEY
-
     from api.cache import (
         ARM_LIVE,
         ARM_SHADOW,
@@ -843,6 +841,7 @@ def test_arm_vocabulary() -> None:
         VERDICT_SCOPE_VERDICT,
         VERDICT_SCOPES,
     )
+    from forward_ledger.schema import LEDGER_ROW_KEY
 
     assert ARMS == ("live", "shadow")
     assert (ARM_LIVE, ARM_SHADOW) == ("live", "shadow")

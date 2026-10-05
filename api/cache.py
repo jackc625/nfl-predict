@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS cache_meta (
 );
 
 CREATE TABLE IF NOT EXISTS bet_list (
-    -- IMMUTABLE recommendation facts (BET_LIST_IMMUTABLE_COLUMNS, 23) --------------
+    -- IMMUTABLE recommendation facts (BET_LIST_IMMUTABLE_COLUMNS, 34) --------------
     game_id VARCHAR,
     season INTEGER,
     week INTEGER,
@@ -182,13 +182,38 @@ CREATE TABLE IF NOT EXISTS bet_list (
     provenance VARCHAR,
     validation_type VARCHAR,
     decided_at_utc VARCHAR,
+    -- Phase-34 stamps (LDGR-02/03/09/10), immutable like every fact above -------------
+    arm VARCHAR,
+    model_artifact_id VARCHAR,
+    blend_id VARCHAR,
+    recipe_id VARCHAR,
+    fill_convention_id VARCHAR,
+    upstream_capture_key VARCHAR,
+    gold_generation_key VARCHAR,
+    odds_snapshot_digest VARCHAR,
+    decision_snapshot_digest VARCHAR,
+    verdict_scope VARCHAR,
+    regime_label VARCHAR,
     -- MUTABLE grading facts (BET_LIST_GRADING_COLUMNS, 6) --------------------------
     grading_status VARCHAR,
     outcome BOOLEAN,
     clv DOUBLE,
     payout_flat DOUBLE,
     realized_units DOUBLE,
-    graded_at TIMESTAMP
+    graded_at TIMESTAMP,
+    -- REAL-FILL facts (BET_LIST_FILL_COLUMNS, 5), NULL on every paper row (LDGR-04) ---
+    fill_sportsbook VARCHAR,
+    fill_line DOUBLE,
+    fill_odds DOUBLE,
+    fill_stake_dollars DOUBLE,
+    fill_at_utc VARCHAR,
+    -- CLOSING-LINE facts (BET_LIST_CLOSING_COLUMNS, 6), report-only (LDGR-07) --------
+    closing_line DOUBLE,
+    closing_odds DOUBLE,
+    closing_sportsbook VARCHAR,
+    closing_captured_at VARCHAR,
+    forward_clv DOUBLE,
+    closing_null_reason VARCHAR
     -- No PRIMARY KEY (mirrors betting_bets WR-02): a flat per-bet ledger so multiple
     -- bets on one game_id are permitted and a re-bet is never silently dropped. A
     -- (game_id, target) PK would let INSERT OR REPLACE drop a same-target re-bet.
@@ -684,8 +709,9 @@ def _load_betting_bets(
 # Generic bet-list materialization (Phase 31, plan 31-01; PROD-02, D31-20/22)
 # ---------------------------------------------------------------------------
 
-# The LOCKED column order, spelled in TWO named DISJOINT halves whose concatenation IS
-# BET_LIST_COLUMNS. WHY the split (REVIEW-FWD-GRADE): a forward row is written at freeze, when the
+# The LOCKED column order, spelled in named DISJOINT classes whose concatenation IS
+# BET_LIST_COLUMNS -- immutable and grading here, with the Phase-34 fill and closing classes after
+# them. WHY the first split (REVIEW-FWD-GRADE): a forward row is written at freeze, when the
 # result does not yet exist. If the WHOLE row were immutable the row could never be graded and the
 # self-grading honesty loop would be silently disabled. So the RECOMMENDATION facts below are
 # immutable -- once written they are the record of what was recommended and when -- and the GRADING
@@ -735,6 +761,35 @@ BET_LIST_IMMUTABLE_COLUMNS: list[str] = [
     # already past its freeze, and filling them from ``snapshot_ts`` would stamp an observation
     # time nobody observed.
     "decided_at_utc",
+    # ---- Phase 34 (forward ledger) stamps, appended after ``decided_at_utc`` as D33-06 planned.
+    # IMMUTABLE because each is a claim about the moment of decision; a stamp that could change
+    # later is no evidence of what decided the row. Every one is NULL on a row written before the
+    # ledger went live and is NEVER reconstructed (SPEC must-not). This list must stay equal to
+    # ``forward_ledger.canonical.IMMUTABLE_COLUMNS_V1`` -- the chain's frozen v1 column list --
+    # which ``forward_ledger.schema`` checks at import.
+    #
+    # LDGR-02: which arm decided the row (``ARMS``). Part of the ledger row key, so a live and a
+    # shadow row for the same game/week/target are two rows, never one overwriting the other.
+    "arm",
+    # LDGR-03: the production model artifact and blend that SCORED the row -- carried from scoring,
+    # never re-read at write time, so an ``artifacts/latest.json`` swap mid-run cannot mis-stamp.
+    "model_artifact_id",
+    "blend_id",
+    # LDGR-03: the committed recipe-registry entry (training recipe + bet rule) in force.
+    "recipe_id",
+    # LDGR-11: the pre-registered pricing/sizing convention the row was priced under (fill-v1).
+    "fill_convention_id",
+    # LDGR-09: the reproduction key -- the Phase-32 live upstream capture identity, the gold build
+    # the inputs came from, the odds snapshot's digest, and the stored decision-input snapshot's
+    # digest. Inside the immutable half, so the chain covers them.
+    "upstream_capture_key",
+    "gold_generation_key",
+    "odds_snapshot_digest",
+    "decision_snapshot_digest",
+    # LDGR-10: whether the row counts toward the pre-registered 2026 verdict (``VERDICT_SCOPES``),
+    # and the D40-08 regime label weeks 2-4 carry (``REGIME_LABEL_BOOTSTRAP``).
+    "verdict_scope",
+    "regime_label",
 ]
 
 # WHY these six, and not ``outcome`` alone (REVIEW-SCHEMA):
@@ -754,13 +809,42 @@ BET_LIST_GRADING_COLUMNS: list[str] = [
     "graded_at",
 ]
 
+# The THIRD mutability class (LDGR-04, D40-05): what was ACTUALLY bet -- book, line, price, stake
+# and fill time. NULL on every paper row (the default), outside the hash chain, and written only
+# by the dedicated owner-run fill path, which moves each column from NULL to a value once (D-17).
+# Present from the first ledger row so a real-money week needs no schema change.
+BET_LIST_FILL_COLUMNS: list[str] = [
+    "fill_sportsbook",
+    "fill_line",
+    "fill_odds",
+    "fill_stake_dollars",
+    "fill_at_utc",
+]
+
+# The FOURTH class (LDGR-07, D-09): the closing line read from a near-kickoff capture, and the
+# forward closing-line value measured against it. REPORT-ONLY -- it feeds no decision -- and
+# DISTINCT from the decision-time ``clv`` grading column, which keeps its published name. Set once
+# from an in-window capture or left NULL with a ``closing_null_reason`` (``CLOSING_NULL_REASONS``);
+# never filled from the decision-time line.
+BET_LIST_CLOSING_COLUMNS: list[str] = [
+    "closing_line",
+    "closing_odds",
+    "closing_sportsbook",
+    "closing_captured_at",
+    "forward_clv",
+    "closing_null_reason",
+]
+
 # The single source of the column order shared by the schema, the explicit-column INSERT and the
-# contract tests. 23 immutable + 6 grading = 29 (Phase 33 added ``decided_at_utc``; the width was
-# 22 + 6 = 28 before it, which is the width every stored parquet still carries and the reason
-# ``backtest.weekly_bet_list.read_bet_list_with_schema_shim`` exists).
+# contract tests: four pairwise-disjoint classes, 34 immutable + 6 grading + 5 fill + 6 closing =
+# 51 (Phase 34). The width history is why ``backtest.weekly_bet_list.read_bet_list_with_schema_shim``
+# exists: 22 + 6 = 28 before Phase 33 added ``decided_at_utc``, then 29 until Phase 34 -- and a
+# stored parquet still carries whichever width last wrote it.
 BET_LIST_COLUMNS: list[str] = [
     *BET_LIST_IMMUTABLE_COLUMNS,
     *BET_LIST_GRADING_COLUMNS,
+    *BET_LIST_FILL_COLUMNS,
+    *BET_LIST_CLOSING_COLUMNS,
 ]
 
 # The CLOSED four-state grading vocabulary. ``pending`` is an ungraded forward row; ``push`` is a
@@ -786,6 +870,40 @@ VALIDATION_TYPE_FORWARD_REALIZED = "forward_realized"
 RUN_MODE_REPLAY = "replay"
 RUN_MODE_FORWARD = "forward"
 
+# The CLOSED ``arm`` vocabulary (LDGR-02). Every row this phase writes is ``ARM_LIVE``; only the
+# Phase-37 frozen shadow arm writes ``ARM_SHADOW``.
+#
+# NAMED ``ARM_*`` AND NOT ``*_LIVE`` ON PURPOSE: ``BET_STATUS_LIVE`` (below) is ALSO the string
+# ``"live"`` but means something unrelated -- "a bet was placed" in the ``status`` column. A
+# suppressed row of the live arm is ``arm='live'`` with ``status='suppressed'``; a constant named
+# ``LIVE`` alone would invite exactly that confusion (34-RESEARCH Pitfall 1).
+ARM_LIVE = "live"
+ARM_SHADOW = "shadow"
+ARMS: tuple[str, ...] = (ARM_LIVE, ARM_SHADOW)
+
+# The CLOSED ``verdict_scope`` vocabulary (LDGR-10): a 2026 forward row before the declared start
+# week W is ``pre_verdict`` and is never counted; a row in weeks W..22 is ``verdict``.
+VERDICT_SCOPE_PRE_VERDICT = "pre_verdict"
+VERDICT_SCOPE_VERDICT = "verdict"
+VERDICT_SCOPES: tuple[str, ...] = (VERDICT_SCOPE_PRE_VERDICT, VERDICT_SCOPE_VERDICT)
+
+# The ``regime_label`` weeks 2-4 carry (D40-08): decided under the cold-start bootstrap regime.
+REGIME_LABEL_BOOTSTRAP = "bootstrap_regime"
+
+# Why a row's closing columns are NULL (LDGR-07: NULL is never silent). ``capture_missed`` covers
+# "machine asleep / no in-window reading"; ``credit_reserve``, ``credit_header_unreadable`` and
+# ``capture_failed`` come from the closing task's own skip records; ``no_closing_market`` means an
+# in-window reading exists but carries no line or price for the row's market; ``no_bet_side`` is a
+# suppressed row with no side to measure.
+CLOSING_NULL_REASONS: tuple[str, ...] = (
+    "capture_missed",
+    "credit_reserve",
+    "credit_header_unreadable",
+    "capture_failed",
+    "no_closing_market",
+    "no_bet_side",
+)
+
 # The contaminated replay window (2021-2024 were burned across Phases 26/27) and the single
 # unburned clean-holdout season this milestone spends exactly once.
 _REPLAY_CONTAMINATED_SEASONS: frozenset[int] = frozenset({2021, 2022, 2023, 2024})
@@ -808,9 +926,9 @@ REPLAY_VALIDATION_TYPE_SEASONS: dict[str, frozenset[int]] = {
 # ``conn.execute(BET_LIST_SCHEMA)`` calls share this constant, and CACHE_SCHEMA carries its own
 # literal copy. A column added here and not there produces a real cache whose table is narrower
 # than the explicit-column INSERT names, and the INSERT then fails in production rather than in
-# the suite. The 29th column is ``decided_at_utc VARCHAR`` (Phase 33), and
-# ``tests/api/test_cache_betting.py`` now BUILDS each site and compares the resulting column
-# lists so the agreement is measured rather than asserted in prose.
+# the suite. The 29th column was ``decided_at_utc VARCHAR`` (Phase 33); Phase 34 appended 22 more
+# (51), and ``tests/api/test_cache_betting.py`` BUILDS each site and compares the resulting column
+# names and types so the agreement is measured rather than asserted in prose.
 BET_LIST_SCHEMA = """
 CREATE TABLE IF NOT EXISTS bet_list (
     game_id VARCHAR,
@@ -838,12 +956,34 @@ CREATE TABLE IF NOT EXISTS bet_list (
     provenance VARCHAR,
     validation_type VARCHAR,
     decided_at_utc VARCHAR,
+    arm VARCHAR,
+    model_artifact_id VARCHAR,
+    blend_id VARCHAR,
+    recipe_id VARCHAR,
+    fill_convention_id VARCHAR,
+    upstream_capture_key VARCHAR,
+    gold_generation_key VARCHAR,
+    odds_snapshot_digest VARCHAR,
+    decision_snapshot_digest VARCHAR,
+    verdict_scope VARCHAR,
+    regime_label VARCHAR,
     grading_status VARCHAR,
     outcome BOOLEAN,
     clv DOUBLE,
     payout_flat DOUBLE,
     realized_units DOUBLE,
-    graded_at TIMESTAMP
+    graded_at TIMESTAMP,
+    fill_sportsbook VARCHAR,
+    fill_line DOUBLE,
+    fill_odds DOUBLE,
+    fill_stake_dollars DOUBLE,
+    fill_at_utc VARCHAR,
+    closing_line DOUBLE,
+    closing_odds DOUBLE,
+    closing_sportsbook VARCHAR,
+    closing_captured_at VARCHAR,
+    forward_clv DOUBLE,
+    closing_null_reason VARCHAR
 )
 """
 

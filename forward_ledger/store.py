@@ -56,6 +56,7 @@ from forward_ledger.canonical import (
     canonical_values,
     chain_hash,
 )
+from forward_ledger.schema import LEDGER_ROW_KEY
 
 __all__ = [
     "LEDGER_DIR",
@@ -79,10 +80,6 @@ __all__ = [
 LEDGER_DIR: Path = Path("ledger")
 LEDGER_FILENAME: str = "forward_2026.jsonl"
 LEDGER_SEASON: int = 2026
-
-# The five columns that identify a forward row (LDGR-02). Named here so a broken entry can be
-# reported by its key.
-_ENTRY_KEY_COLUMNS: tuple[str, ...] = ("game_id", "season", "week", "target", "arm")
 
 # The exact keys of one stored line, in their written order.
 _LINE_KEYS: tuple[str, ...] = (
@@ -282,12 +279,17 @@ def write_entries(ledger_dir: Path | str, entries: Sequence[LedgerEntry]) -> Pat
     directory.mkdir(parents=True, exist_ok=True)
     path = ledger_path(directory)
     payload = b"".join(_entry_line(entry) for entry in entries)
-    _replace_atomically(lambda tmp: tmp.write_bytes(payload), path)
+
+    def _write(tmp: Path) -> None:
+        tmp.write_bytes(payload)
+
+    _replace_atomically(_write, path)
     return path
 
 
 def _entry_key(entry: LedgerEntry) -> tuple[Any, ...]:
-    return tuple(entry.immutable.get(name) for name in _ENTRY_KEY_COLUMNS)
+    """The entry's ``LEDGER_ROW_KEY`` values, so a broken entry is reported by its key."""
+    return tuple(entry.immutable.get(name) for name in LEDGER_ROW_KEY)
 
 
 def verify_chain(entries: Sequence[LedgerEntry]) -> ChainVerdict:

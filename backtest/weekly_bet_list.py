@@ -72,7 +72,9 @@ from typing import Any, cast
 import pandas as pd
 
 from api.cache import (
+    BET_LIST_CLOSING_COLUMNS,
     BET_LIST_COLUMNS,
+    BET_LIST_FILL_COLUMNS,
     BET_LIST_GRADING_COLUMNS,
     BET_LIST_IMMUTABLE_COLUMNS,
     BET_STATUS_LIVE,
@@ -139,6 +141,7 @@ __all__ = [
     "BET_TRACKER_ARTIFACT_NAME",
     "DECIDED_AT_COLUMN",
     "DEFAULT_BET_LIST_DIR",
+    "PHASE34_ADDED_COLUMNS",
     "AlreadyGradedError",
     "BetListCacheSources",
     "ChainFitOverlayDisagreementError",
@@ -199,18 +202,37 @@ BET_LIST_ROW_KEY: tuple[str, ...] = ("game_id", "season", "week", "target")
 # same parse path, so one representation is what keeps that path single.
 DECIDED_AT_COLUMN: str = "decided_at_utc"
 
+# The 22 columns Phase 34 appended (the forward ledger's stamps, real-fill and closing-line
+# facts): every immutable name after ``decided_at_utc`` plus the whole FILL and CLOSING classes.
+# DERIVED from ``api.cache``'s lists rather than re-typed, so the shim below can never fill a
+# different set from the one the schema added. A stored parquet written before Phase 34 carries
+# none of them, and the shim fills each with NULL on read.
+PHASE34_ADDED_COLUMNS: tuple[str, ...] = (
+    *BET_LIST_IMMUTABLE_COLUMNS[
+        BET_LIST_IMMUTABLE_COLUMNS.index(DECIDED_AT_COLUMN) + 1 :
+    ],
+    *BET_LIST_FILL_COLUMNS,
+    *BET_LIST_CLOSING_COLUMNS,
+)
+
 # The column order the schema SHIM returns: ``BET_LIST_COLUMNS`` with ``decided_at_utc``
-# present at the END of the immutable half.
+# present in the immutable half.
 #
-# ONE EXPRESSION RATHER THAN A BRANCH, and that is what makes it safe across the schema bump.
-# ``dict.fromkeys`` preserves order and DEDUPES, so before ``api.cache`` carries the column
-# this tuple inserts it (22 + 1 + 6 = 29) and afterwards the explicit insertion collapses
-# against the entry already in ``BET_LIST_IMMUTABLE_COLUMNS`` and this tuple IS
-# ``BET_LIST_COLUMNS``. The import-time check at the foot of this module asserts that equality
-# once the bump has landed, so the two cannot drift into two different 29-column orders.
+# ONE EXPRESSION RATHER THAN A BRANCH, and that is what made it safe across the Phase-33 bump.
+# ``dict.fromkeys`` preserves order and DEDUPES, so before ``api.cache`` carried the column this
+# tuple inserted it, and since then the explicit insertion collapses against the entry already in
+# ``BET_LIST_IMMUTABLE_COLUMNS`` and this tuple IS ``BET_LIST_COLUMNS`` -- all four classes, 51
+# columns since Phase 34. The import-time check at the foot of this module asserts that equality,
+# so the two cannot drift into two different orders.
 BET_LIST_READ_COLUMNS: tuple[str, ...] = tuple(
     dict.fromkeys(
-        [*BET_LIST_IMMUTABLE_COLUMNS, DECIDED_AT_COLUMN, *BET_LIST_GRADING_COLUMNS]
+        [
+            *BET_LIST_IMMUTABLE_COLUMNS,
+            DECIDED_AT_COLUMN,
+            *BET_LIST_GRADING_COLUMNS,
+            *BET_LIST_FILL_COLUMNS,
+            *BET_LIST_CLOSING_COLUMNS,
+        ]
     )
 )
 
@@ -1695,35 +1717,47 @@ def build_weekly_decision_frame(
 
 
 def read_bet_list_with_schema_shim(path: Path | str) -> pd.DataFrame:
-    """Read a stored bet list, filling an ABSENT ``decided_at_utc`` with NULL. READ ONLY.
+    """Read a stored bet list, filling ABSENT later-schema columns with NULL. READ ONLY.
 
-    THE SHIM IS A READ, AND ONLY A READ. A bet-list parquet written before this phase carries
-    TWENTY-EIGHT columns (22 immutable + 6 grading) -- measured, not assumed: the production
-    artifact is 234 rows by 28 columns. The ``decided_at_utc`` bump takes the schema to 29, and
-    without this shim every existing reader of that file would raise the moment the constant
-    moved.
+    THE SHIM IS A READ, AND ONLY A READ. A bet-list parquet carries whichever width last wrote it:
+    TWENTY-EIGHT columns (22 immutable + 6 grading) before Phase 33 -- measured, not assumed: the
+    production artifact was 234 rows by 28 columns -- then 29 once ``decided_at_utc`` landed. Phase
+    34 takes the schema to 51, and the RUNNING daily task reads its own store before it writes it,
+    so without this shim every existing reader of that file would raise the moment the constant
+    moved. Two fills happen, and nothing else:
 
-    IT MUST NEVER WRITE THE SHIMMED COLUMN BACK, and that is this plan's own named prohibition
-    rather than an implementation preference. Every stored row is a ``backtest_replay`` row that
-    is already past its freeze, so stamping an observation time onto it now -- from
-    ``snapshot_ts``, from the file's mtime, from anything -- would record a time at which
-    nobody observed anything. The 234 rows take NULL and are never backfilled.
+      * ``decided_at_utc`` (Phase 33), when absent;
+      * every ``PHASE34_ADDED_COLUMNS`` column (the ledger stamps, real-fill and closing facts),
+        when absent.
+
+    IT MUST NEVER WRITE A SHIMMED COLUMN BACK, and that is a named prohibition rather than an
+    implementation preference. Every stored row predates the columns it lacks, so stamping one now
+    -- an observation time from ``snapshot_ts``, a model id from today's ``latest.json``, anything
+    -- would record a fact nobody observed when the row was decided. Those rows take NULL and are
+    never backfilled.
 
     Args:
         path: The stored ``bet_list.parquet``.
 
     Returns:
-        The frame in ``BET_LIST_READ_COLUMNS`` order, with ``decided_at_utc`` present.
+        The frame in ``BET_LIST_READ_COLUMNS`` order, with every filled column present.
 
     Raises:
-        ValueError: when a column OTHER than ``decided_at_utc`` is missing. A file written by a
-            different schema is refused rather than merged; only the one column this phase adds
-            is filled.
+        ValueError: when any OTHER column is missing. A file written by a different schema is
+            refused rather than merged; only the columns the two schema bumps added are filled.
     """
     stored = pd.read_parquet(Path(path))
-    if DECIDED_AT_COLUMN not in stored.columns:
+    lacks_decided_at = DECIDED_AT_COLUMN not in stored.columns
+    absent_phase34 = [c for c in PHASE34_ADDED_COLUMNS if c not in stored.columns]
+    if lacks_decided_at or absent_phase34:
         stored = stored.copy()
+    # Spelled as its own assignment, not folded into the loop: ``tests/unit/test_decided_at_utc.py``
+    # scans the production tree by AST for every ``decided_at_utc`` assignment, and this NULL fill
+    # is the permitted one its non-vacuity control expects to find.
+    if lacks_decided_at:
         stored[DECIDED_AT_COLUMN] = None
+    for column in absent_phase34:
+        stored[column] = None
 
     missing = [c for c in BET_LIST_READ_COLUMNS if c not in stored.columns]
     if missing:
@@ -2567,15 +2601,30 @@ def generate_weekly_bet_list(
     return graded
 
 
-# The ONE assertion this module makes about the schema it writes: the immutable half named by
-# ``api.cache`` is exactly the half the freeze fence protects. Stated as an import-time check so a
-# column added to one list and not the other cannot ship silently.
-if set(BET_LIST_IMMUTABLE_COLUMNS) - set(BET_LIST_COLUMNS):  # pragma: no cover
-    msg = "BET_LIST_IMMUTABLE_COLUMNS names a column absent from BET_LIST_COLUMNS"
+# The ONE assertion this module makes about the schema it writes: the four mutability classes
+# named by ``api.cache`` -- immutable, grading, fill, closing -- are pairwise disjoint and their
+# concatenation IS the locked order, so the half the freeze fence protects is exactly the immutable
+# class and no column can belong to two write paths. Stated as an import-time check so a column
+# added to one list and not the other cannot ship silently. A name repeated anywhere in the
+# concatenation means two classes (or one class) share a column.
+_BET_LIST_CLASS_CONCATENATION: list[str] = [
+    *BET_LIST_IMMUTABLE_COLUMNS,
+    *BET_LIST_GRADING_COLUMNS,
+    *BET_LIST_FILL_COLUMNS,
+    *BET_LIST_CLOSING_COLUMNS,
+]
+if (
+    len(set(_BET_LIST_CLASS_CONCATENATION)) != len(_BET_LIST_CLASS_CONCATENATION)
+    or _BET_LIST_CLASS_CONCATENATION != BET_LIST_COLUMNS
+):  # pragma: no cover
+    msg = (
+        "the immutable / grading / fill / closing column classes are not pairwise disjoint, or "
+        "their concatenation is not BET_LIST_COLUMNS"
+    )
     raise RuntimeError(msg)
 
 # The second import-time check: once ``api.cache`` carries ``decided_at_utc``, the shim's read
-# order must BE the locked order rather than a second 29-column order that agrees with it today.
+# order must BE the locked order rather than a second order that agrees with it today.
 # Stated here so the collapse the ``dict.fromkeys`` derivation relies on cannot fail silently.
 if (
     DECIDED_AT_COLUMN in BET_LIST_COLUMNS
