@@ -37,6 +37,9 @@ artifacts_staging/
 logs/
 *.log
 
+# Private forward bet ledger: its own git repository, pushed only to the private backup (D-01, D-10)
+/ledger/
+
 # =============================================================================
 # PYTHON
 # =============================================================================

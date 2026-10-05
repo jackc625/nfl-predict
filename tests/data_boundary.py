@@ -99,6 +99,9 @@ from pathlib import Path
 
 PRODUCTION_DATA_ROOT = Path("data")
 PRODUCTION_ARTIFACTS_ROOT = Path("artifacts")
+# The append-only forward bet ledger (Phase 34, D-10). Its own git repository, pushed
+# to a private backup (D-01), and gitignored by the public one.
+PRODUCTION_LEDGER_ROOT = Path("ledger")
 
 # Everything a production store is made of. Deliberately NOT a "parquet only" list:
 # ``data/nfl_predictions.duckdb`` is the second half of every gold write, and
@@ -113,6 +116,55 @@ TRACKED_SUFFIXES = (
     ".pkl",
     ".joblib",
 )
+
+# The ledger store is JSON lines (``ledger/forward_2026.jsonl``), a suffix the global
+# set does not track. It is added for the ledger root ONLY: widening TRACKED_SUFFIXES
+# would change what every digest document taken under the narrower set means.
+LEDGER_EXTRA_SUFFIXES = (".jsonl",)
+
+# Directory names never walked under the ledger root. ``ledger/.git`` is the backup
+# repository's object store and refs -- written by every backup push and never the
+# ledger itself.
+_LEDGER_EXCLUDED_DIRS = frozenset({".git"})
+
+
+def root_policy(label: str) -> tuple[tuple[str, ...], frozenset[str]]:
+    """The tracked suffixes and excluded directory names for one guarded root.
+
+    The ONE place a root's policy is decided. Both halves of the write guard -- the
+    stat prefilter and the content-digest sweep in ``tests/conftest.py`` -- read it,
+    so neither can silently keep the old global set for a root that needs another.
+    The ``data`` and ``artifacts`` roots get exactly ``TRACKED_SUFFIXES`` and exclude
+    nothing, as before Phase 34.
+    """
+    if label == "ledger":
+        return TRACKED_SUFFIXES + LEDGER_EXTRA_SUFFIXES, _LEDGER_EXCLUDED_DIRS
+    if label in ("data", "artifacts"):
+        return TRACKED_SUFFIXES, frozenset()
+    raise ValueError(
+        f"no guard policy for root label {label!r}; the guarded roots are "
+        "'data', 'artifacts' and 'ledger'"
+    )
+
+
+def iter_files(root: Path, excluded_dirs: frozenset[str] = frozenset()) -> list[Path]:
+    """Every file under *root*, sorted, never descending into an excluded directory.
+
+    Pruned during the walk rather than filtered afterwards, so an excluded
+    directory that grows (a git object store) costs the per-module sweep nothing.
+    A missing *root* yields an empty list. ``Path.walk`` reports symlinks as file
+    names, so callers that need a regular file still check ``is_file()``.
+    """
+    if not root.exists():
+        return []
+    files: list[Path] = []
+    for directory, subdirectories, filenames in root.walk():
+        subdirectories[:] = [
+            name for name in subdirectories if name not in excluded_dirs
+        ]
+        files.extend(directory / name for name in filenames)
+    return sorted(files)
+
 
 _CHUNK_BYTES = 1 << 20
 
@@ -340,6 +392,8 @@ def digest_tree(
     root: Path | str,
     suffixes: tuple[str, ...] = TRACKED_SUFFIXES,
     digest=digest_file,
+    *,
+    excluded_dirs: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """Map every tracked file under *root* to the sha256 of its contents.
 
@@ -352,14 +406,14 @@ def digest_tree(
     to a self-declaring stat signature on a locked file so the CLI can still report.
     Pass ``require_content_digest`` -- or use ``content_digest_tree`` -- where the result
     will settle a VERDICT and a signature must not be accepted (D33-32).
+
+    *excluded_dirs* names directories never walked (``root_policy`` supplies it; only
+    the ledger root excludes anything).
     """
     root_path = Path(root)
-    if not root_path.exists():
-        return {}
-
     lowered = tuple(suffix.lower() for suffix in suffixes)
     digests: dict[str, str] = {}
-    for candidate in sorted(root_path.rglob("*")):
+    for candidate in iter_files(root_path, excluded_dirs):
         if not candidate.is_file():
             continue
         if candidate.suffix.lower() not in lowered:
@@ -371,9 +425,13 @@ def digest_tree(
 def content_digest_tree(
     root: Path | str,
     suffixes: tuple[str, ...] = TRACKED_SUFFIXES,
+    *,
+    excluded_dirs: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """``digest_tree`` that refuses to return a stat signature for any file (D33-32)."""
-    return digest_tree(root, suffixes, require_content_digest)
+    return digest_tree(
+        root, suffixes, require_content_digest, excluded_dirs=excluded_dirs
+    )
 
 
 def mixed_instrument_keys(

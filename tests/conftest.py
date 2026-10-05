@@ -262,6 +262,10 @@ def artifacts_boundary_guard():
 
 GUARD_DATA_ROOT_ENV = "NFL_GUARD_DATA_ROOT"
 GUARD_ARTIFACTS_ROOT_ENV = "NFL_GUARD_ARTIFACTS_ROOT"
+# Plan 34-02 / D-10: the forward bet ledger is the third guarded root. Its policy --
+# `.jsonl` tracked, `.git` never walked -- comes from `tests.data_boundary.root_policy`,
+# which BOTH the stat prefilter and the content sweeps below read.
+GUARD_LEDGER_ROOT_ENV = "NFL_GUARD_LEDGER_ROOT"
 
 # Set to any non-empty value to have the session print what the guard OBSERVED --
 # how often the locked-file read path fired, and the largest number of `.duckdb.wal`
@@ -303,40 +307,43 @@ def _guarded_roots() -> tuple[tuple[str, Path], ...]:
     """The roots this session guards, as (label, path).
 
     The LABEL is the repo-relative name a marker declares against ("data" /
-    "artifacts"), and it stays stable even when the PATH is redirected. The
-    redirection exists for exactly one caller: the nested session in
+    "artifacts" / "ledger"), and it stays stable even when the PATH is redirected.
+    The redirection exists for exactly one caller: the nested session in
     `tests/integration/test_data_boundary_guard_arming.py`, which has to watch the
     guard fire without any real production store being written to do it.
     """
     from tests.data_boundary import (
         PRODUCTION_ARTIFACTS_ROOT,
         PRODUCTION_DATA_ROOT,
+        PRODUCTION_LEDGER_ROOT,
     )
 
     data = os.environ.get(GUARD_DATA_ROOT_ENV)
     artifacts = os.environ.get(GUARD_ARTIFACTS_ROOT_ENV)
+    ledger = os.environ.get(GUARD_LEDGER_ROOT_ENV)
     return (
         ("data", Path(data) if data else PRODUCTION_DATA_ROOT),
         ("artifacts", Path(artifacts) if artifacts else PRODUCTION_ARTIFACTS_ROOT),
+        ("ledger", Path(ledger) if ledger else PRODUCTION_LEDGER_ROOT),
     )
 
 
-def _stat_sweep(root: Path) -> dict[str, tuple[int, int]]:
+def _stat_sweep(root: Path, label: str = "data") -> dict[str, tuple[int, int]]:
     """Map every tracked file under *root* to `(st_size, st_mtime_ns)`.
 
     The cheap half of D33-23. Keys are POSIX-relative to *root*, identical to
-    `digest_tree`'s, so the two maps line up key for key.
+    `digest_tree`'s, so the two maps line up key for key. *label* selects the root's
+    policy (`tests.data_boundary.root_policy`) -- the same policy `_content_sweep`
+    reads; the default is the data root's, which is also the artifacts root's.
     """
-    from tests.data_boundary import TRACKED_SUFFIXES
+    from tests.data_boundary import iter_files, root_policy
 
+    suffixes, excluded_dirs = root_policy(label)
     root_path = Path(root)
-    if not root_path.exists():
-        return {}
-
-    lowered = tuple(suffix.lower() for suffix in TRACKED_SUFFIXES)
+    lowered = tuple(suffix.lower() for suffix in suffixes)
     stats: dict[str, tuple[int, int]] = {}
     wal_siblings = 0
-    for candidate in root_path.rglob("*"):
+    for candidate in iter_files(root_path, excluded_dirs):
         if candidate.name.endswith(".duckdb.wal"):
             wal_siblings += 1
         if candidate.suffix.lower() not in lowered:
@@ -353,6 +360,18 @@ def _stat_sweep(root: Path) -> dict[str, tuple[int, int]]:
         )
     _GUARD_STATE["wal_siblings"] = max(_GUARD_STATE["wal_siblings"], wal_siblings)
     return stats
+
+
+def _content_sweep(label: str, root: Path) -> dict[str, str]:
+    """`content_digest_tree` of *root* under its root policy -- the content half.
+
+    Every content sweep the guard takes (the session baseline and the closing full
+    sweep) goes through here, reading the SAME `root_policy` as `_stat_sweep`.
+    """
+    from tests.data_boundary import content_digest_tree, root_policy
+
+    suffixes, excluded_dirs = root_policy(label)
+    return content_digest_tree(root, suffixes, excluded_dirs=excluded_dirs)
 
 
 def _suspect_paths(
@@ -489,7 +508,7 @@ def _guard_verdict(
         require_content_digest,
     )
 
-    after_stats = _stat_sweep(baseline.root)
+    after_stats = _stat_sweep(baseline.root, baseline.label)
     suspects = _suspect_paths(baseline.stats, after_stats)
     if not suspects:
         return None
@@ -614,10 +633,10 @@ def _take_baselines() -> tuple[_StoreBaseline, ...]:
     comparison this session will make, so a stat signature here would poison the
     other side into a permanently UNDECIDED verdict (D33-32).
     """
-    from tests.data_boundary import content_digest_tree
-
     return tuple(
-        _StoreBaseline(label, root, content_digest_tree(root), _stat_sweep(root))
+        _StoreBaseline(
+            label, root, _content_sweep(label, root), _stat_sweep(root, label)
+        )
         for label, root in _guarded_roots()
     )
 
@@ -632,7 +651,6 @@ def _closing_full_sweep(baselines) -> str | None:
     tracks would produce.
     """
     from tests.data_boundary import (
-        content_digest_tree,
         diff_digests,
         format_digest_diff,
         is_clean,
@@ -640,7 +658,7 @@ def _closing_full_sweep(baselines) -> str | None:
 
     sections = []
     for baseline in baselines:
-        after = content_digest_tree(baseline.root)
+        after = _content_sweep(baseline.label, baseline.root)
         diff = diff_digests(baseline.digests, after)
         if is_clean(diff):
             continue
