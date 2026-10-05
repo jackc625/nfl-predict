@@ -7,6 +7,7 @@ Provides:
 - update_manifest: The PER-TARGET production swapper (one manifest key per call)
 - replace_manifest: The BATCHED production swapper (all four keys, one write, SPEC R13)
 - ARTIFACT_VALIDATORS: The per-kind loadability registry replace_manifest validates through
+- resolve_production_artifacts: Read latest.json ONCE, read-only, into ResolvedArtifacts
 
 Artifact directory structure:
     artifacts/
@@ -730,6 +731,115 @@ def replace_manifest(
         mapping=dict(mapping),
         gold_generation_digest=facts["blend"].gold_generation_digest,
         untouched_keys=sorted(set(manifest) - set(mapping)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# RESOLVE ONCE, READ ONLY (Plan 34-05, LDGR-03)
+#
+# Before this, one weekly decision read ``latest.json`` up to eight times: each of the three
+# scorers and the blend loader resolved it on their own, and a lock instant spanning two weeks
+# ran that set twice. A swap landing between two of those reads scored a row with one model and
+# would stamp it with another. A decision now reads the manifest ONCE into the frozen record
+# below and hands every scorer and blender call its explicit version.
+# ---------------------------------------------------------------------------
+
+
+class IncompleteManifestError(KeyError):
+    """``latest.json`` lacks one of the four pointers a decision is scored by.
+
+    A ``KeyError`` because that is what ``load_model_artifact`` and
+    ``MarketBlender.from_artifacts`` already raise for a missing manifest key, so a caller
+    handling one handles both. No pointer is ever defaulted.
+    """
+
+
+@dataclass(frozen=True)
+class ResolvedArtifacts:
+    """The production ids ONE decision was scored by, read once from ``latest.json``.
+
+    Attributes:
+        wp: The WP model artifact id.
+        ats: The ATS model artifact id.
+        ou: The O/U model artifact id.
+        blend: The blend artifact id.
+        converter: The market-probability converter the blend is BOUND to, read from the
+            blend's own payload -- never from a second "latest" lookup. None only when that
+            blend binds no converter, which is recorded as such rather than invented.
+    """
+
+    wp: str
+    ats: str
+    ou: str
+    blend: str
+    converter: str | None
+
+    def model_id_for(self, target: str) -> str:
+        """The model artifact id for *target* (``wp``, ``ats`` or ``ou``).
+
+        Raises:
+            KeyError: for any other name, including ``blend``, which names no model.
+        """
+        if target not in _MODEL_MANIFEST_KEYS:
+            msg = (
+                f"{target!r} names no model artifact; the model targets are "
+                f"{list(_MODEL_MANIFEST_KEYS)} (the blend is read as .blend)"
+            )
+            raise KeyError(msg)
+        return str(getattr(self, target))
+
+
+def resolve_production_artifacts(
+    artifacts_dir: Path = Path("artifacts"),
+) -> ResolvedArtifacts:
+    """Read ``latest.json`` ONCE, read-only, into the ids one decision is scored by (LDGR-03).
+
+    The ledger path READS this manifest and NEVER writes it: ``latest.json`` is the one
+    production swap surface, and only :func:`update_manifest` and :func:`replace_manifest`
+    may change it. Every scorer and blender call in a decision then receives an explicit
+    version from the returned record, so a swap landing mid-run cannot change which models
+    scored a row or which ids it is stamped with.
+
+    The converter id comes from the RESOLVED blend's own binding, loaded by explicit version
+    through ``MarketBlender.from_artifacts`` -- which also refuses a binding whose converter
+    directory is absent or whose slope disagrees.
+
+    Args:
+        artifacts_dir: Root directory holding ``latest.json`` and the artifacts it names.
+
+    Returns:
+        The frozen four pointers plus the blend's bound converter.
+
+    Raises:
+        FileNotFoundError: when ``latest.json`` is absent, or the blend it names is.
+        IncompleteManifestError: when any of ``wp``, ``ats``, ``ou``, ``blend`` is missing
+            or empty, naming every missing key.
+    """
+    # Imported lazily for the reason _validate_blend_artifact gives: the blender pulls in
+    # pandas and scipy, and this module is imported by lightweight readers.
+    from models.blending import MarketBlender
+
+    latest_path = artifacts_dir / "latest.json"
+    if not latest_path.exists():
+        msg = f"latest.json not found in {artifacts_dir}"
+        raise FileNotFoundError(msg)
+    manifest = json.loads(latest_path.read_text())
+
+    missing = [key for key in BUNDLE_MANIFEST_KEYS if not manifest.get(key)]
+    if missing:
+        msg = (
+            f"{latest_path} names no {missing} pointer(s); a decision is scored by all "
+            f"four of {list(BUNDLE_MANIFEST_KEYS)} and none is defaulted"
+        )
+        raise IncompleteManifestError(msg)
+
+    blender = MarketBlender.from_artifacts(artifacts_dir, version=manifest["blend"])
+    return ResolvedArtifacts(
+        wp=str(manifest["wp"]),
+        ats=str(manifest["ats"]),
+        ou=str(manifest["ou"]),
+        blend=str(manifest["blend"]),
+        converter=blender.market_probability_artifact_id,
     )
 
 

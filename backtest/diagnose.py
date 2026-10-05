@@ -17,8 +17,8 @@ established backtest behavior); that is invoked only via ``run_diagnosis(run_bac
 and is distinct from a deployed-artifact re-fit.
 
 Public API:
-  - ``score_deployed_artifacts(target, gold_df=None, artifacts_dir="artifacts")`` -- DIAG-05 raw
-    deployed-artifact scoring in the BACKTEST column contract, mirroring
+  - ``score_deployed_artifacts(target, gold_df=None, artifacts_dir="artifacts", version=None)`` --
+    DIAG-05 raw deployed-artifact scoring in the BACKTEST column contract, mirroring
     ``scripts.generate_current_week_predictions.run_predictions`` EXACTLY.
   - ``both_population_hit_rates(results_like, closing_odds_df)`` -- DIAG-01 straight-pick (0.0) +
     edge-filtered (0.02) hit-rates via the BettingSimulator honest convention, with the gap.
@@ -106,6 +106,7 @@ def score_deployed_artifacts(
     target: str,
     gold_df: pd.DataFrame | None = None,
     artifacts_dir: str | Path = "artifacts",
+    version: str | None = None,
 ) -> pd.DataFrame:
     """Score a deployed v1.0 artifact over 2021-2024 gold (DIAG-05 raw-prod cut).
 
@@ -120,6 +121,10 @@ def score_deployed_artifacts(
         gold_df: Optional pre-filtered 2021-2024 gold frame. When None, loads from disk
             (read-only). Passing the shared fixture frame avoids a redundant parquet read.
         artifacts_dir: Root directory for the deployed model artifacts.
+        version: The explicit artifact id to score with. None (the default) resolves the
+            target through ``latest.json`` exactly as before; a weekly decision passes the id
+            it resolved ONCE (``models.artifacts.resolve_production_artifacts``, LDGR-03), so
+            a manifest swap mid-run cannot change which model scored a row.
 
     Returns:
         DataFrame with columns: ``game_id``, ``season``, ``week``, ``model_prob``, ``actual``,
@@ -129,7 +134,9 @@ def score_deployed_artifacts(
         KeyError: If a required feature is absent from the gold matrix (should not happen on
             canonical gold -- verified 0 missing for all three targets).
     """
-    artifact = load_model_artifact(target, artifacts_dir=Path(artifacts_dir))
+    artifact = load_model_artifact(
+        target, version=version, artifacts_dir=Path(artifacts_dir)
+    )
     model = artifact["model"]
     feature_list = artifact["feature_list"]
     calibrator = artifact["calibrator"]
