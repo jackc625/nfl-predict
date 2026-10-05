@@ -18,11 +18,6 @@ from typing import Any
 
 import pandas as pd
 import pytest
-from forward_ledger.verdict import (
-    StartWeekUnavailableError,
-    compute_start_week,
-    verdict_rows,
-)
 
 from forward_ledger.canonical import ENTRY_KIND_ROW
 from forward_ledger.declarations import VerdictScope, VerdictScopeUndeclaredError
@@ -34,6 +29,11 @@ from forward_ledger.store import (
     commit_changes,
     ledger_head,
     read_entries,
+)
+from forward_ledger.verdict import (
+    StartWeekUnavailableError,
+    compute_start_week,
+    verdict_rows,
 )
 from tests.unit.test_forward_ledger_store import graded, key_of, make_row
 from utils.date_utils import ET
