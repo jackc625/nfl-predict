@@ -15,6 +15,10 @@ WHAT LIVES HERE
   the chain verifier.
 * :mod:`forward_ledger.schema` -- the ledger row key and the import-time proof that the four
   mutability classes of ``api.cache``'s bet-list schema are disjoint and covering.
+* :mod:`forward_ledger.declarations` -- the one loader for the verdict-scope declaration, the
+  recipe registry and the fill conventions, each refused by name when it does not resolve.
+* :mod:`forward_ledger.cutover` -- the committed switch that sends forward rows to the ledger
+  (off until go-live).
 
 No module under ``api/`` may import this package (D-18, UIAP-01): verification is a CLI, never a
 request path.

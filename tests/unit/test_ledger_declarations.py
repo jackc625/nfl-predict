@@ -19,6 +19,8 @@ import types
 from typing import Any
 
 import pytest
+
+from forward_ledger import cutover
 from forward_ledger.declarations import (
     BOOTSTRAP_REGIME_WEEKS,
     VERDICT_SCOPE_MODULE,
@@ -32,8 +34,6 @@ from forward_ledger.declarations import (
     resolve_recipe,
     verdict_scope_label,
 )
-
-from forward_ledger import cutover
 from forward_ledger.schema import VERDICT_SCOPE_PRE_VERDICT, VERDICT_SCOPE_VERDICT
 
 _FAKE_MODULE = "tests_fake_verdict_scope_declaration"
