@@ -690,12 +690,17 @@ def _clear_staging_dir(staging_dir: Path) -> None:
     worst available outcome: it lands BETWEEN clearing one staging dir and training the next,
     leaving the staging tree half-cleared with no message saying what to close.
 
+    A directory the forward ledger references (a row's model or blend id, or an artifact the
+    ledger keeps a copy of) is NEVER deleted (Phase 34 D-11): the ledger's replay depends on it,
+    so a misconfigured ``--staging-dir artifacts`` cannot prune it.
+
     Args:
         staging_dir: The staging artifacts root to clear (created if absent).
 
     Raises:
         RuntimeError: If a stale dir or the stale manifest cannot be removed, naming the exact
-            locked path and the two likely holders.
+            locked path and the two likely holders; or if a stale dir is referenced by the
+            forward ledger, naming it.
     """
     if not staging_dir.exists():
         staging_dir.mkdir(parents=True, exist_ok=True)
@@ -703,14 +708,30 @@ def _clear_staging_dir(staging_dir: Path) -> None:
 
     import shutil
 
-    for target in _TARGETS:
-        for stale in staging_dir.glob(f"{target}_*"):
-            if stale.is_dir():
-                try:
-                    shutil.rmtree(stale)
-                except OSError as exc:
-                    msg = _locked_path_message(stale, exc)
-                    raise RuntimeError(msg) from exc
+    from forward_ledger.retention import referenced_artifact_ids
+
+    stale_dirs = [
+        stale
+        for target in _TARGETS
+        for stale in staging_dir.glob(f"{target}_*")
+        if stale.is_dir()
+    ]
+    # Checked for every dir BEFORE any is removed, so a refusal leaves staging untouched.
+    referenced = referenced_artifact_ids()
+    protected = sorted(stale.name for stale in stale_dirs if stale.name in referenced)
+    if protected:
+        msg = (
+            f"Refusing to clear '{staging_dir}': the forward ledger references {protected}, "
+            "and its replay depends on those artifacts (Phase 34 D-11). Nothing was removed; "
+            "point --staging-dir at a staging root, never at a directory holding them."
+        )
+        raise RuntimeError(msg)
+    for stale in stale_dirs:
+        try:
+            shutil.rmtree(stale)
+        except OSError as exc:
+            msg = _locked_path_message(stale, exc)
+            raise RuntimeError(msg) from exc
     stale_manifest = staging_dir / "latest.json"
     if stale_manifest.exists():
         try:

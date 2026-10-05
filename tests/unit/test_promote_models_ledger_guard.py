@@ -21,8 +21,8 @@ import ast
 from pathlib import Path
 
 import pytest
-from forward_ledger.retention import referenced_artifact_ids
 
+from forward_ledger.retention import referenced_artifact_ids
 from forward_ledger.store import LedgerFormatError, append_rows, ledger_path
 from scripts.promote_models import _clear_staging_dir
 from tests.unit.test_forward_ledger_store import make_row
