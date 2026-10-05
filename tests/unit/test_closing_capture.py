@@ -11,22 +11,22 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import ast
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import pytest
+
+from backtest.ou_ev_chain import american_to_implied
+from backtest.selector_strategies import ATSStrategy, OUStrategy, WPStrategy
+from forward_ledger.canonical import ENTRY_KIND_ROW
 from forward_ledger.closing import (
     CLOSING_WINDOW,
     closing_values_for,
     finalize_closing,
     select_closing_capture,
 )
-
-from backtest.ou_ev_chain import american_to_implied
-from backtest.selector_strategies import ATSStrategy, OUStrategy, WPStrategy
-from forward_ledger.canonical import ENTRY_KIND_ROW
 from forward_ledger.schema import BET_LIST_CLOSING_COLUMNS, LEDGER_ROW_KEY
 from forward_ledger.store import LedgerEntry
 from forward_ledger.transitions import assert_closing_transition
@@ -35,9 +35,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 GAME = "2026_W06_HOU@JAX"
 # 13:00 ET on Sunday 2026-10-18 (EDT, UTC-4).
-KICKOFF = pd.Timestamp("2026-10-18T17:00:00Z")
+KICKOFF = datetime(2026, 10, 18, 17, 0, tzinfo=UTC)
 # The game's day-before lock, 18:00 ET Saturday -- the decision capture's instant.
-LOCK = pd.Timestamp("2026-10-17T22:00:00Z")
+LOCK = datetime(2026, 10, 17, 22, 0, tzinfo=UTC)
 
 
 def _strategies() -> dict[str, Any]:
@@ -49,7 +49,7 @@ def _strategies() -> dict[str, Any]:
 
 
 def _capture(
-    created_at: pd.Timestamp, sportsbook: str = "draftkings", **overrides: Any
+    created_at: datetime, sportsbook: str = "draftkings", **overrides: Any
 ) -> dict[str, Any]:
     """One silver odds row for GAME, every market present unless overridden."""
     row: dict[str, Any] = {
@@ -75,7 +75,7 @@ def _odds(*rows: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(list(rows))
 
 
-def _games(kickoff: pd.Timestamp = KICKOFF, *, scored: bool = True) -> pd.DataFrame:
+def _games(kickoff: datetime = KICKOFF, *, scored: bool = True) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
@@ -290,7 +290,7 @@ def test_finalize_waits_for_result() -> None:
 
 def test_finalize_uses_final_recorded_kickoff() -> None:
     immutable = _immutable("ats", "home_cover")
-    moved = pd.Timestamp("2026-10-18T20:25:00Z")  # flexed from 13:00 to 16:25 ET
+    moved = datetime(2026, 10, 18, 20, 25, tzinfo=UTC)  # flexed from 13:00 to 16:25 ET
     near_old = _capture(KICKOFF - timedelta(minutes=10), spread=2.5)
     near_new = _capture(moved - timedelta(minutes=10), spread=4.0)
 
