@@ -14,6 +14,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 import pytest
+
+from forward_ledger.closing import CLOSING_WINDOW
 from forward_ledger.closing_windows import (
     MAX_TRIGGERS,
     READING_LEAD,
@@ -21,8 +23,6 @@ from forward_ledger.closing_windows import (
     reading_windows,
     windows_for_schedule,
 )
-
-from forward_ledger.closing import CLOSING_WINDOW
 from tests.fixtures.season_2026 import (
     CapturedScheduleUnavailableError,
     transform_captured_schedule,

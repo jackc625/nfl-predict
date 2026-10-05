@@ -15,6 +15,7 @@ from datetime import date, datetime
 
 import pandas as pd
 import pytest
+
 from forward_ledger.credits import (
     CREDITS_PER_BOARD,
     DECISION_CAPTURE_SAFETY,
@@ -24,7 +25,6 @@ from forward_ledger.credits import (
     monthly_budget,
     remaining_decision_days_in_month,
 )
-
 from tests.fixtures.season_2026 import (
     CapturedScheduleUnavailableError,
     transform_captured_schedule,
