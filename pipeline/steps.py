@@ -1234,7 +1234,7 @@ def step_populate_web_cache() -> None:
         swallowing it here would hide the failure from the run log as well as from the alert.
     """
     from api.cache import populate_cache
-    from backtest.weekly_bet_list import read_bet_list_cache_sources
+    from forward_ledger.cache_sources import read_bet_cache_sources
 
     silver_dir = Path("data/silver")
     # Read the DURABLE artifacts and the schedule HERE and hand over frames. ``api/cache.py`` may
@@ -1242,7 +1242,9 @@ def step_populate_web_cache() -> None:
     # per-game freeze; this module already imports ``backtest`` and is the permitted seam. The
     # frames are loaded into the population run's TEMPORARY database before its atomic swap, which
     # is what makes forward recommendation history survive a rebuild that replaces the whole file.
-    sources = read_bet_list_cache_sources(_bet_list_output_dir(), silver_dir)
+    # The ONE reader shared with scripts/populate_cache.py; it follows the forward-rows cutover
+    # switch (Phase 34) and reads exactly today's sources while the switch is off.
+    sources = read_bet_cache_sources(_bet_list_output_dir(), silver_dir=silver_dir)
 
     populate_cache(
         db_path=_web_cache_db_path(),
@@ -1256,6 +1258,9 @@ def step_populate_web_cache() -> None:
         # Every game this run (and earlier runs) predicted, so the site shows the models' own
         # numbers for each one, bet or not.
         predictions_dir=_predictions_output_dir(),
+        bet_corrections_df=sources.corrections,
+        bet_graded_outcomes_df=sources.graded_outcomes,
+        forward_verdict_context=sources.verdict_context,
     )
 
 

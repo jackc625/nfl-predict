@@ -21,10 +21,8 @@ import argparse
 from pathlib import Path
 
 from api.cache import populate_cache
-from backtest.weekly_bet_list import (
-    DEFAULT_BET_LIST_DIR,
-    read_bet_list_cache_sources,
-)
+from backtest.weekly_bet_list import DEFAULT_BET_LIST_DIR
+from forward_ledger.cache_sources import read_bet_cache_sources
 
 
 def main() -> None:
@@ -84,7 +82,8 @@ def main() -> None:
 
     # Read the bet-list cache sources HERE and pass frames: api/cache.py may import no backtest
     # module (UIAP-01), so it cannot know these filenames or derive a per-game freeze instant.
-    sources = read_bet_list_cache_sources(args.bet_list_dir, args.silver_dir)
+    # The ONE reader shared with the scheduled step; it follows the forward-rows cutover switch.
+    sources = read_bet_cache_sources(args.bet_list_dir, silver_dir=args.silver_dir)
 
     populate_cache(
         db_path=args.db_path,
@@ -96,6 +95,9 @@ def main() -> None:
         bet_tracker_df=sources.tracker,
         bet_schedule_df=sources.schedule,
         predictions_dir=args.predictions_dir,
+        bet_corrections_df=sources.corrections,
+        bet_graded_outcomes_df=sources.graded_outcomes,
+        forward_verdict_context=sources.verdict_context,
     )
 
 
