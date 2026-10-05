@@ -112,7 +112,14 @@ def test_the_pin_covers_the_only_scheduler_definition_in_the_tree() -> None:
     here, so a new scheduled job cannot be added without this list being updated. Without this
     test the pin would guard one file while an unpinned second one appeared beside it.
     """
-    declared = {SCHEDULER_PATH.as_posix()}
+    # RE-DECLARED DELIBERATELY by Plan 34-11 (2026-10-05). Was: {SCHEDULER_PATH} alone. Phase 34
+    # adds a genuinely new scheduled job -- the closing-line wake task, NFL_Predict_Closing (D-07)
+    # -- and, as _WHY instructs, registers it as a SEPARATE definition beside this one rather than
+    # editing the pinned file. That template is pinned by tests/unit/test_closing_scheduler_xml.py.
+    declared = {
+        SCHEDULER_PATH.as_posix(),
+        (pathlib.Path("deployment") / "windows_closing_scheduler.xml").as_posix(),
+    }
     found = {
         p.as_posix()
         for p in pathlib.Path("deployment").rglob("*.xml")
