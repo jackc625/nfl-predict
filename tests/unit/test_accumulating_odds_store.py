@@ -180,6 +180,88 @@ class TestTheDestroyedCaptureDefect:
 
 
 # ---------------------------------------------------------------------------
+# One lock for the odds store (Phase 34, LDGR-07 concurrency, D-08)
+# ---------------------------------------------------------------------------
+
+
+class TestTheOddsStoreLock:
+    """The daily decision capture and the closing capture serialize on ONE OS lock.
+
+    Both write ``silver/odds_snapshot.parquet`` by read-merge-replace, so two interleaved writes
+    would lose one capture. ``append_odds_captures`` takes ``silver/.odds_snapshot.lock`` around
+    the composite upsert with a bounded wait: a held lock is waited for, and a lock held past the
+    wait is refused by name with nothing written.
+    """
+
+    @staticmethod
+    def _lock_path(base: Path) -> Path:
+        return base / "silver" / storage_mod.ODDS_STORE_LOCK_NAME
+
+    def test_the_lock_and_its_wait_are_the_named_constants(self):
+        assert storage_mod.ODDS_STORE_LOCK_NAME == ".odds_snapshot.lock"
+        assert storage_mod.ODDS_STORE_LOCK_WAIT_SECONDS == 120.0
+
+    def test_append_odds_captures_refuses_past_the_bounded_wait(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from utils.file_lock import FileLockHeldError, exclusive_file_lock
+
+        monkeypatch.setattr(storage_mod, "ODDS_STORE_LOCK_WAIT_SECONDS", 0.3)
+        (tmp_path / "silver").mkdir()
+        with (
+            exclusive_file_lock(self._lock_path(tmp_path)),
+            pytest.raises(FileLockHeldError, match=r"\.odds_snapshot\.lock"),
+        ):
+            storage_mod.append_odds_captures(
+                _capture(created_at=FIRST_CAPTURE), base_path=tmp_path
+            )
+        assert not (tmp_path / "silver" / "odds_snapshot.parquet").exists(), (
+            "a refused write must write nothing"
+        )
+
+    def test_append_odds_captures_waits_for_the_holder_then_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import threading
+        import time
+
+        from utils.file_lock import exclusive_file_lock
+
+        monkeypatch.setattr(storage_mod, "ODDS_STORE_LOCK_WAIT_SECONDS", 10.0)
+        (tmp_path / "silver").mkdir()
+        held = threading.Event()
+        release = threading.Event()
+
+        def _holder() -> None:
+            with exclusive_file_lock(self._lock_path(tmp_path)):
+                held.set()
+                release.wait(timeout=10.0)
+
+        holder = threading.Thread(target=_holder)
+        holder.start()
+        try:
+            assert held.wait(timeout=5.0), "the holder never took the lock"
+            threading.Timer(0.6, release.set).start()
+            started = time.monotonic()
+            storage_mod.append_odds_captures(
+                _capture(created_at=FIRST_CAPTURE), base_path=tmp_path
+            )
+            waited = time.monotonic() - started
+        finally:
+            release.set()
+            holder.join(timeout=10.0)
+
+        assert waited >= 0.4, f"the write did not wait for the holder ({waited:.2f}s)"
+        assert len(_stored(tmp_path)) == 1, "the write landed once the lock came free"
+
+    def test_the_lock_file_is_not_a_guarded_data_suffix(self):
+        """The test-write guard digests data suffixes; the lock file must not trip it."""
+        from tests.data_boundary import TRACKED_SUFFIXES
+
+        assert Path(storage_mod.ODDS_STORE_LOCK_NAME).suffix not in TRACKED_SUFFIXES
+
+
+# ---------------------------------------------------------------------------
 # The live ingest path
 # ---------------------------------------------------------------------------
 
