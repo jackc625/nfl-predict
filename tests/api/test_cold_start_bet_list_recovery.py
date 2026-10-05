@@ -60,13 +60,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.cache import (
+    BET_LIST_CORRECTIONS_COLUMNS,
     CACHE_SCHEMA,
     materialize_available_bet_weeks,
+    materialize_bet_graded_outcomes,
+    materialize_bet_list_corrections,
     materialize_bet_list_with_marker,
     materialize_bet_tracker_blocks,
     materialize_bet_week_freeze,
 )
 from api.services import clear_cache
+from backtest.bet_tracker import graded_outcome_rows
 from backtest.weekly_bet_list import (
     DEFAULT_BET_LIST_DIR,
     WeeklyChainFit,
@@ -98,12 +102,15 @@ _POPULATE_FUNCTION = "populate_cache"
 
 # The bet-list, schedule and tracker writers THIS module drives in stage two. Case FOUR asserts
 # this is exactly the set ``populate_cache`` calls, so the hermetic substitution is checkable.
+# Was: four writers; Phase 34 (Plan 34-16) added the corrections and result-strip writers.
 _DRIVEN_WRITERS: frozenset[str] = frozenset(
     {
         "materialize_bet_list_with_marker",
         "materialize_available_bet_weeks",
         "materialize_bet_week_freeze",
         "materialize_bet_tracker_blocks",
+        "materialize_bet_list_corrections",
+        "materialize_bet_graded_outcomes",
     }
 )
 
@@ -317,6 +324,12 @@ def _stage_two_populate(
         materialize_available_bet_weeks(conn, sources.schedule)
         materialize_bet_week_freeze(conn, sources.schedule)
         materialize_bet_tracker_blocks(conn, sources.tracker)
+        # Phase 34 (Plan 34-16): no correction before the ledger cutover, and the result strip's
+        # rows drawn from the same bet-list frame. Was: stage two stopped at the tracker blocks.
+        materialize_bet_list_corrections(
+            conn, pd.DataFrame(columns=pd.Index(BET_LIST_CORRECTIONS_COLUMNS))
+        )
+        materialize_bet_graded_outcomes(conn, graded_outcome_rows(sources.bet_list))
         conn.executemany(
             "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
             [["last_updated", now.isoformat(), now]],

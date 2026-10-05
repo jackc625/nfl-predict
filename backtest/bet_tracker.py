@@ -61,6 +61,8 @@ from typing import Any, ClassVar, cast
 import pandas as pd
 
 from api.cache import (
+    ARM_SHADOW,
+    BET_GRADED_OUTCOMES_COLUMNS,
     BET_TRACKER_BLOCK_COLUMNS,
     GRADING_STATUS_LOSS,
     GRADING_STATUS_PUSH,
@@ -71,7 +73,10 @@ from api.cache import (
     VALIDATION_TYPE_CLEAN_HOLDOUT,
     VALIDATION_TYPE_CONTAMINATED,
     VALIDATION_TYPE_FORWARD_REALIZED,
+    VALIDATION_TYPE_PRE_VERDICT,
+    VERDICT_SCOPE_PRE_VERDICT,
 )
+from forward_ledger.schema import LEDGER_ROW_KEY
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -84,6 +89,8 @@ __all__ = [
     "TrackerBlock",
     "aggregate_all_blocks",
     "aggregate_by_provenance",
+    "graded_outcome_rows",
+    "prepare_tracker_rows",
     "to_tracker_frame",
 ]
 
@@ -136,18 +143,49 @@ _VALIDATION_TYPES: frozenset[str] = frozenset(
     {
         VALIDATION_TYPE_CONTAMINATED,
         VALIDATION_TYPE_CLEAN_HOLDOUT,
+        VALIDATION_TYPE_PRE_VERDICT,
         VALIDATION_TYPE_FORWARD_REALIZED,
     }
 )
 
 # The DECLARED display order of the blocks. Contaminated replay first, then the single clean
-# holdout, then the live forward record -- weakest evidence to strongest, which is the order the
-# reader should meet them in. A pair absent from the frame simply does not appear.
+# holdout, then the forward rows decided before the counting start week, then the live forward
+# verdict record -- weakest evidence to strongest, which is the order the reader should meet them
+# in. A pair absent from the frame simply does not appear.
 TRACKER_BLOCK_ORDER: tuple[tuple[str, str], ...] = (
     (PROVENANCE_BACKTEST_REPLAY, VALIDATION_TYPE_CONTAMINATED),
     (PROVENANCE_BACKTEST_REPLAY, VALIDATION_TYPE_CLEAN_HOLDOUT),
+    (PROVENANCE_FORWARD, VALIDATION_TYPE_PRE_VERDICT),
     (PROVENANCE_FORWARD, VALIDATION_TYPE_FORWARD_REALIZED),
 )
+
+# The grading fields an in-force correction replaces (D-06), each read from the correction's
+# ``corrected_<field>`` column. ``grading_status`` first: it is the one every figure partitions on.
+_CORRECTED_GRADING_FIELDS: tuple[str, ...] = (
+    "grading_status",
+    "outcome",
+    "payout_flat",
+    "realized_units",
+)
+
+# The columns the result-strip rows are drawn from, beyond the tracker's own.
+_GRADED_OUTCOME_REQUIRED_COLUMNS: tuple[str, ...] = (
+    "season",
+    "week",
+    "game_id",
+    "target",
+)
+
+# The result strip's order: by class, then the bet list's key, so two builds render it identically.
+_GRADED_OUTCOME_ORDER: list[str] = [
+    "provenance",
+    "validation_type",
+    "season",
+    "week",
+    "game_id",
+    "target",
+    "arm",
+]
 
 
 @dataclass(frozen=True)
@@ -256,6 +294,123 @@ def _validate_suppressed_rows_are_ungraded(bet_list_df: pd.DataFrame) -> None:
             "lost or pushed; this is a contradiction in the ledger, not a figure."
         )
         raise ValueError(msg)
+
+
+# ---------------------------------------------------------------------------
+# Preparation: the ONE frame the tiles and the result strip are both drawn from
+# ---------------------------------------------------------------------------
+
+
+def _overlay_in_force_corrections(
+    prepared: pd.DataFrame, corrections: pd.DataFrame | None
+) -> pd.DataFrame:
+    """Replace each corrected row's grading with its IN-FORCE correction (D-06) and flag it.
+
+    *corrections* holds at most one row per ``LEDGER_ROW_KEY`` -- the latest correction entry, the
+    one in force -- with the ``corrected_<field>`` columns of ``_CORRECTED_GRADING_FIELDS``. Rows
+    with no correction keep their own grade. Only grading columns PRESENT in *prepared* are
+    replaced, so the frame's shape never changes.
+    """
+    if corrections is None or corrections.empty:
+        prepared["corrected"] = False
+        return prepared
+
+    overlay_columns = [f"corrected_{field}" for field in _CORRECTED_GRADING_FIELDS]
+    missing = [
+        f"corrections.{c}"
+        for c in (*LEDGER_ROW_KEY, *overlay_columns)
+        if c not in corrections.columns
+    ] + [f"bet_list_df.{c}" for c in LEDGER_ROW_KEY if c not in prepared.columns]
+    if missing:
+        msg = (
+            f"prepare_tracker_rows: missing column(s) {missing}; a correction is matched to its "
+            "row by the ledger row key and cannot be applied without it."
+        )
+        raise KeyError(msg)
+    if corrections.duplicated(subset=list(LEDGER_ROW_KEY)).any():
+        msg = (
+            "prepare_tracker_rows: corrections carries more than one row for a ledger key; it "
+            "must hold only the correction IN FORCE (the latest entry) for each key."
+        )
+        raise ValueError(msg)
+
+    # pandas-stubs widens a list-key __getitem__ to DataFrame | Series, so .rename loses its
+    # overload match at type-check time though it is a DataFrame at runtime.
+    overlay = corrections[[*LEDGER_ROW_KEY, *overlay_columns]].rename(  # pyright: ignore[reportCallIssue]
+        columns={
+            f"corrected_{field}": f"_in_force_{field}"
+            for field in _CORRECTED_GRADING_FIELDS
+        }
+    )
+    merged = prepared.reset_index(drop=True).merge(
+        overlay, on=list(LEDGER_ROW_KEY), how="left", indicator=True
+    )
+    corrected = (merged["_merge"] == "both").to_numpy(dtype=bool)
+    for field in _CORRECTED_GRADING_FIELDS:
+        if field not in merged.columns:
+            continue
+        if field in ("grading_status", "outcome"):
+            # A label and a nullable boolean: object, so a push's NULL outcome stays None.
+            merged[field] = merged[field].astype(object)
+        merged.loc[corrected, field] = merged.loc[corrected, f"_in_force_{field}"]
+    merged["corrected"] = corrected
+    return merged.drop(
+        columns=[
+            "_merge",
+            *(f"_in_force_{field}" for field in _CORRECTED_GRADING_FIELDS),
+        ]
+    )
+
+
+def prepare_tracker_rows(
+    bet_list_df: pd.DataFrame,
+    *,
+    corrections: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """The rows the tracker counts, as the forward record's honest classes say. Works on a COPY.
+
+    THE ONE PREPARATION (review finding 4). :func:`aggregate_all_blocks` aggregates this frame and
+    :func:`graded_outcome_rows` returns its graded rows, so the tiles and the ``/bets`` result
+    strip are drawn from one frame by construction and cannot disagree. Three things happen:
+
+    * a ``shadow``-arm forward row is DROPPED -- the frozen shadow arm (Phase 37) is not the live
+      record and never enters a forward block;
+    * a forward row whose ``verdict_scope`` is ``pre_verdict`` is grouped under the display-only
+      class ``VALIDATION_TYPE_PRE_VERDICT``. Its STORED ``validation_type`` (``forward_realized``
+      on a migrated row, immutable and chained) is never rewritten in the caller's frame -- the
+      re-label lives in this copy only (research Pitfall 12, D-16);
+    * the in-force correction's grading replaces the row's own (D-06), and a boolean ``corrected``
+      column says which rows it replaced.
+
+    A frame without ``arm`` / ``verdict_scope`` (a pre-Phase-34 output), or with them NULL,
+    prepares to exactly its own rows plus ``corrected = False``.
+
+    Args:
+        bet_list_df: Bet-list rows carrying at least ``TRACKER_REQUIRED_COLUMNS``.
+        corrections: The in-force corrections, one row per ``LEDGER_ROW_KEY`` with the
+            ``corrected_<field>`` columns (``api.cache.BET_LIST_CORRECTIONS_COLUMNS`` carries
+            them). ``None`` or empty applies none.
+
+    Raises:
+        KeyError: on an absent required column, or a correction that cannot be keyed.
+        ValueError: on a corrections frame with two rows for one key.
+    """
+    _require_columns(bet_list_df)
+    prepared = bet_list_df.copy()
+    is_forward = prepared["provenance"] == PROVENANCE_FORWARD
+
+    if "arm" in prepared.columns:
+        shadow = is_forward & (prepared["arm"] == ARM_SHADOW)
+        prepared = cast(pd.DataFrame, prepared.loc[~shadow].copy())
+        is_forward = is_forward[~shadow]
+
+    if "verdict_scope" in prepared.columns:
+        pre_verdict = is_forward & (
+            prepared["verdict_scope"] == VERDICT_SCOPE_PRE_VERDICT
+        )
+        prepared.loc[pre_verdict, "validation_type"] = VALIDATION_TYPE_PRE_VERDICT
+
+    return _overlay_in_force_corrections(prepared, corrections)
 
 
 # ---------------------------------------------------------------------------
@@ -374,13 +529,23 @@ def aggregate_by_provenance(
     )
 
 
-def aggregate_all_blocks(bet_list_df: pd.DataFrame) -> list[TrackerBlockResult]:
-    """One block per honesty class PRESENT in *bet_list_df*, in the declared display order.
+def aggregate_all_blocks(
+    bet_list_df: pd.DataFrame,
+    *,
+    corrections: pd.DataFrame | None = None,
+) -> list[TrackerBlockResult]:
+    """One block per honesty class PRESENT in the prepared rows, in the declared display order.
 
-    Every block is computed by :func:`aggregate_by_provenance` within its own class, so no figure
-    returned here spans two classes. A class absent from the frame is absent from the result --
-    this function reports what the ledger contains and does not manufacture an empty block for a
-    class that was never written.
+    The rows are first passed through :func:`prepare_tracker_rows` -- shadow rows dropped,
+    pre-verdict rows grouped as their own class, in-force corrections applied -- and every block is
+    then computed by :func:`aggregate_by_provenance` within its own class, so no figure returned
+    here spans two classes. A class absent from the frame is absent from the result -- this
+    function reports what the ledger contains and does not manufacture an empty block for a class
+    that was never written.
+
+    Args:
+        bet_list_df: Bet-list rows carrying at least ``TRACKER_REQUIRED_COLUMNS``.
+        corrections: The in-force corrections (see :func:`prepare_tracker_rows`).
     """
     _require_columns(bet_list_df)
     _validate_vocabularies(bet_list_df)
@@ -389,10 +554,11 @@ def aggregate_all_blocks(bet_list_df: pd.DataFrame) -> list[TrackerBlockResult]:
     if bet_list_df.empty:
         return []
 
+    prepared = prepare_tracker_rows(bet_list_df, corrections=corrections)
     present = {
         (str(row_provenance), str(row_validation_type))
         for row_provenance, row_validation_type in zip(
-            bet_list_df["provenance"], bet_list_df["validation_type"], strict=True
+            prepared["provenance"], prepared["validation_type"], strict=True
         )
     }
 
@@ -402,7 +568,7 @@ def aggregate_all_blocks(bet_list_df: pd.DataFrame) -> list[TrackerBlockResult]:
             continue
         blocks.append(
             aggregate_by_provenance(
-                bet_list_df, provenance=pair[0], validation_type=pair[1]
+                prepared, provenance=pair[0], validation_type=pair[1]
             )
         )
 
@@ -412,6 +578,61 @@ def aggregate_all_blocks(bet_list_df: pd.DataFrame) -> list[TrackerBlockResult]:
         classes=sorted(present),
     )
     return blocks
+
+
+def graded_outcome_rows(
+    bet_list_df: pd.DataFrame,
+    *,
+    corrections: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """The ``/bets`` result strip's rows: every live, graded row of the PREPARED frame.
+
+    Drawn from :func:`prepare_tracker_rows` -- the frame :func:`aggregate_all_blocks` counts -- so
+    for every block the strip's marks of that class ARE the block's wins, losses and pushes (review
+    finding 4). Each row carries its DISPLAY class (a pre-verdict row under ``pre_verdict``, never
+    under the verdict block), its IN-FORCE grade and a ``corrected`` flag; shadow, pending and
+    suppressed rows are absent. A selection and a sort, not a computation: nothing is counted.
+
+    Args:
+        bet_list_df: Bet-list rows carrying ``TRACKER_REQUIRED_COLUMNS`` plus ``season``,
+            ``week``, ``game_id`` and ``target``. ``arm`` is read when present, else NULL.
+        corrections: The in-force corrections (see :func:`prepare_tracker_rows`).
+
+    Returns:
+        A frame in ``api.cache.BET_GRADED_OUTCOMES_COLUMNS`` order, ordered by class and then the
+        bet list's key, so two cache builds store it identically.
+
+    Raises:
+        KeyError: on an absent required column.
+        ValueError: as :func:`aggregate_all_blocks` raises.
+    """
+    _require_columns(bet_list_df)
+    missing = [
+        c for c in _GRADED_OUTCOME_REQUIRED_COLUMNS if c not in bet_list_df.columns
+    ]
+    if missing:
+        msg = (
+            f"graded_outcome_rows: bet_list frame missing required column(s) {missing}; the "
+            "result strip names each bet by its key."
+        )
+        raise KeyError(msg)
+    _validate_vocabularies(bet_list_df)
+    _validate_suppressed_rows_are_ungraded(bet_list_df)
+
+    prepared = prepare_tracker_rows(bet_list_df, corrections=corrections)
+    graded = cast(
+        pd.DataFrame,
+        prepared[
+            (prepared["status"] == _STATUS_LIVE)
+            & (prepared["grading_status"].isin(sorted(_GRADED_STATUSES)))
+        ],
+    )
+    rows = graded.reindex(columns=BET_GRADED_OUTCOMES_COLUMNS)
+    rows["arm"] = rows["arm"].astype(object).where(rows["arm"].notna(), None)
+    rows["corrected"] = rows["corrected"].astype(bool)
+    return rows.sort_values(_GRADED_OUTCOME_ORDER, kind="mergesort").reset_index(
+        drop=True
+    )
 
 
 # ---------------------------------------------------------------------------

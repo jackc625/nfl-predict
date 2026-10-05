@@ -271,6 +271,42 @@ CREATE TABLE IF NOT EXISTS bet_tracker_blocks (
     -- is called from pipeline/steps.py. api/cache.py imports no backtest module and
     -- computes nothing here (REVIEW-IMPORT, UIAP-01).
 );
+
+CREATE TABLE IF NOT EXISTS bet_list_corrections (
+    game_id VARCHAR,
+    season INTEGER,
+    week INTEGER,
+    target VARCHAR,
+    arm VARCHAR,
+    original_grading_status VARCHAR,
+    corrected_grading_status VARCHAR,
+    corrected_outcome BOOLEAN,
+    corrected_payout_flat DOUBLE,
+    corrected_realized_units DOUBLE,
+    realized_value DOUBLE,
+    detected_at_utc VARCHAR,
+    corrected_at_utc VARCHAR
+    -- One row per forward ledger key whose score was corrected after grading (D-05/D-06): the
+    -- IN-FORCE (latest) correction beside the row's original grade. The bet_list row keeps its
+    -- original grade, so /bets can show both. Built outside api/ and only persisted here.
+);
+
+CREATE TABLE IF NOT EXISTS bet_graded_outcomes (
+    provenance VARCHAR,
+    validation_type VARCHAR,
+    season INTEGER,
+    week INTEGER,
+    game_id VARCHAR,
+    target VARCHAR,
+    arm VARCHAR,
+    grading_status VARCHAR,
+    corrected BOOLEAN
+    -- The /bets result strip's marks, one per live graded bet, MATERIALIZED from the same
+    -- prepared rows the tracker blocks aggregate (backtest.bet_tracker.graded_outcome_rows).
+    -- validation_type is the DISPLAY class (pre_verdict for a row decided before the counting
+    -- start week) and grading_status the in-force grade, so the strip cannot disagree with the
+    -- tiles (review finding 4). The request path only selects these rows (UIAP-01).
+);
 """
 
 
@@ -866,6 +902,11 @@ PROVENANCE_FORWARD = "forward"
 VALIDATION_TYPE_CONTAMINATED = "contaminated"
 VALIDATION_TYPE_CLEAN_HOLDOUT = "clean_holdout"
 VALIDATION_TYPE_FORWARD_REALIZED = "forward_realized"
+# A DISPLAY-ONLY class, NEVER stamped on a row (research Pitfall 12, D-16). A 2026 forward row
+# decided before the declared counting start week keeps its stored ``forward_realized`` -- it is
+# immutable and chained -- and is grouped under this class at CACHE BUILD from its
+# ``verdict_scope``, so it is kept on the record and never counted in a verdict figure.
+VALIDATION_TYPE_PRE_VERDICT = "pre_verdict"
 
 RUN_MODE_REPLAY = "replay"
 RUN_MODE_FORWARD = "forward"
@@ -1045,6 +1086,104 @@ CREATE TABLE IF NOT EXISTS bet_tracker_blocks (
     flat_return_units DOUBLE
 )
 """
+
+# The forward ledger's IN-FORCE corrections (Phase 34, D-05/D-06): one row per corrected key, the
+# latest correction entry beside the row's original grade. THREE SITES like ``bet_list``: the
+# CACHE_SCHEMA literal, this standalone CREATE, and the explicit-column INSERT in
+# :func:`materialize_bet_list_corrections` -- ``tests/api/test_cache_betting.py`` builds and
+# compares all three.
+BET_LIST_CORRECTIONS_COLUMNS: list[str] = [
+    "game_id",
+    "season",
+    "week",
+    "target",
+    "arm",
+    "original_grading_status",
+    "corrected_grading_status",
+    "corrected_outcome",
+    "corrected_payout_flat",
+    "corrected_realized_units",
+    "realized_value",
+    "detected_at_utc",
+    "corrected_at_utc",
+]
+BET_LIST_CORRECTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bet_list_corrections (
+    game_id VARCHAR,
+    season INTEGER,
+    week INTEGER,
+    target VARCHAR,
+    arm VARCHAR,
+    original_grading_status VARCHAR,
+    corrected_grading_status VARCHAR,
+    corrected_outcome BOOLEAN,
+    corrected_payout_flat DOUBLE,
+    corrected_realized_units DOUBLE,
+    realized_value DOUBLE,
+    detected_at_utc VARCHAR,
+    corrected_at_utc VARCHAR
+)
+"""
+
+# The /bets result strip's rows (review finding 4), materialized at cache build from the SAME
+# prepared frame the tracker blocks aggregate (``backtest.bet_tracker.graded_outcome_rows``):
+# ``validation_type`` is the display class and ``grading_status`` the in-force grade. Three sites,
+# as above; the writer is :func:`materialize_bet_graded_outcomes`.
+BET_GRADED_OUTCOMES_COLUMNS: list[str] = [
+    "provenance",
+    "validation_type",
+    "season",
+    "week",
+    "game_id",
+    "target",
+    "arm",
+    "grading_status",
+    "corrected",
+]
+BET_GRADED_OUTCOMES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bet_graded_outcomes (
+    provenance VARCHAR,
+    validation_type VARCHAR,
+    season INTEGER,
+    week INTEGER,
+    game_id VARCHAR,
+    target VARCHAR,
+    arm VARCHAR,
+    grading_status VARCHAR,
+    corrected BOOLEAN
+)
+"""
+
+# The forward verdict context /bets needs to name its counting start week (D-15, D-16, LDGR-08),
+# stamped at cache build so the page computes nothing. ``declared`` is ``"true"`` / ``"false"``;
+# the season and start week are NULL while nothing is declared.
+FORWARD_VERDICT_DECLARED_KEY = "forward_verdict_declared"
+FORWARD_VERDICT_SEASON_KEY = "forward_verdict_season"
+FORWARD_VERDICT_START_WEEK_KEY = "forward_verdict_start_week"
+
+# The honesty pair of Track Record's betting simulation (LDGR-08), derived from the seasons the
+# simulation itself covers. Absent when the seasons map to no single evidence class.
+BETTING_SIM_PROVENANCE_KEY = "betting_sim_provenance"
+BETTING_SIM_VALIDATION_TYPE_KEY = "betting_sim_validation_type"
+
+
+def betting_simulation_evidence_pair(seasons: Any) -> tuple[str, str] | None:
+    """The ``(provenance, validation_type)`` pair a betting simulation over *seasons* is evidence of.
+
+    Derived through ``REPLAY_VALIDATION_TYPE_SEASONS`` rather than re-typed: a simulation whose
+    seasons all lie inside one replay class is that class (every one inside the contaminated
+    window -> ``contaminated``; exactly the clean-holdout season -> ``clean_holdout``). Anything
+    else -- no seasons, or seasons spanning two classes or none -- is ``None``: no single evidence
+    class can honestly be claimed, and the badge then renders its raw code.
+    """
+    covered = {int(season) for season in seasons}
+    if not covered:
+        return None
+    for validation_type, class_seasons in REPLAY_VALIDATION_TYPE_SEASONS.items():
+        if covered <= class_seasons:
+            return PROVENANCE_BACKTEST_REPLAY, validation_type
+    return None
+
 
 # The standalone ``cache_meta`` CREATE, so the per-week marker can be stamped against any
 # connection (a partially built cache, or an in-memory test DB) without first building the whole
@@ -1662,6 +1801,151 @@ def materialize_bet_tracker_blocks(
     return _explicit_column_insert(
         conn, "bet_tracker_blocks", BET_TRACKER_BLOCK_COLUMNS, tracker_df
     )
+
+
+def _null_as_none(values: pd.Series) -> pd.Series:
+    """*values* as an object column whose NULLs are ``None`` -- never a coerced NaN.
+
+    The ``betting_bets`` pitfall: ``astype(bool)`` turns NaN into True, so a push's absent outcome
+    must reach DuckDB as ``None`` (SQL NULL); the same holds for an absent VARCHAR such as a
+    replay row's ``arm``. Every other value is kept as written.
+    """
+    return values.astype(object).where(values.notna(), None)
+
+
+def materialize_bet_list_corrections(
+    conn: duckdb.DuckDBPyConnection,
+    corrections_df: pd.DataFrame,
+) -> int:
+    """Persist the PRECOMPUTED in-force corrections (D-05/D-06). Pure persistence, no arithmetic.
+
+    The frame is built outside ``api/`` (``forward_ledger.cache_sources``) from the ledger's
+    correction entries; this writer only inserts it, naming every column explicitly.
+
+    Args:
+        conn: An open DuckDB connection. The table is created if absent.
+        corrections_df: Rows carrying every ``BET_LIST_CORRECTIONS_COLUMNS`` field.
+
+    Returns:
+        The number of rows inserted.
+    """
+    conn.execute(BET_LIST_CORRECTIONS_SCHEMA)
+    if corrections_df.empty:
+        return 0
+
+    _require_columns(
+        corrections_df,
+        BET_LIST_CORRECTIONS_COLUMNS,
+        "materialize_bet_list_corrections",
+        "corrections_df",
+    )
+    # pandas-stubs widens a list-key __getitem__ to DataFrame | Series (the stub gap
+    # materialize_bet_list annotates the same way).
+    subset: pd.DataFrame = corrections_df[BET_LIST_CORRECTIONS_COLUMNS].copy()  # pyright: ignore[reportAssignmentType]
+    subset["corrected_outcome"] = _null_as_none(subset["corrected_outcome"])  # pyright: ignore[reportArgumentType]
+    return _explicit_column_insert(
+        conn, "bet_list_corrections", BET_LIST_CORRECTIONS_COLUMNS, subset
+    )
+
+
+def materialize_bet_graded_outcomes(
+    conn: duckdb.DuckDBPyConnection,
+    graded_outcomes_df: pd.DataFrame,
+) -> int:
+    """Persist the PRECOMPUTED result-strip rows (review finding 4). Pure persistence.
+
+    The rows come from ``backtest.bet_tracker.graded_outcome_rows`` -- the same prepared frame the
+    tracker blocks aggregate -- so each carries its display class and in-force grade already. This
+    writer classifies nothing and counts nothing (UIAP-01, REVIEW-IMPORT).
+
+    Args:
+        conn: An open DuckDB connection. The table is created if absent.
+        graded_outcomes_df: Rows carrying every ``BET_GRADED_OUTCOMES_COLUMNS`` field.
+
+    Returns:
+        The number of rows inserted.
+    """
+    conn.execute(BET_GRADED_OUTCOMES_SCHEMA)
+    if graded_outcomes_df.empty:
+        return 0
+
+    _require_columns(
+        graded_outcomes_df,
+        BET_GRADED_OUTCOMES_COLUMNS,
+        "materialize_bet_graded_outcomes",
+        "graded_outcomes_df",
+    )
+    # Same pandas-stubs gap as materialize_bet_list_corrections above.
+    subset: pd.DataFrame = graded_outcomes_df[BET_GRADED_OUTCOMES_COLUMNS].copy()  # pyright: ignore[reportAssignmentType]
+    subset["arm"] = _null_as_none(subset["arm"])  # pyright: ignore[reportArgumentType]
+    return _explicit_column_insert(
+        conn, "bet_graded_outcomes", BET_GRADED_OUTCOMES_COLUMNS, subset
+    )
+
+
+def stamp_forward_verdict_context(
+    conn: duckdb.DuckDBPyConnection,
+    context: dict[str, Any] | None,
+    now: datetime,
+) -> dict[str, str | None]:
+    """Stamp the forward verdict context into ``cache_meta`` (D-15, D-16). Returns the values.
+
+    ``None`` -- the caller supplied no context -- is stamped as UNDECLARED, the honest default: a
+    start week nobody declared is never invented here.
+
+    Raises:
+        ValueError: a declared context without an integer season and start week.
+    """
+    declared = False
+    season: str | None = None
+    start_week: str | None = None
+    if context is not None and context.get("declared"):
+        declared = True
+        raw_season, raw_week = context.get("season"), context.get("start_week")
+        if not isinstance(raw_season, int) or not isinstance(raw_week, int):
+            msg = (
+                "stamp_forward_verdict_context: a declared verdict context needs an integer "
+                f"season and start_week; got season={raw_season!r}, "
+                f"start_week={raw_week!r}."
+            )
+            raise ValueError(msg)
+        season, start_week = str(raw_season), str(raw_week)
+
+    stamped: dict[str, str | None] = {
+        FORWARD_VERDICT_DECLARED_KEY: "true" if declared else "false",
+        FORWARD_VERDICT_SEASON_KEY: season,
+        FORWARD_VERDICT_START_WEEK_KEY: start_week,
+    }
+    conn.executemany(
+        "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+        [(key, value, now) for key, value in stamped.items()],
+    )
+    return stamped
+
+
+def stamp_betting_sim_evidence_pair(
+    conn: duckdb.DuckDBPyConnection, now: datetime
+) -> tuple[str, str] | None:
+    """Stamp the betting simulation's evidence pair from the seasons ``betting_bets`` holds.
+
+    Reads the populated table only. Stamps nothing when no single evidence class covers the
+    simulation's seasons (see :func:`betting_simulation_evidence_pair`).
+    """
+    seasons = [
+        row[0]
+        for row in conn.execute("SELECT DISTINCT season FROM betting_bets").fetchall()
+    ]
+    pair = betting_simulation_evidence_pair(seasons)
+    if pair is None:
+        return None
+    conn.executemany(
+        "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+        [
+            (BETTING_SIM_PROVENANCE_KEY, pair[0], now),
+            (BETTING_SIM_VALIDATION_TYPE_KEY, pair[1], now),
+        ],
+    )
+    return pair
 
 
 # The edge band used to be computed HERE, by a ``_compute_confidence`` that was a byte-equivalent
@@ -2801,6 +3085,9 @@ def populate_cache(
     bet_tracker_df: pd.DataFrame | None = None,
     bet_schedule_df: pd.DataFrame | None = None,
     predictions_dir: Path | None = None,
+    bet_corrections_df: pd.DataFrame | None = None,
+    bet_graded_outcomes_df: pd.DataFrame | None = None,
+    forward_verdict_context: dict[str, Any] | None = None,
 ) -> None:
     """Populate the DuckDB web cache from artifacts and backtest outputs.
 
@@ -2860,6 +3147,15 @@ def populate_cache(
             files. Every game in them is added to the predictions table (see
             :func:`_load_current_week_predictions`). ``None`` (the default) loads none, so a
             caller that must not read production outputs names its own directory or none.
+        bet_corrections_df: The forward ledger's IN-FORCE corrections
+            (``BET_LIST_CORRECTIONS_COLUMNS``), built outside ``api/``. ``None`` leaves the
+            ``bet_list_corrections`` table present and empty.
+        bet_graded_outcomes_df: The /bets result strip's rows (``BET_GRADED_OUTCOMES_COLUMNS``),
+            computed outside ``api/`` from the same prepared rows as the tracker blocks -- the
+            derivation needs ``backtest``, so this module never derives it. ``None`` leaves the
+            ``bet_graded_outcomes`` table present and empty.
+        forward_verdict_context: ``{"declared", "season", "start_week"}`` for the 2026 forward
+            verdict; ``None`` is stamped as undeclared.
     """
     tmp_path = db_path.with_suffix(".tmp.duckdb")
     logger.info(
@@ -3012,6 +3308,19 @@ def populate_cache(
             tracker_count = materialize_bet_tracker_blocks(conn, bet_tracker_df)
             logger.info("Bet tracker blocks loaded", count=tracker_count)
 
+        # The forward record's in-force corrections and the result strip's rows (Phase 34). Both
+        # tables exist from CACHE_SCHEMA; a ``None`` source leaves them empty.
+        if bet_corrections_df is not None:
+            corrections_count = materialize_bet_list_corrections(
+                conn, bet_corrections_df
+            )
+            logger.info("Bet corrections loaded", count=corrections_count)
+        if bet_graded_outcomes_df is not None:
+            outcomes_count = materialize_bet_graded_outcomes(
+                conn, bet_graded_outcomes_df
+            )
+            logger.info("Bet graded outcomes loaded", count=outcomes_count)
+
         # Pre-render charts from populated data
         chart_count = _prerender_charts(conn)
         logger.info("Charts pre-rendered", count=chart_count)
@@ -3040,12 +3349,19 @@ def populate_cache(
         old_rule_spans = stamp_old_rule_season_ranges(conn, now)
         # The slate /bets opens on (33.2 review C2 WR-01).
         current_slate = stamp_current_slate(conn, silver_dir, now)
+        # The forward verdict context and the betting simulation's evidence pair (LDGR-08).
+        verdict_context = stamp_forward_verdict_context(
+            conn, forward_verdict_context, now
+        )
+        betting_sim_pair = stamp_betting_sim_evidence_pair(conn, now)
 
         logger.info(
             "Cache metadata set",
             prediction_count=pred_count,
             season_range=season_range,
             current_slate=current_slate,
+            betting_sim_pair=betting_sim_pair,
+            **verdict_context,
             **old_rule_spans,
         )
 

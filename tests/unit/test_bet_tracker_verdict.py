@@ -285,10 +285,12 @@ def test_graded_outcome_rows_match_the_tracker() -> None:
     rows = graded_outcome_rows(frame, corrections=corrections)
 
     assert list(rows.columns) == list(BET_GRADED_OUTCOMES_COLUMNS)
+    # Ordered by (provenance, validation_type, season, week, game_id, ...) -- the same ORDER BY the
+    # strip's getter has always used, so the class labels sort as text.
     assert list(zip(rows["game_id"], rows["validation_type"], strict=True)) == [
-        ("PRE", VALIDATION_TYPE_PRE_VERDICT),
         ("FIXED", VALIDATION_TYPE_FORWARD_REALIZED),
         ("LOSS", VALIDATION_TYPE_FORWARD_REALIZED),
+        ("PRE", VALIDATION_TYPE_PRE_VERDICT),
     ]
     by_game = rows.set_index("game_id")
     assert by_game.loc["FIXED", "grading_status"] == GRADING_STATUS_LOSS

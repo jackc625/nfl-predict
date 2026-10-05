@@ -515,7 +515,9 @@ def _bet_list_ddl_columns(statement: str) -> list[str]:
 def _embedded_bet_list_statement() -> str:
     """The single ``bet_list`` CREATE embedded in ``CACHE_SCHEMA``, isolated by name."""
     statements = [s.strip() for s in CACHE_SCHEMA.strip().split(";") if s.strip()]
-    matches = [s for s in statements if "CREATE TABLE IF NOT EXISTS bet_list" in s]
+    # Matched with the opening parenthesis: Phase 34 (Plan 34-16) added `bet_list_corrections`,
+    # whose CREATE also contains the bare prefix. Was: `"CREATE TABLE IF NOT EXISTS bet_list" in s`.
+    matches = [s for s in statements if "CREATE TABLE IF NOT EXISTS bet_list (" in s]
     assert len(matches) == 1, (
         f"expected exactly one embedded bet_list CREATE in CACHE_SCHEMA, found {len(matches)}"
     )
