@@ -18,15 +18,15 @@ from typing import Any
 
 import pandas as pd
 import pytest
+
+from backtest.selector_strategies import default_strategies
+from backtest.weekly_bet_list import grade_row
 from forward_ledger.settle import (
     grading_updates,
     load_silver_games,
     realized_values_from_scores,
     regrade_row,
 )
-
-from backtest.selector_strategies import default_strategies
-from backtest.weekly_bet_list import grade_row
 from forward_ledger.store import append_rows, apply_updates, read_entries
 from tests.unit.test_forward_ledger_store import graded, key_of, make_row
 
