@@ -34,17 +34,20 @@
        "clean_holdout": "Old rule -- 2025, not evidence"
      },
      "forward": {
+       "pre_verdict": "Before counting started",
        "forward_realized": "Live forward record"
      }
    } %}
 {% set _VALIDATION_CLASSES = {
      "contaminated": "evidence-chip",
      "clean_holdout": "evidence-chip",
+     "pre_verdict": "evidence-chip",
      "forward_realized": "evidence-chip"
    } %}
 {% set _VALIDATION_DESCRIPTIONS = {
      "contaminated": "measured on seasons already used to build and tune the models, so the figure is optimistic by construction",
      "clean_holdout": "measured on the 2025 season under the old rule, on inputs later found defective, so it is not evidence",
+     "pre_verdict": "decided before the 2026 counting start week; kept on the record and never counted in the verdict",
      "forward_realized": "recommended before kickoff and graded afterwards"
    } %}
 {% set _provenance_label = _PROVENANCE_LABELS.get(provenance, provenance) %}

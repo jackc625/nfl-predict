@@ -42,13 +42,17 @@ import duckdb
 from cachetools import TTLCache
 
 from api.cache import (
+    BET_GRADED_OUTCOMES_COLUMNS,
     BET_LIST_COLUMNS,
+    BET_LIST_CORRECTIONS_COLUMNS,
     BET_STATUS_LIVE,
     BET_TRACKER_BLOCK_COLUMNS,
+    BETTING_SIM_PROVENANCE_KEY,
+    BETTING_SIM_VALIDATION_TYPE_KEY,
     CURRENT_SLATE_KEY,
-    GRADING_STATUS_LOSS,
-    GRADING_STATUS_PUSH,
-    GRADING_STATUS_WIN,
+    FORWARD_VERDICT_DECLARED_KEY,
+    FORWARD_VERDICT_SEASON_KEY,
+    FORWARD_VERDICT_START_WEEK_KEY,
     PREDICTIONS_TABLE_COLUMNS,
     bet_list_populated_at_key,
     parse_current_slate,
@@ -144,6 +148,17 @@ _BET_LIST_COLUMNS_SQL = ", ".join(BET_LIST_COLUMNS)
 # Same rule for the precomputed tracker blocks: the reader's column list is DERIVED from the
 # writer's, so a figure added to the block cannot be silently dropped on the way out.
 _BET_TRACKER_BLOCK_COLUMNS_SQL = ", ".join(BET_TRACKER_BLOCK_COLUMNS)
+
+# And for the two forward-ledger tables Plan 34-16 builds: the /bets result strip's rows and the
+# in-force corrections, each read with the writer's own column list.
+_BET_GRADED_OUTCOMES_COLUMNS_SQL = ", ".join(BET_GRADED_OUTCOMES_COLUMNS)
+_BET_LIST_CORRECTIONS_COLUMNS_SQL = ", ".join(BET_LIST_CORRECTIONS_COLUMNS)
+
+# The strip's order: by class, then the bet list's key -- the order the producer
+# (``backtest.bet_tracker.graded_outcome_rows``) sorts the rows into before they are written.
+_BET_GRADED_OUTCOMES_ORDER_SQL = (
+    "provenance, validation_type, season, week, game_id, target, arm"
+)
 
 
 def _parse_json_or_default(value: Any, default: Any) -> Any:
@@ -1031,16 +1046,20 @@ class DataService:
         return [dict(zip(columns, row)) for row in result.fetchall()]
 
     def get_graded_bet_outcomes(self) -> list[dict[str, Any]]:
-        """Return every GRADED live bet's stored outcome, for the /bets result strip.
+        """Return the /bets result strip's rows, as the cache build stored them.
 
-        The row set is exactly the one ``backtest.bet_tracker.aggregate_by_provenance`` counts
-        into ``bet_tracker_blocks``: ``status`` live and ``grading_status`` one of win / loss /
-        push. A pending bet is ungraded and a suppressed candidate was never bet, so neither is
-        here. A read, not a computation: each stored ``grading_status`` is returned as written,
-        with no count, rate or SQL aggregate (UIAP-01); the template draws one mark per row.
+        Reads ``bet_graded_outcomes``, which population materializes from the SAME prepared rows
+        the tracker blocks aggregate (``backtest.bet_tracker.graded_outcome_rows``, Plan 34-16):
+        one row per live graded bet, its ``validation_type`` the DISPLAY class (``pre_verdict``
+        for a forward row decided before the counting start week) and its ``grading_status`` the
+        IN-FORCE grade (a corrected row's corrected grade, flagged by ``corrected``). Both facts
+        were decided at cache build, so the strip partitions verdict from pre-verdict marks and
+        agrees with the tiles without this getter deciding anything (review finding 4, D-06).
 
-        Ordered by class and then by the bet list's four-key tie-break, so the strip reads in
-        week order (game id order within a week) and two requests render it identically.
+        A read, not a computation: a plain SELECT of the stored columns -- no CASE, no join, no
+        filter and no SQL aggregate (UIAP-01). The ORDER BY restates the order the producer wrote
+        (class, then the bet list's key), so the strip reads in week order and two requests render
+        it identically. A cache that predates the table returns ``[]``: no strip, never a 500.
         """
         key = ("graded_bet_outcomes",)
         cached = _cache_get(key)
@@ -1053,23 +1072,108 @@ class DataService:
     def _get_graded_bet_outcomes_uncached(self) -> list[dict[str, Any]]:
         try:
             result = self._conn.execute(
-                "SELECT provenance, validation_type, season, week, game_id, target, "
-                "grading_status FROM bet_list "
-                "WHERE status = ? AND grading_status IN (?, ?, ?) "
-                "ORDER BY provenance, validation_type, season, week, game_id, target",
-                [
-                    BET_STATUS_LIVE,
-                    GRADING_STATUS_WIN,
-                    GRADING_STATUS_LOSS,
-                    GRADING_STATUS_PUSH,
-                ],
+                f"SELECT {_BET_GRADED_OUTCOMES_COLUMNS_SQL} FROM bet_graded_outcomes "
+                f"ORDER BY {_BET_GRADED_OUTCOMES_ORDER_SQL}"
             )
         except duckdb.Error:
-            # The cache predates Phase 31 (no bet_list table): no strip, never a 500.
-            logger.warning("bet_list table not available in cache")
+            # The cache predates Plan 34-16 (no bet_graded_outcomes table).
+            logger.warning("bet_graded_outcomes table not available in cache")
             return []
         columns = [desc[0] for desc in result.description]
         return [dict(zip(columns, row)) for row in result.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Forward ledger display inputs (Phase 34 -- LDGR-08, D-06, D-15, D-16)
+    # ------------------------------------------------------------------
+
+    def get_forward_verdict_context(self) -> dict[str, Any]:
+        """Return ``{declared, season, start_week}`` for the 2026 forward verdict (D-15, D-16).
+
+        Read from the three ``forward_verdict_*`` keys population stamps into ``cache_meta``
+        (``api.cache.stamp_forward_verdict_context``), so /bets can name the counting start week
+        without computing it. The stored text is only parsed back into its types. A cache that
+        predates the stamp -- or one stamped undeclared -- reads as UNDECLARED with no season and
+        no start week: a week nobody declared is never invented here.
+        """
+        meta = self.get_cache_meta()
+        if meta.get(FORWARD_VERDICT_DECLARED_KEY) != "true":
+            return {"declared": False, "season": None, "start_week": None}
+        return {
+            "declared": True,
+            "season": int(meta[FORWARD_VERDICT_SEASON_KEY]),
+            "start_week": int(meta[FORWARD_VERDICT_START_WEEK_KEY]),
+        }
+
+    def get_bet_list_corrections(
+        self, season: int | None, week: int | None
+    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        """Return *season* / *week*'s in-force corrections, keyed by the ledger row key (D-06).
+
+        One stored ``bet_list_corrections`` row per corrected forward bet -- the latest correction
+        entry beside the row's ORIGINAL grade -- keyed ``(game_id, season, week, target, arm)``,
+        the key a bet-list row carries, so /bets can mark a corrected row and show both grades by
+        lookup alone. A read, not a computation (UIAP-01). Week filtering mirrors
+        :meth:`get_bet_list`: an absent identifier applies no filter. A cache that predates the
+        table returns ``{}``.
+        """
+        key = ("bet_list_corrections", season, week)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_bet_list_corrections_uncached(season, week)
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_bet_list_corrections_uncached(
+        self, season: int | None, week: int | None
+    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        query = f"SELECT {_BET_LIST_CORRECTIONS_COLUMNS_SQL} FROM bet_list_corrections"
+        conditions: list[str] = []
+        params: list[Any] = []
+        if season is not None:
+            conditions.append("season = ?")
+            params.append(season)
+        if week is not None:
+            conditions.append("week = ?")
+            params.append(week)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY game_id, target, arm"
+
+        try:
+            result = self._conn.execute(query, params)
+        except duckdb.Error:
+            # The cache predates Plan 34-16 (no bet_list_corrections table).
+            logger.warning("bet_list_corrections table not available in cache")
+            return {}
+        columns = [desc[0] for desc in result.description]
+        corrections: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for values in result.fetchall():
+            row = dict(zip(columns, values))
+            row_key = (
+                row["game_id"],
+                row["season"],
+                row["week"],
+                row["target"],
+                row["arm"],
+            )
+            corrections[row_key] = row
+        return corrections
+
+    def get_betting_sim_evidence_pair(self) -> tuple[str, str] | None:
+        """Return the betting simulation's ``(provenance, validation_type)`` pair, or None.
+
+        Read from the two ``betting_sim_*`` keys population stamps from the seasons the simulation
+        covers (``api.cache.stamp_betting_sim_evidence_pair``), for Track Record's badge
+        (LDGR-08). None when the cache carries no stamp -- one that predates it, or a simulation
+        whose seasons no single evidence class covers -- because no pair can then be claimed.
+        """
+        meta = self.get_cache_meta()
+        provenance = meta.get(BETTING_SIM_PROVENANCE_KEY)
+        validation_type = meta.get(BETTING_SIM_VALIDATION_TYPE_KEY)
+        if provenance is None or validation_type is None:
+            return None
+        return provenance, validation_type
 
     def get_cache_meta(self) -> dict[str, Any]:
         """Fetch all cache metadata as a dict."""

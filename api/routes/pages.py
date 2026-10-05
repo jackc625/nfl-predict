@@ -246,6 +246,14 @@ def _build_betting_context(
         for chart_id in BETTING_CHART_IDS
         if chart_id.endswith(f"_{scope}")
     }
+    # The simulation's evidence pair, stamped at population from the seasons it covers (LDGR-08).
+    # Carried HERE, the builder the page and the scope swap share, so the badge inside the swapped
+    # block is re-rendered by every swap rather than left behind by one.
+    # None for both when the cache carries no stamp; the template then renders no badge rather
+    # than a pair nothing established.
+    betting_sim_provenance, betting_sim_validation_type = (
+        service.get_betting_sim_evidence_pair() or (None, None)
+    )
     return {
         "request": request,
         "charts": charts,
@@ -259,6 +267,8 @@ def _build_betting_context(
         "betting_old_rule_scope": service.cached_span_old_rule_scope(
             BETTING_SEASON_RANGE_KEY
         ),
+        "betting_sim_provenance": betting_sim_provenance,
+        "betting_sim_validation_type": betting_sim_validation_type,
     }
 
 
@@ -641,6 +651,12 @@ def _build_bets_context(
         # sections render, for the result strip (redesign spec 7.3). A read and a partition, not
         # a count: the template draws the strip only when it agrees with the stored block.
         "graded_outcomes": _graded_outcomes_by_class(service.get_graded_bet_outcomes()),
+        # The forward verdict's counting start week, stamped at population (D-15, D-16): the
+        # verdict section names it while it has no graded bet, instead of an empty record.
+        "forward_verdict": service.get_forward_verdict_context(),
+        # The selected week's in-force corrections, keyed by the ledger row key a bet row
+        # carries, so a corrected row is marked by lookup alone (D-06).
+        "bet_corrections": service.get_bet_list_corrections(season, week),
         # Two blocks, two scopes. The selected week's list (a 2021-2025 week is a replay the old
         # models reconstructed), and the backtest-replay tracker sections. The forward tracker
         # section is 2026 by construction and carries no label.
