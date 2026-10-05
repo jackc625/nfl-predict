@@ -25,6 +25,7 @@ import hashlib
 import inspect
 import json
 import pathlib
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,19 @@ import pytest
 from sklearn.dummy import DummyClassifier
 
 from backtest import diagnose as diagnose_module
+from backtest import weekly_bet_list
+from backtest.weekly_bet_list import CANONICAL_TARGETS, build_weekly_decision_frame
 from models import artifacts as artifacts_module
+from models.blending import MarketBlender
+from scripts.ingest_historical_odds import gameday_lock
+from tests.fixtures.decision_frame import (
+    FREEZE_AT_SUNDAY,
+    SEASON,
+    SUNDAY_GAMEDAY,
+    WEEK,
+    fits_with_floor,
+    mini_strategies,
+)
 
 CONVERTER_ID = "market_probability_20990101_000000"
 CONVERTER_SLOPE = 0.15
@@ -260,3 +273,248 @@ def test_scorer_default_unchanged(two_wp_models: Path) -> None:
     scored = _score("wp", gold_df=_wp_gold(), artifacts_dir=two_wp_models)
 
     assert scored["model_prob"].tolist() == pytest.approx([0.8, 0.8])
+
+
+# ---------------------------------------------------------------------------
+# Task 2: the decision bundle carries its exact inputs, scored by ids resolved once
+# ---------------------------------------------------------------------------
+
+_RUN_INSTANT = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+
+# Three week-2 games on the Sunday, plus one week-3 game MOVED onto the same Sunday, so the
+# Saturday lock instant spans two (season, week) groups and the freeze-instant wrapper calls
+# the week-scoped builder twice -- the path that read latest.json eight times.
+_WEEK_GAMES: list[tuple[str, int]] = [
+    *[(f"{SEASON}_W{WEEK:02d}_A{i:02d}@H{i:02d}", WEEK) for i in range(3)],
+    (f"{SEASON}_W{WEEK + 1:02d}_MOVED@H09", WEEK + 1),
+]
+
+_MODEL_VALUES: dict[str, dict[str, float]] = {
+    "wp": {"model_prob": 0.61},
+    "ats": {"model_spread": -3.5},
+    "ou": {"model_total": 41.0},
+}
+
+
+def _write_lake(root: Path) -> tuple[Path, Path]:
+    """A silver schedule and pre-lock odds snapshot, and a gold matrix per target."""
+    silver = root / "silver"
+    gold = root / "gold"
+    silver.mkdir(parents=True)
+    gold.mkdir(parents=True)
+    game_ids = [game_id for game_id, _ in _WEEK_GAMES]
+    weeks = [week for _, week in _WEEK_GAMES]
+    count = len(game_ids)
+
+    pd.DataFrame(
+        {
+            "game_id": game_ids,
+            "season": [SEASON] * count,
+            "week": weeks,
+            "kickoff_et": [pd.Timestamp(f"{SUNDAY_GAMEDAY}T17:00:00+00:00")] * count,
+        }
+    ).to_parquet(silver / "games.parquet", index=False)
+    pd.DataFrame(
+        {
+            "game_id": game_ids,
+            "snapshot_ts": [FREEZE_AT_SUNDAY] * count,
+            "created_at": pd.to_datetime([FREEZE_AT_SUNDAY] * count, utc=True),
+            "ml_home": [-130.0] * count,
+            "ml_away": [110.0] * count,
+            "spread": [-2.5] * count,
+            "total": [45.0] * count,
+            "sportsbook": ["consensus"] * count,
+            "is_live": [False] * count,
+        }
+    ).to_parquet(silver / "odds_snapshot.parquet", index=False)
+    gold_frame = pd.DataFrame(
+        {"game_id": game_ids, "season": [SEASON] * count, "week": weeks}
+    )
+    for target in CANONICAL_TARGETS:
+        gold_frame.to_parquet(gold / f"features_{target}.parquet", index=False)
+    return silver, gold
+
+
+class _ScorerSpy:
+    """Stands in for ``score_deployed_artifacts``: records each call's version and gold rows."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+        self.gold_by_target: dict[str, pd.DataFrame] = {}
+
+    def __call__(
+        self,
+        target: str,
+        *,
+        gold_df: pd.DataFrame,
+        artifacts_dir: Path,
+        version: str | None = None,
+    ) -> pd.DataFrame:
+        self.calls.append((target, version))
+        self.gold_by_target[target] = gold_df
+        scored = gold_df[["game_id", "season", "week"]].copy()
+        for column, value in _MODEL_VALUES[target].items():
+            scored[column] = value
+        return scored
+
+
+class _BlenderSpy:
+    """Records every blend load's version and delegates to the real loader."""
+
+    def __init__(self) -> None:
+        self.versions: list[str | None] = []
+        self._real = MarketBlender.from_artifacts
+
+    def __call__(self, artifacts_dir: Path, version: str | None = None) -> Any:
+        self.versions.append(version)
+        return self._real(artifacts_dir, version=version)
+
+
+@pytest.fixture
+def lake(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """``(artifacts, gold, silver)`` under tmp_path, the manifest naming ORIGINAL_IDS."""
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    _write_converter(artifacts)
+    _write_blend(artifacts)
+    _write_manifest(artifacts, ORIGINAL_IDS)
+    silver, gold = _write_lake(tmp_path)
+    return artifacts, gold, silver
+
+
+def _bundle_builder() -> Any:
+    builder = getattr(weekly_bet_list, "build_weekly_decision_bundle", None)
+    assert builder is not None, (
+        "backtest.weekly_bet_list defines no build_weekly_decision_bundle; a decision cannot "
+        "return the exact inputs that produced it"
+    )
+    return builder
+
+
+def _decide_kwargs(lake: tuple[Path, Path, Path]) -> dict[str, Any]:
+    artifacts, gold, silver = lake
+    return {
+        "artifacts_dir": artifacts,
+        "gold_dir": gold,
+        "silver_dir": silver,
+        "fits": fits_with_floor(0.0),
+        "strategies": mini_strategies(),
+        "now": _RUN_INSTANT,
+    }
+
+
+def test_bundle_frame_equals_decision_frame(
+    lake: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One decision path: the bundle's frame IS the decision frame, same inputs, same now."""
+    monkeypatch.setattr(diagnose_module, "score_deployed_artifacts", _ScorerSpy())
+    bundle = _bundle_builder()(SEASON, WEEK, **_decide_kwargs(lake))
+    frame = build_weekly_decision_frame(SEASON, WEEK, **_decide_kwargs(lake))
+
+    assert not frame.empty
+    pd.testing.assert_frame_equal(bundle.frame, frame)
+
+
+def test_bundle_carries_exact_inputs(
+    lake: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The candidates selected over, the spine, each target's scored gold rows, fits and ids."""
+    scorer = _ScorerSpy()
+    monkeypatch.setattr(diagnose_module, "score_deployed_artifacts", scorer)
+    selected_over: list[pd.DataFrame] = []
+    real_select = weekly_bet_list.select_weekly_bets
+
+    def select_spy(candidates: pd.DataFrame, *args: Any, **kwargs: Any) -> Any:
+        selected_over.append(candidates)
+        return real_select(candidates, *args, **kwargs)
+
+    monkeypatch.setattr(weekly_bet_list, "select_weekly_bets", select_spy)
+    manifest_reads: list[str] = []
+    real_read_text = pathlib.Path.read_text
+
+    def counting_read_text(self: pathlib.Path, *args: Any, **kwargs: Any) -> str:
+        if self.name == "latest.json":
+            manifest_reads.append(str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", counting_read_text)
+    kwargs = _decide_kwargs(lake)
+    bundle = _bundle_builder()(SEASON, WEEK, **kwargs)
+
+    assert len(manifest_reads) == 1, (
+        f"one decision read latest.json {len(manifest_reads)} times"
+    )
+    assert len(selected_over) == 1
+    assert bundle.candidates is selected_over[0]
+    assert sorted(bundle.schedule["game_id"]) == sorted(
+        game_id for game_id, week in _WEEK_GAMES if week == WEEK
+    )
+    assert set(bundle.gold_inputs) == set(CANONICAL_TARGETS)
+    for target in CANONICAL_TARGETS:
+        assert bundle.gold_inputs[target] is scorer.gold_by_target[target], target
+    assert bundle.fits == kwargs["fits"]
+    assert bundle.run_instant == _RUN_INSTANT
+    original = _resolved(**{**ORIGINAL_IDS, "converter": CONVERTER_ID})
+    assert bundle.resolved == original
+    assert scorer.calls == [
+        (target, original.model_id_for(target)) for target in CANONICAL_TARGETS
+    ]
+
+
+def test_swap_between_resolution_and_scoring_keeps_original_ids(
+    lake: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """latest.json rewritten after resolution: every scorer and blend load keeps the originals."""
+    artifacts, _gold, _silver = lake
+    resolved = _resolve(artifacts)
+    _write_manifest(artifacts, SWAPPED_IDS)
+
+    scorer = _ScorerSpy()
+    blender = _BlenderSpy()
+    monkeypatch.setattr(diagnose_module, "score_deployed_artifacts", scorer)
+    monkeypatch.setattr(MarketBlender, "from_artifacts", blender)
+
+    bundle = _bundle_builder()(SEASON, WEEK, **_decide_kwargs(lake), resolved=resolved)
+
+    assert bundle.resolved == resolved
+    assert scorer.calls == [
+        (target, ORIGINAL_IDS[target]) for target in CANONICAL_TARGETS
+    ]
+    assert blender.versions == [ORIGINAL_IDS["blend"]]
+
+
+def test_swap_through_a_two_week_lock_instant_keeps_original_ids(
+    lake: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The freeze-instant wrapper builds twice; both builds carry the original ids."""
+    artifacts, gold, silver = lake
+    resolved = _resolve(artifacts)
+    _write_manifest(artifacts, SWAPPED_IDS)
+
+    scorer = _ScorerSpy()
+    blender = _BlenderSpy()
+    monkeypatch.setattr(diagnose_module, "score_deployed_artifacts", scorer)
+    monkeypatch.setattr(MarketBlender, "from_artifacts", blender)
+
+    wrapper = weekly_bet_list.build_freeze_instant_candidates
+    assert "resolved" in inspect.signature(wrapper).parameters, (
+        "build_freeze_instant_candidates takes no resolved=; its two builds re-read "
+        "latest.json on their own"
+    )
+    instant = gameday_lock(SUNDAY_GAMEDAY)
+    candidates, _schedule = wrapper(
+        instant,
+        decided_at=instant,
+        artifacts_dir=artifacts,
+        gold_dir=gold,
+        silver_dir=silver,
+        resolved=resolved,
+    )
+
+    assert sorted(set(candidates["week"])) == [WEEK, WEEK + 1]
+    assert scorer.calls == [
+        (target, ORIGINAL_IDS[target])
+        for _week in (WEEK, WEEK + 1)
+        for target in CANONICAL_TARGETS
+    ]
+    assert blender.versions == [ORIGINAL_IDS["blend"]] * 2
