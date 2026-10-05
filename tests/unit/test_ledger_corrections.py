@@ -17,6 +17,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from data.live_revision import CORRECTION_DISCHARGED_BY
+from data.revision_events import RevisionEventClass
+from forward_ledger.canonical import CORRECTION_COLUMNS_V1
 from forward_ledger.corrections import (
     CorrectionResult,
     OwedEvent,
@@ -24,10 +27,6 @@ from forward_ledger.corrections import (
     in_force_outcomes,
     owed_correction_events,
 )
-
-from data.live_revision import CORRECTION_DISCHARGED_BY
-from data.revision_events import RevisionEventClass
-from forward_ledger.canonical import CORRECTION_COLUMNS_V1
 from forward_ledger.settle import grading_updates, realized_values_from_scores
 from forward_ledger.store import (
     append_rows,
