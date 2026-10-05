@@ -541,3 +541,110 @@ def test_live_and_shadow_same_quad_replay_separately(ledger: Path) -> None:
         [ARM_LIVE, ARM_SHADOW]
     )
     assert all(result.status == "pass" for result in same_quad)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: the replay CLI
+# ---------------------------------------------------------------------------
+
+
+def _run_cli(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, list[str]]:
+    from scripts import replay_ledger as cli
+
+    code = cli.main(list(args))
+    return code, capsys.readouterr().out.splitlines()
+
+
+def _key_text(key: tuple[Any, ...]) -> str:
+    return "|".join(str(part) for part in key)
+
+
+def _replay_lines(lines: list[str]) -> list[str]:
+    return [line for line in lines if line.startswith("REPLAY= ")]
+
+
+def test_cli_all_pass_exit_zero(
+    ledger: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    migrated = _append_migrated_row(
+        ledger, game_id="2026_02_NE_NYG", verdict_scope=VERDICT_SCOPE_PRE_VERDICT
+    )
+    rows = _rows(ledger)
+
+    code, lines = _run_cli(capsys, "--ledger-dir", str(ledger))
+
+    replayed = _replay_lines(lines)
+    assert len(replayed) == len(rows)
+    for line, row in zip(replayed, rows, strict=True):
+        status = "not_replayable" if _key(row) == migrated else "pass"
+        assert line.startswith(f"REPLAY= {_key_text(_key(row))} {status}"), line
+    assert f"REPLAY_PASS= {len(rows) - 1}" in lines
+    assert "REPLAY_NOT_REPLAYABLE= 1" in lines
+    assert "REPLAY_FAIL= 0" in lines
+    assert code == 0
+
+
+def test_cli_failure_exit_one(
+    ledger: Path, fixture_season: FixtureSeason, capsys: pytest.CaptureFixture[str]
+) -> None:
+    part = ledger / SNAPSHOTS_DIRNAME / fixture_season.digests[3] / "gold_ats.parquet"
+    data = bytearray(part.read_bytes())
+    data[len(data) // 2] ^= 0x01
+    part.write_bytes(bytes(data))
+    week3 = [row for row in _rows(ledger) if row["week"] == 3]
+
+    code, lines = _run_cli(capsys, "--ledger-dir", str(ledger))
+
+    for row in week3:
+        line = next(
+            line
+            for line in _replay_lines(lines)
+            if line.startswith(f"REPLAY= {_key_text(_key(row))} ")
+        )
+        assert line.startswith(f"REPLAY= {_key_text(_key(row))} fail "), line
+        assert "gold_ats" in line
+    assert f"REPLAY_FAIL= {len(week3)}" in lines
+    assert code == 1
+
+
+def test_cli_filters(ledger: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    expected = [
+        row
+        for row in _rows(ledger)
+        if row["week"] == 4 and row["game_id"] == SHADOW_GAME
+    ]
+    assert len(expected) == 4  # wp, ats, ou live and the ats shadow
+
+    code, lines = _run_cli(
+        capsys, "--ledger-dir", str(ledger), "--week", "4", "--game-id", SHADOW_GAME
+    )
+
+    assert _replay_lines(lines) == [
+        f"REPLAY= {_key_text(_key(row))} pass" for row in expected
+    ]
+    assert f"REPLAY_PASS= {len(expected)}" in lines
+    assert code == 0
+
+
+def test_cli_unreadable_ledger_exit_two(
+    ledger: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store_file = ledger / "forward_2026.jsonl"
+    original = store_file.read_bytes()
+
+    # A broken chain: one stored value changed, the line still parses.
+    lines = original.split(b"\n")
+    first = json.loads(lines[0])
+    first["immutable"]["model_value"] = 0.123
+    lines[0] = json.dumps(first, separators=(",", ":")).encode("ascii")
+    store_file.write_bytes(b"\n".join(lines))
+    code, output = _run_cli(capsys, "--ledger-dir", str(ledger))
+    assert code == 2
+    assert _replay_lines(output) == []
+
+    # An unreadable store.
+    store_file.write_bytes(b"not a ledger line\n")
+    code, output = _run_cli(capsys, "--ledger-dir", str(ledger))
+    assert code == 2
+    assert any(line.startswith("LEDGER_UNREADABLE= ") for line in output)
+    assert _replay_lines(output) == []
