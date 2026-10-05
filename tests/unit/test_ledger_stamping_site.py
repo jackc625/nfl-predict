@@ -311,6 +311,12 @@ _PRODUCTION_ROOTS: tuple[str, ...] = (
 _STAMPING_SITE = "forward_ledger/stamps.py"
 # The migration (Plan 34-12) writes the pre-ledger rows, whose stamps are NULL forever.
 _NULL_ONLY_SITE = "forward_ledger/migration.py"
+# The display tables re-type a row's own ``arm`` (NaN -> None) as the web cache stores it; the
+# value is the row's own, never a new stamp (Plan 34-16's graded-outcomes path).
+_NULL_NORMALIZING_SITES: dict[str, frozenset[str]] = {
+    "api/cache.py": frozenset({"arm"}),
+    "backtest/bet_tracker.py": frozenset({"arm"}),
+}
 
 
 def _is_null_constant(node: ast.expr | None) -> bool:
@@ -329,19 +335,38 @@ def _subscript_columns(target: ast.expr) -> list[str]:
     ]
 
 
-def _stamp_writes(source: str) -> list[tuple[int, str, bool]]:
-    """``(line, column, writes NULL)`` for every assignment of a Phase-34 stamp column."""
-    writes: list[tuple[int, str, bool]] = []
+def _rewrites_itself(target: ast.expr, value: ast.expr | None, column: str) -> bool:
+    """True when *value* is computed from the target's own column (``x["c"] = f(x["c"])``)."""
+    if value is None or not isinstance(target, ast.Subscript):
+        return False
+    base = ast.unparse(target.value)
+    return any(
+        isinstance(node, ast.Subscript)
+        and ast.unparse(node.value) == base
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == column
+        for node in ast.walk(value)
+    )
+
+
+def _stamp_writes(source: str) -> list[tuple[int, str, bool, bool]]:
+    """``(line, column, writes NULL, rewrites itself)`` for every Phase-34 stamp assignment."""
+    writes: list[tuple[int, str, bool, bool]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 writes += [
-                    (node.lineno, column, _is_null_constant(node.value))
+                    (
+                        node.lineno,
+                        column,
+                        _is_null_constant(node.value),
+                        _rewrites_itself(target, node.value, column),
+                    )
                     for column in _subscript_columns(target)
                 ]
         elif isinstance(node, ast.AugAssign | ast.AnnAssign):
             writes += [
-                (node.lineno, column, _is_null_constant(node.value))
+                (node.lineno, column, _is_null_constant(node.value), False)
                 for column in _subscript_columns(node.target)
             ]
         elif (
@@ -350,7 +375,7 @@ def _stamp_writes(source: str) -> list[tuple[int, str, bool]]:
             and node.func.attr == "assign"
         ):
             writes += [
-                (node.lineno, keyword.arg, _is_null_constant(keyword.value))
+                (node.lineno, keyword.arg, _is_null_constant(keyword.value), False)
                 for keyword in node.keywords
                 if keyword.arg in PHASE34_STAMP_COLUMNS
             ]
@@ -359,10 +384,14 @@ def _stamp_writes(source: str) -> list[tuple[int, str, bool]]:
 
 def _offences(relative: str, source: str) -> list[str]:
     offences: list[str] = []
-    for line, column, writes_null in _stamp_writes(source):
+    for line, column, writes_null, rewrites_itself in _stamp_writes(source):
         if relative == _STAMPING_SITE:
             continue
         if relative == _NULL_ONLY_SITE and writes_null:
+            continue
+        if rewrites_itself and column in _NULL_NORMALIZING_SITES.get(
+            relative, frozenset()
+        ):
             continue
         offences.append(f"{relative}:{line} assigns {column!r}")
     return offences
@@ -389,7 +418,7 @@ def test_single_stamping_site() -> None:
 
     # Non-vacuity: the scanner finds every stamp column assigned at the one site.
     assigned_at_site = {
-        column for _, column, _ in _stamp_writes(sources[_STAMPING_SITE])
+        column for _, column, _, _ in _stamp_writes(sources[_STAMPING_SITE])
     }
     assert assigned_at_site == set(PHASE34_STAMP_COLUMNS)
 
@@ -420,3 +449,9 @@ def test_single_stamping_site_controls() -> None:
 
     migration_value = 'def migrate(frame):\n    frame["model_artifact_id"] = "wp_x"\n'
     assert len(_offences(_NULL_ONLY_SITE, migration_value)) == 1
+
+    normalized = 'def tidy(rows):\n    rows["arm"] = _null_as_none(rows["arm"])\n'
+    assert _offences("api/cache.py", normalized) == []
+
+    display_value = 'def tidy(rows, other):\n    rows["arm"] = "live"\n    rows["arm"] = other["arm"]\n'
+    assert len(_offences("api/cache.py", display_value)) == 2
