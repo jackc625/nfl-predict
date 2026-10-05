@@ -201,6 +201,20 @@ def _payload(games: pd.DataFrame) -> list[dict[str, Any]]:
     return [_event(row) for row in games.to_dict("records")]
 
 
+def _imported_modules(relative: str) -> set[str]:
+    """Every module *relative* imports; ``from pkg import mod`` on a bare package is ``pkg.mod``."""
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse((REPO_ROOT / relative).read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if "." in node.module:
+                imported.add(node.module)
+            else:
+                imported.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return imported
+
+
 class TestNoGameNear:
     def test_no_games_no_request(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -410,19 +424,19 @@ class TestTheDecisionCaptureIgnoresTheCreditRule:
         assert len(pd.read_parquet(tmp_path / "silver" / "odds_snapshot.parquet")) == 1
 
     def test_the_decision_modules_do_not_import_the_credit_rule(self) -> None:
-        for relative in ("pipeline/daily_steps.py", "scripts/ingest_odds.py"):
-            tree = ast.parse((REPO_ROOT / relative).read_text(encoding="utf-8"))
-            imported = {
-                node.module
-                for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom) and node.module
-            } | {
-                alias.name
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Import)
-                for alias in node.names
-            }
+        # Plan 34-15 wires the recommend step to the ledger behind the cutover switch; those two
+        # modules are the only ledger imports the decision path may carry, and neither reaches
+        # the credit rule.
+        allowed = {"forward_ledger.cutover", "forward_ledger.runner"}
+        for relative in (
+            "pipeline/daily_steps.py",
+            "scripts/ingest_odds.py",
+            "forward_ledger/runner.py",
+        ):
+            imported = _imported_modules(relative)
             assert "forward_ledger.credits" not in imported, relative
-            assert not any(name.startswith("forward_ledger") for name in imported), (
-                relative
-            )
+            if relative != "forward_ledger/runner.py":
+                ledger = {
+                    name for name in imported if name.startswith("forward_ledger")
+                }
+                assert ledger <= allowed, (relative, sorted(ledger - allowed))

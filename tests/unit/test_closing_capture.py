@@ -389,6 +389,8 @@ _SELECTION_MODULES = (
     "backtest/selector_strategies.py",
     "backtest/weekly_bet_list.py",
 )
+# The cutover switch is one boolean (Plan 34-15 routes forward rows on it); it reads no closing.
+_SELECTION_ALLOWED_LEDGER_IMPORTS = frozenset({"forward_ledger.cutover"})
 
 
 def _closing_references(source: str) -> tuple[set[str], set[str]]:
@@ -430,4 +432,5 @@ def test_selection_path_never_reads_closing() -> None:
         assert names == set(), (
             f"{relative} references closing column(s) {sorted(names)}"
         )
-        assert imports == set(), f"{relative} imports {sorted(imports)}"
+        unexpected = imports - _SELECTION_ALLOWED_LEDGER_IMPORTS
+        assert unexpected == set(), f"{relative} imports {sorted(unexpected)}"
