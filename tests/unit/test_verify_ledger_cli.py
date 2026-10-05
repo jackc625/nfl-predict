@@ -37,7 +37,8 @@ from forward_ledger.store import (
     write_entries,
 )
 from forward_ledger.transport import run_git
-from scripts.verify_ledger import main
+from forward_ledger.verify import verify_ledger
+from scripts.verify_ledger import main, report_lines
 from tests.unit.test_forward_ledger_store import key_of, make_row
 from tests.unit.test_ledger_anchor import git_out, make_bare, make_repo
 
@@ -390,10 +391,6 @@ def test_remote_unreachable_warns(tmp_path: Path) -> None:
         if "fetch" in args:
             return subprocess.CompletedProcess(list(args), 128, b"", b"network down")
         return run_git(args, cwd=cwd, **kwargs)
-
-    from forward_ledger.verify import verify_ledger
-
-    from scripts.verify_ledger import report_lines
 
     report = verify_ledger(
         ledger, repo, runner=fetch_fails, remote_url=remote.as_posix()

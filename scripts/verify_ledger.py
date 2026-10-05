@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
-"""Verify the 2026 forward ledger's hash chain (Phase 34, LDGR-06). A CLI, never a route.
+"""Verify the 2026 forward ledger (Phase 34, LDGR-05, LDGR-06). A CLI, never a route.
 
-Recomputes every chain hash from the published ``GENESIS_HASH`` and reports, one ``FIELD= value``
-line each, how many entries the store holds, its head, and whether the chain is intact. On a broken
-chain it names the FIRST entry that fails by its seq and its ``game_id|season|week|target|arm`` key.
+What it checks (``forward_ledger.verify`` holds the rules):
 
-Plan 34-10 adds the local and remote anchor comparison, the backup lag, the verdict-week stamp
-check and the D-19 re-grade to THIS CLI. No module under ``api/`` may import it or the
-``forward_ledger`` package (D-18, UIAP-01).
+* the hash chain, recomputed from the published ``GENESIS_HASH`` -- a broken chain names the FIRST
+  entry that fails by its seq and its ``game_id|season|week|target|arm`` key;
+* the LOCAL ``ledger-anchor`` commit (authoritative): a missing anchor while rows exist, a tail
+  shorter than the anchored row count, or a head that is not the ledger's hash at that count fails;
+  rows newer than the anchor are a warning;
+* the GitHub anchor, read anonymously over HTTPS: unreachable or behind is a warning, a remote
+  that DISAGREES with the ledger fails;
+* the private backup's lag (commits not yet pushed, files not yet committed), a warning.
 
-Exit codes: 0 intact; 1 the chain is broken; 2 the store exists but cannot be read.
+Output is one ``FIELD= value`` line each, then ``LOCAL_RESULT=`` (every local check),
+``EXTERNAL_RESULT=`` (the GitHub anchor: VERIFIED, BEHIND, UNREACHABLE, SKIPPED or DISAGREES) and
+last ``VERIFY_RESULT=``. No module under ``api/`` may import this CLI or the ``forward_ledger``
+package (D-18, UIAP-01); nothing on the daily run imports it either.
+
+Exit codes: 0 PASS (warnings allowed); 1 any failure; 2 the store exists but cannot be read.
 
 Usage:
     uv run python -m scripts.verify_ledger
-    uv run python -m scripts.verify_ledger --ledger-dir path/to/ledger
+    uv run python -m scripts.verify_ledger --skip-remote
+    uv run python -m scripts.verify_ledger --ledger-dir path/to/ledger --repo-dir path/to/repo
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -24,18 +33,23 @@ import argparse
 import sys
 from pathlib import Path
 
-from forward_ledger.store import (
-    LEDGER_DIR,
-    LedgerFormatError,
-    read_entries,
-    verify_chain,
+from forward_ledger.remote_config import ANCHOR_REMOTE_HTTPS_URL
+from forward_ledger.store import LEDGER_DIR, LedgerFormatError
+from forward_ledger.verify import (
+    REMOTE_BEHIND,
+    REMOTE_VERIFIED,
+    VerifyReport,
+    verify_ledger,
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
     """The CLI parser."""
     parser = argparse.ArgumentParser(
-        description="Verify the 2026 forward ledger's hash chain from its genesis constant"
+        description=(
+            "Verify the 2026 forward ledger: its hash chain, its local and GitHub anchors "
+            "and its backup lag"
+        )
     )
     parser.add_argument(
         "--ledger-dir",
@@ -43,30 +57,97 @@ def build_parser() -> argparse.ArgumentParser:
         default=LEDGER_DIR,
         help=f"The ledger directory (default: {LEDGER_DIR.as_posix()})",
     )
+    parser.add_argument(
+        "--repo-dir",
+        type=Path,
+        default=Path(),
+        help="The repository carrying the ledger-anchor branch (default: .)",
+    )
+    parser.add_argument(
+        "--remote-url",
+        default=ANCHOR_REMOTE_HTTPS_URL,
+        help=f"Where the remote anchor is read from (default: {ANCHOR_REMOTE_HTTPS_URL})",
+    )
+    parser.add_argument(
+        "--skip-remote",
+        action="store_true",
+        help="Do not read the remote anchor (reported as EXTERNAL_RESULT= SKIPPED)",
+    )
     return parser
+
+
+def _chain_lines(report: VerifyReport) -> list[str]:
+    lines = [
+        f"LEDGER_ENTRIES= {report.entries}",
+        f"HEAD_HASH= {report.head_hash}",
+        f"CHAIN_OK= {report.chain.ok}",
+    ]
+    if not report.chain.ok:
+        key = report.chain.first_broken_key or ()
+        lines += [
+            f"FIRST_BROKEN_SEQ= {report.chain.first_broken_seq}",
+            f"FIRST_BROKEN_KEY= {'|'.join(str(part) for part in key)}",
+            f"CHAIN_BROKEN_REASON= {report.chain.reason}",
+        ]
+    return lines
+
+
+def _anchor_lines(report: VerifyReport) -> list[str]:
+    anchor = report.local_anchor
+    rows = "none" if anchor.rows is None else anchor.rows
+    lines = [f"LOCAL_ANCHOR_ROWS= {rows}", f"LOCAL_ANCHOR_OK= {anchor.ok}"]
+    if anchor.reason is not None:
+        lines.append(f"LOCAL_ANCHOR_REASON= {anchor.reason}")
+    lines.append(f"UNANCHORED_ENTRIES= {report.unanchored}")
+
+    remote = report.remote
+    if remote.state in (REMOTE_VERIFIED, REMOTE_BEHIND):
+        lines.append(f"REMOTE_ANCHOR_BEHIND_BY= {remote.behind_by}")
+    else:
+        lines.append(f"REMOTE_ANCHOR= {remote.state}")
+    return lines
+
+
+def _backup_lines(report: VerifyReport) -> list[str]:
+    backup = report.backup
+    if backup.behind_by is None or backup.uncommitted is None:
+        return [f"BACKUP= {backup.error}"]
+    return [
+        f"BACKUP_BEHIND_BY= {backup.behind_by}",
+        f"BACKUP_UNCOMMITTED= {backup.uncommitted}",
+    ]
+
+
+def report_lines(report: VerifyReport) -> list[str]:
+    """Every output line for *report*, ``VERIFY_RESULT=`` last."""
+    lines = [*_chain_lines(report), *_anchor_lines(report), *_backup_lines(report)]
+    lines += [f"WARNING= {warning}" for warning in report.warnings]
+    lines += [f"FAILURE= {failure}" for failure in report.failures]
+    lines += [
+        f"LOCAL_RESULT= {'PASS' if report.local_ok else 'FAIL'}",
+        f"EXTERNAL_RESULT= {report.remote.state.upper()}",
+        f"VERIFY_RESULT= {'PASS' if report.ok else 'FAIL'}",
+    ]
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     args = build_parser().parse_args(argv)
     try:
-        entries = read_entries(args.ledger_dir)
+        report = verify_ledger(
+            args.ledger_dir,
+            args.repo_dir,
+            remote_url=args.remote_url,
+            check_remote=not args.skip_remote,
+        )
     except LedgerFormatError as error:
         print(f"LEDGER_UNREADABLE= {error}")
         return 2
 
-    verdict = verify_chain(entries)
-    print(f"LEDGER_ENTRIES= {verdict.entry_count}")
-    print(f"HEAD_HASH= {verdict.head_hash}")
-    print(f"CHAIN_OK= {verdict.ok}")
-    if verdict.ok:
-        return 0
-
-    key = verdict.first_broken_key or ()
-    print(f"FIRST_BROKEN_SEQ= {verdict.first_broken_seq}")
-    print(f"FIRST_BROKEN_KEY= {'|'.join(str(part) for part in key)}")
-    print(f"CHAIN_BROKEN_REASON= {verdict.reason}")
-    return 1
+    for line in report_lines(report):
+        print(line)
+    return 0 if report.ok else 1
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from forward_ledger.anchor import write_anchor_commit
 from forward_ledger.canonical import (
     CORRECTION_COLUMN_TYPES_V1,
     CORRECTION_COLUMNS_V1,
@@ -49,6 +50,7 @@ from forward_ledger.store import (
     verify_chain,
     write_entries,
 )
+from tests.unit.test_ledger_anchor import make_repo
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_SOURCE = REPO_ROOT / "forward_ledger" / "canonical.py"
@@ -153,7 +155,19 @@ def _two_row_ledger(ledger_dir: Path) -> list:
     return entries
 
 
-def _run_cli(ledger_dir: Path) -> subprocess.CompletedProcess:
+def _anchored_repo(path: Path, entries: list) -> Path:
+    """A tmp_path repository whose ``ledger-anchor`` commits the head of *entries*.
+
+    Since Plan 34-10 the CLI also checks the local anchor; the real repository's refs are never
+    read by a test, so each run is pointed at its own repository and skips the remote read.
+    """
+    repo = make_repo(path)
+    head, count = ledger_head(entries)
+    write_anchor_commit(repo, head, count)
+    return repo
+
+
+def _run_cli(ledger_dir: Path, repo_dir: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
@@ -161,6 +175,9 @@ def _run_cli(ledger_dir: Path) -> subprocess.CompletedProcess:
             "scripts.verify_ledger",
             "--ledger-dir",
             str(ledger_dir),
+            "--repo-dir",
+            str(repo_dir),
+            "--skip-remote",
         ],
         cwd=REPO_ROOT,
         capture_output=True,
@@ -386,7 +403,7 @@ def test_payload_is_exactly_the_v1_column_list() -> None:
 
 def test_verify_cli_clean_exit_zero(tmp_path: Path) -> None:
     entries = _two_row_ledger(tmp_path)
-    completed = _run_cli(tmp_path)
+    completed = _run_cli(tmp_path, _anchored_repo(tmp_path / "public", entries))
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "CHAIN_OK= True" in completed.stdout
@@ -395,14 +412,14 @@ def test_verify_cli_clean_exit_zero(tmp_path: Path) -> None:
 
 
 def test_verify_cli_names_first_broken_row(tmp_path: Path) -> None:
-    _two_row_ledger(tmp_path)
+    repo = _anchored_repo(tmp_path / "public", _two_row_ledger(tmp_path))
     path = ledger_path(tmp_path)
     original = path.read_bytes()
     # One character inside an immutable value of the SETTLED seq-0 row: -3.2 -> -3.3.
     assert original.count(b'"model_value":-3.2,') == 1
     path.write_bytes(original.replace(b'"model_value":-3.2,', b'"model_value":-3.3,'))
 
-    completed = _run_cli(tmp_path)
+    completed = _run_cli(tmp_path, repo)
 
     assert completed.returncode == 1, completed.stdout + completed.stderr
     assert "CHAIN_OK= False" in completed.stdout
@@ -411,7 +428,7 @@ def test_verify_cli_names_first_broken_row(tmp_path: Path) -> None:
 
 
 def test_malformed_line_is_refused_by_name(tmp_path: Path) -> None:
-    _two_row_ledger(tmp_path)
+    repo = _anchored_repo(tmp_path / "public", _two_row_ledger(tmp_path))
     path = ledger_path(tmp_path)
     lines = path.read_bytes().split(b"\n")
     # Line 2 cut mid-object, as a crash during a non-atomic write would leave it.
@@ -421,7 +438,7 @@ def test_malformed_line_is_refused_by_name(tmp_path: Path) -> None:
     with pytest.raises(LedgerFormatError, match="line 2"):
         read_entries(tmp_path)
 
-    completed = _run_cli(tmp_path)
+    completed = _run_cli(tmp_path, repo)
     assert completed.returncode == 2, completed.stdout + completed.stderr
     assert "LEDGER_UNREADABLE=" in completed.stdout
     assert "line 2" in completed.stdout
