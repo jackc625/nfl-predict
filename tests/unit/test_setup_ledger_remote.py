@@ -183,7 +183,7 @@ def inherited_acl(
 
 def make_paths(tmp_path: Path) -> setup.SetupPaths:
     ssh_dir = tmp_path / "ssh"
-    ssh_dir.mkdir()
+    ssh_dir.mkdir(parents=True)
     return setup.SetupPaths(
         anchor_key=ssh_dir / "nfl_ledger_anchor_ed25519",
         backup_key=ssh_dir / "nfl_ledger_backup_ed25519",
