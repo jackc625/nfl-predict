@@ -608,6 +608,240 @@ Keyed off each stage's success signal above:
 
 ---
 
+## Forward ledger
+
+Added 2026-10-05 (Phase 34), after the old-rule addendum at the end of this file was written; it
+is a set of operating procedures, not a result. Since the cutover that evening, every 2026 forward
+bet the daily run decides is written to an append-only ledger instead of `outputs/bet_list/`. This
+section covers where the record lives, how to restore it, how to keep its pushes working, how to
+record a real bet and how to check it. The scheduled side -- the closing wake task, the Odds API
+credit budget, the deploy keys and the run log -- is explained in `AUTOMATION.md`; the daily run's
+ledger steps are in `PIPELINE.md`. Every command runs in PowerShell from the repository root.
+
+### Where the record lives
+
+- `ledger/forward_2026.jsonl` -- one line per entry: every forward row and every correction entry,
+  chained by sha256 from a published genesis hash. A row is never edited. Grading, the closing line
+  and a real fill each fill their own empty columns once, and a score corrected after grading is
+  recorded as a new correction entry, never as an edit.
+- `ledger/snapshots/` -- the exact inputs each decision run scored (candidates, schedule, gold
+  rows), so a row can be replayed later.
+- `ledger/artifacts/` and `ledger/recipes/` -- the ledger's own copies of every model, blend and
+  converter directory a row was scored with, and of the chain-fit record
+  (`ledger/recipes/<sha256>.json`). Replay needs nothing from `artifacts/` or `outputs/`.
+- `ledger/` is itself a git repository (branch `main`). This public repository ignores it, and it
+  is pushed to the PRIVATE repository `jackc625/nfl-predict-ledger`. Every push is a commit, so the
+  backup keeps a dated history and a damaged local file can never overwrite the last good copy.
+- The PUBLIC repository's branch `ledger-anchor` holds one two-line file, `ANCHOR`: the ledger's
+  head hash and its row count. No game, pick, line or stake is ever published. A ruleset (id
+  24536696) forbids deleting or force-pushing that branch, so the published history of heads
+  cannot be rewritten.
+- `logs/ledger_runs.jsonl` -- one line per ledger event: appends, refusals, settles, pushes and
+  their failures (`AUTOMATION.md`, "Ledger run log").
+
+Go-live was 2026-10-05 at about 17:47 ET. The ledger started with the 87 rows the old writer had
+produced for weeks 3 and 4 (42 and 45), labelled `pre_verdict`. The first anchor is commit
+`ec71c42` on `ledger-anchor`; the first backup push is commit `53b9d38` on the backup's `main`.
+The 2025 replay rows stay in `outputs/bet_list/`. The 2026 verdict counts weeks 5-22 only, the live
+arm only, on the corrected outcome; that scope is declared in `backtest/verdict_scope_2026.py`,
+committed and pushed before week 5's first lock (Wednesday 2026-10-07, 18:00 ET).
+
+Forward rows now come only from the daily run. `scripts/generate_bet_list.py` and the manual
+Friday pipeline refuse to write forward rows (`ForwardRowsMovedToLedgerError`), so operation 12
+above no longer produces the forward record -- the ledger is that record now.
+
+### Restore the ledger from the private backup
+
+Use this when `ledger/` is damaged or lost: verify fails on the chain, the file is gone, or the
+disk was replaced. It rebuilds `ledger/` from the private backup alone.
+
+1. Stop the scheduled tasks, so nothing writes while you work. Use an ELEVATED terminal ("Run as
+   administrator"): both tasks run with the highest privileges, and a normal terminal may answer
+   "Access is denied".
+
+   ```powershell
+   schtasks /change /tn NFL_Predict_Pipeline /disable
+   schtasks /change /tn NFL_Predict_Closing /disable
+   ```
+
+2. Move the damaged directory aside. Never delete it: it is the evidence of what went wrong, and
+   you will compare it with the restored copy. Moving it outside the repository keeps it from being
+   mistaken for project files.
+
+   ```powershell
+   Move-Item ledger "$HOME\ledger_damaged_$(Get-Date -Format yyyyMMdd_HHmm)"
+   ```
+
+3. Clone the backup into `ledger`, signed in as yourself (your normal GitHub sign-in; the deploy
+   keys are for the scheduled pushes, not for this):
+
+   ```powershell
+   git clone --branch main https://github.com/jackc625/nfl-predict-ledger.git ledger
+   ```
+
+   If your GitHub account has an SSH key, the SSH form does the same:
+   `git clone --branch main git@github.com:jackc625/nfl-predict-ledger.git ledger`. Always pass
+   `--branch main`: the backup's history lives on `main`, and naming it means the clone cannot
+   check out an empty default branch.
+
+4. On a NEW machine only, the public repository's local `ledger-anchor` branch is missing too, and
+   verify treats the local anchor as authoritative. If `git show-ref refs/heads/ledger-anchor`
+   prints nothing, copy it from GitHub with `git fetch origin ledger-anchor:ledger-anchor`.
+
+5. Verify. It must print `VERIFY_RESULT= PASS` (warning lines are allowed; a `FAILURE=` line is
+   not):
+
+   ```powershell
+   uv run python -m scripts.verify_ledger
+   ```
+
+   Verify includes the D-19 settled-result check: every settled row is re-graded from the official
+   scores in `data/silver/games.parquet`, so that file must exist. On a fresh machine, ingest the
+   season's games first (`uv run python scripts/ingest_games.py --season 2026`), or point verify at
+   a silver store that has them with `--silver-dir <dir>`. The re-grade also reads the chain-fit
+   record. If `outputs/row19/neutral_hfa_chain_fit.json` is absent (it is gitignored, so a fresh
+   checkout lacks it), pass the ledger's own copy:
+   `--chain-fit-path ledger/recipes/<sha256>.json`.
+
+6. Spot-check a replay of one week, 5 or later. It must end with `REPLAY_FAIL= 0`:
+
+   ```powershell
+   uv run python -m scripts.replay_ledger --week <n>
+   ```
+
+   Weeks 3 and 4 were migrated without stored inputs, so their rows print `not_replayable`. That
+   is expected; it is reported and never counted as a pass.
+
+7. Re-enable the tasks only after BOTH checks pass (elevated terminal again):
+
+   ```powershell
+   schtasks /change /tn NFL_Predict_Pipeline /enable
+   schtasks /change /tn NFL_Predict_Closing /enable
+   ```
+
+If verify or replay fails on the restored copy, leave the tasks disabled. The backup and the anchor
+disagree, and that has to be understood before anything is written again.
+
+### If pushes start failing
+
+Every daily run that changes the ledger ends with a sync. It commits a new anchor when the head
+moved and pushes it to `ledger-anchor`, then commits and pushes the backup. A failed push never
+fails the run: it is printed on the `LEDGER_SYNC=` line, recorded as an `anchor_push` or
+`backup_push` event with `ok` false in `logs/ledger_runs.jsonl`, and retried by the next sync,
+which carries the current head. A missing or locked backup repository is recorded the same way and
+never fails the run either.
+
+Verify shows a stuck push with two lines:
+
+- `REMOTE_ANCHOR_BEHIND_BY= N` -- the GitHub anchor is N rows behind the local ledger.
+- `BACKUP_BEHIND_BY= N` -- N backup commits are not on GitHub yet (`BACKUP_UNCOMMITTED= N`
+  counts changed files not yet committed).
+
+Both read 0 after a good sync. They are warnings, not failures; a number that keeps growing day
+after day means GitHub is refusing the pushes.
+
+The usual cause is a deploy key that has disappeared. The two keys --
+`C:/Users/jackc/.ssh/nfl_ledger_anchor_ed25519` for the public repository and
+`C:/Users/jackc/.ssh/nfl_ledger_backup_ed25519` for the private one -- were registered with `gh`,
+and GitHub deletes keys added by `gh` when that `gh` login is revoked. Logging `gh` out removes
+them. The key files on disk are untouched; only the registration is gone. To re-add them:
+
+1. `gh auth status` -- if you are not logged in, `gh auth login`.
+2. `uv run python -m scripts.setup_ledger_remote register-deploy-keys` -- adds each key,
+   write-scoped, to its own repository (`gh repo deploy-key add <key>.pub -R <repo>
+   --allow-write --title ...`), skips a key that is still registered, and reads both back.
+3. `uv run python -m scripts.setup_ledger_remote verify` -- must print `SETUP_READBACK_MATCH= True`.
+4. `uv run python -m scripts.sync_ledger` -- pushes whatever is waiting. Read `ANCHOR_PUSHED=`,
+   `BACKUP_PUSHED=` and the two `_ERROR=` lines. `SYNC_RESULT= DONE` means it ran; a push that
+   still failed is DONE too, with its error named. Then re-run verify: both `_BEHIND_BY=` lines
+   should read 0.
+
+If a key FILE is missing, `register-deploy-keys` refuses and names it. `create-keys` makes new keys
+(it refuses to overwrite an existing file); then repeat steps 2-4. `sync_ledger` exits 1 only when
+the ledger cannot be read or its chain is broken (`SYNC_REFUSED=`): nothing is ever published from
+a broken chain, so restore from the backup first.
+
+### Recording a real bet
+
+Paper rows carry empty fill columns. When you actually place a bet, record it on its row:
+
+```powershell
+uv run python -m scripts.record_fill --game-id <game_id> --season 2026 --week <n> --target ats --sportsbook draftkings --line -3.5 --odds -110 --stake-dollars 50 --filled-at 2026-10-18T12:01:00-04:00
+```
+
+- The row is named by its full key: `--game-id`, `--season`, `--week`, `--target` (`wp`, `ats` or
+  `ou`) and `--arm` (default `live`).
+- Give at least one of `--sportsbook`, `--line`, `--odds`, `--stake-dollars` and `--filled-at`.
+  `--filled-at` must carry a UTC offset; a time without one is refused, never guessed.
+- **Each value can be set once.** A second write to a column that already holds a value is refused
+  (`FILL_REFUSED=`), even with the same value, and the ledger is left byte-identical. Check the
+  numbers before you run it: there is no edit.
+- Success prints `FILL_RECORDED=` and then the sync's lines. A fill changes the ledger directory,
+  so the backup is pushed straight away (no anchor commit: the head does not move). A failed push
+  is printed, not fatal; `uv run python -m scripts.sync_ledger` retries it.
+- Exit codes: 0 recorded, 1 refused by the ledger, 2 bad input.
+
+### Verify and replay
+
+`uv run python -m scripts.verify_ledger` only reads; it never repairs anything. Exit 0 is PASS
+(warnings allowed), 1 is any failure, 2 means the ledger file cannot be read. Its lines:
+
+| Line | What it means |
+|------|---------------|
+| `LEDGER_ENTRIES=`, `HEAD_HASH=`, `CHAIN_OK=` | The entry count, the head hash, and whether the chain recomputes from the genesis hash. A broken chain adds `FIRST_BROKEN_SEQ=` and `FIRST_BROKEN_KEY=`, naming the first entry that fails. |
+| `LOCAL_ANCHOR_ROWS=`, `LOCAL_ANCHOR_OK=`, `UNANCHORED_ENTRIES=` | The local `ledger-anchor` commit is authoritative. A missing anchor while rows exist, or an anchored head that is not the ledger's hash at that count, fails -- this is what catches a truncated file. Rows newer than the anchor are a warning; the next sync anchors them. |
+| `REMOTE_ANCHOR_BEHIND_BY=` or `REMOTE_ANCHOR=` | The GitHub anchor, read anonymously: how many rows it is behind, or `unreachable` / `skipped`. Warnings. |
+| `BACKUP_BEHIND_BY=`, `BACKUP_UNCOMMITTED=` (or `BACKUP=`) | Backup lag. Warnings. |
+| `VERDICT_DECLARED=`, `VERDICT_START_WEEK=`, `VERDICT_STAMPS_OK=`, `VERDICT_LABELS_OK=`, `CORRECTIONS_OK=` | The rules of the committed verdict scope (W = 5): every live 2026 row carries the label its week is given; rows in weeks 5-22 carry every stamp, a registered recipe and `fill-v1`; every correction entry names a real row. |
+| `REGRADE_CHECKED=`, `REGRADE_OK=` | D-19: every settled row (win, loss, push) is re-graded from the official scores and compared with its in-force outcome -- its latest correction entry if it has one, otherwise its own grade. |
+| `REGRADE_MISMATCH=` | One line per settled row whose stored grade, payout or realized units disagree with the official score or with its in-force correction: `<seq> <key> <field> stored=<value> regraded=<value> <reason>`. The reason is `regrade_differs`, `correction_differs` (a correction is in force and the row still disagrees), `no_recorded_score` or `no_strategy_for_target`. Any mismatch fails. |
+| `WARNING=`, `FAILURE=` | One line per warning or failure, in words. |
+| `LOCAL_RESULT=` | PASS or FAIL over every check made on this machine: the chain, the local anchor, the verdict rules and the re-grade. |
+| `EXTERNAL_RESULT=` | The GitHub anchor on its own: `VERIFIED`, `BEHIND`, `UNREACHABLE`, `SKIPPED` (with `--skip-remote`) or `DISAGREES`. Only `DISAGREES` fails: GitHub holds a head the local ledger does not have, which means the local file was rewritten or cut short. |
+| `VERIFY_RESULT=` | The overall answer. |
+
+A `REGRADE_MISMATCH=` line means a stored result no longer matches the public score. Never edit the
+ledger by hand to make it go away. If the official score was corrected after grading, the daily
+run's settle pass appends a correction entry once the revision detector flags that game, so re-run
+verify after the next daily run. If the mismatch persists, or the score never changed, treat it as
+damage and compare against the backup (the restore procedure above).
+
+`uv run python -m scripts.replay_ledger` re-derives each row from its stored snapshot and the
+ledger's own artifact copies, and compares every decision field: categories exactly, numbers within
+1e-9. Narrow it with `--week`, `--season` or `--game-id` (repeatable). It prints one `REPLAY=` line
+per row, then `REPLAY_PASS=`, `REPLAY_NOT_REPLAYABLE=` and `REPLAY_FAIL=`. A pre-verdict row with
+no snapshot -- the 87 migrated rows -- is `not_replayable`; a verdict row with no snapshot fails.
+Exit 0 means no row failed, 1 that a row failed, 2 that the ledger cannot be read or its chain is
+broken (replay never runs on an unverified ledger).
+
+### The one-time migration
+
+Done once, on 2026-10-05, by Plan 34-19. Do NOT run it again. The order was: publish, verify, and
+only then flip the switch.
+
+1. `outputs/bet_list/` was copied to `outputs/bet_list_pre_migration/` (kept as a record).
+2. `uv run python -m scripts.migrate_forward_rows --apply` moved the old writer's 87 forward rows
+   into the empty ledger exactly as stored -- arm `live`, every stamp NULL, labelled
+   `pre_verdict`, chained from the genesis hash -- and then rewrote `outputs/bet_list/` to hold only
+   the 234 2025 replay rows.
+3. `uv run python -m scripts.sync_ledger`, with the switch still off, pushed the first anchor
+   (`ec71c42`) and the first backup (`53b9d38`); both were read back from GitHub.
+4. `uv run python -m scripts.setup_ledger_remote create-anchor-ruleset` protected `ledger-anchor`
+   (ruleset 24536696), and `setup_ledger_remote verify` printed `SETUP_READBACK_MATCH= True`.
+5. `uv run python -m scripts.verify_ledger` printed `VERIFY_RESULT= PASS`.
+6. Only then was the switch turned on -- `FORWARD_ROWS_GO_TO_LEDGER = True` in
+   `forward_ledger/cutover.py`, in a commit of its own (`300e44e`) -- and the web cache rebuilt.
+7. The owner installed `NFL_Predict_Closing` from an elevated terminal (`AUTOMATION.md`).
+
+The dry run, `uv run python -m scripts.migrate_forward_rows` with no flag, only prints what
+`--apply` would do. `--apply` now refuses (`MIGRATION_REFUSED= AlreadyMigratedError`), because the
+ledger already holds entries. `--finish` exists only to complete an outputs rewrite interrupted
+inside step 2. There is no way back: once the remote `ledger-anchor` exists, undoing the migration
+is forbidden. The test suite runs with the switch OFF unless a test turns it on
+(`tests/conftest.py`), so no test writes forward rows the way production does.
+
+---
+
 ## Cross-references
 
 - **`PIPELINE.md`** -- the canonical 8-stage run sequence (ingest -> features -> train ->

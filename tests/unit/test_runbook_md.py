@@ -391,3 +391,37 @@ class TestPhase31Reconciled:
             "RUNBOOK.md should cross-link PROFITABILITY-READOUT.md (the Phase-31 milestone close "
             "and the explanation of the five deliberately-red tests)"
         )
+
+
+class TestPhase34ForwardLedger:
+    """Plan 34-21: the owner can restore, verify, replay and re-key the ledger from the RUNBOOK.
+
+    D-02 requires a short restore procedure here that rebuilds ``ledger/`` from the private backup
+    alone. Each subsection is pinned by its heading, and the restore by its clone command, which
+    must name the backup repository and its ``main`` branch.
+    """
+
+    def test_documents_every_forward_ledger_subsection(self):
+        """The section and its six subsections are present, named in the drift message."""
+        content = _read_runbook_md()
+        headings = (
+            "## Forward ledger",
+            "### Where the record lives",
+            "### Restore the ledger from the private backup",
+            "### If pushes start failing",
+            "### Recording a real bet",
+            "### Verify and replay",
+            "### The one-time migration",
+        )
+        missing = [heading for heading in headings if heading not in content]
+        assert not missing, f"RUNBOOK.md missing forward-ledger sections: {missing}"
+
+    def test_the_restore_clones_the_private_backup_on_main(self):
+        """The restore names the backup repository and clones its main branch into ledger/."""
+        content = _read_runbook_md()
+        assert (
+            "git clone --branch main https://github.com/jackc625/nfl-predict-ledger.git ledger"
+            in content
+        ), (
+            "RUNBOOK.md restore does not clone jackc625/nfl-predict-ledger on main into ledger"
+        )
