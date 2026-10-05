@@ -52,6 +52,7 @@ GAMES = ("2026_06_KC_BUF", "2026_06_DAL_PHI")
 DECIDED_AT = datetime(2026, 10, 14, 21, 18, 10, tzinfo=UTC)
 LOCK = datetime(2026, 10, 14, 22, 0, tzinfo=UTC)
 SETTLE_AT = datetime(2026, 10, 21, 21, 0, 5, tzinfo=UTC)
+CONVERTER_SLOPE = 0.15
 
 _RECIPE = RECIPE_REGISTRY[IN_FORCE_RECIPE_ID]
 RESOLVED = ResolvedArtifacts(
@@ -76,14 +77,15 @@ def _decided_row(
     game_id: str, decided_at: datetime, **overrides: Any
 ) -> dict[str, Any]:
     """One decided ATS row as the decision path emits it: no Phase-34 stamp yet."""
-    row = make_row(
-        game_id=game_id,
-        target="ats",
-        bet_side="home_cover",
-        slipped_line=-3.0,
-        decided_at_utc=decided_at.isoformat(),
+    fields: dict[str, Any] = {
+        "game_id": game_id,
+        "target": "ats",
+        "bet_side": "home_cover",
+        "slipped_line": -3.0,
+        "decided_at_utc": decided_at.isoformat(),
         **overrides,
-    )
+    }
+    row = make_row(**fields)
     return {name: row[name] for name in _DECISION_COLUMNS}
 
 
@@ -151,8 +153,31 @@ class _Env:
             directory = self.artifacts / str(artifact_id)
             directory.mkdir(parents=True)
             (directory / "metadata.json").write_text(
-                json.dumps({"id": artifact_id}), encoding="utf-8"
+                json.dumps({"id": artifact_id, "slope_beta": CONVERTER_SLOPE}),
+                encoding="utf-8",
             )
+        # The blend payload and the manifest ``resolve_production_artifacts`` reads.
+        (self.artifacts / RESOLVED.blend / "blend_weights.json").write_text(
+            json.dumps(
+                {
+                    "weights": {"wp": 0.0, "ats": 0.0, "ou": 0.12},
+                    "market_probability_artifact_id": RESOLVED.converter,
+                    "market_probability_slope_beta": CONVERTER_SLOPE,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.artifacts / "latest.json").write_text(
+            json.dumps(
+                {
+                    "wp": RESOLVED.wp,
+                    "ats": RESOLVED.ats,
+                    "ou": RESOLVED.ou,
+                    "blend": RESOLVED.blend,
+                }
+            ),
+            encoding="utf-8",
+        )
         self.gold.mkdir()
         for target in ("wp", "ats", "ou"):
             _gold().to_parquet(self.gold / f"features_{target}.parquet", index=False)
