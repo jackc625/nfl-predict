@@ -33,6 +33,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
+
+import tests.gold_generation as test_gold_generation
+from backtest.weekly_bet_list import DecisionBundle
+from data.upstream_live import AS_OF_ENV, AsOfCapture, as_of_capture
+from forward_ledger import repro_key
+from forward_ledger.canonical import CanonicalValueError, frame_digest
 from forward_ledger.snapshots import (
     SNAPSHOT_PART_KEYS,
     SNAPSHOT_PARTS,
@@ -42,12 +48,6 @@ from forward_ledger.snapshots import (
     load_decision_snapshot,
     write_decision_snapshot,
 )
-
-import tests.gold_generation as test_gold_generation
-from backtest.weekly_bet_list import DecisionBundle
-from data.upstream_live import AS_OF_ENV, AsOfCapture, as_of_capture
-from forward_ledger import repro_key
-from forward_ledger.canonical import CanonicalValueError, frame_digest
 from models.artifacts import ResolvedArtifacts
 
 SEASON = 2026

@@ -36,6 +36,16 @@ THE CHAIN
 ``(GENESIS_HASH, 0)``. The genesis hash is a literal in this source so it is published by the
 commit that introduces it; the tests re-derive it from ``GENESIS_SEED``.
 
+THE SAME DISCIPLINE FOR A WHOLE FRAME (LDGR-09, Plan 34-08)
+-----------------------------------------------------------
+:func:`frame_digest` gives a decision-input frame (a snapshot part, the admissible odds rows) one
+content digest that a parquet round trip, a row shuffle or a column reorder cannot move. A frame
+has no declared schema, so each column is coerced by its pandas dtype KIND instead, and the kind
+is bound into the payload: columns sorted by name, rows sorted by a stated key that must identify
+every row UNIQUELY (a tie would leave the digest dependent on the order the tied rows arrived in),
+the one null form, floats by exact ``repr``, tz-aware instants as UTC ISO 8601 at nanosecond
+precision. A naive datetime, an infinity or an object it cannot render exactly is refused by name.
+
 Constants and pure functions only: no I/O, no clock, no state.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -46,7 +56,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -59,6 +70,7 @@ __all__ = [
     "CORRECTION_COLUMN_TYPES_V1",
     "ENTRY_KIND_CORRECTION",
     "ENTRY_KIND_ROW",
+    "FRAME_DOMAIN",
     "GENESIS_HASH",
     "GENESIS_SEED",
     "IMMUTABLE_COLUMNS_V1",
@@ -68,6 +80,7 @@ __all__ = [
     "canonical_values",
     "chain_hash",
     "coerce_canonical_value",
+    "frame_digest",
 ]
 
 CANON_VERSION = 1
@@ -226,6 +239,14 @@ GENESIS_HASH = "1962f73e60f847b4867c95ddfbcf7de42651b4d56814a17d0569dc2358f6e6d7
 # Domain separation: no other sha256 in this repository can produce a chain link by accident.
 CHAIN_DOMAIN = b"nfl-ledger-chain-v1\n"
 
+# The same separation for a frame digest (LDGR-09): a frame digest can never equal a chain link.
+FRAME_DOMAIN = b"nfl-ledger-frame-v1\n"
+
+# The pandas dtype kinds a frame digest can render exactly: signed and unsigned integers, floats,
+# booleans, datetimes (tz-aware only) and objects (strings, categories, the string dtype).
+_FRAME_KINDS: frozenset[str] = frozenset("iufbMO")
+_NANOS_PER_SECOND = 1_000_000_000
+
 _COLUMNS_BY_KIND: dict[str, tuple[tuple[str, ...], dict[str, str]]] = {
     ENTRY_KIND_ROW: (IMMUTABLE_COLUMNS_V1, IMMUTABLE_COLUMN_TYPES_V1),
     ENTRY_KIND_CORRECTION: (CORRECTION_COLUMNS_V1, CORRECTION_COLUMN_TYPES_V1),
@@ -366,3 +387,145 @@ def chain_hash(prev_hash: str, payload: bytes) -> str:
     return hashlib.sha256(
         CHAIN_DOMAIN + prev_hash.encode("ascii") + b"\n" + payload
     ).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# frame_digest: one content digest for a whole frame (LDGR-09)
+# ---------------------------------------------------------------------------
+
+
+def _refuse_cell(column: str, kind: str, value: Any, why: str) -> CanonicalValueError:
+    return CanonicalValueError(
+        f"frame column {column!r} (dtype kind {kind!r}) cannot canonicalize {value!r} "
+        f"({type(value).__name__}): {why}"
+    )
+
+
+def _instant_text(column: str, kind: str, value: Any) -> str:
+    """A tz-aware instant as UTC ISO 8601 at nanosecond precision.
+
+    Rendered from the nanosecond count since the epoch, so a ``[us]`` and a ``[ns]`` column holding
+    the same instant -- parquet writers and readers disagree about the unit -- give the same text.
+    """
+    stamp = pd.Timestamp(value)
+    if stamp.tzinfo is None:
+        raise _refuse_cell(column, kind, value, "a naive datetime names no instant")
+    seconds, nanos = divmod(stamp.value, _NANOS_PER_SECOND)
+    whole = datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    return f"{whole}.{nanos:09d}+00:00"
+
+
+def _frame_cell(column: str, kind: str, value: Any) -> Any:
+    """*value* of a column of dtype *kind* in its one canonical JSON form."""
+    if _is_null(value):
+        return None
+    if kind in "iu":
+        if isinstance(value, bool | np.bool_):
+            raise _refuse_cell(column, kind, value, "a boolean is not an integer")
+        return int(value)
+    if kind == "f":
+        number = float(value)
+        if math.isinf(number):
+            raise _refuse_cell(column, kind, value, "infinity has no canonical form")
+        return number
+    if kind == "b":
+        return bool(value)
+    if kind == "M":
+        return _instant_text(column, kind, value)
+    # Object kind: strings (object, category and the string dtype all report "O"), and the
+    # booleans a left join leaves in an object column beside its NaN.
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, bool | np.bool_):
+        return bool(value)
+    raise _refuse_cell(
+        column, kind, value, "an object column may hold only strings and booleans"
+    )
+
+
+def _frame_columns(frame: pd.DataFrame) -> list[tuple[str, str]]:
+    """``(name, dtype kind)`` for every column, sorted by name, or a named refusal."""
+    names = list(frame.columns)
+    if any(not isinstance(name, str) for name in names):
+        msg = f"frame column names must be strings; got {names!r}"
+        raise CanonicalValueError(msg)
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    if duplicated:
+        msg = f"frame column name(s) {duplicated} appear more than once"
+        raise CanonicalValueError(msg)
+
+    columns: list[tuple[str, str]] = []
+    for name in sorted(names):
+        dtype = frame[name].dtype
+        kind = dtype.kind
+        if kind not in _FRAME_KINDS:
+            msg = f"frame column {name!r} has dtype {dtype} (kind {kind!r}), which has no canonical form"
+            raise CanonicalValueError(msg)
+        if kind == "M" and not isinstance(dtype, pd.DatetimeTZDtype):
+            msg = f"frame column {name!r} is a naive datetime ({dtype}); it names no instant"
+            raise CanonicalValueError(msg)
+        columns.append((name, kind))
+    return columns
+
+
+def frame_digest(frame: pd.DataFrame, sort_by: Sequence[str]) -> str:
+    """One sha256 over *frame*'s content, independent of row order, column order and dtype unit.
+
+    Args:
+        frame: The frame to digest. Its index is ignored.
+        sort_by: Columns whose values identify every row UNIQUELY; rows are ordered by them.
+
+    Returns:
+        ``sha256(FRAME_DOMAIN + payload)`` as lowercase hex, where the payload is compact ASCII
+        JSON binding the ``(name, dtype kind)`` column list, the sort key and the sorted rows.
+
+    Raises:
+        CanonicalValueError: a key column is missing or holds a null, a key tuple appears twice
+            (named with its columns and value), a column name is not a unique string, a dtype
+            has no canonical form, a datetime is naive, a float is infinite, or an object cell is
+            neither a string nor a boolean.
+    """
+    key = tuple(sort_by)
+    if not key:
+        msg = "frame_digest needs a non-empty sort key"
+        raise CanonicalValueError(msg)
+    missing = [name for name in key if name not in frame.columns]
+    if missing:
+        msg = f"frame_digest sort key {list(key)} names column(s) {missing} the frame lacks"
+        raise CanonicalValueError(msg)
+
+    columns = _frame_columns(frame)
+    names = [name for name, _ in columns]
+    rendered = [
+        [_frame_cell(name, kind, value) for value in frame[name].tolist()]
+        for name, kind in columns
+    ]
+    rows = [list(row) for row in zip(*rendered, strict=True)] if rendered else []
+
+    key_positions = [names.index(name) for name in key]
+    keyed: dict[str, list[Any]] = {}
+    for row in rows:
+        key_values = [row[position] for position in key_positions]
+        if any(value is None for value in key_values):
+            msg = (
+                f"frame_digest sort key {list(key)} holds a null in row {key_values!r}"
+            )
+            raise CanonicalValueError(msg)
+        key_text = json.dumps(key_values, ensure_ascii=True, separators=(",", ":"))
+        if key_text in keyed:
+            msg = (
+                f"frame_digest sort key {list(key)} is not unique: {tuple(key_values)!r} "
+                "appears more than once, so row order would move the digest"
+            )
+            raise CanonicalValueError(msg)
+        keyed[key_text] = row
+
+    payload = [
+        ["columns", [[name, kind] for name, kind in columns]],
+        ["sort_by", list(key)],
+        ["rows", [keyed[text] for text in sorted(keyed)]],
+    ]
+    body = json.dumps(
+        payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+    ).encode("ascii")
+    return hashlib.sha256(FRAME_DOMAIN + body).hexdigest()
