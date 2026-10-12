@@ -76,12 +76,24 @@ nested sessions prove the guard watches it, with every root redirected onto ``tm
 8. A separate session whose one module writes nothing exits 0 -- the third root adds no
    false positive.
 
-THE SESSION SAFETY NET (34-REVIEW WR-17)
-----------------------------------------
+THE FOURTH ROOT, ``logs`` (34-REVIEW WR-18)
+------------------------------------------
+``logs/ledger_runs.jsonl`` feeds settlement: its ``closing_capture`` skip events become each row's
+permanent ``closing_null_reason``. So the run records under ``logs/`` (``.jsonl`` only) are guarded
+too, proved by one more nested session:
+
+9. ``test_9_run_log_write.py`` -- an unmarked module appends a ``closing_capture`` skip event to
+   ``ledger_runs.jsonl``. The session FAILS and the report routes the marker to ``logs/``.
+10. ``test_10_untracked_logs_files.py`` -- in the SAME session, a module rewrites the Friday
+    ``.json`` log and a console log. Neither is a run record, and nothing is reported.
+
+THE SESSION SAFETY NET (34-REVIEW WR-17, WR-18)
+-----------------------------------------------
 ``TestTheSafetyNetRefusesTheLedgersRealSideEffects`` proves, inside this session, that every test
 runs with real ``schtasks``, git aimed at GitHub or at this repository, and writes to the
-production ``ledger/`` REFUSED before they happen, with the ledger run log quarantined -- and that
-the allowed neighbour of each (a read, a ``tmp_path`` repository, a sandbox ledger) still runs.
+production ``ledger/`` or to a production run record REFUSED before they happen, with the ledger
+run log quarantined -- and that the allowed neighbour of each (a read, a ``tmp_path`` repository,
+a sandbox ledger or log) still runs.
 
 TEST CLASS: **integration**. It spawns a real pytest process. It writes nothing outside
 ``tmp_path``; the ``data_boundary_guard`` request on every test is the belt-and-braces
@@ -352,13 +364,19 @@ def _build_sandbox(root: Path) -> tuple[Path, Path]:
 
 
 def _run_child(
-    suite: Path, data: Path, artifacts: Path, ledger: Path
+    suite: Path, data: Path, artifacts: Path, ledger: Path, logs: Path | None = None
 ) -> subprocess.CompletedProcess:
-    """Run the generated mini-suite with EVERY guarded root redirected into tmp."""
+    """Run the generated mini-suite with EVERY guarded root redirected into tmp.
+
+    *logs* defaults to a ``logs`` directory beside *ledger*; it need not exist.
+    """
     env = os.environ.copy()
     env["NFL_GUARD_DATA_ROOT"] = str(data)
     env["NFL_GUARD_ARTIFACTS_ROOT"] = str(artifacts)
     env["NFL_GUARD_LEDGER_ROOT"] = str(ledger)
+    env["NFL_GUARD_LOGS_ROOT"] = str(
+        logs if logs is not None else ledger.parent / "logs"
+    )
     env["PYTHONPATH"] = os.pathsep.join(
         [str(REPO_ROOT), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
@@ -758,20 +776,30 @@ def _ledger_root_with_git_internals(root: Path) -> Path:
 class TestTheLedgerRootIsTheThirdGuardedRoot:
     """Direct checks on the root list and the per-root policy. No nested session."""
 
-    def test_guarded_roots_returns_three_roots_with_the_ledger_last(
+    def test_guarded_roots_returns_four_roots_with_the_ledger_then_the_logs(
         self, monkeypatch, tmp_path
     ) -> None:
-        from tests.conftest import GUARD_LEDGER_ROOT_ENV, _guarded_roots
-        from tests.data_boundary import PRODUCTION_LEDGER_ROOT
+        """Was: three roots, ledger last. 34-REVIEW WR-18 appended the run records under logs/."""
+        from tests.conftest import (
+            GUARD_LEDGER_ROOT_ENV,
+            GUARD_LOGS_ROOT_ENV,
+            _guarded_roots,
+        )
+        from tests.data_boundary import PRODUCTION_LEDGER_ROOT, PRODUCTION_LOGS_ROOT
 
         assert GUARD_LEDGER_ROOT_ENV == "NFL_GUARD_LEDGER_ROOT"
+        assert GUARD_LOGS_ROOT_ENV == "NFL_GUARD_LOGS_ROOT"
         monkeypatch.delenv(GUARD_LEDGER_ROOT_ENV, raising=False)
+        monkeypatch.delenv(GUARD_LOGS_ROOT_ENV, raising=False)
         roots = _guarded_roots()
-        assert [label for label, _ in roots] == ["data", "artifacts", "ledger"]
+        assert [label for label, _ in roots] == ["data", "artifacts", "ledger", "logs"]
         assert roots[2][1] == PRODUCTION_LEDGER_ROOT == Path("ledger")
+        assert roots[3][1] == PRODUCTION_LOGS_ROOT == Path("logs")
 
         monkeypatch.setenv(GUARD_LEDGER_ROOT_ENV, str(tmp_path))
         assert _guarded_roots()[2] == ("ledger", tmp_path)
+        monkeypatch.setenv(GUARD_LOGS_ROOT_ENV, str(tmp_path / "logs"))
+        assert _guarded_roots()[3] == ("logs", tmp_path / "logs")
 
     def test_the_data_and_artifacts_suffixes_are_the_pre_phase34_set(self) -> None:
         from tests.data_boundary import (
@@ -788,6 +816,7 @@ class TestTheLedgerRootIsTheThirdGuardedRoot:
             (*_PRE_PHASE34_TRACKED_SUFFIXES, ".jsonl"),
             frozenset({".git"}),
         )
+        assert root_policy("logs") == ((".jsonl",), frozenset())
 
     def test_both_sweeps_use_the_ledger_root_policy(self, tmp_path) -> None:
         """The pre-test stat pass and the content-digest pass read ONE policy.
@@ -963,3 +992,108 @@ class TestTheSafetyNetRefusesTheLedgersRealSideEffects:
         monkeypatch.chdir(tmp_path)
         assert current_sink().authorize("ledger/forward_2026.jsonl", "ledger_commit", 1)
         assert current_sink().authorize(str(REPO_ROOT / "outputs" / "x.csv"), "csv", 1)
+
+    def test_a_production_run_record_write_is_refused_before_it_lands(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """34-REVIEW WR-18: the run records under logs/ are refused at write time too."""
+        from data.write_sink import current_sink
+        from forward_ledger import run_log
+
+        logs = REPO_ROOT / "logs"
+        for name in ("ledger_runs.jsonl", "daily_lock_runs.jsonl"):
+            with pytest.raises(pytest.fail.Exception, match="PRODUCTION run record"):
+                current_sink().authorize(str(logs / name), "ledger_run", 1)
+        # Through the real append path: refused before a byte is written.
+        with pytest.raises(pytest.fail.Exception, match="PRODUCTION run record"):
+            run_log.record_event("cutover", path=logs / "ledger_runs.jsonl", note="x")
+
+        # Allowed neighbours: an untracked logs/ file, and a sandbox's own run log.
+        assert current_sink().authorize(str(logs / "friday_pipeline.json"), "log", 1)
+        monkeypatch.chdir(tmp_path)
+        assert current_sink().authorize("logs/ledger_runs.jsonl", "ledger_run", 1)
+
+
+# ---------------------------------------------------------------------------
+# 34-REVIEW WR-18: the fourth guarded root, `logs`, in a nested session.
+# ---------------------------------------------------------------------------
+
+RUN_LOG_MODULE = "test_9_run_log_write.py"
+RUN_LOG_TEST = "test_a_stray_closing_capture_skip_event_is_rejected"
+UNTRACKED_LOGS_MODULE = "test_10_untracked_logs_files.py"
+
+_LOGS_CHILD_MODULES: dict[str, str] = {
+    RUN_LOG_MODULE: f'''\
+"""A stray event appended to the ledger run log -- the shape that would change a closing reason."""
+
+import os
+import pathlib
+
+LOGS = pathlib.Path(os.environ["NFL_GUARD_LOGS_ROOT"])
+
+
+def {RUN_LOG_TEST}():
+    with open(LOGS / "ledger_runs.jsonl", "ab") as handle:
+        handle.write(b'{{"event": "closing_capture", "outcome": "skipped"}}\\n')
+''',
+    UNTRACKED_LOGS_MODULE: '''\
+"""Writes logs/ files that are not run records. Must not be reported."""
+
+import os
+import pathlib
+
+LOGS = pathlib.Path(os.environ["NFL_GUARD_LOGS_ROOT"])
+
+
+def test_console_logs_and_the_friday_json_are_not_run_records():
+    (LOGS / "friday_pipeline.json").write_bytes(b'{"status": "REWRITTEN"}')
+    (LOGS / "nfl-predict.log").write_bytes(b"a console line")
+''',
+}
+
+
+@pytest.fixture(scope="module")
+def logs_session(tmp_path_factory) -> dict[str, object]:
+    """Run the two logs modules ONCE, every root redirected, logs/ holding real run records."""
+    root = tmp_path_factory.mktemp("guard_arming_logs")
+    data, artifacts, ledger = _build_store(root)
+    logs = root / "store" / "logs"
+    logs.mkdir()
+    (logs / "ledger_runs.jsonl").write_bytes(b'{"event": "settle"}\n')
+    (logs / "daily_lock_runs.jsonl").write_bytes(b'{"outcome": "no_games"}\n')
+    (logs / "friday_pipeline.json").write_bytes(b'{"status": "v1"}')
+    suite = _write_suite(root, _LOGS_CHILD_MODULES)
+    completed = _run_child(suite, data, artifacts, ledger, logs)
+    output = completed.stdout + completed.stderr
+    return {"completed": completed, "output": output, "blocks": _blocks(output)}
+
+
+class TestARunLogWriteIsCaughtAndOtherLogsAreNot:
+    """Nested session: a ledger_runs.jsonl append trips the guard; console logs do not."""
+
+    def test_exactly_the_run_log_module_is_reported(
+        self, logs_session, data_boundary_guard
+    ) -> None:
+        output = str(logs_session["output"])
+        assert logs_session["completed"].returncode != 0, (
+            f"an unmarked append to the ledger run log went unreported.\n\n{output}"
+        )
+        assert re.search(r"\b2 passed\b", output), output
+        errors = re.search(r"\b(\d+) errors?\b", output)
+        assert errors and int(errors.group(1)) == 1, output
+        assert UNTRACKED_LOGS_MODULE not in logs_session["blocks"], output
+
+    def test_the_report_names_the_run_log_and_routes_the_marker_to_logs(
+        self, logs_session, data_boundary_guard
+    ) -> None:
+        output = str(logs_session["output"])
+        block = logs_session["blocks"].get(RUN_LOG_MODULE)
+        assert block, f"the run-log write was NOT reported.\n\n{output}"
+        assert f"ERROR at teardown of {RUN_LOG_TEST}" in output, output
+        assert "ledger_runs.jsonl" in block, block
+        assert "REWRITTEN:" in block, block
+        assert 'writes_production_store(paths=["logs/ledger_runs.jsonl"])' in block, (
+            block
+        )
+        assert "friday_pipeline.json" not in output, output
+        assert CLOSING_SWEEP_HEADER not in output, output

@@ -1,4 +1,4 @@
-"""Content-based boundary guards for the production stores under ``data/`` and ``artifacts/``.
+"""Content-based boundary guards for the production stores: data, artifacts, ledger and logs.
 
 WHY THIS EXISTS
 ---------------
@@ -102,6 +102,10 @@ PRODUCTION_ARTIFACTS_ROOT = Path("artifacts")
 # The append-only forward bet ledger (Phase 34, D-10). Its own git repository, pushed
 # to a private backup (D-01), and gitignored by the public one.
 PRODUCTION_LEDGER_ROOT = Path("ledger")
+# The run records under ``logs/`` (34-REVIEW WR-18). ``logs/ledger_runs.jsonl`` is an INPUT to
+# settlement -- its ``closing_capture`` skip and failure events become each row's permanent
+# ``closing_null_reason`` -- and ``logs/daily_lock_runs.jsonl`` is the daily run's own record.
+PRODUCTION_LOGS_ROOT = Path("logs")
 
 # Everything a production store is made of. Deliberately NOT a "parquet only" list:
 # ``data/nfl_predictions.duckdb`` is the second half of every gold write, and
@@ -122,6 +126,11 @@ TRACKED_SUFFIXES = (
 # would change what every digest document taken under the narrower set means.
 LEDGER_EXTRA_SUFFIXES = (".jsonl",)
 
+# Only the JSON-lines run records are tracked under ``logs/``. Its other files are console logs,
+# generated task XML and the Friday orchestrator's ``.json`` execution log, which tests write to
+# sandboxes of their own and which nothing downstream reads as an input.
+LOGS_TRACKED_SUFFIXES = (".jsonl",)
+
 # Directory names never walked under the ledger root. ``ledger/.git`` is the backup
 # repository's object store and refs -- written by every backup push and never the
 # ledger itself.
@@ -135,15 +144,17 @@ def root_policy(label: str) -> tuple[tuple[str, ...], frozenset[str]]:
     stat prefilter and the content-digest sweep in ``tests/conftest.py`` -- read it,
     so neither can silently keep the old global set for a root that needs another.
     The ``data`` and ``artifacts`` roots get exactly ``TRACKED_SUFFIXES`` and exclude
-    nothing, as before Phase 34.
+    nothing, as before Phase 34; ``logs`` tracks only its ``.jsonl`` run records.
     """
     if label == "ledger":
         return TRACKED_SUFFIXES + LEDGER_EXTRA_SUFFIXES, _LEDGER_EXCLUDED_DIRS
     if label in ("data", "artifacts"):
         return TRACKED_SUFFIXES, frozenset()
+    if label == "logs":
+        return LOGS_TRACKED_SUFFIXES, frozenset()
     raise ValueError(
         f"no guard policy for root label {label!r}; the guarded roots are "
-        "'data', 'artifacts' and 'ledger'"
+        "'data', 'artifacts', 'ledger' and 'logs'"
     )
 
 

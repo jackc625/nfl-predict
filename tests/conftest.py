@@ -241,9 +241,10 @@ def _ledger_cutover_off_unless_a_test_turns_it_on(monkeypatch):
 #   call of the anchor, the backup and the sync goes through ``transport.run_git``'s module-global
 #   ``subprocess``, which is where the refusal sits -- so it binds even where ``run_git`` was
 #   bound as a default argument.
-# * The write sink refuses a write under the production ``ledger/`` BEFORE it lands, unless the
-#   test declares that path with ``writes_production_store``. Every ledger writer asks the sink
-#   first (``store``, ``snapshots``, ``artifacts_copy``).
+# * The write sink refuses a write under the production ``ledger/``, or to a production run record
+#   (``logs/*.jsonl``, WR-18), BEFORE it lands, unless the test declares that path with
+#   ``writes_production_store``. Every ledger writer asks the sink first (``store``,
+#   ``snapshots``, ``artifacts_copy``), and so does every run-log append (``append_jsonl``).
 
 # The git verbs the ledger's transport uses to WRITE: objects, refs, commits, the index, remotes.
 _GIT_WRITE_VERBS = frozenset(
@@ -319,30 +320,43 @@ class _GitRefusingSubprocess:
         return self._real.run(command, *args, **kwargs)
 
 
-def production_ledger_write_refusal(target, declared: frozenset[str]) -> str | None:
+# What the sink refuses, per guarded root: everything under the ledger, the run records in logs.
+_REFUSED_AT_WRITE_TIME: dict[str, str] = {
+    "ledger": "the PRODUCTION ledger (34-REVIEW WR-17; the 2026-10-05 incident, WR-13)",
+    "logs": "a PRODUCTION run record (34-REVIEW WR-18; the ledger run log feeds settlement)",
+}
+
+
+def production_write_refusal(target, declared: dict[str, frozenset[str]]) -> str | None:
     """Why a sink write to *target* must not land under pytest, or None when it may.
 
     *target* is resolved against the CURRENT directory, exactly as the writer will resolve it,
-    so a test that moved into a sandbox writes its own ``ledger/`` freely. The production ledger
-    is anchored at this repository, never at the current directory. *declared* holds the
-    ledger-relative paths the test declares with ``writes_production_store``.
+    so a test that moved into a sandbox writes its own ``ledger/`` and ``logs/`` freely. The
+    production roots are anchored at this repository, never at the current directory. Under
+    ``logs`` only the root's tracked run records (``root_policy("logs")``) are refused.
+    *declared* maps each root label to the root-relative paths the test declares with
+    ``writes_production_store``.
     """
-    ledger_root = dict(_guarded_roots())["ledger"]
-    if not ledger_root.is_absolute():
-        ledger_root = project_root / ledger_root
-    ledger_root = ledger_root.resolve()
+    from tests.data_boundary import root_policy
+
     resolved = Path(target).resolve()
-    if not resolved.is_relative_to(ledger_root):
-        return None
-    key = resolved.relative_to(ledger_root).as_posix()
-    if key in declared:
-        return None
-    return (
-        f"a write to the PRODUCTION ledger was refused before it landed: "
-        f"{resolved.as_posix()} (34-REVIEW WR-17; the 2026-10-05 incident, WR-13). Point the "
-        "writer at a tmp_path ledger (ledger_dir=...), or declare the path with "
-        "writes_production_store if the write is genuinely intended."
-    )
+    for label, root in _guarded_roots():
+        what = _REFUSED_AT_WRITE_TIME.get(label)
+        if what is None:
+            continue
+        anchored = (root if root.is_absolute() else project_root / root).resolve()
+        if not resolved.is_relative_to(anchored):
+            continue
+        if label == "logs" and resolved.suffix.lower() not in root_policy(label)[0]:
+            return None
+        if resolved.relative_to(anchored).as_posix() in declared.get(label, ()):
+            return None
+        return (
+            f"a write to {what} was refused before it landed: {resolved.as_posix()}. Point the "
+            "writer at tmp_path (ledger_dir=..., or monkeypatch the record's path), or declare "
+            "the path with writes_production_store if the write is genuinely intended."
+        )
+    return None
 
 
 @pytest.fixture(scope="session")
@@ -353,8 +367,8 @@ def _ledger_run_log_quarantine(tmp_path_factory) -> Path:
 
 @pytest.fixture(autouse=True)
 def _no_real_ledger_side_effects(request, monkeypatch, _ledger_run_log_quarantine):
-    """WR-17: no test reaches the real Task Scheduler, GitHub, this repository's git, or the
-    production ledger or its run log, unless it injects the seam itself."""
+    """WR-17 / WR-18: no test reaches the real Task Scheduler, GitHub, this repository's git, the
+    production ledger or a production run record, unless it injects the seam itself."""
     from data.write_sink import ProductionSink
     from forward_ledger import closing_schedule, run_log, transport
 
@@ -375,11 +389,11 @@ def _no_real_ledger_side_effects(request, monkeypatch, _ledger_run_log_quarantin
         transport, "subprocess", _GitRefusingSubprocess(transport.subprocess)
     )
 
-    declared = _marker_paths_for_item(request.node).get("ledger", frozenset())
+    declared = _marker_paths_for_item(request.node)
     real_authorize = ProductionSink.authorize
 
     def _authorize(self, target, kind, rows=None):
-        reason = production_ledger_write_refusal(target, declared)
+        reason = production_write_refusal(target, declared)
         if reason is not None:
             pytest.fail(reason, pytrace=False)
         return real_authorize(self, target, kind, rows)
@@ -459,6 +473,11 @@ GUARD_ARTIFACTS_ROOT_ENV = "NFL_GUARD_ARTIFACTS_ROOT"
 # `.jsonl` tracked, `.git` never walked -- comes from `tests.data_boundary.root_policy`,
 # which BOTH the stat prefilter and the content sweeps below read.
 GUARD_LEDGER_ROOT_ENV = "NFL_GUARD_LEDGER_ROOT"
+# 34-REVIEW WR-18: the run records under `logs/` are the fourth guarded root. The ledger run log
+# feeds settlement (its closing_capture skip events become permanent closing_null_reasons), so a
+# stray test write there would change production rows at the next settle. Its policy -- `.jsonl`
+# only -- also comes from `tests.data_boundary.root_policy`.
+GUARD_LOGS_ROOT_ENV = "NFL_GUARD_LOGS_ROOT"
 
 # Set to any non-empty value to have the session print what the guard OBSERVED --
 # how often the locked-file read path fired, and the largest number of `.duckdb.wal`
@@ -500,7 +519,7 @@ def _guarded_roots() -> tuple[tuple[str, Path], ...]:
     """The roots this session guards, as (label, path).
 
     The LABEL is the repo-relative name a marker declares against ("data" /
-    "artifacts" / "ledger"), and it stays stable even when the PATH is redirected.
+    "artifacts" / "ledger" / "logs"), and it stays stable even when the PATH is redirected.
     The redirection exists for exactly one caller: the nested session in
     `tests/integration/test_data_boundary_guard_arming.py`, which has to watch the
     guard fire without any real production store being written to do it.
@@ -509,15 +528,18 @@ def _guarded_roots() -> tuple[tuple[str, Path], ...]:
         PRODUCTION_ARTIFACTS_ROOT,
         PRODUCTION_DATA_ROOT,
         PRODUCTION_LEDGER_ROOT,
+        PRODUCTION_LOGS_ROOT,
     )
 
     data = os.environ.get(GUARD_DATA_ROOT_ENV)
     artifacts = os.environ.get(GUARD_ARTIFACTS_ROOT_ENV)
     ledger = os.environ.get(GUARD_LEDGER_ROOT_ENV)
+    logs = os.environ.get(GUARD_LOGS_ROOT_ENV)
     return (
         ("data", Path(data) if data else PRODUCTION_DATA_ROOT),
         ("artifacts", Path(artifacts) if artifacts else PRODUCTION_ARTIFACTS_ROOT),
         ("ledger", Path(ledger) if ledger else PRODUCTION_LEDGER_ROOT),
+        ("logs", Path(logs) if logs else PRODUCTION_LOGS_ROOT),
     )
 
 
