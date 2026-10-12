@@ -106,6 +106,12 @@ _GROUP_GATE_VERDICT_PATH = (
     Path(__file__).resolve().parent.parent / "config" / "group_gate_verdict.toml"
 )
 
+# The forward ledger whose referenced artifacts ``_clear_staging_dir`` protects (Phase 34 D-11),
+# anchored to the REPOSITORY for the same reason as the verdict above: resolved against the working
+# directory, a run started anywhere else found no ledger, read it as "nothing referenced" and
+# protected nothing (34-REVIEW WR-26). The ledger is ``ledger/`` at the repository root.
+_REPO_LEDGER_DIR = Path(__file__).resolve().parent.parent / "ledger"
+
 # The season lists ``_incumbent_window`` READS OUT OF THE INCUMBENT'S RECORD, mapped from the
 # metadata config key to the ``models.train --config-*-seasons`` flag stem they are compared
 # against. Since review CR-01 the values handed to models.train come from the committed rule,
@@ -676,7 +682,10 @@ def _resolve_staged_version(
 
 
 def _clear_staging_dir(
-    staging_dir: Path, artifacts_dir: Path = Path("artifacts")
+    staging_dir: Path,
+    artifacts_dir: Path = Path("artifacts"),
+    *,
+    ledger_dir: Path | None = None,
 ) -> None:
     """Delete stale candidate dirs and any stale latest.json before a fresh staging train.
 
@@ -704,6 +713,8 @@ def _clear_staging_dir(
     Args:
         staging_dir: The staging artifacts root to clear (created if absent).
         artifacts_dir: The production artifacts root (``--artifacts-dir``).
+        ledger_dir: The forward ledger to protect; the repository's ``ledger/``
+            (``_REPO_LEDGER_DIR``, never the working directory's) when None.
 
     Raises:
         RuntimeError: If a stale dir or the stale manifest cannot be removed, naming the exact
@@ -718,8 +729,8 @@ def _clear_staging_dir(
 
     from forward_ledger.artifacts_copy import ARTIFACT_COPIES_DIRNAME
     from forward_ledger.retention import referenced_artifact_ids
-    from forward_ledger.store import LEDGER_DIR
 
+    ledger = _REPO_LEDGER_DIR if ledger_dir is None else ledger_dir
     stale_dirs = [
         stale
         for target in _TARGETS
@@ -727,10 +738,10 @@ def _clear_staging_dir(
         if stale.is_dir()
     ]
     # Checked for every dir BEFORE any is removed, so a refusal leaves staging untouched.
-    referenced = referenced_artifact_ids()
+    referenced = referenced_artifact_ids(ledger)
     kept_roots = (
         artifacts_dir.resolve(),
-        (Path(LEDGER_DIR) / ARTIFACT_COPIES_DIRNAME).resolve(),
+        (ledger / ARTIFACT_COPIES_DIRNAME).resolve(),
     )
     staging_is_kept_root = staging_dir.resolve() in kept_roots
     protected = sorted(

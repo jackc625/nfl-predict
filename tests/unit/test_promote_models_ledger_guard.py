@@ -24,6 +24,7 @@ import pytest
 
 from forward_ledger.retention import referenced_artifact_ids
 from forward_ledger.store import LedgerFormatError, append_rows, ledger_path
+from scripts import promote_models
 from scripts.promote_models import _clear_staging_dir
 from tests.unit.test_forward_ledger_store import make_row
 
@@ -106,46 +107,74 @@ def test_referenced_ids_from_rows_and_copies(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_clear_staging_refuses_referenced_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)  # the default ledger directory, "ledger", resolves here
-    _ledger_with_rows(tmp_path / "ledger")
+def test_clear_staging_refuses_referenced_dir(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    _ledger_with_rows(ledger)
     staging = tmp_path / "staging"
+    production = tmp_path / "artifacts"
     (staging / "wp_X").mkdir(parents=True)
 
     with pytest.raises(RuntimeError, match="wp_X"):
-        _clear_staging_dir(staging)
+        _clear_staging_dir(staging, production, ledger_dir=ledger)
 
     assert (staging / "wp_X").is_dir()
 
     # Pointed at the production root, a referenced id is refused even with a ledger copy kept.
-    (tmp_path / "ledger" / "artifacts" / "wp_X").mkdir(parents=True)
-    production = tmp_path / "artifacts"
+    (ledger / "artifacts" / "wp_X").mkdir(parents=True)
     (production / "wp_X").mkdir(parents=True)
     with pytest.raises(RuntimeError, match="wp_X"):
-        _clear_staging_dir(production)
+        _clear_staging_dir(production, production, ledger_dir=ledger)
     assert (production / "wp_X").is_dir()
 
     # After a promote copied it into production, the staging duplicate may go (WR-08).
-    _clear_staging_dir(staging)
+    _clear_staging_dir(staging, production, ledger_dir=ledger)
     assert not (staging / "wp_X").exists()
     assert (production / "wp_X").is_dir()
 
 
-def test_clear_staging_still_clears_unreferenced(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    _ledger_with_rows(tmp_path / "ledger")
+def test_clear_staging_still_clears_unreferenced(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    _ledger_with_rows(ledger)
     staging = tmp_path / "staging"
     (staging / "wp_OLD").mkdir(parents=True)
     (staging / "latest.json").write_text("{}", encoding="utf-8")
 
-    _clear_staging_dir(staging)
+    _clear_staging_dir(staging, tmp_path / "artifacts", ledger_dir=ledger)
 
     assert not (staging / "wp_OLD").exists()
     assert not (staging / "latest.json").exists()
+
+
+def test_default_ledger_is_the_repositorys_not_the_working_directorys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WR-26: the guard must find the ledger wherever the operator stands.
+
+    Resolved against the working directory, a run started from any other directory found no
+    ledger, read that as "nothing referenced" and deleted a referenced artifact. The default is
+    now the repository's ``ledger/``. Here it is pointed at a sandbox ledger that references
+    ``wp_X``, the process stands in a FOREIGN directory holding no ledger, and the call -- with no
+    ``ledger_dir`` -- must still refuse.
+    """
+    assert promote_models._REPO_LEDGER_DIR == REPO_ROOT / "ledger"
+    assert promote_models._REPO_LEDGER_DIR.is_absolute()
+
+    ledger = tmp_path / "repo" / "ledger"
+    _ledger_with_rows(ledger)
+    monkeypatch.setattr(promote_models, "_REPO_LEDGER_DIR", ledger)
+    foreign = tmp_path / "elsewhere"
+    foreign.mkdir()
+    monkeypatch.chdir(foreign)
+    staging = tmp_path / "staging"
+    (staging / "wp_X").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="wp_X"):
+        _clear_staging_dir(staging, tmp_path / "artifacts")
+    assert (staging / "wp_X").is_dir()
+
+    # Negative control: the fail-open shape this replaces -- a ledger looked up where the process
+    # stands finds nothing in the foreign directory and protects nothing.
+    assert referenced_artifact_ids(Path("ledger")) == frozenset()
 
 
 # ---------------------------------------------------------------------------
