@@ -357,6 +357,39 @@ def test_record_appends_stamped_rows_end_to_end(env: _Env, run_log_path: Path) -
     assert append["entry_count"] == 2
 
 
+def test_latest_json_swapped_mid_decision_keeps_the_scoring_ids(env: _Env) -> None:
+    """LDGR-03, through the runner (34-REVIEW WR-29): ``latest.json`` is swapped AFTER the ids
+    were resolved and while the decision is in flight -- the builder rewrites it before returning
+    -- and every stored row still names the ids that scored it. A runner that re-resolved after
+    the build would stamp the swapped ids (or be refused by the recipe check) and fail here."""
+    swapped = {
+        "wp": "wp_20990101_000001",
+        "ats": "ats_20990101_000002",
+        "ou": "ou_20990101_000003",
+        "blend": "blend_20990101_000004",
+    }
+
+    def _swapping_builder(season: int, week: int, **kwargs: Any) -> DecisionBundle:
+        bundle = env.builder(season, week, **kwargs)
+        (env.artifacts / "latest.json").write_text(
+            json.dumps(swapped), encoding="utf-8"
+        )
+        return bundle
+
+    outcome = env.record(bundle_builder=_swapping_builder)
+
+    assert outcome.wrote is True
+    manifest = json.loads((env.artifacts / "latest.json").read_text(encoding="utf-8"))
+    assert manifest == swapped, "the swap did not happen, so nothing was tested"
+    entries = read_entries(env.ledger)
+    assert len(entries) == 2
+    for entry in entries:
+        assert entry.immutable["model_artifact_id"] == RESOLVED.ats
+        assert entry.immutable["blend_id"] == RESOLVED.blend
+    copies = sorted(path.name for path in (env.ledger / "artifacts").iterdir())
+    assert set(swapped.values()).isdisjoint(copies)
+
+
 def test_identical_repeat_writes_nothing(env: _Env) -> None:
     env.record()
     before = _sha(ledger_path(env.ledger))
