@@ -4,7 +4,8 @@ WHAT IS STAMPED, AND FROM WHERE
 -------------------------------
 Eleven immutable columns follow ``decided_at_utc`` in the v1 schema, and :func:`stamp_ledger_rows`
 is the only production code that sets them (an AST scan in
-``tests/unit/test_ledger_stamping_site.py`` holds that; the migration may only set them NULL):
+``tests/unit/test_ledger_stamping_site.py`` holds that; the migration may set them only NULL plus
+its reviewed D-14 ``arm`` / ``verdict_scope`` / ``regime_label`` labels):
 
   * ``arm`` -- ``live`` for every row this phase writes (Phase 37 writes ``shadow``);
   * ``model_artifact_id`` / ``blend_id`` -- from the ids the decision was SCORED by, resolved once
