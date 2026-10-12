@@ -601,6 +601,17 @@ Keyed off each stage's success signal above:
   `outputs/predictions/predictions_<S>_week<W>.csv` exists. Exit code is 0 for BOTH success
   and degraded; only `failed` exits 1. The log is `logs/friday_pipeline.json`
   (single-file overwrite -- it reflects the MOST RECENT run only).
+- **A test run fails with `PRODUCTION STORE WRITE GUARD` while a scheduled task ran.** The
+  closing wake task (`NFL_Predict_Closing`, 16 to 30 reading windows a month) writes
+  `data/silver/odds_snapshot.parquet` and `logs/ledger_runs.jsonl`, and the 17:00 ET daily run
+  writes `ledger/` and both run records under `logs/`. The suite's write guard cannot tell those
+  bytes from a test's, so a session that overlaps one fails, naming whichever test module was
+  running; a store caught mid-write can also stop the run with `CANNOT PROVE THE CONTENT`. When a
+  run record grew during the failing module, the report starts with
+  `CONCURRENT PRODUCTION WRITER LIKELY` and names the new records. Check the task's time, then
+  re-run that module outside the task windows. The guard still fails in this case on purpose: it
+  cannot separate the two writers, and passing would hide a real test write made in the same
+  window. Do not loosen the guard to get past it.
 - **Recovery is re-running the stage, not editing data by hand.** Every stage is
   re-runnable; Silver upserts are latest-wins and the gitignored outputs are regenerated.
   Recovering does NOT mean a re-fit or a gold rebuild -- those are the DESTRUCTIVE operations

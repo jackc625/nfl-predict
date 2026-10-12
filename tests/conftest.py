@@ -1,6 +1,7 @@
 """Pytest configuration and fixtures for NFL Prediction System tests."""
 
 import itertools
+import json
 import os
 import re
 import shutil
@@ -487,6 +488,21 @@ GUARD_OBSERVATIONS_ENV = "NFL_GUARD_OBSERVATIONS"
 
 CLOSING_SWEEP_HEADER = "SESSION-END FULL CONTENT SWEEP"
 
+# 34-REVIEW WR-19 -- the scheduled production writers can land INSIDE a test session. The
+# NFL_Predict_Closing wake task (16 to 30 reading windows a month) writes
+# data/silver/odds_snapshot.parquet and logs/ledger_runs.jsonl; the 17:00 ET daily run writes
+# ledger/forward_2026.jsonl, ledger/snapshots/, ledger/artifacts/ and both run records. The stat
+# sweep cannot tell their bytes from a test's, so a session overlapping one fails, blaming
+# whichever module was running; if a store is mid-replace at sweep time, D33-32 raises by name.
+#
+# Every test write to the run records is refused at the write sink (WR-18) and the ledger run log
+# is quarantined per test (WR-17), so a run record that GREW during a module's window was written
+# by another process. When that is seen beside a violation, the report leads with this header and
+# names the new records. The verdict is NOT downgraded: the guard cannot separate two writers'
+# bytes, and calling the session clean would hide a real test write made in the same window. The
+# remedy is to re-run outside the task windows (RUNBOOK, "Troubleshooting & Recovery").
+CONCURRENT_WRITER_HEADER = "CONCURRENT PRODUCTION WRITER LIKELY"
+
 # Session-lived guard state. A module global rather than a fixture because
 # `pytest_sessionfinish` and `pytest_terminal_summary` are hooks, not fixtures, and
 # the closing sweep has to reach the same rebased baseline the per-test pass left.
@@ -856,6 +872,58 @@ def _take_baselines() -> tuple[_StoreBaseline, ...]:
     )
 
 
+def concurrent_writer_note(
+    logs_root: Path, before: dict[str, tuple[int, int]]
+) -> str | None:
+    """Name the run records under *logs_root* that grew past their *before* sizes, or None.
+
+    *before* is the logs root's stat map at the start of the window. Only the bytes appended
+    since are read, and only to name each new record's event (or outcome) and instant.
+    """
+    grown: list[str] = []
+    for key, (size, _mtime) in sorted(before.items()):
+        path = Path(logs_root) / key
+        try:
+            now = path.stat().st_size
+            if now <= size:
+                continue
+            with open(path, "rb") as handle:
+                handle.seek(size)
+                tail = handle.read(now - size)
+        except OSError:
+            continue
+        records = []
+        for line in tail.decode("utf-8", errors="replace").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                what = record.get("event") or record.get("outcome")
+                when = record.get("at_utc") or record.get("recorded_at")
+                records.append(f"{what} at {when}")
+        grown.append(
+            f"  logs/{key}: +{len(records)} record(s): {'; '.join(records[:5])}"
+        )
+    if not grown:
+        return None
+    return "\n".join(
+        [
+            f"{CONCURRENT_WRITER_HEADER} -- production run record(s) grew in this window:",
+            *grown,
+            "Every test write to these files is refused at the write sink, so the lines came "
+            "from another process (the 17:00 ET daily run or the NFL_Predict_Closing wake task) "
+            "or from a write that bypassed the sink. The findings below may be THAT process's "
+            "writes, not this module's. The guard cannot separate two writers' bytes, so it "
+            "still fails: re-run outside the scheduled task windows.",
+        ]
+    )
+
+
+def _logs_baseline(baselines) -> _StoreBaseline | None:
+    return next((baseline for baseline in baselines if baseline.label == "logs"), None)
+
+
 def _closing_full_sweep(baselines) -> str | None:
     """The D33-23 review hardening: a FULL content sweep at session end.
 
@@ -884,8 +952,11 @@ def _closing_full_sweep(baselines) -> str | None:
     if not sections:
         return None
 
+    logs = _logs_baseline(baselines)
+    note = concurrent_writer_note(logs.root, logs.stats) if logs is not None else None
     return "\n\n".join(
         [
+            *([note] if note else []),
             CLOSING_SWEEP_HEADER
             + " -- a production store moved and NO per-module stat sweep saw it.",
             "The per-module prefilter reads (st_size, st_mtime_ns) and content-hashes "
@@ -984,6 +1055,8 @@ def production_store_write_guard(request, _production_store_baseline):
     if any(declared.values()):
         _checkpoint_declared_writes()
 
+    logs = _logs_baseline(_production_store_baseline)
+    logs_before = dict(logs.stats) if logs is not None else {}
     violations = [
         message
         for baseline in _production_store_baseline
@@ -998,8 +1071,15 @@ def production_store_write_guard(request, _production_store_baseline):
 
     from tests.data_boundary import DataBoundaryViolation
 
+    note = concurrent_writer_note(logs.root, logs_before) if logs is not None else None
     raise DataBoundaryViolation(
-        "\n\n".join([_module_violation_header(request.node.nodeid), *violations])
+        "\n\n".join(
+            [
+                _module_violation_header(request.node.nodeid),
+                *([note] if note else []),
+                *violations,
+            ]
+        )
     )
 
 

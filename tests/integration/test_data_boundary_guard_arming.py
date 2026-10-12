@@ -83,7 +83,9 @@ permanent ``closing_null_reason``. So the run records under ``logs/`` (``.jsonl`
 too, proved by one more nested session:
 
 9. ``test_9_run_log_write.py`` -- an unmarked module appends a ``closing_capture`` skip event to
-   ``ledger_runs.jsonl``. The session FAILS and the report routes the marker to ``logs/``.
+   ``ledger_runs.jsonl``. The session FAILS and the report routes the marker to ``logs/``. A run
+   record that grew is also how the guard recognises a scheduled production writer landing
+   inside a session (34-REVIEW WR-19), so the report leads with that note, naming the record.
 10. ``test_10_untracked_logs_files.py`` -- in the SAME session, a module rewrites the Friday
     ``.json`` log and a console log. Neither is a run record, and nothing is reported.
 
@@ -132,6 +134,7 @@ _GUARD_MODULE_HEADER_RE = re.compile(r"PRODUCTION STORE WRITE GUARD -- MODULE (\
 _SEPARATOR_RULE_RE = re.compile(r"^[-_]{4,}")
 
 CLOSING_SWEEP_HEADER = "SESSION-END FULL CONTENT SWEEP"
+CONCURRENT_WRITER_HEADER = "CONCURRENT PRODUCTION WRITER LIKELY"
 
 MARKED_MODULE = "test_1_marked_writer.py"
 ACCEPTED_LOSS_MODULE = "test_2_accepted_loss.py"
@@ -536,6 +539,8 @@ class TestThePhase33Wave6IncidentIsStillCaught:
         ):
             assert key in block, f"{key} is missing from the report.\n\n{block}"
         assert "REWRITTEN:" in block, block
+        # No run record grew in this session, so no concurrent writer is suggested (WR-19).
+        assert CONCURRENT_WRITER_HEADER not in block, block
         digests = _SHA256_RE.findall(block)
         assert len(digests) >= 6, (
             "the violation must carry BOTH digests for EACH of the three matrices, so "
@@ -1097,3 +1102,42 @@ class TestARunLogWriteIsCaughtAndOtherLogsAreNot:
         )
         assert "friday_pipeline.json" not in output, output
         assert CLOSING_SWEEP_HEADER not in output, output
+
+    def test_a_grown_run_record_is_reported_as_a_likely_concurrent_writer(
+        self, logs_session, data_boundary_guard
+    ) -> None:
+        """WR-19, end to end: the real guard leads its report with the grown record, named."""
+        block = logs_session["blocks"][RUN_LOG_MODULE]
+        assert CONCURRENT_WRITER_HEADER in block, block
+        assert (
+            "logs/ledger_runs.jsonl: +1 record(s): closing_capture at None" in block
+        ), block
+
+
+class TestTheConcurrentWriterNote:
+    """34-REVIEW WR-19: the note names what grew, and says nothing when nothing did."""
+
+    def test_the_note_names_each_grown_record_and_nothing_else(self, tmp_path) -> None:
+        from tests.conftest import _stat_sweep, concurrent_writer_note
+
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        (logs / "ledger_runs.jsonl").write_bytes(b'{"event": "settle"}\n')
+        (logs / "daily_lock_runs.jsonl").write_bytes(b'{"outcome": "no_games"}\n')
+        before = _stat_sweep(logs, "logs")
+        assert concurrent_writer_note(logs, before) is None
+
+        with open(logs / "ledger_runs.jsonl", "ab") as handle:
+            handle.write(
+                b'{"event": "closing_capture", "at_utc": "2026-10-12T00:05:00+00:00"}\n'
+            )
+        (logs / "friday_pipeline.json").write_bytes(b"{}")
+        note = concurrent_writer_note(logs, before)
+        assert note is not None
+        assert note.startswith(CONCURRENT_WRITER_HEADER), note
+        assert (
+            "logs/ledger_runs.jsonl: +1 record(s): "
+            "closing_capture at 2026-10-12T00:05:00+00:00"
+        ) in note
+        assert "daily_lock_runs" not in note, note
+        assert "friday_pipeline" not in note, note
