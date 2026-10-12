@@ -16,8 +16,9 @@ daily run's critical recommend step. In order:
      printed (``LEDGER_REFUSED=``) -- the run does not fail, and new keys still append;
   5. nothing new -> NOTHING is written: no snapshot, no copy, no ledger write, no anchor commit;
   6. otherwise store the snapshot and the artifact and chain-fit copies (written BEFORE the row
-     that references them, and idempotent), then ONE ``commit_changes`` with the slate's
-     ``publish_by`` deadline, which re-reads the clock immediately before the replace.
+     that references them, and idempotent) -- refusing when the snapshot written is not the one
+     the rows were stamped with -- then ONE ``commit_changes`` with the slate's ``publish_by``
+     deadline, which re-reads the clock immediately before the replace.
 
 :func:`settle_ledger` -- every day the schedule refresh returns a season: grade pending rows from
 the refreshed silver scores, append the corrections owed by the live manifest's
@@ -76,7 +77,11 @@ from forward_ledger.settle import (
     load_silver_games,
     realized_values_from_scores,
 )
-from forward_ledger.snapshots import compute_snapshot_digest, write_decision_snapshot
+from forward_ledger.snapshots import (
+    SnapshotDigestMismatchError,
+    compute_snapshot_digest,
+    write_decision_snapshot,
+)
 from forward_ledger.stamps import stamp_ledger_rows
 from forward_ledger.store import (
     LEDGER_DIR,
@@ -276,11 +281,12 @@ def record_forward_slate(
         decided_at=decided_at,
     )
     entries = read_entries(ledger)
+    stamped_digest = compute_snapshot_digest(bundle)
     stamped = stamp_ledger_rows(
         frame,
         resolved=bundle.resolved,
         repro=repro,
-        snapshot_digest=compute_snapshot_digest(bundle),
+        snapshot_digest=stamped_digest,
         scope=_verdict_scope_or_none(),
         ledger_has_verdict_rows=_has_verdict_rows(entries),
     )
@@ -307,6 +313,14 @@ def record_forward_slate(
         )
 
     snapshot_digest = write_decision_snapshot(ledger, bundle)
+    if snapshot_digest != stamped_digest:
+        # The writer re-reads uv.lock, the chain-fit file and the library versions; if one moved
+        # since stamping, the rows would name a snapshot that does not exist (34-REVIEW WR-05).
+        raise SnapshotDigestMismatchError(
+            "meta",
+            f"the rows were stamped with snapshot {stamped_digest} but the snapshot written is "
+            f"{snapshot_digest}; nothing was written to the ledger",
+        )
     ensure_artifact_copies(ledger, bundle.resolved, Path(artifacts_dir))
     ensure_recipe_record_copy(ledger, bundle.chain_fit_path)
     result = commit_changes(
