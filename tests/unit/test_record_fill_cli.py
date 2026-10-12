@@ -141,6 +141,22 @@ def test_no_fill_value_refused(fill_world: dict[str, Any]) -> None:
     assert _fill(fill_world["ledger"]) == 2
     assert fill_world["sync"].calls == []
 
+    # An implausible value is refused too: a fill column can never be corrected (WR-14).
+    ledger = fill_world["ledger"]
+    stored = _sha(ledger_path(ledger))
+    for bad in (
+        ("--odds", "0"),
+        ("--odds", "-50"),
+        ("--odds", "nan"),
+        ("--stake-dollars", "0"),
+        ("--stake-dollars", "-25"),
+    ):
+        assert _fill(ledger, *bad) == 2, bad
+    wp_line = ["--ledger-dir", str(ledger), *KEY_ARGS[:-1], "wp", "--line", "-3.5"]
+    assert record_fill.main(wp_line) == 2
+    assert _sha(ledger_path(ledger)) == stored
+    assert fill_world["sync"].calls == []
+
 
 def test_unknown_key_refused(fill_world: dict[str, Any], capsys) -> None:
     ledger = fill_world["ledger"]

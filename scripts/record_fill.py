@@ -18,8 +18,12 @@ never assumed. It is stored in UTC. At least one fill value is required.
 
 Output: ``FILL_RECORDED=`` (key and columns) then the sync's outcome lines, or ``FILL_REFUSED=``.
 
+Because a fill column can never be corrected, implausible values are refused before the write:
+``--odds`` must be an American price (at least 100 either side of even), ``--stake-dollars`` must
+be positive, and ``--line`` is refused on a ``wp`` row, which has no line.
+
 Exit codes: 0 recorded; 1 refused by the ledger (already recorded, unknown key, busy, broken
-chain); 2 bad input (naive or unparseable ``--filled-at``, no fill value).
+chain); 2 bad input (naive or unparseable ``--filled-at``, no fill value, an implausible value).
 
 Usage:
     uv run python -m scripts.record_fill --game-id 2026_07_KC_BUF --season 2026 --week 7 \\
@@ -104,8 +108,19 @@ def _fill_values(args: argparse.Namespace) -> dict[str, Any]:
     """The fill columns the owner named; ``--filled-at`` rendered in UTC.
 
     Raises:
-        ValueError: the instant is naive or unparseable, or no fill value was given.
+        ValueError: the instant is naive or unparseable, no fill value was given, or a value is
+            implausible (a write that can never be corrected, 34-REVIEW WR-14).
     """
+    # The negated comparisons also refuse NaN, which compares False to everything.
+    if args.odds is not None and not abs(args.odds) >= 100:
+        msg = f"--odds {args.odds} is not an American price; it must be -100 or below, or +100 or above"
+        raise ValueError(msg)
+    if args.stake_dollars is not None and not args.stake_dollars > 0:
+        msg = f"--stake-dollars {args.stake_dollars} is not a positive stake"
+        raise ValueError(msg)
+    if args.line is not None and args.target == "wp":
+        msg = "--line is refused on a wp row: a moneyline bet has no line"
+        raise ValueError(msg)
     values: dict[str, Any] = {
         "fill_sportsbook": args.sportsbook,
         "fill_line": args.line,
