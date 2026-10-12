@@ -32,6 +32,7 @@ measured when it was written.
 * Plan 34-19 Task 3 -- ``P34_CUTOVER``.
 * Plan 34-22 Task 3 -- ``P34_PREREGISTRATION_WITNESS``, ``P34_W``,
   ``P34_W_FIRST_LOCK_UTC``, ``P34_W_FIRST_DECISION_RUN_UTC``.
+* Plan 34-23 Task 1 -- ``P34_FIRST_LIVE_READBACK``.
 """
 
 from __future__ import annotations
@@ -301,3 +302,140 @@ P34_W: int = 5
 P34_W_FIRST_LOCK_UTC: str = "2026-10-07T22:00:00+00:00"
 
 P34_W_FIRST_DECISION_RUN_UTC: str = "2026-10-07T21:00:00+00:00"
+
+# ---------------------------------------------------------------------------
+# Plan 34-23 Task 1 -- the first live ledger read-back, MEASURED 2026-10-12
+# (ET, read via PowerShell; 00:07 to 00:10 ET Mon 2026-10-12), after week W = 5's
+# LAST decision run: 2026_W05_BUF@LA kicks off Mon 2026-10-12 20:15 ET, locks Sun
+# 2026-10-11 18:00 ET (utils.game_lock), so its decision run was the Sun 17:00
+# ET scheduled run.
+#
+# Run log (logs/ledger_runs.jsonl) since the cutover, grouped by run_id: two
+# scheduled runs appended rows and each has anchor_commit, anchor_push,
+# backup_commit and backup_push events of its own run_id, all ok=true with the
+# append's head_hash. No push has ever recorded ok=false. Console lines:
+# "RUNS_WITH_APPENDS= ['48ec3a304bbf45ce98e1944e3c6bf7ac',
+# '57d1b8ba56314c6996d429b28d5033e9']", "RUNS_MISSING_PUSH_OUTCOME= []".
+#
+# verify_ledger: VERIFY_RESULT= PASS, EXTERNAL_RESULT= VERIFIED,
+# REMOTE_ANCHOR_BEHIND_BY= 0, BACKUP_BEHIND_BY= 0, VERDICT_DECLARED= True,
+# VERDICT_START_WEEK= 5, VERDICT_STAMPS_OK= True, REGRADE_CHECKED= 26,
+# REGRADE_OK= True. replay_ledger --week 5: REPLAY_PASS= 6, REPLAY_FAIL= 0.
+#
+# WEEK 5 IS INCOMPLETE: 13 of its 15 games have no ledger row. All 13 lock at
+# Sat 2026-10-10 18:00 ET, so their one decision run was the Sat 17:00 ET
+# scheduled run, which never fired: the Windows System log shows a user power-off
+# (event 1074) at Fri 2026-10-09 23:33:05 ET and the next boot (event 6005) at Sun
+# 2026-10-11 10:08:44 ET, and neither run log holds any record between
+# 2026-10-09 00:05 UTC and 2026-10-11 16:50 UTC. WakeToRun wakes from sleep, not
+# from power-off, and StartWhenAvailable is false, so the run was missed, not
+# late. The games were NOT back-filled and nothing was hand-run (D33-37). Raised
+# to the owner at the Plan 34-23 checkpoint. (The Fri 2026-10-09 17:00 ET run was
+# also missed -- power-off 14:39:13 to 19:54:47 ET -- but no game locked on it.)
+# ---------------------------------------------------------------------------
+
+P34_FIRST_LIVE_READBACK: dict[str, object] = {
+    "measured_on": "2026-10-12",
+    "measured_at_et": "2026-10-12 00:07",
+    "w": 5,
+    "w_last_decision_run_et": "2026-10-11 17:00",
+    "first_scheduled_appending_run": {
+        "run_id": "48ec3a304bbf45ce98e1944e3c6bf7ac",
+        "append_at_utc": "2026-10-07T21:16:28.619191+00:00",
+        "append_at_et": "2026-10-07 17:16:28",
+    },
+    "appending_runs": (
+        {
+            "run_id": "48ec3a304bbf45ce98e1944e3c6bf7ac",
+            "append_at_et": "2026-10-07 17:16:28",
+            "appended_rows": 3,
+            "head_hash": "0a7301bd45d8d5c524b1abd399c60cd326b9c6f2220b15bbe5c07e557850eecf",
+            "entry_count": 90,
+            "anchor_commit": ("ok", "20d7484639ae2774c9e1786d32a7169d3ae9a549"),
+            "anchor_push": ("ok", "20d7484639ae2774c9e1786d32a7169d3ae9a549"),
+            "backup_commit": ("ok", "164282652872fbe444c3ce6b67753f79cf3f85bf"),
+            "backup_push": ("ok", "164282652872fbe444c3ce6b67753f79cf3f85bf"),
+        },
+        {
+            "run_id": "57d1b8ba56314c6996d429b28d5033e9",
+            "append_at_et": "2026-10-11 17:25:19",
+            "appended_rows": 3,
+            "head_hash": "aedc2fc9076174432ba5ee0afb69d9eccaa3ae910e6305557127744ccc0526b5",
+            "entry_count": 93,
+            "anchor_commit": ("ok", "0d1bfe663786e2178a3056dbaac8efb819610760"),
+            "anchor_push": ("ok", "0d1bfe663786e2178a3056dbaac8efb819610760"),
+            "backup_commit": ("ok", "98cf9ae263b16845b40cab93a12e20d7352a81fc"),
+            "backup_push": ("ok", "98cf9ae263b16845b40cab93a12e20d7352a81fc"),
+        },
+    ),
+    "runs_missing_push_outcome": (),
+    "failed_pushes_ever": 0,
+    "ledger_head_hash": "aedc2fc9076174432ba5ee0afb69d9eccaa3ae910e6305557127744ccc0526b5",
+    "ledger_entries": 93,
+    "anchor_local": "0d1bfe663786e2178a3056dbaac8efb819610760",
+    "anchor_remote": "0d1bfe663786e2178a3056dbaac8efb819610760",
+    "anchor_content": (
+        "head_hash=aedc2fc9076174432ba5ee0afb69d9eccaa3ae910e6305557127744ccc0526b5",
+        "row_count=93",
+    ),
+    "backup_local": "98cf9ae263b16845b40cab93a12e20d7352a81fc",
+    "backup_remote": "98cf9ae263b16845b40cab93a12e20d7352a81fc",
+    "public_master_remote": "d0d5d9502df7594dd723a519284f4ee5b9cc258f",
+    "verify_ledger": {
+        "VERIFY_RESULT": "PASS",
+        "EXTERNAL_RESULT": "VERIFIED",
+        "REMOTE_ANCHOR_BEHIND_BY": 0,
+        "BACKUP_BEHIND_BY": 0,
+        "VERDICT_DECLARED": True,
+        "VERDICT_START_WEEK": 5,
+        "VERDICT_STAMPS_OK": True,
+        "VERDICT_LABELS_OK": True,
+        "REGRADE_CHECKED": 26,
+        "REGRADE_OK": True,
+    },
+    "expected_w_games": (
+        "2026_W05_BAL@ATL",
+        "2026_W05_BUF@LA",
+        "2026_W05_CHI@GB",
+        "2026_W05_CIN@MIA",
+        "2026_W05_CLE@NYJ",
+        "2026_W05_DEN@LAC",
+        "2026_W05_DET@ARI",
+        "2026_W05_HOU@TEN",
+        "2026_W05_IND@PIT",
+        "2026_W05_LV@NE",
+        "2026_W05_MIN@NO",
+        "2026_W05_NYG@WAS",
+        "2026_W05_PHI@JAX",
+        "2026_W05_SF@SEA",
+        "2026_W05_TB@DAL",
+    ),
+    "ledger_w_games": ("2026_W05_BUF@LA", "2026_W05_TB@DAL"),
+    "missing_w_games": (
+        "2026_W05_BAL@ATL",
+        "2026_W05_CHI@GB",
+        "2026_W05_CIN@MIA",
+        "2026_W05_CLE@NYJ",
+        "2026_W05_DEN@LAC",
+        "2026_W05_DET@ARI",
+        "2026_W05_HOU@TEN",
+        "2026_W05_IND@PIT",
+        "2026_W05_LV@NE",
+        "2026_W05_MIN@NO",
+        "2026_W05_NYG@WAS",
+        "2026_W05_PHI@JAX",
+        "2026_W05_SF@SEA",
+    ),
+    "missing_w_games_cause": (
+        "the Sat 2026-10-10 17:00 ET decision run never fired: machine powered off "
+        "Fri 2026-10-09 23:33:05 ET to Sun 2026-10-11 10:08:44 ET (System events "
+        "1074/6006, 6005); no daily_lock_runs.jsonl or ledger_runs.jsonl record for it"
+    ),
+    "w_games_without_3_targets": (),
+    "w_rows": 6,
+    "w_rows_verdict": 6,
+    "w_rows_null_stamps": 0,
+    "replay_week_w": {"REPLAY_PASS": 6, "REPLAY_NOT_REPLAYABLE": 0, "REPLAY_FAIL": 0},
+    "rows_by_week": ((2026, 3, 42), (2026, 4, 45), (2026, 5, 6)),
+    "null_stamp_rows_by_week": ((2026, 3, 42), (2026, 4, 45), (2026, 5, 0)),
+}
