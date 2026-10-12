@@ -10,6 +10,9 @@ root, through the REAL orchestrator and the REAL daily step registry's ``close_c
 3. A passed lock, including after a missed day: refused before a single request; never back-filled.
 4. The weekend split: the Friday run predicts the Saturday games, the Saturday run the Sunday
    games, and neither predicts the other's. A weekly run structurally cannot get this right.
+5. The cutover ON path (34-REVIEW WR-16): the conftest pin runs cases 1-4 with the ledger switch
+   OFF, so one case turns it ON and runs the ledger half for real -- settle, the bound run id, the
+   append into the sandbox's own ``ledger/`` and the end-of-run sync -- naming its extra stand-ins.
 
 REUSED, NOT REBUILT
 -------------------
@@ -31,8 +34,9 @@ the completion alerts, which are log-only and not under test. Every HTTP client'
 replaced by a counter that records the URL, so "zero requests" is counted, not assumed.
 
 The production ``data/`` and ``artifacts/`` trees are content-digested around every case
-(``data_boundary_guard`` / ``artifacts_boundary_guard``). This module imports nothing that can
-shell out.
+(``data_boundary_guard`` / ``artifacts_boundary_guard``). Only case 5 shells out: real git, in
+the sandbox's own repository and its local bare "remote", never in this repository or to GitHub
+(the conftest safety net refuses both).
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -43,7 +47,7 @@ import json
 import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -483,3 +487,151 @@ def test_the_friday_run_predicts_saturday_and_the_saturday_run_predicts_sunday(
     assert set(locks.loc[list(WEEKEND_SUNDAY_GAMES)]) == {
         pd.Timestamp(_et(saturday, 18, 0))
     }
+
+
+# ---------------------------------------------------------------------------
+# 34-REVIEW WR-16: the cutover ON path, through the REAL ledger runner
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_the_cut_over_run_appends_the_slate_to_a_real_ledger_under_one_run_id(
+    make_rehearsal: Callable[..., Rehearsal], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production's path since the cutover, end to end through the real entry point.
+
+    The conftest pin turns the switch OFF for every test, so the cases above rehearse the
+    pre-cutover path. Here it is ON, and the ledger half runs for real: the pre-selection settle,
+    the bound ``LEDGER_RUN_ID``, the recommend step's ``record_forward_slate`` append into the
+    sandbox's own ``ledger/`` with ``repo_dir=Path()`` read as a real git repository, and the
+    end-of-run sync's real ``publish_ledger_state``. The run log is the production default,
+    ``logs/ledger_runs.jsonl``, relative to the sandbox.
+
+    What stands in, beyond the stand-ins above: the decision bundle (no models are scored here)
+    and the synthetic stores it reads, injected into the real ``record_forward_slate``; the
+    store's publish-deadline clock, which reads the rehearsal clock; the snapshot's ``uv.lock``
+    path, read from the repository because the sandbox has none; and the push destinations,
+    local bare repositories in place of the GitHub remotes.
+    """
+    from backtest.weekly_bet_list import DecisionBundle
+    from data.upstream_live import AS_OF_ENV
+    from forward_ledger import cutover, run_log, runner, snapshots
+    from forward_ledger.anchor import read_local_anchor
+    from forward_ledger.store import read_entries, verify_chain
+    from tests.unit.test_forward_ledger_runner import _decided_row, _Env
+    from tests.unit.test_ledger_anchor import fake_spec, git_out, make_bare
+
+    rehearsal = make_rehearsal("ledger_on", _week_three_schedule())
+    root = rehearsal.root
+    wednesday = date(2026, 9, 23)
+    clock = _et(wednesday, 17, 0)
+    lock = _et(wednesday, 18, 0)
+
+    monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", True)
+    monkeypatch.setattr(run_log, "LEDGER_RUN_LOG", Path("logs/ledger_runs.jsonl"))
+    monkeypatch.setattr(
+        daily,
+        "build_daily_step_registry",
+        lambda slate: [
+            step
+            for step in daily_steps.build_daily_step_registry(slate)
+            if step.name in (*_RUN_STEPS, "generate_recommendations")
+        ],
+    )
+    monkeypatch.delenv(AS_OF_ENV, raising=False)
+    git_out(root, "init", "-q")
+
+    stores = _Env(root / "stores")
+
+    def _bundle(season: int, week: int, **kwargs: Any) -> DecisionBundle:
+        now = kwargs["now"]
+        row = _decided_row(
+            THURSDAY_GAME,
+            now,
+            week=week,
+            snapshot_ts=now.isoformat(),
+            freeze_ts=lock.isoformat(),
+        )
+        spine = {"game_id": [THURSDAY_GAME], "season": [season], "week": [week]}
+        return DecisionBundle(
+            frame=pd.DataFrame([row]),
+            candidates=pd.DataFrame(
+                {"game_id": [THURSDAY_GAME], "target": ["ats"], "model_value": [-3.2]}
+            ),
+            schedule=pd.DataFrame({**spine, "gameday": ["2026-09-24"]}),
+            gold_inputs={
+                target: pd.DataFrame({**spine, "elo_diff": [12.5]})
+                for target in ("wp", "ats", "ou")
+            },
+            fits={},
+            resolved=kwargs["resolved"],
+            chain_fit_path=stores.chain_fit,
+            run_instant=now,
+        )
+
+    real_record = runner.record_forward_slate
+
+    def _record(slate: daily_steps.DailySlate, **kwargs: Any) -> Any:
+        # The production keywords (decided_at, exclusions, publish_by, repo_dir) pass through;
+        # ledger_dir and the run log stay production's defaults, relative to the sandbox.
+        return real_record(
+            slate,
+            **kwargs,
+            artifacts_dir=stores.artifacts,
+            gold_dir=stores.gold,
+            silver_dir=stores.silver,
+            manifest_dir=stores.manifests,
+            bundle_builder=_bundle,
+        )
+
+    monkeypatch.setattr(runner, "record_forward_slate", _record)
+    real_commit = runner.commit_changes
+    monkeypatch.setattr(
+        runner,
+        "commit_changes",
+        lambda *a, **k: real_commit(*a, clock=lambda: clock, **k),
+    )
+    monkeypatch.setattr(
+        snapshots, "UV_LOCK_PATH", Path(__file__).parents[2] / "uv.lock"
+    )
+    anchor_remote = make_bare(root / "anchor_remote.git")
+    real_publish = runner.publish_ledger_state
+    monkeypatch.setattr(
+        runner,
+        "publish_ledger_state",
+        lambda **k: real_publish(
+            **k,
+            anchor_spec=fake_spec(root, anchor_remote.as_posix()),
+            backup_spec=fake_spec(root, (root / "backup_remote.git").as_posix()),
+        ),
+    )
+
+    code, contract = rehearsal.run(wednesday, clock=clock)
+
+    assert code == 0
+    assert contract["RUN_STATUS"] == RunStatus.SUCCESS.value
+    assert contract["LEDGER_SETTLE"].startswith("unchanged")
+    assert contract["LEDGER_SYNC"] == (
+        "anchor_committed=True anchor_pushed=True backup_committed=False "
+        "backup_pushed=False refused=none"
+    )
+
+    entries = read_entries(root / "ledger")
+    assert verify_chain(entries).ok
+    assert [entry.immutable["game_id"] for entry in entries] == [THURSDAY_GAME]
+    assert entries[0].immutable["decided_at_utc"] == clock.astimezone(UTC).isoformat()
+    assert read_local_anchor(root) == (entries[-1].chain_hash, 1)
+    assert git_out(anchor_remote, "rev-parse", "refs/heads/ledger-anchor") == git_out(
+        root, "rev-parse", "refs/heads/ledger-anchor"
+    )
+
+    events = [
+        json.loads(line)
+        for line in (root / "logs" / "ledger_runs.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    names = [event["event"] for event in events]
+    assert names[0] == "append" and events[0]["appended_rows"] == 1
+    assert {"anchor_commit", "anchor_push", "backup_push"} <= set(names)
+    assert {event["run_id"] for event in events} == {contract["LEDGER_RUN_ID"]}
