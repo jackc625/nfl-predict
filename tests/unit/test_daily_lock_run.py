@@ -1271,6 +1271,11 @@ def test_generate_refuses_forward_mode_after_cutover(monkeypatch):
     with pytest.raises(_Reached):
         weekly_bet_list.generate_weekly_bet_list(2025, 6, run_mode="replay")
 
+    # The Friday orchestrator's critical step writes nothing after the cutover (WR-09).
+    from pipeline import steps
+
+    assert steps.step_generate_recommendations() is None
+
     _cut_over(monkeypatch, on=False)
     with pytest.raises(_Reached):
         weekly_bet_list.generate_weekly_bet_list(2026, 6, run_mode="forward")

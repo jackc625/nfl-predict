@@ -197,6 +197,11 @@ uv run python scripts/generate_current_week_predictions.py --season <YEAR> --wee
 
 #### 6a. Sub-step: generate the weekly bet list
 
+> **Pre-cutover history (Phase 34).** Since the forward-ledger cutover on 2026-10-05 this
+> sub-step REFUSES (`ForwardRowsMovedToLedgerError`): forward rows come only from the daily
+> run's recommend step, and a game past its lock with no row stays unbet. See "The daily run
+> and its ledger steps" below. The text that follows describes the pre-cutover path.
+
 The `/bets` page serves a ranked +EV bet list. Its rows come from a durable artifact that
 must be produced BEFORE the cache is built. This is a sub-step of Predict rather than a
 stage of its own: it consumes the same week's model output and produces a recommendation
@@ -234,8 +239,10 @@ uv run python scripts/populate_cache.py
 
 - **Live entry point:** `scripts/populate_cache.py` -> `api.cache.populate_cache`.
 - **Produces:** `data/web_cache.duckdb` (~6 MB; the only data source the API reads).
-- **PRECONDITION: run sub-step 6a first.** For the bet list this stage is a pure COPY step
-  over `outputs/bet_list/`. Skipping 6a does NOT make it fail: the population still exits 0
+- **PRECONDITION (pre-cutover): run sub-step 6a first.** Since the cutover the forward rows
+  are copied from `ledger/` and 6a is refused, so run this stage directly. Before it, for the
+  bet list this stage was a pure COPY step over `outputs/bet_list/`. Skipping 6a does NOT
+  make it fail: the population still exits 0
   and still writes the schedule-derived navigation and per-game freeze tables, but the
   `bet_list` table is created EMPTY with no per-week populated-at marker -- and a freeze
   present beside an absent marker is exactly the condition `/bets` treats as stale, so the
@@ -284,8 +291,12 @@ The per-stage commands above are for **historical / full builds** (they use
 `--current` on the Elo/form builders, and the full current-week run goes through the
 orchestrator below.
 
-The coherent **current-week** path is the Friday orchestrator, which calls the builder
-classes directly and runs the data + predictions subset:
+The Friday orchestrator below WAS the coherent **current-week** path. Since Plan 33.2-28 the
+scheduled path is the daily run, and since the forward-ledger cutover (2026-10-05) only the
+daily run writes forward bets: the orchestrator's `generate_recommendations` step logs the
+cutover and writes nothing, so a manual run still refreshes data, predictions, exports and the
+cache but produces no bet rows. See "The daily run and its ledger steps" below. The
+orchestrator calls the builder classes directly and runs the data + predictions subset:
 
 ```powershell
 uv run python scripts/friday_pipeline.py --log-level INFO
@@ -343,8 +354,8 @@ uv run python scripts/daily_lock_pipeline.py
    pushed (`LEDGER_SYNC=`). A failed push is recorded in `logs/ledger_runs.jsonl` and retried by
    the next sync; it never changes the run's exit code.
 
-Forward rows now come ONLY from this run. `scripts/generate_bet_list.py` (sub-step 6a) and the
-Friday orchestrator's `generate_recommendations` step refuse to write forward rows after the
-cutover (`ForwardRowsMovedToLedgerError`). The script has no replay mode, so 6a is refused
-outright; `outputs/bet_list/` keeps only the 2025 replay rows. The owner procedures -- verify, replay, restore, recording a real bet and
+Forward rows now come ONLY from this run. `scripts/generate_bet_list.py` (sub-step 6a) refuses
+to write forward rows after the cutover (`ForwardRowsMovedToLedgerError`), and the Friday
+orchestrator's `generate_recommendations` step logs the cutover and writes nothing. The script
+has no replay mode, so 6a is refused outright; `outputs/bet_list/` keeps only the 2025 replay rows. The owner procedures -- verify, replay, restore, recording a real bet and
 a manual `uv run python -m scripts.sync_ledger` -- are in `RUNBOOK.md`, "Forward ledger".

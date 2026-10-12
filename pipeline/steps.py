@@ -1111,13 +1111,29 @@ def step_generate_recommendations() -> None:
     suppressed one. The decision instant is passed as ``now`` so the refusal here and the
     ``decided_at_utc`` stamp there are one instant.
 
+    AFTER THE FORWARD-LEDGER CUTOVER THIS STEP WRITES NOTHING (Phase 34, 34-REVIEW WR-09).
+    Forward rows go to the ledger, and the daily run's recommend step
+    (``pipeline.daily_steps.recommend_slate``) is their only writer; the delegate would refuse
+    with ``ForwardRowsMovedToLedgerError``. With the switch ON this step logs that and returns,
+    the same way the daily step branches on the switch, so a manual Friday run still reaches the
+    export, validation and cache steps instead of ending at this critical step.
+
     Raises:
         Whatever the delegate raises. Nothing is swallowed: a week that cannot be selected must
         record a clean step failure rather than publish a silently empty bet list.
     """
     from backtest.weekly_bet_list import generate_weekly_bet_list
+    from forward_ledger.cutover import forward_rows_go_to_ledger
     from pipeline import live_skip
     from utils.date_utils import get_current_nfl_week
+    from utils.logging_config import get_logger
+
+    if forward_rows_go_to_ledger():
+        get_logger(__name__).info(
+            "generate_recommendations skipped: forward rows go to the forward ledger since "
+            "the cutover; the daily run (scripts/daily_lock_pipeline.py) writes them"
+        )
+        return
 
     season, week = get_current_nfl_week()
     decided_at = _decision_instant()
