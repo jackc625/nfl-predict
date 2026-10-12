@@ -119,6 +119,19 @@ def test_clear_staging_refuses_referenced_dir(
 
     assert (staging / "wp_X").is_dir()
 
+    # Pointed at the production root, a referenced id is refused even with a ledger copy kept.
+    (tmp_path / "ledger" / "artifacts" / "wp_X").mkdir(parents=True)
+    production = tmp_path / "artifacts"
+    (production / "wp_X").mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="wp_X"):
+        _clear_staging_dir(production)
+    assert (production / "wp_X").is_dir()
+
+    # After a promote copied it into production, the staging duplicate may go (WR-08).
+    _clear_staging_dir(staging)
+    assert not (staging / "wp_X").exists()
+    assert (production / "wp_X").is_dir()
+
 
 def test_clear_staging_still_clears_unreferenced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

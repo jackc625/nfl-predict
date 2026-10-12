@@ -675,7 +675,9 @@ def _resolve_staged_version(
     return newest.name
 
 
-def _clear_staging_dir(staging_dir: Path) -> None:
+def _clear_staging_dir(
+    staging_dir: Path, artifacts_dir: Path = Path("artifacts")
+) -> None:
     """Delete stale candidate dirs and any stale latest.json before a fresh staging train.
 
     Clearing guarantees only the freshly-trained candidates exist, so the deterministic
@@ -691,11 +693,17 @@ def _clear_staging_dir(staging_dir: Path) -> None:
     leaving the staging tree half-cleared with no message saying what to close.
 
     A directory the forward ledger references (a row's model or blend id, or an artifact the
-    ledger keeps a copy of) is NEVER deleted (Phase 34 D-11): the ledger's replay depends on it,
-    so a misconfigured ``--staging-dir artifacts`` cannot prune it.
+    ledger keeps a copy of) is NEVER deleted from where the ledger depends on it (Phase 34 D-11).
+    Protection is by LOCATION: pointed at the production artifacts root or at the ledger's own
+    copies directory, every referenced id is refused, so a misconfigured
+    ``--staging-dir artifacts`` cannot prune it. A real staging root may drop its duplicate of a
+    referenced id only while a separate copy survives under the production root or the ledger's
+    copies directory -- otherwise the first re-fit after a promote (which copies staging into
+    production and leaves the staging dir behind under the same name) would always refuse.
 
     Args:
         staging_dir: The staging artifacts root to clear (created if absent).
+        artifacts_dir: The production artifacts root (``--artifacts-dir``).
 
     Raises:
         RuntimeError: If a stale dir or the stale manifest cannot be removed, naming the exact
@@ -708,7 +716,9 @@ def _clear_staging_dir(staging_dir: Path) -> None:
 
     import shutil
 
+    from forward_ledger.artifacts_copy import ARTIFACT_COPIES_DIRNAME
     from forward_ledger.retention import referenced_artifact_ids
+    from forward_ledger.store import LEDGER_DIR
 
     stale_dirs = [
         stale
@@ -718,12 +728,26 @@ def _clear_staging_dir(staging_dir: Path) -> None:
     ]
     # Checked for every dir BEFORE any is removed, so a refusal leaves staging untouched.
     referenced = referenced_artifact_ids()
-    protected = sorted(stale.name for stale in stale_dirs if stale.name in referenced)
+    kept_roots = (
+        artifacts_dir.resolve(),
+        (Path(LEDGER_DIR) / ARTIFACT_COPIES_DIRNAME).resolve(),
+    )
+    staging_is_kept_root = staging_dir.resolve() in kept_roots
+    protected = sorted(
+        stale.name
+        for stale in stale_dirs
+        if stale.name in referenced
+        and (
+            staging_is_kept_root
+            or not any((root / stale.name).is_dir() for root in kept_roots)
+        )
+    )
     if protected:
         msg = (
             f"Refusing to clear '{staging_dir}': the forward ledger references {protected}, "
             "and its replay depends on those artifacts (Phase 34 D-11). Nothing was removed; "
-            "point --staging-dir at a staging root, never at a directory holding them."
+            "point --staging-dir at a staging root, never at the production artifacts root or "
+            "the ledger's copies, and keep a copy of each referenced id under one of those."
         )
         raise RuntimeError(msg)
     for stale in stale_dirs:
@@ -1468,7 +1492,7 @@ def main(argv: list[str] | None = None) -> int:
         # This stays OUTSIDE the per-target loop on purpose: its glob is per-target
         # (``{target}_*``), so moving it inside would delete a sibling candidate that a
         # previous iteration of this same run had just trained.
-        _clear_staging_dir(args.staging_dir)
+        _clear_staging_dir(args.staging_dir, args.artifacts_dir)
         # One subprocess PER TARGET (D30-12). A single ``--target all`` invocation cannot carry
         # three different per-target selection windows, and the untuned flag is gone so Optuna
         # actually runs (SPEC R5).
