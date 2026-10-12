@@ -170,10 +170,15 @@
   {# The four distinct non-happy renders (SPEC R5, UI-SPEC E2 empty / E7). Order matters:
      a missing TABLE is checked first because it is the only one of the four that names an action
      the reader can take, and reporting it as "no bets cleared the floor" would be a claim about
-     the models made from the absence of a table. Never a blank page and never a 500. #}
+     the models made from the absence of a table. Never a blank page and never a 500.
+
+     THE RECOVERY COPY IS CUTOVER-TRUE (Phase 34, 34-REVIEW WR-10). Forward bets come only from
+     the daily run, which writes them into the forward ledger before each game's lock, and
+     scripts/generate_bet_list.py now refuses. So the only command named is the cache copy, and a
+     game past its lock with no ledger row is said to stay unbet rather than to be rebuildable. #}
   {% if not bet_list_available %}
     {% with heading="Bet list not built yet",
-            body='The bet-list cache table does not exist. Build the list for this week with "uv run python scripts/generate_bet_list.py", then load it into the cache with "uv run python scripts/populate_cache.py", then reload this page. The second command only COPIES what the first produces, so running it on its own creates the table with no rows in it.',
+            body='The bet-list cache table does not exist. Load it with "uv run python scripts/populate_cache.py", then reload this page. That command only COPIES what the forward ledger holds, plus the stored backtest replay rows: forward bets come only from the 5 PM daily run, which records each one before its game locks.',
             action_text=none, action_url=none %}
       {% include "components/_empty_state.html" %}
     {% endwith %}
@@ -184,7 +189,7 @@
        text names the games and repeats both timestamps so the claim can be checked rather than
        taken. The suppressed section is withheld with it (UI-SPEC E3 error, owner decision). #}
     {% with message="This week's list is missing -- its locked games have no list in the cache",
-            recovery_text="Each game's list is built the day before its kickoff, before its 6:00 PM Eastern lock. These games have passed that lock with no list in the cache: " ~ (missing_labels | join(", ")) ~ '. Past weeks below are unaffected and remain readable. To restore this section, rebuild the list with "uv run python scripts/generate_bet_list.py" and then load it into the cache with "uv run python scripts/populate_cache.py". The second command only COPIES what the first produces, so running it on its own leaves this section withheld. The running server picks the rebuilt cache up on the next request, so no restart is needed. Cache last populated: ' ~ (bet_list_populated_at or "not recorded") ~ "; latest game lock this week: " ~ (bet_week_freeze or "not recorded") ~ "." %}
+            recovery_text="Each game's list is built the day before its kickoff, before its 6:00 PM Eastern lock. These games have passed that lock with no list in the cache: " ~ (missing_labels | join(", ")) ~ '. Past weeks below are unaffected and remain readable. Forward bets come only from the 5 PM daily run, and no bet can be made after its game locks, so a game that reached its lock with no row in the forward ledger stays unbet. If the ledger does hold rows for these games, reload the cache with "uv run python scripts/populate_cache.py"; it only COPIES what the forward ledger holds, so it cannot create a missing bet. The running server picks the rebuilt cache up on the next request, so no restart is needed. Cache last populated: ' ~ (bet_list_populated_at or "not recorded") ~ "; latest game lock this week: " ~ (bet_week_freeze or "not recorded") ~ "." %}
       {% include "components/_error_state.html" %}
     {% endwith %}
   {% elif week_not_evaluated %}
@@ -708,7 +713,7 @@
     <p class="text-sm text-muted max-w-2xl mt-2">{{ TRACKER_CAPTIONS["forward"] }}</p>
   </div>
   {% with message="The forward record is withheld -- this week's locked games have no list in the cache",
-          recovery_text='The forward record\'s totals are computed from the same cache the list above is missing from, so they would be incomplete. The backtest replay above is unaffected and remains readable, because a replay figure does not depend on the current week\'s locks. To restore this section, rebuild the list with "uv run python scripts/generate_bet_list.py" and then load it into the cache with "uv run python scripts/populate_cache.py". The second command only COPIES what the first produces, so running it on its own leaves this section withheld.' %}
+          recovery_text='The forward record\'s totals are computed from the same cache the list above is missing from, so they would be incomplete. The backtest replay above is unaffected and remains readable, because a replay figure does not depend on the current week\'s locks. Forward bets come only from the 5 PM daily run, and a game that reached its lock with no row in the forward ledger stays unbet. If the ledger does hold rows for these games, reload the cache with "uv run python scripts/populate_cache.py"; it only COPIES what the forward ledger holds, so it cannot create a missing bet.' %}
     {% include "components/_error_state.html" %}
   {% endwith %}
 </section>

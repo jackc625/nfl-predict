@@ -38,6 +38,15 @@ two seams and the same reason as ``tests/unit/test_bet_list_entry_point.py``. Ev
 runs FOR REAL: the selector, the frame mapping, the artifact upsert, the grading pass, both durable
 writes, the shared reader, all four cache writers, the route and the template.
 
+AFTER THE FORWARD-LEDGER CUTOVER (Phase 34, 34-REVIEW WR-10)
+------------------------------------------------------------
+``scripts/generate_bet_list.py`` now refuses forward rows: the daily run is their only writer, and
+no bet can be made after its game's lock. So the page names ONE command, the copy step, with the
+clause that it only copies what the forward ledger holds, and says a game past its lock with no
+ledger row stays unbet. Stage one below no longer stands for a command the page names; it stands
+for the rows the daily run already wrote. The cutover switch is pinned OFF for the suite, so the
+pre-cutover writer still produces those rows hermetically.
+
 Selectors (``-k``): cold_state, follow, copy_only, writer_set.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -91,7 +100,8 @@ _HARD_BLOCK_MESSAGE = (
 # distinguish a served list from a served disclosure.
 _ROW_TABLE_HEADER = "Stake (units)"
 
-# The two recovery commands, in the order the page must name them.
+# The generation command the page must NOT name (it refuses since the cutover), and the copy step
+# it names.
 _GENERATE_SCRIPT = "scripts/generate_bet_list.py"
 _POPULATE_SCRIPT = "scripts/populate_cache.py"
 _SCRIPT_PATH_PATTERN = re.compile(r"scripts/[A-Za-z0-9_]+\.py")
@@ -276,7 +286,9 @@ def _stage_one_generate(
 ) -> pd.DataFrame:
     """Run the GENERATION command's library entry point into ``output_dir``.
 
-    This is what ``scripts/generate_bet_list.py`` does: resolve the week and delegate. Both
+    Since the cutover this stands for the rows the daily run already wrote, not for a command the
+    page names (see the module docstring). It is what ``scripts/generate_bet_list.py`` did before
+    the cutover: resolve the week and delegate. Both
     lake-reading seams are injected in the namespace the function resolves them from;
     ``gold_dir`` points at a directory that does not exist, so the grading pass finds no realized
     labels and every selected row stays live -- the genuine forward state.
@@ -433,28 +445,28 @@ def test_cold_state_renders_the_cache_absent_copy(tmp_path: pathlib.Path) -> Non
     )
 
 
-def test_cold_state_names_exactly_the_two_scripts_in_order(
+def test_cold_state_names_exactly_the_copy_script(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Read the sequence OUT of the page rather than hardcoding what is then followed.
+    """Read the command OUT of the page rather than hardcoding what is then followed.
 
-    A test that hardcodes the sequence and runs it proves the SEQUENCE works. It does not prove
-    the page names it, so copy that silently stopped naming the producer would still pass. Parsing
-    the rendered body is what makes this module fail when the copy regresses.
+    A test that hardcodes the command and runs it proves the COMMAND works. It does not prove the
+    page names it. Parsing the rendered body is what makes this module fail when the copy
+    regresses -- including back to naming the generation script, which refuses since the cutover.
     """
     db_path = _cold_cache(tmp_path / "cold.duckdb", seed_navigation=True)
 
     with _serving(db_path) as client:
         body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
 
-    assert _named_scripts(body) == [_GENERATE_SCRIPT, _POPULATE_SCRIPT], (
-        "the cache-absent state does not name the generation script and then the population "
-        f"script; it names {_named_scripts(body)}. Naming only the copy step is the shipped "
-        "defect: from this exact state that command has nothing to copy."
+    assert _named_scripts(body) == [_POPULATE_SCRIPT], (
+        "the cache-absent state does not name exactly the population script; it names "
+        f"{_named_scripts(body)}. {_GENERATE_SCRIPT} refuses forward rows since the "
+        "forward-ledger cutover, so naming it sends the reader to a command that fails."
     )
 
 
-@pytest.mark.parametrize("script_path", [_GENERATE_SCRIPT, _POPULATE_SCRIPT])
+@pytest.mark.parametrize("script_path", [_POPULATE_SCRIPT])
 def test_cold_state_named_script_is_a_runnable_entry_point(script_path: str) -> None:
     """Each named script exists, defines ``main``, and carries a ``__main__`` guard.
 
@@ -477,7 +489,7 @@ def test_cold_state_named_script_is_a_runnable_entry_point(script_path: str) -> 
 
 
 # ---------------------------------------------------------------------------
-# TWO. Follow them, in the order the page names them, and the page serves a list
+# TWO. With the rows recorded, follow the command the page names and it serves a list
 # ---------------------------------------------------------------------------
 
 
@@ -495,13 +507,13 @@ def test_follow_the_named_sequence_and_the_page_serves_the_row_table(
     artifact_dir = tmp_path / "bet_list"
     silver_dir = _write_authored_silver(tmp_path / "silver")
 
-    # Stage one: the generation command the page names FIRST.
+    # Stage one: the rows the daily run recorded before the lock (see the module docstring).
     graded = _stage_one_generate(artifact_dir, tmp_path, monkeypatch)
     assert not graded.empty, (
         "stage one produced no rows, so stage two would copy nothing"
     )
 
-    # Stage two: the population command the page names SECOND.
+    # Stage two: the population command the page names.
     _stage_two_populate(db_path, artifact_dir, silver_dir)
 
     with _serving(db_path) as client:
@@ -564,8 +576,8 @@ def test_copy_only_from_a_cold_state_does_not_serve_a_list(
     assert response.status_code == 200
     body = response.text
     assert _ROW_TABLE_HEADER not in body, (
-        "the copy step alone served a row table, which would mean the generation command the copy "
-        "now names is not actually required and this whole gap was misdiagnosed"
+        "the copy step alone served a row table from an empty source, so the page would be "
+        "showing bets nothing recorded"
     )
     assert _HARD_BLOCK_MESSAGE in body, (
         "the copy step alone did not land on the withheld refusal. Anything else here is worse "
@@ -574,14 +586,16 @@ def test_copy_only_from_a_cold_state_does_not_serve_a_list(
     )
 
 
-def test_copy_only_refusal_names_both_commands_so_the_loop_is_broken(
+def test_copy_only_refusal_says_the_missed_game_stays_unbet(
     tmp_path: pathlib.Path,
 ) -> None:
-    """THE LOOP: the state the copy step lands you in must point FORWARD, not back.
+    """THE LOOP, after the cutover: the refusal must not promise a rebuild that cannot happen.
 
-    Before this plan the refusal named ``scripts/populate_cache.py`` and nothing else -- the very
-    command that had just put the reader here. Re-running it reproduced the same state. The
-    refusal must now name the producer, so the reader has somewhere to go.
+    Before plan 31-23 the refusal named ``scripts/populate_cache.py`` and nothing else, and
+    re-running it reproduced the same state. Plan 31-23 broke that loop by naming the producer.
+    Since the forward-ledger cutover the producer refuses, and no bet can be made after its game's
+    lock, so the honest exit is to SAY the game stays unbet: every instructional block names only
+    the copy step, with the clause that it cannot create a missing bet (34-REVIEW WR-10).
     """
     db_path = _cold_cache(tmp_path / "cold.duckdb", seed_navigation=False)
     silver_dir = _write_authored_silver(tmp_path / "silver")
@@ -590,21 +604,22 @@ def test_copy_only_refusal_names_both_commands_so_the_loop_is_broken(
     with _serving(db_path) as client:
         body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
 
-    for paragraph in _instructional_paragraphs(body):
-        assert _named_scripts(paragraph) == [_GENERATE_SCRIPT, _POPULATE_SCRIPT], (
-            "a block that gives the reader a command names a sequence that cannot restore what it "
-            f"refers to; it names {_named_scripts(paragraph)}. The offending block reads:\n"
+    paragraphs = _instructional_paragraphs(body)
+    assert paragraphs, "the refusal gives the reader no instruction at all"
+    for paragraph in paragraphs:
+        assert _named_scripts(paragraph) == [_POPULATE_SCRIPT], (
+            "a block that gives the reader a command names something other than the copy step; "
+            f"it names {_named_scripts(paragraph)}. The offending block reads:\n"
             f"{paragraph.strip()[:400]}\n"
-            "Every instructional block must name the producer before the copy step -- naming only "
-            "the copy step is the loop, whichever block does it. The whole-body assertion below "
-            "cannot catch this: it deduplicates, so a repeat of the copy step alone is invisible."
+            f"{_GENERATE_SCRIPT} refuses forward rows since the cutover, so naming it is a "
+            "recovery that cannot work."
         )
-
-    assert _named_scripts(body) == [_GENERATE_SCRIPT, _POPULATE_SCRIPT], (
-        "the refusal a copy-step-only reader lands on does not name the generation script before "
-        f"the population script; it names {_named_scripts(body)}. That is the loop: the only "
-        "command offered is the one that produced this state."
-    )
+        assert (
+            "stays unbet" in paragraph and "cannot create a missing bet" in paragraph
+        ), (
+            "a block that names the copy step does not say a game past its lock with no ledger "
+            f"row stays unbet and that the copy cannot create it:\n{paragraph.strip()[:400]}"
+        )
 
 
 # ---------------------------------------------------------------------------
