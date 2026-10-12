@@ -4,7 +4,8 @@ D-01/D-02: a second copy of the whole ledger lives in a private repository and m
 verify and replay on its own. The backup is a nested git repository in the ledger directory whose
 FIRST commit is ``.gitattributes`` (``* -text``) -- ``core.autocrlf=true`` is set system-wide on
 this machine, and without it a restore would rewrite every LF to CRLF -- plus a ``.gitignore``
-that keeps the writer lock and temp files out of history.
+that keeps the writer lock and temp files out of history. The restore round trip clones with
+``core.autocrlf=true`` set explicitly, with a no-attributes control, so it discriminates on any host.
 
 Real git only, against ``tmp_path`` repositories and local bare "remotes"; nothing reaches GitHub.
 
@@ -40,6 +41,15 @@ from tests.unit.test_ledger_anchor import (
 # Real git here runs over tmp_path repositories only, isolated from inherited GIT_* variables and
 # the global/system config (34-REVIEW WR-32; tests/conftest.py::isolated_git_env).
 pytestmark = pytest.mark.usefixtures("isolated_git_env")
+
+
+_AUTOCRLF = ("-c", "core.autocrlf=true")
+_IDENTITY = (
+    "-c",
+    "user.name=Ledger Test",
+    "-c",
+    "user.email=ledger@example.invalid",
+)
 
 
 def _ledger_with_rows(tmp_path: Path) -> Path:
@@ -122,9 +132,32 @@ def test_restore_round_trip_is_byte_identical(tmp_path: Path) -> None:
     original = ledger_path(ledger).read_bytes()
     assert b"\r\n" not in original
 
-    clone = git(tmp_path, "clone", "--branch", "main", remote.as_posix(), "restored")
+    # The clone forces core.autocrlf=true (34-REVIEW WR-33): the module runs with the global and
+    # system config hidden, so the setting this test guards against is applied explicitly rather
+    # than inherited from whichever machine runs it.
+    clone = git(
+        tmp_path, *_AUTOCRLF, "clone", "--branch", "main", remote.as_posix(), "restored"
+    )
     assert clone.returncode == 0, clone.stderr
 
     restored = tmp_path / "restored"
     assert ledger_path(restored).read_bytes() == original
     assert verify_chain(read_entries(restored)).ok
+
+    # Control: the same history with .gitattributes removed DOES come back with CRLF, so the
+    # byte identity above is the attributes' doing, not the host's.
+    git_out(ledger, "rm", "-q", ".gitattributes")
+    git_out(ledger, *_IDENTITY, "commit", "-q", "-m", "control: no attributes")
+    stripped = make_bare(tmp_path / "stripped.git")
+    git_out(ledger, "push", "-q", stripped.as_posix(), "HEAD:refs/heads/main")
+    control = git(
+        tmp_path,
+        *_AUTOCRLF,
+        "clone",
+        "--branch",
+        "main",
+        stripped.as_posix(),
+        "control",
+    )
+    assert control.returncode == 0, control.stderr
+    assert b"\r\n" in ledger_path(tmp_path / "control").read_bytes()
