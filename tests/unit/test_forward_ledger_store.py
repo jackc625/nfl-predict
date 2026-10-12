@@ -52,6 +52,7 @@ from forward_ledger.store import (
     read_entries,
 )
 from utils.file_lock import FileLockHeldError, exclusive_file_lock
+from utils.game_lock import game_lock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -385,6 +386,23 @@ def test_decided_after_freeze_refused(tmp_path: Path) -> None:
     with pytest.raises(DecidedAfterFreezeError):
         append_rows(tmp_path, [late])
     assert not ledger_path(tmp_path).exists()
+
+
+def test_decided_exactly_at_the_lock_is_admitted(tmp_path: Path) -> None:
+    """D33.2-01 (34-REVIEW WR-34): information timed AT the lock is admissible -- at-lock counts,
+    one second after does not. A comparison drifted from ``>`` to ``>=`` would refuse every
+    at-lock decision; the refused side above cannot see that, this positive control does."""
+    # The row's freeze IS utils.game_lock's lock for a Thursday 20:15 ET kickoff (2026-10-15).
+    lock = game_lock(pd.Timestamp("2026-10-16T00:15:00Z"))
+    assert lock == datetime.fromisoformat(make_row()["freeze_ts"])
+    at_lock = make_row(decided_at_utc=lock.astimezone(UTC).isoformat())
+    assert at_lock["decided_at_utc"] == "2026-10-14T22:00:00+00:00"
+
+    result = append_rows(tmp_path, [at_lock])
+
+    assert result.wrote is True
+    (entry,) = read_entries(tmp_path)
+    assert entry.immutable["decided_at_utc"] == "2026-10-14T22:00:00+00:00"
 
 
 def test_broken_chain_blocks_writing(tmp_path: Path) -> None:
