@@ -411,8 +411,11 @@ def read_entries(ledger_dir: Path | str = LEDGER_DIR) -> list[LedgerEntry]:
     writer is never blocked by an open handle held here (34-RESEARCH Pitfall 6).
 
     Raises:
-        LedgerFormatError: the store exists but cannot be read, or a line is malformed (named by
-            its 1-based line number). Absent is not corrupt; unreadable is never read as empty.
+        LedgerFormatError: the store exists but cannot be read, is zero-length, or a line is
+            malformed (named by its 1-based line number). Absent is not corrupt; unreadable is
+            never read as empty. A store that exists is never legitimately empty -- no writer
+            writes a store with nothing in it -- so a zero-length file is damage (a power cut
+            mid-replace), not "nothing recorded yet" (34-REVIEW WR-02).
     """
     path = ledger_path(ledger_dir)
     if not path.exists():
@@ -423,7 +426,11 @@ def read_entries(ledger_dir: Path | str = LEDGER_DIR) -> list[LedgerEntry]:
         msg = f"cannot read the ledger store {path.as_posix()}: {error}"
         raise LedgerFormatError(msg) from error
     if not data:
-        return []
+        msg = (
+            f"the ledger store {path.as_posix()} exists but is zero-length; it was not written "
+            "whole and is never read as an empty ledger"
+        )
+        raise LedgerFormatError(msg)
 
     lines = data.split(b"\n")
     if lines[-1] != b"":
