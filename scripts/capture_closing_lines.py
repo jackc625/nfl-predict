@@ -16,8 +16,12 @@ ONE RUN, IN ORDER
    ``forward_ledger.credits.closing_capture_allowed`` with the season's schedule. Refused -> event
    ``skipped`` with the reason (``credit_reserve`` / ``credit_header_unreadable``) and the target
    game ids; no odds request. The daily DECISION capture never consults this rule.
-3. The reading: one board request (3 credits) whose kickoff window is bounded by the targets'
-   kickoffs, one minute either side. The capture instant is observed when the response returns.
+3. The reading: one board request (3 credits) whose kickoff window is the targets' kickoffs
+   widened by ``COMMENCE_TIME_TOLERANCE`` (one hour) on each side -- the same tolerance the
+   transform's matcher already allows between a listing and the schedule (34-REVIEW WR-07). The
+   provider bills per market per region, not per event, so the wider window costs nothing extra;
+   any non-target event it returns matches no target schedule row and is never written. The
+   capture instant is observed when the response returns.
    The board is transformed with ``capture_kind="closing"`` against the targets and their locks --
    ``snapshot_ts = lock``, ``created_at`` = the true capture instant, any game already kicked off
    at that instant refused -- validated against ``OddsSchema`` and appended to
@@ -72,14 +76,22 @@ from scripts.ingest_historical_odds import (
     NaiveTimestampError,
     require_aware_snapshot_ts,
 )
-from scripts.ingest_odds import SCHEDULE_COLUMNS, OddsDataIngester
+from scripts.ingest_odds import (
+    COMMENCE_TIME_TOLERANCE,
+    SCHEDULE_COLUMNS,
+    OddsDataIngester,
+)
 
 CAPTURE_EVENT = "closing_capture"
 REASON_CAPTURE_FAILED = "capture_failed"
 
-# The board request's kickoff window reaches one minute past the targets' kickoffs on each side,
-# so a kickoff on the window's edge is never filtered out by the provider.
-REQUEST_MARGIN = timedelta(minutes=1)
+# The board request's kickoff window reaches this far past the targets' kickoffs on each side. It
+# was one minute, 60 times stricter than the matcher it feeds, and two 8:15 PM single-game readings
+# came back empty with nothing kept to say why (34-REVIEW WR-07). The board costs the same 3
+# credits however many events it lists (one credit per market per region, forward_ledger.credits),
+# and only the targets can be written: the transform matches against the targets' schedule rows
+# alone and refuses any capture at or after a target's scheduled kickoff.
+REQUEST_MARGIN: timedelta = COMMENCE_TIME_TOLERANCE
 
 
 def _load_games() -> pd.DataFrame:

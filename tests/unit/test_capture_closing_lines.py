@@ -279,8 +279,8 @@ class TestTheCapture:
 
         assert len(run.client.odds_requests) == 1, "one board, one request"
         request = run.client.odds_requests[0]
-        assert request["date_from"] == EARLY_KICKOFF - timedelta(minutes=1)
-        assert request["date_to"] == LATE_KICKOFF + timedelta(minutes=1)
+        assert request["date_from"] == EARLY_KICKOFF - timedelta(hours=1)
+        assert request["date_to"] == LATE_KICKOFF + timedelta(hours=1)
 
         stored = pd.read_parquet(run.store)
         assert sorted(stored["game_id"]) == ["2026_W06_DAL@PHI", "2026_W06_NYG@WAS"]
@@ -305,21 +305,26 @@ class TestTheCapture:
     def test_started_games_excluded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Kicked off five minutes ago, no result recorded yet: never requested.
+        # Kicked off five minutes ago, no result recorded yet: never a target. The widened
+        # request window can return it, and it is still never written (34-REVIEW WR-07).
         started = _game("SEA", "SF", NOW - timedelta(minutes=5))
         games = _games(started)
-        in_window = games.loc[
-            games["game_id"].isin(["2026_W06_DAL@PHI", "2026_W06_NYG@WAS"])
+        returned = games.loc[
+            games["game_id"].isin(
+                ["2026_W06_DAL@PHI", "2026_W06_NYG@WAS", started["game_id"]]
+            )
         ]
         run = _Run(
-            tmp_path, monkeypatch, games, _FakeClient(payload=_payload(in_window))
+            tmp_path, monkeypatch, games, _FakeClient(payload=_payload(returned))
         )
 
         assert run.main() == 0
         assert run.client.odds_requests[0]["date_from"] == EARLY_KICKOFF - timedelta(
-            minutes=1
+            hours=1
         )
         assert started["game_id"] not in run.event["game_ids"]
+        assert started["game_id"] not in set(pd.read_parquet(run.store)["game_id"])
+        assert run.event["board_events"] == 3
 
     def test_failure_recorded(
         self,
