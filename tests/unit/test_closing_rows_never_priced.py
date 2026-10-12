@@ -11,9 +11,10 @@ decision row:
 
 * the market-anchor admission (``features.market_anchors.admissible_market_rows``);
 * the prediction dedupe (``scripts.generate_current_week_predictions.load_market_data``);
-* the weekly candidate dedupe, called EXACTLY as ``build_weekly_candidates`` calls it
-  (``dedupe_odds_by_book_preference(..., locks=..., keep_inadmissible=True)``), where the
-  admissible decision row must outrank the later inadmissible closing row.
+* the weekly candidate build, driven through the REAL ``build_weekly_candidates`` over the
+  stored odds (only the model scorer stands in), where the admissible decision row must outrank
+  the later inadmissible closing row. Was: a hand copy of its two dedupe steps, which would have
+  kept passing had production dropped ``locks=`` (34-REVIEW WR-21).
 
 And a game whose ONLY rows are closing rows is suppressed by the selector as ``stale_line`` --
 never priced (research Pitfall 8).
@@ -32,10 +33,12 @@ from typing import Any
 import pandas as pd
 import pytest
 
+import backtest.diagnose as diagnose_module
 import data.storage as storage_mod
 from backtest.bet_selector import BetSelector
-from backtest.ou_divergence import dedupe_odds_by_book_preference, odds_information_time
+from backtest.ou_divergence import dedupe_odds_by_book_preference
 from backtest.selector_strategies import OUStrategy
+from backtest.weekly_bet_list import CANONICAL_TARGETS, build_weekly_candidates
 from features.market_anchors import admissible_market_rows
 from scripts.ingest_odds import OddsDataIngester
 from utils.date_utils import kickoff_wall_clock_et
@@ -223,14 +226,22 @@ class TestEveryDecisionReaderIgnoresClosingRows:
         assert load_market_data([GAME_ID]).empty
 
     def test_weekly_candidate_dedupe_ignores_closing_rows(
-        self, both_rows: pd.DataFrame
+        self,
+        tmp_path: Path,
+        both_rows: pd.DataFrame,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        odds = _weekly_dedupe(both_rows)
-        assert len(odds) == 1
-        assert odds.iloc[0]["spread"] == DECISION_SPREAD
-        assert odds.iloc[0]["snapshot_ts"] == pd.Timestamp(DECISION_CAPTURE), (
-            "the selector's freshness fence must be handed the decision row's capture instant"
-        )
+        candidates = _weekly_candidates(tmp_path, monkeypatch)
+        assert sorted(candidates["target"]) == sorted(CANONICAL_TARGETS)
+        by_target = candidates.set_index("target")
+        assert by_target.loc["ats", "closing_spread"] == DECISION_SPREAD
+        assert by_target.loc["ou", "closing_total"] == DECISION_TOTAL
+        for target in CANONICAL_TARGETS:
+            assert by_target.loc[target, "snapshot_ts"] == pd.Timestamp(
+                DECISION_CAPTURE
+            ), (
+                "the selector's freshness fence must be handed the decision row's capture instant"
+            )
 
 
 def _write_lake(base: Path, odds: pd.DataFrame) -> None:
@@ -241,28 +252,49 @@ def _write_lake(base: Path, odds: pd.DataFrame) -> None:
     _schedule()[["game_id", "kickoff_et"]].to_parquet(silver / "games.parquet")
 
 
-def _weekly_dedupe(odds: pd.DataFrame) -> pd.DataFrame:
-    """The exact two steps ``build_weekly_candidates`` applies to the stored odds."""
-    schedule = _schedule()
-    locks = {
-        str(game_id): game_lock(kickoff)
-        for game_id, kickoff in zip(
-            schedule["game_id"], schedule["kickoff_et"], strict=True
+# What the stand-in scorer returns per target: the one seam that would otherwise need models.
+_MODEL_VALUES: dict[str, dict[str, float]] = {
+    "wp": {"model_prob": 0.61},
+    "ats": {"model_spread": -3.5},
+    "ou": {"model_total": 41.0},
+}
+
+
+def _weekly_candidates(base: Path, monkeypatch: pytest.MonkeyPatch) -> pd.DataFrame:
+    """The REAL ``build_weekly_candidates`` over the odds stored under ``base/silver``.
+
+    A one-game schedule and a one-row gold matrix per target are written beside the store, and
+    only ``backtest.diagnose.score_deployed_artifacts`` stands in (as in
+    ``tests/unit/test_weekly_candidates_exclusion.py``). The lock fence, the dedupe and the
+    capture-instant hand-off to the selector are production's own.
+    """
+    silver, gold = base / "silver", base / "gold"
+    _schedule().to_parquet(silver / "games.parquet", index=False)
+    gold.mkdir()
+    for target in CANONICAL_TARGETS:
+        _schedule()[["game_id", "season", "week"]].to_parquet(
+            gold / f"features_{target}.parquet", index=False
         )
-    }
-    game_ids = set(schedule["game_id"])
-    deduped = dedupe_odds_by_book_preference(
-        odds[odds["game_id"].isin(game_ids)], locks=locks, keep_inadmissible=True
+
+    def _score(target: str, *, gold_df: pd.DataFrame, **_kwargs: Any) -> pd.DataFrame:
+        scored = gold_df[["game_id", "season", "week"]].copy()
+        for column, value in _MODEL_VALUES[target].items():
+            scored[column] = value
+        return scored
+
+    monkeypatch.setattr(diagnose_module, "score_deployed_artifacts", _score)
+    candidates, _spine = build_weekly_candidates(
+        SEASON, WEEK, artifacts_dir=base / "artifacts", gold_dir=gold, silver_dir=silver
     )
-    deduped["snapshot_ts"] = odds_information_time(deduped)
-    return deduped
+    return candidates
 
 
 def _ou_verdict(
-    odds: pd.DataFrame,
+    base: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
-    """Run the game's O/U candidate, built from the weekly dedupe, through the real selector."""
-    row = _weekly_dedupe(odds).iloc[0]
+    """Run the game's REAL O/U weekly candidate through the real selector."""
+    candidates = _weekly_candidates(base, monkeypatch)
+    row = candidates.loc[candidates["target"] == "ou"].iloc[0]
     gameday = kickoff_wall_clock_et(KICKOFF).date().isoformat()
     candidate = {
         "game_id": GAME_ID,
@@ -270,7 +302,7 @@ def _ou_verdict(
         "week": WEEK,
         "target": "ou",
         "model_total": 41.0,
-        "closing_total": float(row["total"]),
+        "closing_total": float(row["closing_total"]),
         "sportsbook": row["sportsbook"],
         "is_live": bool(row["is_live"]),
         "snapshot_ts": row["snapshot_ts"],
@@ -297,9 +329,12 @@ class TestAClosingOnlyGameIsNeverPriced:
     """``keep_inadmissible=True`` keeps the closing row as a placeholder; the fence suppresses it."""
 
     def test_closing_only_game_is_suppressed_stale_line(
-        self, closing_only: pd.DataFrame
+        self,
+        tmp_path: Path,
+        closing_only: pd.DataFrame,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        reasons, selected, record = _ou_verdict(closing_only)
+        reasons, selected, record = _ou_verdict(tmp_path, monkeypatch)
         assert reasons == ["stale_line"]
         assert selected == []
         assert record["per_bet_ev"] is None, "a stale line is never priced"
@@ -307,8 +342,11 @@ class TestAClosingOnlyGameIsNeverPriced:
         assert record["kelly_stake"] == 0.0
 
     def test_a_game_with_a_decision_row_is_not_stale(
-        self, both_rows: pd.DataFrame
+        self,
+        tmp_path: Path,
+        both_rows: pd.DataFrame,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Control: the same selector reaches a non-stale verdict once a pre-lock line exists."""
-        reasons, _selected, _record = _ou_verdict(both_rows)
+        reasons, _selected, _record = _ou_verdict(tmp_path, monkeypatch)
         assert "stale_line" not in reasons
