@@ -854,6 +854,7 @@ def test_arm_vocabulary() -> None:
         "credit_reserve",
         "credit_header_unreadable",
         "capture_failed",
+        "capture_empty",
         "no_closing_market",
         "no_bet_side",
     )

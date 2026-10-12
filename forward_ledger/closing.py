@@ -75,6 +75,7 @@ from utils.date_utils import kickoff_wall_clock_et
 __all__ = [
     "CLOSING_SKIP_REASONS",
     "CLOSING_WINDOW",
+    "REASON_CAPTURE_EMPTY",
     "REASON_CAPTURE_MISSED",
     "REASON_NO_BET_SIDE",
     "REASON_NO_CLOSING_MARKET",
@@ -86,15 +87,19 @@ __all__ = [
 
 CLOSING_WINDOW = timedelta(minutes=60)
 
-# The NULL reasons this module assigns itself. The other three come from the closing task's own
-# run-log records (CLOSING_SKIP_REASONS). All six are api.cache.CLOSING_NULL_REASONS.
+# The NULL reasons this module assigns itself. The other four come from the closing task's own
+# run-log records (CLOSING_SKIP_REASONS). All seven are api.cache.CLOSING_NULL_REASONS.
 REASON_CAPTURE_MISSED = "capture_missed"
 REASON_NO_CLOSING_MARKET = "no_closing_market"
 REASON_NO_BET_SIDE = "no_bet_side"
+# The reading RAN, but wrote no row for the game: a ``captured`` record naming it in
+# ``empty_game_ids`` (34-REVIEW CR-02). Never ``capture_missed``, which means no reading was taken.
+REASON_CAPTURE_EMPTY = "capture_empty"
 CLOSING_SKIP_REASONS: tuple[str, ...] = (
     "credit_reserve",
     "credit_header_unreadable",
     "capture_failed",
+    REASON_CAPTURE_EMPTY,
 )
 _OWN_REASONS = (REASON_CAPTURE_MISSED, REASON_NO_CLOSING_MARKET, REASON_NO_BET_SIDE)
 if set(_OWN_REASONS) | set(CLOSING_SKIP_REASONS) != set(
@@ -285,13 +290,18 @@ def _recorded_kickoffs(games: pd.DataFrame) -> dict[str, datetime]:
 
 
 def _skip_reason(game_id: str, capture_events: Sequence[Mapping[str, Any]]) -> str:
-    """The latest closing-task skip or failure reason covering *game_id*, else ``capture_missed``.
+    """The latest closing-task record's reason covering *game_id*, else ``capture_missed``.
 
-    *capture_events* are the run log's ``closing_capture`` records, oldest first.
+    *capture_events* are the run log's ``closing_capture`` records, oldest first. A ``captured``
+    record naming the game in ``empty_game_ids`` (the reading ran and wrote no row for it) gives
+    ``capture_empty``; a ``skipped`` / ``failed`` record naming it in ``game_ids`` gives its own
+    reason.
     """
     reason = REASON_CAPTURE_MISSED
     for event in capture_events:
-        if event.get("reason") in CLOSING_SKIP_REASONS and game_id in (
+        if game_id in (event.get("empty_game_ids") or ()):
+            reason = REASON_CAPTURE_EMPTY
+        elif event.get("reason") in CLOSING_SKIP_REASONS and game_id in (
             event.get("game_ids") or ()
         ):
             reason = str(event["reason"])
@@ -315,9 +325,10 @@ def finalize_closing(
       * no ``bet_side`` -> NULL with ``no_bet_side``;
       * an in-window capture carrying the row's market -> the six values (:func:`closing_values_for`);
       * in-window captures, none carrying the market -> NULL with ``no_closing_market``;
-      * no in-window capture -> NULL with the reason of the latest closing-task skip or failure
-        event naming the game (``credit_reserve``, ``credit_header_unreadable``,
-        ``capture_failed``), else ``capture_missed``.
+      * no in-window capture -> NULL with the reason of the latest closing-task record naming the
+        game (``credit_reserve``, ``credit_header_unreadable``, ``capture_failed``, or
+        ``capture_empty`` for a reading that ran and wrote no row for it), else
+        ``capture_missed``.
 
     Plan 34-15 applies the result through ``commit_changes(closing_updates=...)``, whose one-way
     closing transition refuses any overwrite.

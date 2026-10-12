@@ -23,14 +23,19 @@ ONE RUN, IN ORDER
    at that instant refused -- validated against ``OddsSchema`` and appended to
    ``data/silver/odds_snapshot.parquet`` through ``data.storage.append_odds_captures``, under the
    odds store's lock shared with the daily run. Event ``captured`` with the game ids, the rows
-   written and the capture instant.
+   written and the capture instant, plus the evidence that explains an empty or partial board
+   (34-REVIEW CR-02): ``board_events`` and ``board_games`` (every event the API returned, with its
+   listed commence time), ``rows_by_game`` (rows written per target game), ``empty_game_ids``
+   (targets that got no row) and the transform's ``unmatched`` / ``in_play`` / ``no_kickoff``
+   lists.
 4. Any exception -> event ``failed`` with reason ``capture_failed`` and the exception's CLASS NAME
    only (never its message, which could carry a request URL), exit 1.
 
 Each outcome is exactly ONE ``closing_capture`` event in ``logs/ledger_runs.jsonl``
 (``forward_ledger.run_log``). The settle pass reads the ``skipped`` and ``failed`` events' reasons
-and game ids when it finalizes a game's closing columns as NULL
-(``forward_ledger.closing.finalize_closing``).
+and game ids, and the ``captured`` events' ``empty_game_ids`` (``capture_empty``: the reading ran
+and wrote nothing for the game -- never ``capture_missed``), when it finalizes a game's closing
+columns as NULL (``forward_ledger.closing.finalize_closing``).
 
 These closing rows can never reach a decision: every decision reader judges a line's admissibility
 on ``created_at`` against the game's lock (``tests/unit/test_closing_rows_never_priced.py``).
@@ -144,7 +149,19 @@ def _record(outcome: str, game_ids: list[str], **fields: Any) -> None:
     LOG(CAPTURE_EVENT, outcome=outcome, game_ids=game_ids, **fields)
     reason = fields.get("reason")
     suffix = f" reason={reason}" if reason else ""
+    empty = fields.get("empty_game_ids")
+    if empty:
+        suffix += f" empty={len(empty)}"
     print(f"CLOSING_CAPTURE= {outcome}{suffix} games={len(game_ids)}")
+
+
+def _board_games(raw_odds: list[dict[str, Any]]) -> list[str]:
+    """Every event the board returned, as ``away @ home (commence_time ...)``, sorted."""
+    return sorted(
+        f"{event.get('away_team')} @ {event.get('home_team')} "
+        f"(commence_time {event.get('commence_time')})"
+        for event in raw_odds
+    )
 
 
 def _capture(
@@ -184,18 +201,32 @@ def _capture(
             captured_at=captured_at,
             capture_kind="closing",
         )
-        rows = 0
+        validated = pd.DataFrame()
         if not odds.empty:
             validated = ingester.validate_odds_data(odds)
             if not validated.empty:
                 append_odds_captures(validated)
-                rows = len(validated)
+        rows = len(validated)
+        written = (
+            validated["game_id"].astype(str).value_counts()
+            if rows
+            else pd.Series(dtype="int64")
+        )
+        rows_by_game = {game_id: int(written.get(game_id, 0)) for game_id in game_ids}
+        report = ingester.last_match_report
         _record(
             "captured",
             game_ids,
             rows=rows,
             captured_at=captured_at.isoformat(),
             remaining_credits=remaining,
+            board_events=len(raw_odds),
+            board_games=_board_games(raw_odds),
+            rows_by_game=rows_by_game,
+            empty_game_ids=[g for g in game_ids if rows_by_game[g] == 0],
+            unmatched=list(report.unmatched_games),
+            in_play=list(report.in_play_games),
+            no_kickoff=list(report.no_kickoff_games),
         )
         return 0
     finally:

@@ -278,6 +278,17 @@ def test_reason_from_skip_record() -> None:
     )
     assert updates[_key(immutable)]["closing_null_reason"] == "capture_missed"
 
+    # The reading ran and wrote no row for the game: capture_empty, never capture_missed.
+    empty = {"event": "closing_capture", "outcome": "captured", "game_ids": [GAME]}
+    updates = finalize_closing(
+        entries,
+        _games(),
+        _odds(_capture(LOCK)),
+        [{**empty, "rows": 0, "empty_game_ids": [GAME]}],
+        _strategies(),
+    )
+    assert updates[_key(immutable)]["closing_null_reason"] == "capture_empty"
+
 
 def test_finalize_waits_for_result() -> None:
     immutable = _immutable("ats", "home_cover")

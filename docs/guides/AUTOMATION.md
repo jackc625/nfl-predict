@@ -794,8 +794,11 @@ which is report-only).
   triggers and `CLOSING_READBACK_MATCH= True`; its first wake was that evening at 20:05 ET.
 
 A game whose reading was skipped or missed keeps NULL closing columns with a recorded reason
-(`credit_reserve`, `credit_header_unreadable`, `capture_failed`, else `capture_missed`); the settle
-pass finalizes them once, after the game's result is recorded.
+(`credit_reserve`, `credit_header_unreadable`, `capture_failed`, `capture_empty` when the reading
+ran but wrote no row for the game, else `capture_missed`); the settle pass finalizes them once,
+after the game's result is recorded. A `captured` event carries the evidence for an empty or
+partial board: `board_events`, `board_games` (each event's listed commence time), `rows_by_game`,
+`empty_game_ids` and the transform's `unmatched` / `in_play` / `no_kickoff` lists.
 
 ## Odds API credit budget
 

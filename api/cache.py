@@ -933,14 +933,16 @@ REGIME_LABEL_BOOTSTRAP = "bootstrap_regime"
 
 # Why a row's closing columns are NULL (LDGR-07: NULL is never silent). ``capture_missed`` covers
 # "machine asleep / no in-window reading"; ``credit_reserve``, ``credit_header_unreadable`` and
-# ``capture_failed`` come from the closing task's own skip records; ``no_closing_market`` means an
-# in-window reading exists but carries no line or price for the row's market; ``no_bet_side`` is a
-# suppressed row with no side to measure.
+# ``capture_failed`` come from the closing task's own skip records; ``capture_empty`` means the
+# closing reading ran but wrote no row for the game (its run-log record names the game in
+# ``empty_game_ids``); ``no_closing_market`` means an in-window reading exists but carries no line
+# or price for the row's market; ``no_bet_side`` is a suppressed row with no side to measure.
 CLOSING_NULL_REASONS: tuple[str, ...] = (
     "capture_missed",
     "credit_reserve",
     "credit_header_unreadable",
     "capture_failed",
+    "capture_empty",
     "no_closing_market",
     "no_bet_side",
 )

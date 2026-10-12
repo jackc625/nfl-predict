@@ -298,6 +298,9 @@ class TestTheCapture:
         assert event["game_ids"] == ["2026_W06_DAL@PHI", "2026_W06_NYG@WAS"]
         assert event["rows"] == 2
         assert event["captured_at"] == CAPTURED_AT.isoformat()
+        assert event["board_events"] == 2
+        assert event["rows_by_game"] == {"2026_W06_DAL@PHI": 1, "2026_W06_NYG@WAS": 1}
+        assert event["empty_game_ids"] == []
 
     def test_started_games_excluded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -355,6 +358,9 @@ class TestTheCapture:
         run = _Run(tmp_path, monkeypatch, games, _FakeClient(payload=[]))
         assert run.main(["--now", "2026-10-11T13:01:00-04:00"]) == 0
         assert run.event["game_ids"] == ["2026_W06_NYG@WAS"]
+        # An empty board is recorded as such, never as a capture of the game (34-REVIEW CR-02).
+        assert run.event["board_events"] == 0
+        assert run.event["empty_game_ids"] == ["2026_W06_NYG@WAS"]
 
     def test_help_says_no_argument_is_required(
         self, capsys: pytest.CaptureFixture[str]
