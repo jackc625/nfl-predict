@@ -9,11 +9,12 @@ locked order.
 
 WHAT THIS MODULE PINS, one contract fact per test:
 
-  (1) the locked order is 29 long, 23 + 6, and ``decided_at_utc`` sits at index 22 -- inside the
-      immutable half, because a row's claim about when it was decided is a RECOMMENDATION fact and
-      must never transition;
-  (2) all THREE DDL sites build the same 29 columns in the same order -- the two
-      ``conn.execute(BET_LIST_SCHEMA)`` calls and the copy embedded in ``CACHE_SCHEMA``;
+  (1) ``decided_at_utc`` sits at index 22 -- inside the immutable half, because a row's claim
+      about when it was decided is a RECOMMENDATION fact and must never transition. Phase 34
+      (Plan 34-01) widened the order to 51 (34 immutable + 6 grading + fill + closing); was 29;
+  (2) all THREE DDL sites build the same columns (51 since Phase 34; was 29) in the same order
+      -- the two ``conn.execute(BET_LIST_SCHEMA)`` calls and the copy embedded in
+      ``CACHE_SCHEMA``;
   (3) a FORWARD row decided AFTER its own freeze is REFUSED by name, and the message carries the
       game and both instants;
   (4) a FORWARD row decided EXACTLY ON its freeze is ACCEPTED -- the assertion is ``<=``. This is a
@@ -187,15 +188,17 @@ def _cache_schema_bet_list_statement() -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_the_locked_order_is_twenty_nine_with_decided_at_last_in_the_immutable_half() -> (
-    None
-):
-    """OWNER RULING 2026-09-12: 23 immutable + 6 grading = 29, ``decided_at_utc`` at index 22.
+def test_the_locked_order_keeps_decided_at_at_index_22_within_the_51_columns() -> None:
+    """``decided_at_utc`` stays at index 22, right after ``validation_type``, in 51 columns.
 
-    The index is asserted, not merely the membership. The ruling placed the column immediately
-    after ``validation_type`` and immediately before ``grading_status`` -- the LAST position of
-    the immutable half -- so that Phase 34's own bump (D33-06) appends against a known base
-    rather than against a column set whose order was never written down.
+    The index is asserted, not merely the membership. Phase 34 (Plan 34-01 Task 2, D33-06)
+    appended 11 stamps after ``decided_at_utc`` in the immutable half (34 columns) and the FILL
+    and CLOSING classes after the 6 grading columns, so the column is no longer the last of the
+    immutable half; what is pinned is the position the ruling gave it.
+
+    Was (Phase 33, OWNER RULING 2026-09-12): 23 immutable + 6 grading = 29, with
+    ``decided_at_utc`` the LAST position of the immutable half, so that Phase 34's own bump would
+    append against a known base rather than a column set whose order was never written down.
     """
     # The Phase-33 witness values are history and stay pinned as recorded.
     assert BET_LIST_COLUMN_COUNT_BEFORE == 28
@@ -219,15 +222,16 @@ def test_the_locked_order_is_twenty_nine_with_decided_at_last_in_the_immutable_h
     )
 
 
-def test_all_three_ddl_sites_build_the_same_twenty_nine_columns_in_the_same_order() -> (
-    None
-):
+def test_all_three_ddl_sites_build_the_same_51_columns_in_the_same_order() -> None:
     """T-33-24: the standalone CREATE and the ``CACHE_SCHEMA`` copy cannot drift apart.
 
     Both are BUILT and read back through ``PRAGMA table_info`` rather than compared as text, so a
-    site that formats its DDL differently but produces the same table still passes and a site that
-    produces a 28-column table fails. The two ``conn.execute(BET_LIST_SCHEMA)`` call sites share
-    one constant, so the constant is the thing under test for both of them.
+    site that formats its DDL differently but produces the same table still passes, and a site
+    whose table is not exactly ``BET_LIST_COLUMNS`` (51 columns since Phase 34) fails. The two
+    ``conn.execute(BET_LIST_SCHEMA)`` call sites share one constant, so the constant is the thing
+    under test for both of them.
+
+    Was (Phase 33): 29 columns, so the example failure was a 28-column table.
     """
     standalone = _ddl_columns(BET_LIST_SCHEMA)
     embedded = _ddl_columns(_cache_schema_bet_list_statement())
