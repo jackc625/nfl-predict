@@ -201,6 +201,13 @@ def _ledger_cutover_off_unless_a_test_turns_it_on(monkeypatch):
     The committed switch is ON since Plan 34-19's cutover. The suite was written against the
     OFF default, and every test that exercises the ledger path already sets the switch with
     ``monkeypatch`` -- so the production value never decides which path a test runs.
+
+    This pin hides the COMMITTED value from every test, so a revert of the constant to OFF would
+    pass unnoticed here. ``tests/unit/test_ledger_declarations.py::test_cutover_committed_on``
+    reads the committed source by AST instead, and fails on such a revert (34-REVIEW WR-15).
+
+    Function-scoped: module- and session-scoped fixtures run before it and see the production
+    value.
     """
     from forward_ledger import cutover
 

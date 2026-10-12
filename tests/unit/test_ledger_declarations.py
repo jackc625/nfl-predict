@@ -14,6 +14,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import ast
 import sys
 import types
 from pathlib import Path
@@ -139,11 +140,46 @@ def test_bootstrap_weeks() -> None:
     assert BOOTSTRAP_REGIME_WEEKS == (2, 3, 4)
 
 
+def _committed_switch_values(source: str) -> list[object]:
+    """The value of every module-level binding of the switch in *source*, read by AST.
+
+    By AST rather than by substring (34-REVIEW WR-15): a substring check passes when the ``True``
+    line survives only in a comment or docstring, or when a later line rebinds the name to
+    ``False``. A non-literal value is returned as its AST node, so it can never equal ``True``.
+    """
+    values: list[object] = []
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign):
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(
+            isinstance(target, ast.Name) and target.id == "FORWARD_ROWS_GO_TO_LEDGER"
+            for target in targets
+        ):
+            values.append(value.value if isinstance(value, ast.Constant) else value)
+    return values
+
+
 def test_cutover_committed_on(monkeypatch: pytest.MonkeyPatch) -> None:
     # Was: the committed default was OFF; Plan 34-19 flipped it in commit 300e44e. Read the
     # committed source, since tests/conftest.py pins the in-memory switch OFF for every test.
     source = Path(cutover.__file__).read_text(encoding="utf-8")
-    assert "FORWARD_ROWS_GO_TO_LEDGER: bool = True" in source
+    assert _committed_switch_values(source) == [True], (
+        "forward_ledger/cutover.py must bind FORWARD_ROWS_GO_TO_LEDGER exactly once, to the "
+        "literal True; forward rows would otherwise stop reaching the ledger silently"
+    )
+    # Negative control: the True line kept only in a comment, or rebound later, is caught.
+    reverted = (
+        "# FORWARD_ROWS_GO_TO_LEDGER: bool = True\nFORWARD_ROWS_GO_TO_LEDGER = False\n"
+    )
+    assert _committed_switch_values(reverted) == [False]
+    rebound = (
+        "FORWARD_ROWS_GO_TO_LEDGER: bool = True\nFORWARD_ROWS_GO_TO_LEDGER = False\n"
+    )
+    assert _committed_switch_values(rebound) == [True, False]
     # The accessor reads the module constant at call time, so the ONE flip is the constant.
     monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", True)
     assert cutover.forward_rows_go_to_ledger() is True
