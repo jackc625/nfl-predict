@@ -54,6 +54,10 @@ from tests.unit.test_forward_ledger_store import key_of, make_row
 from tests.unit.test_ledger_anchor import git_out, make_bare, make_repo
 from tests.unit.test_ledger_settle import games_frame
 
+# Real git here runs over tmp_path repositories only, isolated from inherited GIT_* variables and
+# the global/system config (34-REVIEW WR-32; tests/conftest.py::isolated_git_env).
+pytestmark = pytest.mark.usefixtures("isolated_git_env")
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 GRADED_AT = "2026-10-19T21:00:00+00:00"

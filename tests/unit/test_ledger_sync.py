@@ -47,6 +47,10 @@ from tests.unit.test_ledger_anchor import (
     ref_sha,
 )
 
+# Real git here runs over tmp_path repositories only, isolated from inherited GIT_* variables and
+# the global/system config (34-REVIEW WR-32; tests/conftest.py::isolated_git_env).
+pytestmark = pytest.mark.usefixtures("isolated_git_env")
+
 NOW = datetime(2026, 10, 15, 1, 0, tzinfo=UTC)
 SYNC_EVENTS = (
     "anchor_commit",

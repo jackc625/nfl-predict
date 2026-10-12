@@ -31,6 +31,10 @@ from scripts import record_fill, sync_ledger
 from tests.unit.test_forward_ledger_store import make_row
 from tests.unit.test_ledger_anchor import make_repo
 
+# Real git here runs over tmp_path repositories only, isolated from inherited GIT_* variables and
+# the global/system config (34-REVIEW WR-32; tests/conftest.py::isolated_git_env).
+pytestmark = pytest.mark.usefixtures("isolated_git_env")
+
 ROW = make_row()
 KEY_ARGS = [
     "--game-id",

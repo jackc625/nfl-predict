@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from forward_ledger.backup import commit_backup, ensure_backup_repo, push_backup
 from forward_ledger.remote_config import BACKUP_PUSHED_REF, BACKUP_REPO_SLUG
 from forward_ledger.store import (
@@ -34,6 +36,10 @@ from tests.unit.test_ledger_anchor import (
     make_bare,
     ref_sha,
 )
+
+# Real git here runs over tmp_path repositories only, isolated from inherited GIT_* variables and
+# the global/system config (34-REVIEW WR-32; tests/conftest.py::isolated_git_env).
+pytestmark = pytest.mark.usefixtures("isolated_git_env")
 
 
 def _ledger_with_rows(tmp_path: Path) -> Path:

@@ -402,6 +402,36 @@ def _no_real_ledger_side_effects(request, monkeypatch, _ledger_run_log_quarantin
     monkeypatch.setattr(ProductionSink, "authorize", _authorize)
 
 
+# 34-REVIEW WR-32: the ledger's real-git tests run ``git`` directly over tmp_path repositories.
+# Inherited ``GIT_DIR`` / ``GIT_WORK_TREE`` / ``GIT_INDEX_FILE`` (a run from inside a git hook, or
+# a shell that exported them) would point that git at THIS repository instead, and the owner's
+# global or system config (``commit.gpgsign``, ``core.hooksPath``, ``init.templateDir``,
+# ``core.autocrlf``) would change what it does. Identity variables are kept; the ledger code sets
+# its own identity anyway (``forward_ledger.transport``).
+_GIT_IDENTITY_ENV: frozenset[str] = frozenset(
+    {"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"}
+)
+
+
+def isolate_git_env(monkeypatch, config_dir: Path) -> None:
+    """Drop every inherited ``GIT_*`` variable except identity, and every config layer above the
+    repository's own: ``GIT_CONFIG_GLOBAL`` is an empty file, ``GIT_CONFIG_NOSYSTEM=1``. A test
+    that depends on a setting (``core.autocrlf=true``) passes it explicitly with ``-c``."""
+    for name in list(os.environ):
+        if name.startswith("GIT_") and name not in _GIT_IDENTITY_ENV:
+            monkeypatch.delenv(name)
+    empty_global = config_dir / "empty_global.gitconfig"
+    empty_global.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_global))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture
+def isolated_git_env(monkeypatch, tmp_path_factory) -> None:
+    """WR-32: real git in this test sees only its own repositories and config (``usefixtures``)."""
+    isolate_git_env(monkeypatch, tmp_path_factory.mktemp("git_config"))
+
+
 # ---------------------------------------------------------------------------
 # Plan 33-01 / COLD-05: the production stores are guarded BY DEFAULT
 # ---------------------------------------------------------------------------

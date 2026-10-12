@@ -19,6 +19,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -42,6 +43,11 @@ from forward_ledger.remote_config import (
     RemoteSpec,
 )
 from forward_ledger.transport import MissingDeployKeyError, git_push_env, run_git
+from tests.conftest import isolate_git_env
+
+# Real git here runs over tmp_path repositories only, isolated from inherited GIT_* variables and
+# the global/system config (34-REVIEW WR-32; tests/conftest.py::isolated_git_env).
+pytestmark = pytest.mark.usefixtures("isolated_git_env")
 
 HEAD_ONE = "1" * 64
 HEAD_TWO = "abcdef0123456789" * 4
@@ -90,6 +96,31 @@ def make_repo(path: Path) -> Path:
 def make_bare(path: Path) -> Path:
     git_out(path.parent, "init", "--bare", path.name)
     return path
+
+
+def test_real_git_ignores_an_inherited_git_dir_and_global_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WR-32: the isolation every real-git module here runs under, and the hazard it closes."""
+    decoy = make_repo(tmp_path / "decoy")
+    decoy_head = git_out(decoy, "rev-parse", "HEAD")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    # The hazard is real: with GIT_DIR exported, git run in `target` acts on another repository.
+    monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+    hijacked = git_out(target, "rev-parse", "--absolute-git-dir")
+    assert Path(hijacked).resolve() == (decoy / ".git").resolve()
+
+    # The isolation drops it, and every config layer above the repository's own.
+    isolate_git_env(monkeypatch, tmp_path)
+    assert "GIT_DIR" not in os.environ
+    fresh = make_repo(tmp_path / "fresh")
+    own = git_out(fresh, "rev-parse", "--absolute-git-dir")
+    assert Path(own).resolve() == (fresh / ".git").resolve()
+    assert git_out(decoy, "rev-parse", "HEAD") == decoy_head
+    assert git(fresh, "config", "--get", "core.autocrlf").returncode != 0
+    assert git(fresh, "config", "--get", "user.name").returncode != 0
 
 
 def fake_spec(tmp_path: Path, url: str) -> RemoteSpec:
