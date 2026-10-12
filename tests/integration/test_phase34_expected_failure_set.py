@@ -1,0 +1,229 @@
+"""The Phase-34 expected failure set, as MEASURED and recorded, still holds (34-REVIEW WR-24).
+
+``tests.phase34_state.P34_EXPECTED_FAILURE_BASELINE`` enumerates, by node id, the failures the
+phase EXPECTS. 34-VALIDATION.md says that set is "asserted unchanged"; until this module, nothing
+read it. This module reads it and never edits it: the baseline is a committed record under its
+module's append protocol, and a re-measurement is a new slot written by a plan, not by a test.
+
+WHAT IS ASSERTED, HALF BY HALF
+------------------------------
+* The tripwires. The baseline does not re-list them; it names their one home,
+  ``tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS``, and records that all of them failed when
+  measured. That pointer must still resolve to a set of the recorded size. Whether they are STILL
+  red is already enforced, by running them, in
+  ``tests/integration/test_phase33_expected_failure_set.py``; that this gate exists is asserted
+  here, so the tripwires are not run twice.
+* The xfail quarantines. Every recorded node id still collects, and its function still carries
+  ``pytest.mark.xfail(strict=True)``. In the other direction, no xfail exists anywhere under
+  ``tests/`` outside the recorded set. A quarantine therefore cannot be erased by deleting the
+  test or un-marking it, and a new one cannot appear unrecorded.
+
+THE FIGURE IS NINE, NOT SEVEN. Older records (and CLAUDE.md) quote "7 xfailed" as the standing
+quarantine. The baseline MEASURED nine strict xfails in these two modules and recorded nine; this
+gate holds the measured, committed figure. Making the count agree with the older "7" would mean
+deleting two quarantines, which is the failure mode the baseline exists to prevent.
+
+The data-dependent nodes are checked for collectability only: their recorded outcomes ("passed")
+depend on the wall clock and the live stores, as the baseline itself says.
+
+TEST CLASS: integration. It collects the recorded nodes in a subprocess (no test is run) and reads
+source by AST. It writes nothing.
+
+ASCII only, no emoji (CLAUDE.md hard constraint).
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from tests.phase34_state import P34_EXPECTED_FAILURE_BASELINE
+
+pytestmark = pytest.mark.integration
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TESTS_ROOT = REPO_ROOT / "tests"
+PHASE33_GATE = TESTS_ROOT / "integration" / "test_phase33_expected_failure_set.py"
+PHASE33_GATE_TEST = "test_the_measured_failing_set_equals_the_tripwire_constant"
+
+_BASELINE: dict[str, Any] = dict(P34_EXPECTED_FAILURE_BASELINE)
+_QUARANTINES: tuple[str, ...] = tuple(_BASELINE["xfail_quarantines"])
+_DATA_DEPENDENT: tuple[str, ...] = tuple(
+    node_id for node_id, _outcome in _BASELINE["data_dependent_reds"]
+)
+
+
+def _site(node_id: str) -> tuple[str, str]:
+    """``(file, Class::function)`` of a node id, with any parametrize id stripped."""
+    path, _sep, rest = node_id.partition("::")
+    return path, rest.split("[", 1)[0]
+
+
+def _is_xfail_mark(node: ast.AST) -> bool:
+    """``pytest.mark.xfail`` (bare or called) or a runtime ``pytest.xfail``."""
+    if not (isinstance(node, ast.Attribute) and node.attr == "xfail"):
+        return False
+    owner = node.value
+    if isinstance(owner, ast.Name):
+        return owner.id == "pytest"
+    return (
+        isinstance(owner, ast.Attribute)
+        and owner.attr == "mark"
+        and isinstance(owner.value, ast.Name)
+        and owner.value.id == "pytest"
+    )
+
+
+def _definitions(tree: ast.AST) -> list[tuple[int, int, str, ast.AST]]:
+    """``(first line, last line, Class::function, node)`` of every def and class, decorators in."""
+    found: list[tuple[int, int, str, ast.AST]] = []
+
+    def visit(node: ast.AST, prefix: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                name = (*prefix, child.name)
+                starts = [child.lineno, *(dec.lineno for dec in child.decorator_list)]
+                end = child.end_lineno or child.lineno
+                found.append((min(starts), end, "::".join(name), child))
+                visit(child, name)
+
+    visit(tree, ())
+    return found
+
+
+def _xfail_sites(path: Path) -> set[str]:
+    """The innermost def or class enclosing every xfail mark in *path* (``<module>`` if none)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    definitions = _definitions(tree)
+    sites: set[str] = set()
+    for node in ast.walk(tree):
+        if not _is_xfail_mark(node):
+            continue
+        line = getattr(node, "lineno", 0)
+        enclosing = [
+            (end - start, name)
+            for start, end, name, _def in definitions
+            if start <= line <= end
+        ]
+        sites.add(min(enclosing)[1] if enclosing else "<module>")
+    return sites
+
+
+def _strict_xfail(definition: ast.AST) -> bool:
+    """Whether *definition* is decorated ``pytest.mark.xfail(..., strict=True, ...)``."""
+    for decorator in getattr(definition, "decorator_list", ()):
+        if isinstance(decorator, ast.Call) and _is_xfail_mark(decorator.func):
+            for keyword in decorator.keywords:
+                if (
+                    keyword.arg == "strict"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True
+                ):
+                    return True
+    return False
+
+
+def test_the_baseline_is_the_measured_record() -> None:
+    """Anti-vacuity: every check below runs over these values, so they are pinned as recorded."""
+    assert _BASELINE["head"] == "c75119420f30a38592c59343a32abd02b398c3b5"
+    assert len(_QUARANTINES) == len(set(_QUARANTINES)) == 9
+    assert len(_DATA_DEPENDENT) == 4
+
+
+def test_the_tripwire_half_resolves_to_the_one_constant_and_its_gate() -> None:
+    tripwires = _BASELINE["tripwires"]
+    module_name, _sep, attribute = str(tripwires["source"]).rpartition(".")
+    constant = getattr(importlib.import_module(module_name), attribute)
+    assert len(constant) == len(set(constant)) == tripwires["measured_failed"] == 5, (
+        f"{tripwires['source']} holds {len(constant)} tripwires; the baseline recorded "
+        f"{tripwires['measured_failed']} failing. A tripwire dropped from the constant is a "
+        "disclosure erased from the record."
+    )
+    gate = ast.parse(PHASE33_GATE.read_text(encoding="utf-8"))
+    names = {node.name for node in gate.body if isinstance(node, ast.FunctionDef)}
+    assert PHASE33_GATE_TEST in names, (
+        f"{PHASE33_GATE.name} no longer defines {PHASE33_GATE_TEST}; nothing would then run the "
+        "tripwires to prove they are still red"
+    )
+
+
+def test_every_recorded_quarantine_is_still_a_strict_xfail() -> None:
+    for node_id in _QUARANTINES:
+        path, qualname = _site(node_id)
+        tree = ast.parse((REPO_ROOT / path).read_text(encoding="utf-8"))
+        matches = [
+            node for _start, _end, name, node in _definitions(tree) if name == qualname
+        ]
+        assert matches, f"QUARANTINE ERASED: {node_id} no longer exists"
+        assert _strict_xfail(matches[0]), (
+            f"QUARANTINE ERASED: {node_id} is no longer marked xfail(strict=True)"
+        )
+
+
+def test_no_xfail_exists_outside_the_recorded_set(tmp_path: Path) -> None:
+    # Control first: the scan sees each form a quarantine can take, attributed to its owner.
+    sample = tmp_path / "test_sample.py"
+    sample.write_text(
+        "import pytest\n"
+        "pytestmark = pytest.mark.xfail\n"
+        "class TestA:\n"
+        "    @pytest.mark.xfail(strict=True, reason='r')\n"
+        "    def test_marked(self):\n"
+        "        pass\n"
+        "def test_runtime():\n"
+        "    pytest.xfail('r')\n"
+        "def test_clean():\n"
+        "    assert 'pytest.mark.xfail'\n",
+        encoding="utf-8",
+    )
+    assert _xfail_sites(sample) == {"<module>", "TestA::test_marked", "test_runtime"}
+
+    recorded = {_site(node_id) for node_id in _QUARANTINES}
+    found = {
+        (path.relative_to(REPO_ROOT).as_posix(), site)
+        for path in sorted(TESTS_ROOT.rglob("*.py"))
+        if "__pycache__" not in path.parts
+        for site in _xfail_sites(path)
+    }
+    assert found - recorded == set(), (
+        "UNRECORDED QUARANTINE: an xfail exists that P34_EXPECTED_FAILURE_BASELINE does not "
+        f"enumerate: {sorted(found - recorded)}. Record it in a new tests/phase34_state.py slot."
+    )
+    assert recorded - found == set(), (
+        f"QUARANTINE ERASED: no xfail mark remains at {sorted(recorded - found)}"
+    )
+
+
+def test_every_recorded_node_id_still_collects() -> None:
+    """Collection catches renames and lost parametrize ids; no recorded node is RUN here."""
+    node_ids = [*_QUARANTINES, *_DATA_DEPENDENT]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-o",
+            "addopts=",
+            "-q",
+            "--collect-only",
+            *node_ids,
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    output = (result.stdout + result.stderr).replace("\\", "/")
+    assert result.returncode == 0, output
+    for node_id in node_ids:
+        assert node_id in output, (
+            f"recorded node id no longer collects: {node_id}. It was renamed, moved or lost "
+            f"its parametrize id; re-record it in a new slot, never drop it.\n\n{output}"
+        )
