@@ -318,6 +318,42 @@ def test_push_to_local_bare_remote(tmp_path: Path) -> None:
     assert read_remote_anchor(repo, url=remote.as_posix()) == (HEAD_ONE, 3)
 
 
+class _GuardRefused(Exception):
+    """The sentinel a stand-in refspec guard raises."""
+
+
+def test_push_anchor_runs_the_refspec_guard_on_its_exact_push_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WR-35: the guard tests above call ``_assert_anchor_refspec`` directly; this proves the push
+    path calls it, with the very argv it then hands to git, and that a refusal stops the push."""
+    repo = make_repo(tmp_path / "public")
+    remote = make_bare(tmp_path / "remote.git")
+    write_anchor_commit(repo, HEAD_ONE, 3)
+    spec = fake_spec(tmp_path, remote.as_posix())
+    checked: list[list[str]] = []
+    real_guard = anchor._assert_anchor_refspec
+
+    def _spy(arguments: Sequence[str]) -> None:
+        checked.append(list(arguments))
+        real_guard(arguments)
+
+    monkeypatch.setattr(anchor, "_assert_anchor_refspec", _spy)
+    spy = SpyRunner()
+    assert push_anchor(repo, spec=spec, runner=spy).ok
+    (pushed,) = [call for call in spy.calls if call[0] == "push"]
+    assert checked == [pushed]
+
+    def _refuse(arguments: Sequence[str]) -> None:
+        raise _GuardRefused(list(arguments))
+
+    monkeypatch.setattr(anchor, "_assert_anchor_refspec", _refuse)
+    refused_spy = SpyRunner()
+    with pytest.raises(_GuardRefused):
+        push_anchor(repo, spec=spec, runner=refused_spy)
+    assert [call for call in refused_spy.calls if call[0] == "push"] == []
+
+
 def test_transport_env_pins_the_deploy_key(tmp_path: Path) -> None:
     spec = fake_spec(tmp_path, "git@github.com:owner/repo.git")
     base = {"PATH": "x", "GIT_SSH": "plink.exe", "SSH_AUTH_SOCK": "agent.sock"}

@@ -338,6 +338,48 @@ def test_run_writes_result_json(fake: FakeRunner, paths: smoke.SmokePaths) -> No
     )
 
 
+def test_run_checks_the_exact_anchor_push_argv_and_a_refusal_stops_it(
+    fake: FakeRunner, paths: smoke.SmokePaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WR-35: ``--run`` calls ``check_smoke_push_args`` on the very argv it pushes, and when the
+    guard refuses, no anchor push reaches the runner (the refusal is recorded, never raised)."""
+    _good_run_world(fake, paths)
+    checked: list[list[str]] = []
+    real_guard = smoke.check_smoke_push_args
+
+    def _spy(push_args: Sequence[str]) -> None:
+        checked.append(list(push_args))
+        real_guard(push_args)
+
+    monkeypatch.setattr(smoke, "check_smoke_push_args", _spy)
+    assert smoke.main(["--run"], paths=paths) == 0
+    anchor_pushes = [
+        argv
+        for argv in fake.argvs()
+        if argv[:2] == ["git", "push"] and ANCHOR_REMOTE_URL in argv
+    ]
+    assert len(anchor_pushes) == 1
+    assert checked == [anchor_pushes[0][1:]]
+
+    refused_world = FakeRunner()
+    monkeypatch.setattr(smoke, "RUNNER", refused_world)
+    _good_run_world(refused_world, paths)
+
+    def _refuse(push_args: Sequence[str]) -> None:
+        raise RuntimeError(f"sentinel refspec refusal: {list(push_args)}")
+
+    monkeypatch.setattr(smoke, "check_smoke_push_args", _refuse)
+    assert smoke.main(["--run"], paths=paths) == 0
+    assert not [
+        argv
+        for argv in refused_world.argvs()
+        if argv[:2] == ["git", "push"] and ANCHOR_REMOTE_URL in argv
+    ]
+    result = json.loads(paths.result_path.read_text(encoding="ascii"))
+    assert result["anchor_push"]["ok"] is False
+    assert "sentinel refspec refusal" in result["errors"]["anchor_push"]
+
+
 def test_run_never_raises_and_records_each_failure(
     fake: FakeRunner, paths: smoke.SmokePaths
 ) -> None:
