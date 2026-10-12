@@ -37,7 +37,10 @@ migrated rows included) from the silver scores through the one re-grade path
 (``forward_ledger.settle.regrade_row`` -- no second grader) and compares it with the outcome IN
 FORCE (the latest correction entry, else the row's own grade; D-05/D-06). A difference, a terminal
 row whose game has no recorded score, or a store that cannot be read while terminal rows exist is a
-failure naming the row. Fill and closing columns are never checked (D-19). Nothing is repaired: a
+failure naming the row. The compared fields are ``grading_status``, ``outcome``, ``payout_flat`` and
+``realized_units``. The grading half's ``clv`` is the decision-time CLV, which the grader carries
+through unchanged rather than deriving from the score, so -- like the fill and closing columns --
+it is outside the D-19 check (D-19; 34-REVIEW WR-04). Nothing is repaired: a
 mismatch with no correction entry means a score changed without its owed correction or a stored
 grade was edited, and both are the owner's to look at.
 
@@ -427,6 +430,13 @@ def _same_value(stored: Any, regraded: Any) -> bool:
     return abs(float(stored) - float(regraded)) <= REGRADE_TOLERANCE
 
 
+def _same_outcome(stored: Any, regraded: Any) -> bool:
+    """Equal outcomes: None only equals None, and a stored outcome must be a real bool."""
+    if stored is None or regraded is None:
+        return stored is None and regraded is None
+    return type(stored) is bool and stored == bool(regraded)
+
+
 def _value_mismatches(
     seq: int, key: tuple[Any, ...], in_force: InForce, regraded: Mapping[str, Any]
 ) -> list[RegradeMismatch]:
@@ -442,6 +452,12 @@ def _value_mismatches(
                 in_force.grading_status,
                 regraded["grading_status"],
                 reason,
+            )
+        )
+    if not _same_outcome(in_force.outcome, regraded["outcome"]):
+        mismatches.append(
+            RegradeMismatch(
+                seq, key, "outcome", in_force.outcome, regraded["outcome"], reason
             )
         )
     for field in ("payout_flat", "realized_units"):
