@@ -384,6 +384,28 @@ def test_finish_completes_interrupted_rewrite(stores: tuple[Path, Path]) -> None
     assert _sha(ledger_path(ledger_dir)) == ledger_sha
 
 
+def test_finish_refuses_an_empty_ledger(stores: tuple[Path, Path]) -> None:
+    """WR-36: ``--finish`` rewrites the outputs to replay rows only, so against an empty ledger it
+    would delete every 2026 forward row from the only store still holding them. Refused by name,
+    with every outputs file byte-identical and no migration event logged."""
+    output_dir, ledger_dir = stores
+    before = {
+        path.name: _sha(path) for path in sorted(output_dir.iterdir()) if path.is_file()
+    }
+    assert before, "the fixture wrote no outputs, so nothing was protected"
+    log = _Log()
+
+    with pytest.raises(MigrationMismatchError, match="empty"):
+        migrate_forward_rows(output_dir, ledger_dir, finish=True, log=log)
+
+    after = {
+        path.name: _sha(path) for path in sorted(output_dir.iterdir()) if path.is_file()
+    }
+    assert after == before
+    assert log.events == []
+    assert not ledger_path(ledger_dir).exists()
+
+
 def test_finish_refuses_a_ledger_that_differs(tmp_path: Path) -> None:
     output_dir, ledger_dir = tmp_path / "outputs", tmp_path / "ledger"
     _write_fixture(output_dir)
