@@ -30,6 +30,11 @@ so the three halves land together or not at all (34-RESEARCH Q2, Pitfall 11).
 Every event goes through ``forward_ledger.run_log.record_event`` (or an injected ``log``), so each
 carries the daily run's bound ``run_id``.
 
+NEVER ONTO A LEDGER SHORTER THAN ITS ANCHOR (34-REVIEW CR-01): when the caller names the repository
+carrying ``ledger-anchor`` (``repo_dir``; the daily run passes its working directory), the record and
+settle writes are refused unless the store still extends the anchored head. An absent, emptied or
+shortened store is then a named refusal, never a fresh genesis-rooted ledger.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -45,6 +50,7 @@ import pandas as pd
 
 from backtest.weekly_bet_list import build_weekly_decision_bundle
 from data.upstream_live import load_live_manifest
+from forward_ledger.anchor import read_local_anchor
 from forward_ledger.artifacts_copy import (
     ensure_artifact_copies,
     ensure_recipe_record_copy,
@@ -74,6 +80,7 @@ from forward_ledger.store import (
     LEDGER_SEASON,
     LedgerEntry,
     MissingStampError,
+    assert_extends_anchor,
     classify_incoming,
     commit_changes,
     read_entries,
@@ -179,6 +186,18 @@ def _key_text(key: Sequence[Any]) -> str:
     return " ".join(str(value) for value in key)
 
 
+def _anchored_head(repo_dir: Path | str | None) -> tuple[str, int] | None:
+    """The local ``ledger-anchor`` head, or None when no repository is named or no anchor exists.
+
+    Raises:
+        forward_ledger.anchor.AnchorFormatError, forward_ledger.transport.GitCommandError: the
+            anchor exists but cannot be read -- a write is refused rather than made unchecked.
+    """
+    if repo_dir is None:
+        return None
+    return read_local_anchor(Path(repo_dir))
+
+
 def record_forward_slate(
     slate: DailySlate,
     *,
@@ -192,6 +211,7 @@ def record_forward_slate(
     manifest_dir: Path | str | None = None,
     bundle_builder: Callable[..., Any] = build_weekly_decision_bundle,
     log: LogCallable | None = None,
+    repo_dir: Path | str | None = None,
 ) -> RecordOutcome:
     """Decide the slate's week and write its new forward rows to the ledger, first pick standing.
 
@@ -206,6 +226,9 @@ def record_forward_slate(
         manifest_dir: The live-manifest directory (``config/upstream_live`` when None).
         bundle_builder: The decision seam (``build_weekly_decision_bundle``).
         log: ``(event, **fields)``; ``forward_ledger.run_log.record_event`` when None.
+        repo_dir: The repository carrying ``ledger-anchor``; when given, the write is refused
+            unless the store extends the anchored head. None checks no anchor (a ``tmp_path``
+            ledger in a test).
 
     Returns:
         What was decided, appended, skipped and refused.
@@ -279,7 +302,10 @@ def record_forward_slate(
     ensure_artifact_copies(ledger, bundle.resolved, Path(artifacts_dir))
     ensure_recipe_record_copy(ledger, bundle.chain_fit_path)
     result = commit_changes(
-        ledger, new_rows=list(classification.new), publish_by=publish_by
+        ledger,
+        new_rows=list(classification.new),
+        publish_by=publish_by,
+        anchored_head=_anchored_head(repo_dir),
     )
     if result.wrote:
         emit(
@@ -312,6 +338,7 @@ def settle_ledger(
     manifest_dir: Path | str | None = None,
     strategies: Mapping[str, Any] | None = None,
     log: LogCallable | None = None,
+    repo_dir: Path | str | None = None,
 ) -> SettleOutcome:
     """Grade, correct and finalize the ledger from refreshed silver data, in ONE atomic write.
 
@@ -323,6 +350,8 @@ def settle_ledger(
         strategies: ``target -> strategy``; the live registry
             (``forward_ledger.settle.live_strategies``) when None.
         log: ``(event, **fields)``; ``forward_ledger.run_log.record_event`` when None.
+        repo_dir: The repository carrying ``ledger-anchor``; when given, a store that does not
+            extend the anchored head (absent and emptied included) is refused by name.
 
     Returns:
         What changed. ``changed`` is False -- and the file untouched -- when nothing was owed.
@@ -334,6 +363,8 @@ def settle_ledger(
     emit = log or record_event
     ledger = Path(ledger_dir)
     entries = read_entries(ledger)
+    anchored = _anchored_head(repo_dir)
+    assert_extends_anchor(entries, anchored)
     if not entries:
         return SettleOutcome(False, 0, 0, 0, 0)
 
@@ -367,6 +398,7 @@ def settle_ledger(
         grading_updates=grading,
         new_corrections=corrections.payloads,
         closing_updates=closing,
+        anchored_head=anchored,
     )
     if result.wrote:
         emit(

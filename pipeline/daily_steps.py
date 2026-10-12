@@ -592,8 +592,10 @@ def recommend_slate(slate: DailySlate) -> None:
     (``forward_ledger.cutover.forward_rows_go_to_ledger``) decides. OFF -- until Plan 34-19 --
     the old writer ``generate_weekly_bet_list`` runs exactly as before. ON, the rows go to the
     forward ledger through ``forward_ledger.runner.record_forward_slate`` with the same decision
-    instant, exclusions and deadline, and never to ``outputs/bet_list``. Both branches share the
-    late-publish refusal below.
+    instant, exclusions and deadline, and never to ``outputs/bet_list``; the working directory is
+    named as the repository carrying ``ledger-anchor``, so a store shorter than its anchor is
+    refused rather than restarted (34-REVIEW CR-01). Both branches share the late-publish refusal
+    below.
     """
     from backtest.weekly_bet_list import (
         PublishDeadlinePassedError,
@@ -620,6 +622,7 @@ def recommend_slate(slate: DailySlate) -> None:
                 decided_at=decided_at,
                 excluded_game_ids=live_skip.excluded_games() | outside_slate,
                 publish_by=slate.lock if in_scope else None,
+                repo_dir=Path(),
             )
         else:
             generate_weekly_bet_list(

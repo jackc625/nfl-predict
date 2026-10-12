@@ -987,7 +987,8 @@ def test_recommend_switch_on_uses_runner(monkeypatch, tmp_path):
 
     ((slate_arg, kwargs),) = calls
     assert slate_arg is slate
-    assert set(kwargs) == {"decided_at", "excluded_game_ids", "publish_by"}
+    assert set(kwargs) == {"decided_at", "excluded_game_ids", "publish_by", "repo_dir"}
+    assert kwargs["repo_dir"] == Path()
     assert kwargs["decided_at"].tzinfo is not None
     assert kwargs["excluded_game_ids"] == frozenset({outside})
     assert kwargs["publish_by"] == slate.lock

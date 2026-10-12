@@ -4,7 +4,8 @@ WHY AN ANCHOR
 -------------
 A hash chain detects an edited or reordered entry, but not a truncated tail: a ledger with its last
 k entries removed still verifies. The head committed somewhere the laptop cannot rewrite -- a
-branch on GitHub -- is what makes truncation detectable (the verify CLI compares the two).
+branch on GitHub -- is what makes truncation detectable (the verify CLI compares the two, and
+walks the branch's whole history, so an anchor later moved onto a shorter ledger is still caught).
 
 WHAT THE ANCHOR IS (D-12)
 -------------------------
@@ -77,6 +78,7 @@ __all__ = [
     "RemoteAnchorUnreachableError",
     "anchor_content",
     "push_anchor",
+    "read_anchor_history",
     "read_local_anchor",
     "read_remote_anchor",
     "write_anchor_commit",
@@ -216,6 +218,26 @@ def _read_anchor_at(repo: Path, ref: str, runner: GitRunner) -> tuple[str, int]:
         msg = f"the ANCHOR file at {ref} is not exactly 'head_hash=<64 hex>' and 'row_count=<int>'"
         raise AnchorFormatError(msg)
     return match.group(1).decode("ascii"), int(match.group(2))
+
+
+def read_anchor_history(
+    repo_dir: Path, ref: str = ANCHOR_REF, *, runner: GitRunner = run_git
+) -> list[tuple[str, tuple[str, int]]]:
+    """Every anchor commit reachable from *ref*, newest first, as ``(sha, (head hash, row count))``.
+
+    The published history only grows (D-12: no force-push, no deletion), so an EARLIER anchor with
+    more rows than the ledger holds is evidence of truncation that the tip alone can no longer
+    show. ``[]`` when *ref* does not exist.
+
+    Raises:
+        AnchorFormatError: a commit is not exactly the one two-line ``ANCHOR`` file.
+        GitCommandError: git failed for another reason.
+    """
+    repo = Path(repo_dir)
+    if resolve_ref(repo, ref, runner=runner) is None:
+        return []
+    shas = run_checked(runner, ["rev-list", ref], cwd=repo).split()
+    return [(sha, _read_anchor_at(repo, sha, runner)) for sha in shas]
 
 
 def read_local_anchor(

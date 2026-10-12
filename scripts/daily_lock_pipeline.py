@@ -523,7 +523,7 @@ def _settle_ledger(start: datetime) -> SettleOutcome | None:
     from forward_ledger.run_log import record_event
 
     try:
-        outcome = runner.settle_ledger(now=start)
+        outcome = runner.settle_ledger(now=start, repo_dir=Path())
     except Exception as exc:  # noqa: BLE001 - recorded; the decision run goes on
         reason = f"{type(exc).__name__}: {exc}"
         print(f"LEDGER_SETTLE= failed {reason}")

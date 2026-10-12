@@ -5,6 +5,9 @@ ONE FUNCTION, CALLED AFTER EVERY LEDGER-CHANGING RUN
 :func:`publish_ledger_state` runs after the writer has released the ledger. In order:
 
   1. read the store and verify the chain -- a broken chain is never published (``sync_refused``);
+     nor is a ledger that no longer extends the local anchor's head (a shortened, emptied or
+     deleted store, 34-REVIEW CR-01): the anchor only ever moves forward, and neither an anchor
+     nor a backup commit is made over the shrunken file;
   2. compare the ledger head with the local anchor; when it MOVED (a row or a correction entry)
      write exactly one anchor commit (``anchor_commit``) -- an unmoved head writes none
      (SPEC LDGR-05 empty edge; research Q5);
@@ -38,7 +41,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,7 +58,13 @@ from forward_ledger.remote_config import (
     BACKUP_SPEC,
     RemoteSpec,
 )
-from forward_ledger.store import ledger_head, read_entries, verify_chain
+from forward_ledger.store import (
+    LedgerEntry,
+    anchor_prefix_problem,
+    ledger_head,
+    read_entries,
+    verify_chain,
+)
 from forward_ledger.transport import GitRunner, resolve_ref, run_git
 
 __all__ = ["BACKUP_REPO_MISSING", "SyncOutcome", "publish_ledger_state"]
@@ -108,6 +117,23 @@ class _EventLog:
             self._log(event, **fields, **self._head)
         except Exception:
             logger.exception("the ledger run log refused the %s event", event)
+
+
+def _anchor_regression(
+    entries: Sequence[LedgerEntry], repo_dir: Path, runner: GitRunner
+) -> str | None:
+    """Why the ledger no longer extends the local anchor, or None (no anchor, or it extends).
+
+    An anchor that cannot be read is left to the anchor step, which records the same failure
+    as ``anchor_commit``; the descent check binds whenever the anchor is readable.
+    """
+    try:
+        anchored = read_local_anchor(repo_dir, runner=runner)
+    except Exception:  # noqa: BLE001 - publish_ledger_state never raises
+        return None
+    if anchored is None:
+        return None
+    return anchor_prefix_problem(entries, anchored)
 
 
 def _publish_anchor(
@@ -239,6 +265,15 @@ def publish_ledger_state(
         reason = (
             f"the ledger chain is broken at seq {verdict.first_broken_seq} "
             f"(key {verdict.first_broken_key}): {verdict.reason}"
+        )
+        emit("sync_refused", ok=False, reason=reason)
+        return SyncOutcome(False, False, None, False, False, None, reason)
+
+    regression = _anchor_regression(entries, Path(repo_dir), runner)
+    if regression is not None:
+        reason = (
+            f"the ledger does not extend its anchored head: {regression}; nothing is "
+            "anchored or backed up over it"
         )
         emit("sync_refused", ok=False, reason=reason)
         return SyncOutcome(False, False, None, False, False, None, reason)

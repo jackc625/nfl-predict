@@ -47,6 +47,15 @@ THE ONE WRITE PATH (D-13, Plan 34-04)
      tail chains from the old head -- append-only is checked at write time, not only by verify;
   7. write nothing when nothing changed; otherwise re-check ``publish_by`` against the clock, ask
      the write sink, and replace the file atomically (bounded retry for a reader holding it open).
+     The temp file is flushed and fsynced before the replace, so a power cut cannot publish an
+     empty or partial store.
+
+THE STORE NEVER SHRINKS BELOW ITS ANCHOR (34-REVIEW CR-01)
+---------------------------------------------------------
+The chain alone cannot see a truncated tail; the ``ledger-anchor`` head can. A caller that knows
+the anchored head passes it as ``anchored_head``, and the write is refused unless the stored
+entries still extend it (:func:`assert_extends_anchor`). An absent or emptied store under an
+existing anchor is therefore a refusal, never a fresh genesis.
 
 The migration of the old writer's NULL-stamp rows is NOT this path: it is a separate entry point
 (Plan 34-12), because only it may write a row without stamps.
@@ -59,6 +68,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -140,8 +150,10 @@ __all__ = [
     "LedgerFormatError",
     "LedgerWriterBusyError",
     "MissingStampError",
+    "anchor_prefix_problem",
     "append_rows",
     "apply_updates",
+    "assert_extends_anchor",
     "build_entry",
     "classify_incoming",
     "commit_changes",
@@ -438,8 +450,29 @@ def _serialize(entries: Sequence[LedgerEntry]) -> bytes:
 
 
 def _write_payload(tmp: Path, payload: bytes) -> None:
-    """Write the whole store's bytes to the sibling temp file (bytes, so no CR is ever added)."""
-    tmp.write_bytes(payload)
+    """Write the whole store's bytes to the sibling temp file (bytes, so no CR is ever added).
+
+    Flushed and fsynced before the replace publishes it: without that, a power cut shortly after
+    the rename can leave the store zero-length or stale on NTFS (34-REVIEW WR-02).
+    """
+    with tmp.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Make the rename durable where the platform allows a directory handle (not on Windows)."""
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def _replace_with_retry(path: Path, payload: bytes) -> None:
@@ -456,6 +489,7 @@ def _replace_with_retry(path: Path, payload: bytes) -> None:
                 raise
             time.sleep(_REPLACE_RETRY_SECONDS)
         else:
+            _fsync_directory(path.parent)
             return
 
 
@@ -529,7 +563,8 @@ class LedgerWriterBusyError(Exception):
 
 
 class LedgerChainBrokenError(Exception):
-    """The stored chain does not verify, or the write-time append-only proof failed."""
+    """The stored chain does not verify, does not extend its anchored head, or the write-time
+    append-only proof failed."""
 
 
 class FirstPickStandsError(Exception):
@@ -567,6 +602,46 @@ class MissingStampError(Exception):
 
 class LedgerEntryRefusedError(Exception):
     """A row or correction breaks a ledger rule not covered by a more specific refusal."""
+
+
+def anchor_prefix_problem(
+    entries: Sequence[LedgerEntry], anchored_head: tuple[str, int]
+) -> str | None:
+    """Why *entries* do not extend the anchored ``(head hash, row count)``, or None when they do.
+
+    They extend it when the ledger holds at least the anchored row count and its stored chain hash
+    after that many entries IS the anchored hash -- the anchored rows are still a prefix.
+    """
+    anchored_hash, anchored_rows = anchored_head
+    if anchored_rows > len(entries):
+        return f"the ledger holds {len(entries)} entries but its anchor commits {anchored_rows}"
+    head = GENESIS_HASH if anchored_rows == 0 else entries[anchored_rows - 1].chain_hash
+    if head != anchored_hash:
+        return (
+            f"the ledger's hash after {anchored_rows} entries is not the anchored head "
+            f"{anchored_hash}"
+        )
+    return None
+
+
+def assert_extends_anchor(
+    entries: Sequence[LedgerEntry], anchored_head: tuple[str, int] | None
+) -> None:
+    """Refuse a ledger that does not extend its anchored head; None (no anchor) refuses nothing.
+
+    Raises:
+        LedgerChainBrokenError: the anchored rows are no longer a prefix of *entries* -- the store
+            was shortened, emptied or deleted, and is restored from the backup, never restarted.
+    """
+    if anchored_head is None:
+        return
+    problem = anchor_prefix_problem(entries, anchored_head)
+    if problem is not None:
+        msg = (
+            f"{problem}. Nothing is written onto a ledger that does not extend its anchored head; "
+            "restore the store from the private backup (RUNBOOK), never restart it."
+        )
+        raise LedgerChainBrokenError(msg)
 
 
 @dataclass(frozen=True)
@@ -893,6 +968,7 @@ def commit_changes(
     closing_updates: Mapping[tuple[Any, ...], Mapping[str, Any]] | None = None,
     publish_by: datetime | None = None,
     clock: Callable[[], datetime] | None = None,
+    anchored_head: tuple[str, int] | None = None,
 ) -> CommitResult:
     """Append rows and corrections and apply mutable-half updates, under every D-13 guard.
 
@@ -907,6 +983,8 @@ def commit_changes(
         closing_updates: ``LEDGER_ROW_KEY`` values -> the closing half to set (once).
         publish_by: When given, nothing is written once ``clock()`` is past it.
         clock: The instant source for *publish_by*; ``datetime.now(UTC)`` by default.
+        anchored_head: The local ``ledger-anchor`` head ``(hash, row count)``; when given, the
+            stored entries read under the lock must extend it (:func:`assert_extends_anchor`).
 
     Returns:
         What changed, whether it was written, and the resulting head.
@@ -946,6 +1024,7 @@ def commit_changes(
             },
             publish_by=publish_by,
             clock=clock,
+            anchored_head=anchored_head,
         )
 
 
@@ -957,6 +1036,7 @@ def _commit_under_lock(
     updates: Mapping[str, Mapping[tuple[Any, ...], Mapping[str, Any]]],
     publish_by: datetime | None,
     clock: Callable[[], datetime] | None,
+    anchored_head: tuple[str, int] | None,
 ) -> CommitResult:
     old = read_entries(directory)
     verdict = verify_chain(old)
@@ -967,6 +1047,7 @@ def _commit_under_lock(
             "chain."
         )
         raise LedgerChainBrokenError(msg)
+    assert_extends_anchor(old, anchored_head)
 
     validated = [_validate_new_row(row) for row in new_rows]
     classification = classify_incoming(old, validated)

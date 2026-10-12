@@ -9,12 +9,14 @@ but a ledger with its last k entries removed still verifies. The head committed 
 * the LOCAL anchor is authoritative. Absent while the ledger holds entries, anchoring more rows
   than the ledger holds (a truncated tail), or naming a hash that is not the ledger's hash at its
   row count -- each is a FAILURE. Rows written after the last anchor are only a warning: the next
-  sync anchors them.
+  sync anchors them. The check walks the branch's WHOLE history, not only its tip: every anchor
+  commit ever written must still be a prefix of the ledger, so an anchor later moved onto a
+  shortened ledger cannot hide the longer head it once committed (34-REVIEW CR-01).
 * the REMOTE anchor (the public repository on GitHub, read anonymously) is the copy a local
   attacker cannot rewrite. Unreachable, skipped or behind is a WARNING -- a failed push is
   non-fatal by LDGR-05, so the remote may legitimately lag. A remote that DISAGREES (a row count
   beyond the ledger, or a hash that is not the ledger's at its count) is a FAILURE: that is not
-  lag, it is a different history.
+  lag, it is a different history. The remote branch's history is walked the same way.
 * the private BACKUP (the ``ledger/`` directory's own repository, D-01) is reported by how many
   commits it is ahead of its last successful push and how many files are uncommitted. Backup lag
   is always a warning.
@@ -69,6 +71,7 @@ from backtest.weekly_bet_list import DEFAULT_CHAIN_FIT_PATH, FrozenChainFitError
 from forward_ledger.anchor import (
     AnchorFormatError,
     RemoteAnchorUnreachableError,
+    read_anchor_history,
     read_local_anchor,
     read_remote_anchor,
 )
@@ -85,7 +88,11 @@ from forward_ledger.declarations import (
     resolve_recipe,
     verdict_scope_label,
 )
-from forward_ledger.remote_config import ANCHOR_REMOTE_HTTPS_URL, BACKUP_PUSHED_REF
+from forward_ledger.remote_config import (
+    ANCHOR_REMOTE_HTTPS_URL,
+    BACKUP_PUSHED_REF,
+    REMOTE_ANCHOR_FETCH_REF,
+)
 from forward_ledger.schema import ARM_LIVE, LEDGER_ROW_KEY
 from forward_ledger.settle import (
     DEFAULT_SILVER_DIR,
@@ -98,6 +105,7 @@ from forward_ledger.store import (
     LEDGER_STAMP_COLUMNS,
     ChainVerdict,
     LedgerEntry,
+    anchor_prefix_problem,
     read_entries,
     verify_chain,
 )
@@ -545,6 +553,24 @@ def _regrade_failures(regrade: RegradeCheck) -> list[str]:
     ]
 
 
+def _history_problem(
+    entries: Sequence[LedgerEntry], history: Sequence[tuple[str, tuple[str, int]]]
+) -> str | None:
+    """Why some anchor commit in *history* is not a prefix of *entries*, or None."""
+    count = len(entries)
+    for sha, (anchored_hash, anchored_rows) in history:
+        problem = anchor_prefix_problem(entries, (anchored_hash, anchored_rows))
+        if problem is None:
+            continue
+        if anchored_rows > count:
+            return (
+                f"{TRUNCATED_REASON} (the earlier anchor commit {sha[:12]} commits "
+                f"{anchored_rows} entries, the ledger holds {count})"
+            )
+        return f"the earlier anchor commit {sha[:12]} is not a prefix of the ledger: {problem}"
+    return None
+
+
 def _check_local_anchor(
     entries: Sequence[LedgerEntry], repo_dir: Path, runner: GitRunner
 ) -> AnchorCheck:
@@ -578,6 +604,14 @@ def _check_local_anchor(
             f"{anchored_hash}"
         )
         return AnchorCheck(anchored_rows, anchored_hash, False, reason)
+    try:
+        history = read_anchor_history(repo_dir, runner=runner)
+    except (AnchorFormatError, GitCommandError) as error:
+        reason = f"the local anchor history could not be read: {error}"
+        return AnchorCheck(anchored_rows, anchored_hash, False, reason)
+    problem = _history_problem(entries, history)
+    if problem is not None:
+        return AnchorCheck(anchored_rows, anchored_hash, False, problem)
     return AnchorCheck(anchored_rows, anchored_hash, True, None)
 
 
@@ -613,6 +647,21 @@ def _check_remote(
             f"{remote_rows} entries"
         )
         return RemoteCheck(REMOTE_DISAGREES, remote_rows, remote_hash, None, reason)
+    if not absent:
+        try:
+            history = read_anchor_history(
+                repo_dir, REMOTE_ANCHOR_FETCH_REF, runner=runner
+            )
+        except AnchorFormatError as error:
+            reason = f"the remote anchor history at {url} is malformed: {error}"
+            return RemoteCheck(REMOTE_DISAGREES, remote_rows, remote_hash, None, reason)
+        except GitCommandError as error:
+            reason = f"the fetched remote anchor history could not be read: {error}"
+            return RemoteCheck(REMOTE_UNREACHABLE, None, None, None, reason)
+        problem = _history_problem(entries, history)
+        if problem is not None:
+            reason = f"the remote anchor history disagrees: {problem}"
+            return RemoteCheck(REMOTE_DISAGREES, remote_rows, remote_hash, None, reason)
 
     behind = count - remote_rows
     reason = "the remote ledger-anchor branch does not exist yet" if absent else None
