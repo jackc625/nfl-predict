@@ -718,16 +718,18 @@
   {% endwith %}
 </section>
 {% else %}
-  {# The forward classes in the declared order: the "before counting started" block (kept on the
-     record, never counted) above the verdict record. The verdict section ALWAYS renders with its
+  {# The forward classes: the verdict record FIRST, then the "before counting started" block (kept
+     on the record, never counted) after it, so the counted record is never read below an
+     uncounted one (34-REVIEW WR-11). This departs from the weakest-to-strongest TRACKER_ORDER on
+     purpose; the labels and badges are unchanged. The verdict section ALWAYS renders with its
      own badge (LDGR-08): with no graded verdict bet it names the counting start week instead of
      an empty record. Each block's strip is found by its own class key -- the rows were classified
      at cache build, so nothing is decided here. #}
+  {% set _verdict_block = forward_blocks | selectattr("validation_type", "equalto", "forward_realized") | first | default(none) %}
+  {{ tracker_section("forward", "forward_realized", _verdict_block, _outcomes_by_class.get("forward:forward_realized", [])) }}
   {% for block in forward_blocks if block.validation_type != "forward_realized" %}
     {{ tracker_section("forward", block.validation_type, block, _outcomes_by_class.get("forward:" ~ block.validation_type, [])) }}
   {% endfor %}
-  {% set _verdict_block = forward_blocks | selectattr("validation_type", "equalto", "forward_realized") | first | default(none) %}
-  {{ tracker_section("forward", "forward_realized", _verdict_block, _outcomes_by_class.get("forward:forward_realized", [])) }}
 {% endif %}
 {% endif %}
 

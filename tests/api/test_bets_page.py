@@ -4429,10 +4429,11 @@ def test_pre_verdict_row_label_and_exclusion(tmp_path: Path) -> None:
     assert 'data-validation-type="pre_verdict"' in slips[0]
 
     sections = _tracker_sections(body)
+    # The verdict record renders FIRST, so it is never read below the uncounted block (WR-11).
     assert [k for k in sections if k.startswith("forward")] == [
-        "forward:pre_verdict",
         "forward:forward_realized",
-    ], f"the forward blocks are not before-counting then verdict: {sorted(sections)}"
+        "forward:pre_verdict",
+    ], f"the forward blocks are not verdict then before-counting: {list(sections)}"
     before = sections["forward:pre_verdict"]
     verdict = sections["forward:forward_realized"]
     assert '<span aria-hidden="true">1-0-0</span>' in before
