@@ -509,8 +509,24 @@ def _regenerate_closing_triggers(games: pd.DataFrame, start: datetime) -> None:
             trigger_count=len(registration.expected_starts),
         )
     except Exception as exc:  # noqa: BLE001 - the previous registration still covers the week
-        print(f"CLOSING_TRIGGERS= failed {type(exc).__name__}: {exc}")
+        reason = f"{type(exc).__name__}: {exc}"
+        print(f"CLOSING_TRIGGERS= failed {reason}")
         logger.error("Closing trigger regeneration failed", error=str(exc))
+        # Recorded, as both guides promise, so stale triggers are visible in the run log
+        # (34-REVIEW WR-12). Its own try: a failing run log must not fail the run either.
+        try:
+            record_event(
+                "closing_triggers",
+                outcome="failed",
+                reason=f"error: {reason}",
+                readback_match=False,
+                trigger_count=0,
+            )
+        except Exception as log_error:  # noqa: BLE001 - nor does a failing run log
+            logger.error(
+                "Ledger run log refused the closing-trigger failure",
+                error=str(log_error),
+            )
 
 
 def _settle_ledger(start: datetime) -> SettleOutcome | None:

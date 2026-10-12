@@ -1130,6 +1130,13 @@ def test_triggers_regenerated_before_no_games_return(
     monkeypatch.setattr(closing_schedule, "register_closing_triggers", _broken)
     assert daily.run_daily(RUN_DATE, start=start, dry_run=False) == 0
     assert "CLOSING_TRIGGERS= failed" in capsys.readouterr().out
+    # The failure is recorded in the run log, as both guides promise (WR-12).
+    from forward_ledger import run_log
+
+    failed = run_log.read_events(event="closing_triggers")[-1]
+    assert failed["outcome"] == "failed"
+    assert "schtasks is not on PATH" in failed["reason"]
+    assert failed["trigger_count"] == 0
 
 
 def test_sync_at_end_when_cut_over(monkeypatch, tmp_path):
