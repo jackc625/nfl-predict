@@ -430,12 +430,70 @@ def _closing_references(source: str) -> tuple[set[str], set[str]]:
     return names, imports
 
 
+# The constants that NAME the closing columns (34-REVIEW WR-20). ``frame[BET_LIST_CLOSING_COLUMNS]``
+# or ``row[BET_LIST_CLOSING_COLUMNS[4]]`` reads a closing column without spelling its name, so the
+# literal scan above cannot see it.
+_CLOSING_ALIASES = frozenset({"BET_LIST_CLOSING_COLUMNS", "CLOSING_NULL_REASONS"})
+# Where an alias counts as a read. ``weekly_bet_list.py`` names ``BET_LIST_CLOSING_COLUMNS`` at
+# module level for its schema shim, which selects nothing; its SELECTION functions must not. The
+# other two modules carry no shim, so all of each is scanned (``BetSelector.select`` included).
+_ALIAS_SCOPES: dict[str, tuple[str, ...] | None] = {
+    "backtest/bet_selector.py": None,
+    "backtest/selector_strategies.py": None,
+    "backtest/weekly_bet_list.py": (
+        "build_weekly_candidates",
+        "_build_weekly_candidates_with_inputs",
+        "select_weekly_bets",
+    ),
+}
+
+
+def _closing_alias_references(
+    source: str, functions: tuple[str, ...] | None
+) -> tuple[set[str], set[str]]:
+    """(closing aliases referenced, functions scanned) in *source*; the whole module when None."""
+    tree = ast.parse(source)
+    scopes: list[ast.AST] = (
+        [tree]
+        if functions is None
+        else [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name in functions
+        ]
+    )
+    found: set[str] = set()
+    for scope in scopes:
+        for node in ast.walk(scope):
+            if isinstance(node, ast.Name) and node.id in _CLOSING_ALIASES:
+                found.add(node.id)
+            elif isinstance(node, ast.Attribute) and node.attr in _CLOSING_ALIASES:
+                found.add(node.attr)
+    scanned = {getattr(scope, "name", "<module>") for scope in scopes}
+    return found, scanned
+
+
 def test_selection_path_never_reads_closing() -> None:
     control_names, control_imports = _closing_references(
         "from forward_ledger.closing import x\nrow['closing_line']\nrow.forward_clv\n"
     )
     assert control_names == {"closing_line", "forward_clv"}
     assert control_imports == {"forward_ledger.closing"}
+
+    # Alias control: a selection function reading through the constant is caught, in both the
+    # bare and the attribute form; the module-level shim use is not.
+    shim = "COLUMNS = [*BET_LIST_CLOSING_COLUMNS]\n"
+    reader = (
+        "def select_weekly_bets(frame, row):\n"
+        "    frame[BET_LIST_CLOSING_COLUMNS]\n"
+        "    return row[cache.BET_LIST_CLOSING_COLUMNS[4]]\n"
+    )
+    assert _closing_alias_references(shim + reader, ("select_weekly_bets",)) == (
+        {"BET_LIST_CLOSING_COLUMNS"},
+        {"select_weekly_bets"},
+    )
+    assert _closing_alias_references(shim, ("select_weekly_bets",))[0] == set()
 
     for relative in _SELECTION_MODULES:
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")
@@ -445,3 +503,14 @@ def test_selection_path_never_reads_closing() -> None:
         )
         unexpected = imports - _SELECTION_ALLOWED_LEDGER_IMPORTS
         assert unexpected == set(), f"{relative} imports {sorted(unexpected)}"
+
+        functions = _ALIAS_SCOPES[relative]
+        aliases, scanned = _closing_alias_references(source, functions)
+        if functions is not None:
+            assert scanned == set(functions), (
+                f"{relative} no longer defines {sorted(set(functions) - scanned)}; the alias "
+                "scan would pass by finding nothing to scan"
+            )
+        assert aliases == set(), (
+            f"{relative} reads closing columns through {sorted(aliases)} on the selection path"
+        )
