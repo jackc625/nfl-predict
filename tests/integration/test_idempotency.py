@@ -333,7 +333,11 @@ _BL_DECIDED_AT = _BEFORE_FREEZE.isoformat()
 
 
 def _bet_row(**overrides) -> dict:
-    """One COMPLETE forward bet-list row. Every locked column present; nothing invented."""
+    """One COMPLETE pre-ledger forward bet-list row: every locked column spelled out.
+
+    Nothing is invented, and nothing is filled in by a loop: the 22 Phase-34 columns are
+    NULL, the shape the pre-ledger writer produced (the Phase-34 ledger writer stamps them).
+    """
     row = {
         "game_id": _BL_GAME,
         "season": _BL_SEASON,
@@ -364,12 +368,33 @@ def _bet_row(**overrides) -> dict:
         "payout_flat": None,
         "realized_units": None,
         "graded_at": None,
+        # Phase 34 (Plan 34-01 Task 2) widened the locked schema from 29 to 51. Was: the literal
+        # ended at ``graded_at``. The 22 Phase-34 keys are spelled out, NULL as on every row the
+        # pre-ledger writer produced, so a future column breaks this fixture loudly rather than
+        # being filled in silently (34-REVIEW WR-22).
+        "arm": None,
+        "model_artifact_id": None,
+        "blend_id": None,
+        "recipe_id": None,
+        "fill_convention_id": None,
+        "upstream_capture_key": None,
+        "gold_generation_key": None,
+        "odds_snapshot_digest": None,
+        "decision_snapshot_digest": None,
+        "verdict_scope": None,
+        "regime_label": None,
+        "fill_sportsbook": None,
+        "fill_line": None,
+        "fill_odds": None,
+        "fill_stake_dollars": None,
+        "fill_at_utc": None,
+        "closing_line": None,
+        "closing_odds": None,
+        "closing_sportsbook": None,
+        "closing_captured_at": None,
+        "forward_clv": None,
+        "closing_null_reason": None,
     }
-    # Phase 34 (Plan 34-01 Task 2) widened the locked schema from 29 to 51. Was: the literal above
-    # was the whole width. The 22 Phase-34 columns are NULL, as on every row the pre-ledger writer
-    # produced; the drift check below still proves the row spans the locked width exactly.
-    for column in BET_LIST_COLUMNS:
-        row.setdefault(column, None)
     row.update(overrides)
     assert set(row) == set(BET_LIST_COLUMNS), (
         f"the fixture row drifted from BET_LIST_COLUMNS: {set(row) ^ set(BET_LIST_COLUMNS)}"
