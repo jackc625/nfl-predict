@@ -640,6 +640,10 @@ def test_cli_unreadable_ledger_exit_two(
     store_file.write_bytes(b"\n".join(lines))
     code, output = _run_cli(capsys, "--ledger-dir", str(ledger))
     assert code == 2
+    # Exit 2 is shared with an unreadable store; the line names WHICH refusal ran, so a
+    # re-serialization that broke the line's format cannot pass as a broken chain (WR-37).
+    assert any(line.startswith("LEDGER_CHAIN_BROKEN= ") for line in output), output
+    assert not any(line.startswith("LEDGER_UNREADABLE= ") for line in output)
     assert _replay_lines(output) == []
 
     # An unreadable store.
