@@ -663,8 +663,11 @@ above no longer produces the forward record -- the ledger is that record now.
 
 ### Restore the ledger from the private backup
 
-Use this when `ledger/` is damaged or lost: verify fails on the chain, the file is gone, or the
-disk was replaced. It rebuilds `ledger/` from the private backup alone.
+Use this when `ledger/` is damaged or lost: verify fails on the chain or the anchor, the file is
+gone, or the disk was replaced. Since 2026-10-12 the daily run also refuses to write when the ledger
+is shorter than its anchor or the file is zero-length (for example after a power cut mid-write);
+follow these steps then too, and never start a new ledger in its place. It rebuilds
+`ledger/` from the private backup alone.
 
 1. Stop the scheduled tasks, so nothing writes while you work. Use an ELEVATED terminal ("Run as
    administrator"): both tasks run with the highest privileges, and a normal terminal may answer
@@ -769,8 +772,8 @@ them. The key files on disk are untouched; only the registration is gone. To re-
 
 If a key FILE is missing, `register-deploy-keys` refuses and names it. `create-keys` makes new keys
 (it refuses to overwrite an existing file); then repeat steps 2-4. `sync_ledger` exits 1 only when
-the ledger cannot be read or its chain is broken (`SYNC_REFUSED=`): nothing is ever published from
-a broken chain, so restore from the backup first.
+the ledger cannot be read, its chain is broken, or it is shorter than its anchor (`SYNC_REFUSED=`):
+nothing is ever published from a broken or shortened ledger, so restore from the backup first.
 
 ### Recording a real bet
 
