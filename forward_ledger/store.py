@@ -162,7 +162,6 @@ __all__ = [
     "ledger_path",
     "read_entries",
     "verify_chain",
-    "write_entries",
 ]
 
 # The data directory, top-level and gitignored by the public repo (D-10): it fits no data-lake
@@ -439,8 +438,16 @@ def read_entries(ledger_dir: Path | str = LEDGER_DIR) -> list[LedgerEntry]:
     return [_parse_line(raw, number) for number, raw in enumerate(lines[:-1], start=1)]
 
 
-def write_entries(ledger_dir: Path | str, entries: Sequence[LedgerEntry]) -> Path:
-    """Replace the store with *entries*, atomically, and return its path.
+def _write_entries_unguarded(
+    ledger_dir: Path | str, entries: Sequence[LedgerEntry]
+) -> Path:
+    """Replace the store with *entries*, atomically, and return its path. BYPASSES every D-13 guard.
+
+    No writer lock, no chain verification, no append-only proof, no ``publish_by`` and no anchor
+    check: whatever *entries* hold becomes the store. Private on purpose (34-REVIEW WR-06): the ONE
+    production caller is ``forward_ledger.migration.commit_migrated_rows``, which takes the writer
+    lock itself and writes only into an empty ledger. Every other write goes through
+    :func:`commit_changes`. The write sink is still consulted, so a dry run writes nothing.
 
     Raises:
         ValueError: a mutable half carries a value JSON cannot encode exactly (NaN, infinity).
@@ -448,6 +455,8 @@ def write_entries(ledger_dir: Path | str, entries: Sequence[LedgerEntry]) -> Pat
     directory = Path(ledger_dir)
     directory.mkdir(parents=True, exist_ok=True)
     path = ledger_path(directory)
+    if not current_sink().authorize(str(path), "ledger_unguarded_write", len(entries)):
+        return path
     _replace_with_retry(path, _serialize(entries))
     return path
 

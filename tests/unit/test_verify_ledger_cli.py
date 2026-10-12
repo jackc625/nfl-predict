@@ -42,9 +42,9 @@ from forward_ledger.settle import SILVER_GAMES_FILENAME
 from forward_ledger.store import (
     LEDGER_STAMP_COLUMNS,
     LedgerEntry,
+    _write_entries_unguarded,
     build_entry,
     ledger_path,
-    write_entries,
 )
 from forward_ledger.transport import run_git
 from forward_ledger.verify import verify_ledger
@@ -146,7 +146,7 @@ def write_ledger(
             entry = build_entry(previous, seq, ENTRY_KIND_CORRECTION, immutable)
         entries.append(entry)
         previous = entry.chain_hash
-    write_entries(ledger_dir, entries)
+    _write_entries_unguarded(ledger_dir, entries)
     return entries
 
 
@@ -367,7 +367,7 @@ def test_truncated_tail_names_head_mismatch(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     ledger, repo, entries = two_week_setup(tmp_path)
-    write_entries(ledger, entries[:-2])
+    _write_entries_unguarded(ledger, entries[:-2])
 
     code, out = run_cli(capsys, cli_args(ledger, repo))
 

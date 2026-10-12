@@ -67,11 +67,11 @@ from forward_ledger.snapshots import (
 from forward_ledger.stamps import IN_FORCE_RECIPE_ID, stamp_ledger_rows
 from forward_ledger.store import (
     LEDGER_STAMP_COLUMNS,
+    _write_entries_unguarded,
     build_entry,
     commit_changes,
     ledger_head,
     read_entries,
-    write_entries,
 )
 from models.artifacts import save_model_artifact
 from tests.fixtures.decision_frame import chain_fit_record
@@ -374,7 +374,7 @@ def _append_migrated_row(
     }
     head, count = ledger_head(entries)
     entry = build_entry(head, count, ENTRY_KIND_ROW, values)
-    write_entries(ledger_dir, [*entries, entry])
+    _write_entries_unguarded(ledger_dir, [*entries, entry])
     return _key(values)
 
 

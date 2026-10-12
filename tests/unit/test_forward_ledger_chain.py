@@ -44,12 +44,12 @@ from forward_ledger.canonical import (
 )
 from forward_ledger.store import (
     LedgerFormatError,
+    _write_entries_unguarded,
     build_entry,
     ledger_head,
     ledger_path,
     read_entries,
     verify_chain,
-    write_entries,
 )
 from tests.fixtures.decision_frame import chain_fit_record
 from tests.unit.test_ledger_anchor import make_repo
@@ -176,7 +176,7 @@ def _two_row_ledger(ledger_dir: Path) -> list:
         ),
     )
     entries = [first, second]
-    write_entries(ledger_dir, entries)
+    _write_entries_unguarded(ledger_dir, entries)
     return entries
 
 
@@ -314,7 +314,7 @@ def test_one_row_ledger_verifies_and_chains_from_genesis(tmp_path: Path) -> None
     assert entry.chain_hash == chain_hash(
         GENESIS_HASH, canonical_entry_bytes(ENTRY_KIND_ROW, _row())
     )
-    write_entries(tmp_path, [entry])
+    _write_entries_unguarded(tmp_path, [entry])
 
     read_back = read_entries(tmp_path)
     assert read_back == [entry]
@@ -332,7 +332,7 @@ def test_noop_reencode_changes_no_hash(tmp_path: Path) -> None:
     )
     assert first_bytes.count(b"\n") == len(entries)
 
-    write_entries(tmp_path, read_entries(tmp_path))
+    _write_entries_unguarded(tmp_path, read_entries(tmp_path))
     second_bytes = path.read_bytes()
     reread = read_entries(tmp_path)
 
@@ -349,7 +349,7 @@ def test_reader_keeps_file_order(tmp_path: Path) -> None:
         entry = build_entry(previous, seq, ENTRY_KIND_ROW, _row(game_id=game_id))
         entries.append(entry)
         previous = entry.chain_hash
-    write_entries(tmp_path, entries)
+    _write_entries_unguarded(tmp_path, entries)
 
     read_back = read_entries(tmp_path)
     assert [e.immutable["game_id"] for e in read_back] == game_ids
@@ -388,7 +388,7 @@ def test_float_round_trip_and_negative_zero(tmp_path: Path) -> None:
         )
         entries.append(entry)
         previous = entry.chain_hash
-    write_entries(tmp_path, entries)
+    _write_entries_unguarded(tmp_path, entries)
 
     read_back = [e.immutable["model_value"] for e in read_entries(tmp_path)]
     for written, read in zip(values, read_back, strict=True):

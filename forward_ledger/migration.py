@@ -20,8 +20,8 @@ from the published ``GENESIS_HASH`` as the ledger's first entries:
 
 This is the ONE entry point allowed to write NULL-stamp rows. ``forward_ledger.store
 .commit_changes`` refuses every such row by design, so the migration writes through the store's
-lower-level ``build_entry`` / ``write_entries`` under the same single-writer lock -- and only into
-an EMPTY ledger: a second migration is refused (:class:`AlreadyMigratedError`).
+lower-level ``build_entry`` / ``_write_entries_unguarded`` under the same single-writer lock --
+and only into an EMPTY ledger: a second migration is refused (:class:`AlreadyMigratedError`).
 
 TWO PHASES, IN THIS ORDER (34-RESEARCH Pitfall 9)
 ------------------------------------------------
@@ -90,11 +90,11 @@ from forward_ledger.store import (
     LedgerEntryRefusedError,
     LedgerWriterBusyError,
     _mutable_value,
+    _write_entries_unguarded,
     build_entry,
     ledger_head,
     read_entries,
     verify_chain,
-    write_entries,
 )
 from utils.file_lock import FileLockHeldError, exclusive_file_lock
 
@@ -360,7 +360,7 @@ def commit_migrated_rows(
             entries = _chain(payloads)
             if not entries:
                 return ledger_head(entries)
-            write_entries(directory, entries)
+            _write_entries_unguarded(directory, entries)
             written = read_entries(directory)
             if not verify_chain(written).ok or written != entries:
                 msg = (
