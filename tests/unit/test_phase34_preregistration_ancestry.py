@@ -14,7 +14,8 @@ For EACH record this module asserts, against the witness in ``tests/phase34_stat
 (iii) the commit touches ONLY that record;
 (iv)  the record's newline-normalized sha256 equals the witnessed digest;
 (v)   the commit's committer date is BEFORE week W's first lock;
-(vi)  the commit is reachable from GitHub's ``master`` (``refs/remotes/origin/master``).
+(vi)  the commit is reachable from this clone's LOCAL tracking ref of GitHub's ``master``
+      (``refs/remotes/origin/master``) -- as fresh as the last fetch; no network read is made.
 
 And, once, for the declaration: the witnessed first lock is ``utils.game_lock`` of the earliest
 week-W kickoff in the recorded schedule, the declaration's constants are the registered values,
@@ -88,7 +89,8 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Copied in shape from tests/unit/test_preregistration_ancestry.py so the guards read alike.
 SHALLOW_SKIP_MESSAGE = (
-    "git history is unavailable (shallow clone or not a git checkout), so "
+    "git history is unavailable (no git binary, not a git checkout, or a shallow or treeless "
+    "clone), so "
     "`git merge-base --is-ancestor` would fail for want of history rather than for want of "
     "ancestry -- and the two are indistinguishable from the exit code alone. Skipping BEFORE "
     "any ancestry call rather than reporting a false ancestry violation."
@@ -120,11 +122,24 @@ def _git(*args: str) -> subprocess.CompletedProcess:
 
 
 def _git_history_is_unavailable() -> bool:
-    """True when this is not a git checkout, or a shallow one (module-level: monkeypatchable)."""
-    if _git("rev-parse", "--git-dir").returncode != 0:
+    """True when history cannot answer (module-level: monkeypatchable).
+
+    That is: no ``git`` binary on PATH, not a git checkout, a shallow clone, or a treeless
+    partial clone (``--filter=tree:*``), whose ``git show --name-only`` / ``log -- <path>`` fail
+    offline for want of trees rather than for want of the record (34-REVIEW WR-30).
+    """
+    try:
+        if _git("rev-parse", "--git-dir").returncode != 0:
+            return True
+        shallow = _git("rev-parse", "--is-shallow-repository")
+        if shallow.returncode != 0 or shallow.stdout.strip() == "true":
+            return True
+        partial = _git("config", "--get-regexp", r"^remote\..*\.partialclonefilter$")
+    except FileNotFoundError:
         return True
-    shallow = _git("rev-parse", "--is-shallow-repository")
-    return shallow.returncode != 0 or shallow.stdout.strip() == "true"
+    return any(
+        line.split()[-1].startswith("tree:") for line in partial.stdout.splitlines()
+    )
 
 
 def _skip_without_history() -> None:
@@ -199,6 +214,9 @@ class TestTheWitnessIsWellFormed:
         assert (REPO_ROOT / relative_path).is_file(), (
             f"{relative_path} is missing. It is TRACKED, so this is a broken checkout."
         )
+        # A non-git export (or no git binary) cannot answer "is it tracked"; skip, never a false
+        # "broken checkout" verdict (34-REVIEW WR-30).
+        _skip_without_history()
         tracked = _git("ls-files", relative_path).stdout.split()
         assert tracked == [relative_path], (
             f"{relative_path} is not tracked: an untracked record has no commit to anchor."
@@ -280,7 +298,15 @@ class TestEachRecordWasCommittedAloneBeforeWeekW:
             f"{phase34_state.P34_W}'s first lock ({phase34_state.P34_W_FIRST_LOCK_UTC})."
         )
 
-    def test_vi_the_commit_is_on_githubs_master(self, relative_path: str) -> None:
+    def test_vi_the_commit_is_reachable_from_the_local_origin_master_ref(
+        self, relative_path: str
+    ) -> None:
+        """Reachability from THIS clone's ``refs/remotes/origin/master`` tracking ref.
+
+        No network read is made: the ref is as fresh as the last fetch, and a locally rewritten
+        ref would satisfy it. That is the documented T-34-75 trade; the push itself was read back
+        from GitHub once, at go-live (``P34_PREREGISTRATION_WITNESS``, Plan 34-22).
+        """
         _skip_without_history()
         if _git("rev-parse", "--verify", "--quiet", REMOTE_MASTER_REF).returncode != 0:
             pytest.skip(NO_REMOTE_MASTER_SKIP_MESSAGE)
@@ -410,6 +436,53 @@ class TestTheGuardsAreReal:
         with pytest.raises(pytest.skip.Exception) as excinfo:
             _skip_without_history()
         assert str(excinfo.value) == SHALLOW_SKIP_MESSAGE
+
+    def test_the_tracked_check_skips_without_history(self, monkeypatch) -> None:
+        """WR-30: a non-git export skips the tracked check rather than failing it."""
+        monkeypatch.setattr(
+            sys.modules[__name__], "_git_history_is_unavailable", lambda: True
+        )
+        with pytest.raises(pytest.skip.Exception):
+            TestTheWitnessIsWellFormed().test_each_record_is_tracked(RECORD_PATHS[0])
+
+    def test_no_git_binary_reads_as_unavailable_history(self, monkeypatch) -> None:
+        def _no_git(*_args: str) -> subprocess.CompletedProcess:
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(sys.modules[__name__], "_git", _no_git)
+        assert _git_history_is_unavailable() is True
+
+    @pytest.mark.parametrize(
+        ("partial_filter", "unavailable"),
+        [("tree:0", True), ("blob:none", False), (None, False)],
+    )
+    def test_only_a_treeless_partial_clone_reads_as_unavailable(
+        self, monkeypatch, partial_filter: str | None, unavailable: bool
+    ) -> None:
+        """A blob-filtered clone keeps its trees and still answers, so it must NOT skip --
+        the ancestry checks keep running everywhere history can answer them."""
+
+        def _fake_git(*args: str) -> subprocess.CompletedProcess:
+            stdout = {
+                "--git-dir": ".git\n",
+                "--is-shallow-repository": "false\n",
+            }.get(args[-1], "")
+            if args[0] == "config":
+                stdout = (
+                    f"remote.origin.partialclonefilter {partial_filter}\n"
+                    if partial_filter
+                    else ""
+                )
+            return subprocess.CompletedProcess(["git", *args], 0, stdout, "")
+
+        monkeypatch.setattr(sys.modules[__name__], "_git", _fake_git)
+        assert _git_history_is_unavailable() is unavailable
+
+    def test_history_is_available_on_this_checkout(self) -> None:
+        """The guard does not skip a real, full checkout: here the ancestry checks RUN."""
+        if not (REPO_ROOT / ".git").exists():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+        assert _git_history_is_unavailable() is False
 
     @pytest.mark.parametrize("relative_path", RECORD_PATHS)
     def test_a_one_byte_edit_would_move_the_digest(self, relative_path: str) -> None:
