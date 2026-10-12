@@ -540,6 +540,10 @@ def _settle_ledger(start: datetime) -> SettleOutcome | None:
         f"LEDGER_SETTLE= {state} graded={outcome.graded} corrections={outcome.corrections} "
         f"closing_finalized={outcome.closing_finalized} observations={outcome.observations}"
     )
+    if outcome.closing_deferred is not None:
+        # Loud, not fatal: grading and corrections landed; closing rows stay NULL until the run
+        # log parses again (34-REVIEW WR-01).
+        print(f"LEDGER_CLOSING_DEFERRED= {outcome.closing_deferred}")
     return outcome
 
 

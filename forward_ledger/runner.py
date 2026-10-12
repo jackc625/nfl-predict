@@ -22,7 +22,10 @@ daily run's critical recommend step. In order:
 :func:`settle_ledger` -- every day the schedule refresh returns a season: grade pending rows from
 the refreshed silver scores, append the corrections owed by the live manifest's
 ``live_revision_graded`` verdicts, and finalize closing columns -- all in ONE ``commit_changes``,
-so the three halves land together or not at all (34-RESEARCH Q2, Pitfall 11).
+so the three halves land together or not at all (34-RESEARCH Q2, Pitfall 11). Only the closing
+finalization reads the run log; a run log that cannot be parsed DEFERS it -- those rows stay NULL
+and are retried by a later run, and the outcome names why -- while grading and corrections still
+land (34-REVIEW WR-01). A malformed log is never read as "no events".
 
 :func:`sync_after_run` -- after the run, anchor the head and back up the directory through
 ``forward_ledger.sync.publish_ledger_state``. It NEVER raises (LDGR-05, D-01).
@@ -133,13 +136,18 @@ class RecordOutcome:
 
 @dataclass(frozen=True)
 class SettleOutcome:
-    """What one :func:`settle_ledger` pass did. ``changed`` is True when the ledger was written."""
+    """What one :func:`settle_ledger` pass did. ``changed`` is True when the ledger was written.
+
+    ``closing_deferred`` names why closing finalization was deferred (the run log could not be
+    parsed); None when it ran.
+    """
 
     changed: bool
     graded: int
     corrections: int
     closing_finalized: int
     observations: int
+    closing_deferred: str | None = None
 
 
 def _silver_odds(silver_dir: Path | str) -> pd.DataFrame:
@@ -378,8 +386,19 @@ def settle_ledger(
     corrections = correction_payloads(
         entries, owed_correction_events(manifest), realized, registry, now
     )
-    closing = finalize_closing(
-        entries, games, odds, read_events(event="closing_capture"), registry
+    closing_deferred: str | None = None
+    try:
+        capture_events = read_events(event="closing_capture")
+    except ValueError as error:
+        # The closing NULL reasons come from these records, so no closing column is finalized
+        # without them; grading and corrections do not read the log and still land.
+        closing_deferred = str(error)
+        logger.error("Closing finalization deferred", error=closing_deferred)
+        capture_events = None
+    closing = (
+        {}
+        if capture_events is None
+        else finalize_closing(entries, games, odds, capture_events, registry)
     )
 
     for observation in corrections.observations:
@@ -391,7 +410,7 @@ def settle_ledger(
         )
     observed = len(corrections.observations)
     if not (grading or corrections.payloads or closing):
-        return SettleOutcome(False, 0, 0, 0, observed)
+        return SettleOutcome(False, 0, 0, 0, observed, closing_deferred)
 
     result = commit_changes(
         ledger,
@@ -406,6 +425,7 @@ def settle_ledger(
             graded=result.grading_changed,
             corrections=result.appended_corrections,
             closing_finalized=result.closing_changed,
+            closing_deferred=closing_deferred,
             head_hash=result.head_hash,
             entry_count=result.entry_count,
         )
@@ -436,6 +456,7 @@ def settle_ledger(
         corrections=result.appended_corrections if result.wrote else 0,
         closing_finalized=result.closing_changed if result.wrote else 0,
         observations=observed,
+        closing_deferred=closing_deferred,
     )
 
 
