@@ -1,5 +1,6 @@
 """Pytest configuration and fixtures for NFL Prediction System tests."""
 
+import itertools
 import os
 import re
 import shutil
@@ -207,11 +208,183 @@ def _ledger_cutover_off_unless_a_test_turns_it_on(monkeypatch):
     reads the committed source by AST instead, and fails on such a revert (34-REVIEW WR-15).
 
     Function-scoped: module- and session-scoped fixtures run before it and see the production
-    value.
+    value. The safety net below still refuses their real ledger writes, schtasks and pushes.
     """
     from forward_ledger import cutover
 
     monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", False)
+
+
+# ---------------------------------------------------------------------------
+# 34-REVIEW WR-17: the session safety net for the ledger's real side effects
+# ---------------------------------------------------------------------------
+#
+# The daily run reaches three things no test may reach, and until this net each test file had to
+# remember its own monkeypatch for each: the real Task Scheduler (``closing_schedule.run_schtasks``
+# can ``/create /f`` over the installed ``NFL_Predict_Closing`` task), real git (an anchor commit
+# in this repository, a backup commit in ``ledger/.git``, a push to GitHub), and the production
+# stores the ledger writes. The write guard below sees none of the git writes, and sees a store
+# write only AFTER it has landed. On 2026-10-05 a test ran the real settle and sync against the
+# production ``ledger/`` and regraded seven rows with its fixed clock (34-REVIEW WR-13).
+#
+# So every test now runs with these refused, LOUDLY: each refusal is ``pytest.fail``, which is a
+# BaseException, so a production ``except Exception`` (the daily run's non-fatal passes) cannot
+# swallow it. A test that genuinely needs one of them injects it explicitly -- a fake schtasks
+# runner, a git runner over ``tmp_path`` repositories, a ``tmp_path`` ledger -- and the existing
+# per-file patches stay as documentation. Reads are never refused: several tests read ``data/``,
+# ``ledger/`` and ``logs/`` by design.
+#
+# * ``closing_schedule.run_schtasks`` refuses every call.
+# * ``run_log.LEDGER_RUN_LOG`` points at a per-test file outside the repository.
+# * The git transport refuses any command naming a GitHub remote, and any write-shaped git
+#   command run inside this repository (its ``ledger/`` backup repository included). Every git
+#   call of the anchor, the backup and the sync goes through ``transport.run_git``'s module-global
+#   ``subprocess``, which is where the refusal sits -- so it binds even where ``run_git`` was
+#   bound as a default argument.
+# * The write sink refuses a write under the production ``ledger/`` BEFORE it lands, unless the
+#   test declares that path with ``writes_production_store``. Every ledger writer asks the sink
+#   first (``store``, ``snapshots``, ``artifacts_copy``).
+
+# The git verbs the ledger's transport uses to WRITE: objects, refs, commits, the index, remotes.
+_GIT_WRITE_VERBS = frozenset(
+    {
+        "add",
+        "commit",
+        "commit-tree",
+        "fetch",
+        "hash-object",
+        "init",
+        "mktree",
+        "push",
+        "update-ref",
+    }
+)
+# Every production remote is on GitHub (forward_ledger.remote_config); tests use local bare repos.
+_PRODUCTION_REMOTE_HOST = "github.com"
+_RUN_LOG_QUARANTINE_IDS = itertools.count(1)
+
+
+def _git_verb(args) -> str | None:
+    """The git subcommand in *args*, skipping global options (``-c name=value``, ``-C dir``)."""
+    items = [str(arg) for arg in args]
+    index = 0
+    while index < len(items):
+        if items[index] in ("-c", "-C"):
+            index += 2
+        elif items[index].startswith("-"):
+            index += 1
+        else:
+            return items[index]
+    return None
+
+
+def git_side_effect_refusal(args, cwd) -> str | None:
+    """Why ``git <args>`` in *cwd* must not run under pytest, or None when it may.
+
+    Refused: any command naming a GitHub remote, and a write verb run inside this repository.
+    Allowed: reads anywhere, and every command over ``tmp_path`` repositories and their local bare
+    "remotes", which is how the ledger's own git tests work.
+    """
+    items = [str(arg) for arg in args]
+    if any(_PRODUCTION_REMOTE_HOST in item for item in items):
+        return (
+            f"git {' '.join(items)} names a GitHub remote; a test must never reach the "
+            "production remotes (34-REVIEW WR-17). Use a local bare repository under tmp_path."
+        )
+    verb = _git_verb(items)
+    where = Path(cwd if cwd is not None else Path.cwd()).resolve()
+    if verb in _GIT_WRITE_VERBS and where.is_relative_to(project_root.resolve()):
+        return (
+            f"git {verb} would write the production repository at {where.as_posix()} (an anchor "
+            "commit here, or a backup commit in ledger/.git); refused under pytest "
+            "(34-REVIEW WR-17). Run git against a tmp_path repository."
+        )
+    return None
+
+
+class _GitRefusingSubprocess:
+    """``forward_ledger.transport``'s ``subprocess``, refusing the git calls a test must not make."""
+
+    def __init__(self, real) -> None:
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def run(self, command, *args, **kwargs):
+        if command and str(command[0]) == "git":
+            reason = git_side_effect_refusal(command[1:], kwargs.get("cwd"))
+            if reason is not None:
+                pytest.fail(reason, pytrace=False)
+        return self._real.run(command, *args, **kwargs)
+
+
+def production_ledger_write_refusal(target, declared: frozenset[str]) -> str | None:
+    """Why a sink write to *target* must not land under pytest, or None when it may.
+
+    *target* is resolved against the CURRENT directory, exactly as the writer will resolve it,
+    so a test that moved into a sandbox writes its own ``ledger/`` freely. The production ledger
+    is anchored at this repository, never at the current directory. *declared* holds the
+    ledger-relative paths the test declares with ``writes_production_store``.
+    """
+    ledger_root = dict(_guarded_roots())["ledger"]
+    if not ledger_root.is_absolute():
+        ledger_root = project_root / ledger_root
+    ledger_root = ledger_root.resolve()
+    resolved = Path(target).resolve()
+    if not resolved.is_relative_to(ledger_root):
+        return None
+    key = resolved.relative_to(ledger_root).as_posix()
+    if key in declared:
+        return None
+    return (
+        f"a write to the PRODUCTION ledger was refused before it landed: "
+        f"{resolved.as_posix()} (34-REVIEW WR-17; the 2026-10-05 incident, WR-13). Point the "
+        "writer at a tmp_path ledger (ledger_dir=...), or declare the path with "
+        "writes_production_store if the write is genuinely intended."
+    )
+
+
+@pytest.fixture(scope="session")
+def _ledger_run_log_quarantine(tmp_path_factory) -> Path:
+    """One directory, outside the repository, holding every test's quarantined run log."""
+    return tmp_path_factory.mktemp("ledger_run_log_quarantine")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ledger_side_effects(request, monkeypatch, _ledger_run_log_quarantine):
+    """WR-17: no test reaches the real Task Scheduler, GitHub, this repository's git, or the
+    production ledger or its run log, unless it injects the seam itself."""
+    from data.write_sink import ProductionSink
+    from forward_ledger import closing_schedule, run_log, transport
+
+    def _refuse_schtasks(args):
+        pytest.fail(
+            f"schtasks is not allowed in tests (asked: schtasks {' '.join(map(str, args))}). "
+            "Inject runner=... into the closing-schedule call (34-REVIEW WR-17).",
+            pytrace=False,
+        )
+
+    monkeypatch.setattr(closing_schedule, "run_schtasks", _refuse_schtasks)
+    monkeypatch.setattr(
+        run_log,
+        "LEDGER_RUN_LOG",
+        _ledger_run_log_quarantine / f"{next(_RUN_LOG_QUARANTINE_IDS)}.jsonl",
+    )
+    monkeypatch.setattr(
+        transport, "subprocess", _GitRefusingSubprocess(transport.subprocess)
+    )
+
+    declared = _marker_paths_for_item(request.node).get("ledger", frozenset())
+    real_authorize = ProductionSink.authorize
+
+    def _authorize(self, target, kind, rows=None):
+        reason = production_ledger_write_refusal(target, declared)
+        if reason is not None:
+            pytest.fail(reason, pytrace=False)
+        return real_authorize(self, target, kind, rows)
+
+    monkeypatch.setattr(ProductionSink, "authorize", _authorize)
 
 
 # ---------------------------------------------------------------------------

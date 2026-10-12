@@ -76,6 +76,13 @@ nested sessions prove the guard watches it, with every root redirected onto ``tm
 8. A separate session whose one module writes nothing exits 0 -- the third root adds no
    false positive.
 
+THE SESSION SAFETY NET (34-REVIEW WR-17)
+----------------------------------------
+``TestTheSafetyNetRefusesTheLedgersRealSideEffects`` proves, inside this session, that every test
+runs with real ``schtasks``, git aimed at GitHub or at this repository, and writes to the
+production ``ledger/`` REFUSED before they happen, with the ledger run log quarantined -- and that
+the allowed neighbour of each (a read, a ``tmp_path`` repository, a sandbox ledger) still runs.
+
 TEST CLASS: **integration**. It spawns a real pytest process. It writes nothing outside
 ``tmp_path``; the ``data_boundary_guard`` request on every test is the belt-and-braces
 control that says so, the same request the already-sandboxed
@@ -89,8 +96,10 @@ import os
 import re
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -857,3 +866,100 @@ class TestANestedSessionThatWritesNothingPasses:
         assert re.search(r"\b1 passed\b", output), output
         assert not re.search(r"\b\d+ errors?\b", output), output
         assert CLOSING_SWEEP_HEADER not in output, output
+
+
+# ---------------------------------------------------------------------------
+# 34-REVIEW WR-17: the session safety net refuses the ledger's real side effects
+# ---------------------------------------------------------------------------
+
+
+class TestTheSafetyNetRefusesTheLedgersRealSideEffects:
+    """Negative controls: each refusal FIRES, and the allowed neighbour of each still runs.
+
+    Run inside THIS session, under the autouse ``_no_real_ledger_side_effects`` fixture, so what is
+    proven is the net every test runs under. Each refusal is caught here as
+    ``pytest.fail.Exception`` -- a BaseException, so a production ``except Exception`` cannot
+    swallow it.
+    """
+
+    def test_real_schtasks_is_refused_even_through_a_swallowing_caller(self) -> None:
+        from deployment.setup_scheduling import EASTERN_WINDOWS_ZONE
+        from forward_ledger import closing_schedule
+
+        with pytest.raises(pytest.fail.Exception, match="schtasks is not allowed"):
+            closing_schedule.run_schtasks(["/query", "/tn", "NFL_Predict_Closing"])
+        # register_closing_triggers catches Exception into a "failed" outcome; the refusal is not
+        # an Exception, so it still surfaces.
+        with pytest.raises(pytest.fail.Exception, match="schtasks is not allowed"):
+            closing_schedule.register_closing_triggers(
+                pd.DataFrame(),
+                datetime(2026, 10, 12, 21, 0, tzinfo=UTC),
+                zone_reader=lambda: EASTERN_WINDOWS_ZONE,
+            )
+
+    def test_the_ledger_run_log_is_quarantined_outside_the_repository(self) -> None:
+        from forward_ledger import run_log
+
+        production = REPO_ROOT / "logs" / "ledger_runs.jsonl"
+        before = production.read_bytes() if production.exists() else None
+        quarantined = Path(run_log.LEDGER_RUN_LOG).resolve()
+        assert not quarantined.is_relative_to(REPO_ROOT), quarantined
+
+        assert run_log.record_event("cutover", note="WR-17 negative control")
+        (record,) = run_log.read_events(event="cutover")
+        assert record["note"] == "WR-17 negative control"
+        after = production.read_bytes() if production.exists() else None
+        assert after == before, "the production run log moved"
+
+    def test_git_to_github_or_into_this_repository_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        import inspect
+
+        from forward_ledger import anchor, backup, sync, transport
+        from forward_ledger.remote_config import ANCHOR_REMOTE_URL, BACKUP_REMOTE_URL
+
+        refspec = "refs/heads/ledger-anchor:refs/heads/ledger-anchor"
+        for url in (ANCHOR_REMOTE_URL, BACKUP_REMOTE_URL):
+            with pytest.raises(pytest.fail.Exception, match="GitHub remote"):
+                transport.run_git(["push", "--porcelain", url, refspec], cwd=tmp_path)
+        for repo in (REPO_ROOT, REPO_ROOT / "ledger"):
+            with pytest.raises(pytest.fail.Exception, match="production repository"):
+                transport.run_git(
+                    ["-c", "core.quotepath=off", "commit-tree", "x"], cwd=repo
+                )
+
+        # Allowed neighbours: a read in this repository, and a write in a tmp_path repository.
+        assert (
+            transport.run_git(["rev-parse", "--git-dir"], cwd=REPO_ROOT).returncode == 0
+        )
+        assert transport.run_git(["init", "-q"], cwd=tmp_path).returncode == 0
+
+        # The bound defaults ARE the guarded function: the refusal sits in its module global.
+        for function in (
+            anchor.push_anchor,
+            backup.push_backup,
+            sync.publish_ledger_state,
+        ):
+            assert inspect.signature(function).parameters["runner"].default is (
+                transport.run_git
+            )
+
+    def test_a_production_ledger_write_is_refused_before_it_lands(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        from data.write_sink import current_sink
+
+        production = REPO_ROOT / "ledger" / "forward_2026.jsonl"
+        for target in (production, production / ".." / "snapshots" / "x"):
+            with pytest.raises(pytest.fail.Exception, match="PRODUCTION ledger"):
+                current_sink().authorize(str(target), "ledger_commit", 1)
+
+        # The relative form a writer uses resolves against the current directory: from the
+        # repository it is the production ledger, from a sandbox it is the sandbox's own.
+        monkeypatch.chdir(REPO_ROOT)
+        with pytest.raises(pytest.fail.Exception, match="PRODUCTION ledger"):
+            current_sink().authorize("ledger/forward_2026.jsonl", "ledger_commit", 1)
+        monkeypatch.chdir(tmp_path)
+        assert current_sink().authorize("ledger/forward_2026.jsonl", "ledger_commit", 1)
+        assert current_sink().authorize(str(REPO_ROOT / "outputs" / "x.csv"), "csv", 1)
