@@ -15,10 +15,12 @@ daily run's critical recommend step. In order:
      DIFFERENT pick for a stored key is refused, logged by name (``first_pick_refusal``) and
      printed (``LEDGER_REFUSED=``) -- the run does not fail, and new keys still append;
   5. nothing new -> NOTHING is written: no snapshot, no copy, no ledger write, no anchor commit;
-  6. otherwise store the snapshot and the artifact and chain-fit copies (written BEFORE the row
-     that references them, and idempotent) -- refusing when the snapshot written is not the one
-     the rows were stamped with -- then ONE ``commit_changes`` with the slate's ``publish_by``
-     deadline, which re-reads the clock immediately before the replace.
+  6. otherwise check the slate's ``publish_by`` deadline (a late write leaves NOTHING in
+     ``ledger/``, not even a snapshot or copy), then store the snapshot and the artifact and
+     chain-fit copies (written BEFORE the row that references them, and idempotent) -- refusing
+     when the snapshot written is not the one the rows were stamped with -- then ONE
+     ``commit_changes`` with the same deadline, which re-reads the clock immediately before the
+     replace.
 
 :func:`settle_ledger` -- every day the schedule refresh returns a season: grade pending rows from
 the refreshed silver scores, append the corrections owed by the live manifest's
@@ -88,6 +90,7 @@ from forward_ledger.store import (
     LEDGER_SEASON,
     LedgerEntry,
     MissingStampError,
+    assert_before_publish_deadline,
     assert_extends_anchor,
     classify_incoming,
     commit_changes,
@@ -225,6 +228,7 @@ def record_forward_slate(
     bundle_builder: Callable[..., Any] = build_weekly_decision_bundle,
     log: LogCallable | None = None,
     repo_dir: Path | str | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> RecordOutcome:
     """Decide the slate's week and write its new forward rows to the ledger, first pick standing.
 
@@ -242,13 +246,15 @@ def record_forward_slate(
         repo_dir: The repository carrying ``ledger-anchor``; when given, the write is refused
             unless the store extends the anchored head. None checks no anchor (a ``tmp_path``
             ledger in a test).
+        clock: The instant source for *publish_by*, shared by the check before the side files
+            and the one inside ``commit_changes``; ``datetime.now(UTC)`` when None.
 
     Returns:
         What was decided, appended, skipped and refused.
 
     Raises:
         backtest.weekly_bet_list.PublishDeadlinePassedError: the write was ready after
-            *publish_by*; nothing was written to the ledger.
+            *publish_by*; nothing was written to ``ledger/`` -- no row, snapshot or copy.
         Everything the decision, stamping and ``commit_changes`` refuse, by name.
     """
     emit = log or record_event
@@ -312,6 +318,12 @@ def record_forward_slate(
             entry_count=len(entries),
         )
 
+    # The deadline BEFORE any side file: a late decision must leave no snapshot, artifact copy or
+    # recipe copy behind for the next backup to publish as an orphan (34-REVIEW WR-25).
+    # ``commit_changes`` checks it again immediately before the replace.
+    assert_before_publish_deadline(
+        publish_by, clock, ready="the forward slate's ledger write"
+    )
     snapshot_digest = write_decision_snapshot(ledger, bundle)
     if snapshot_digest != stamped_digest:
         # The writer re-reads uv.lock, the chain-fit file and the library versions; if one moved
@@ -327,6 +339,7 @@ def record_forward_slate(
         ledger,
         new_rows=list(classification.new),
         publish_by=publish_by,
+        clock=clock,
         anchored_head=_anchored_head(repo_dir),
     )
     if result.wrote:

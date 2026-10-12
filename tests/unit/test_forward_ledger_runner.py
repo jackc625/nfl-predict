@@ -407,10 +407,41 @@ def test_conflicting_rows_refused_others_appended(
     assert f"LEDGER_REFUSED= {GAMES[0]}" in capsys.readouterr().out
 
 
+def _ledger_files(ledger_dir: Path) -> list[str]:
+    """Every file under *ledger_dir* (the writer's lock file aside), relative and sorted."""
+    if not ledger_dir.exists():
+        return []
+    return sorted(
+        path.relative_to(ledger_dir).as_posix()
+        for path in ledger_dir.rglob("*")
+        if path.is_file() and path.name != store.LEDGER_WRITER_LOCK_NAME
+    )
+
+
 def test_publish_deadline_passed_raises_and_writes_nothing(env: _Env) -> None:
-    with pytest.raises(PublishDeadlinePassedError):
-        env.record(publish_by=datetime(2026, 1, 1, tzinfo=UTC))
-    assert not ledger_path(env.ledger).exists()
+    """A late write leaves NOTHING in ``ledger/``: no row, no snapshot, no artifact or recipe copy
+    (34-REVIEW WR-25) -- the next backup would otherwise publish them as orphans."""
+    with pytest.raises(PublishDeadlinePassedError, match="after its publish deadline"):
+        env.record(publish_by=LOCK, clock=lambda: LOCK + timedelta(seconds=1))
+
+    assert _ledger_files(env.ledger) == []
+    assert not (env.ledger / SNAPSHOTS_DIRNAME).exists()
+    assert not (env.ledger / "artifacts").exists()
+    assert not (env.ledger / "recipes").exists()
+
+
+def test_publish_deadline_not_passed_writes_under_the_same_clock(env: _Env) -> None:
+    """The positive control: at the deadline exactly (``>`` refuses, so at-deadline is admitted)
+    the slate writes its rows and side files through the real guarded commit."""
+    outcome = env.record(publish_by=LOCK, clock=lambda: LOCK)
+
+    assert outcome.wrote is True
+    assert outcome.appended == 2
+    files = _ledger_files(env.ledger)
+    assert ledger_path(env.ledger).relative_to(env.ledger).as_posix() in files
+    assert _snapshot_dirs(env.ledger)
+    assert (env.ledger / "artifacts").is_dir()
+    assert (env.ledger / "recipes").is_dir()
 
 
 # ---------------------------------------------------------------------------

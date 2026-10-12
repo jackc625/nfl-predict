@@ -153,6 +153,7 @@ __all__ = [
     "anchor_prefix_problem",
     "append_rows",
     "apply_updates",
+    "assert_before_publish_deadline",
     "assert_extends_anchor",
     "build_entry",
     "classify_incoming",
@@ -974,6 +975,40 @@ def _prove_append_only(old: Sequence[LedgerEntry], new: Sequence[LedgerEntry]) -
 # ---------------------------------------------------------------------------
 
 
+def assert_before_publish_deadline(
+    publish_by: datetime | None,
+    clock: Callable[[], datetime] | None = None,
+    *,
+    ready: str = "the ledger commit",
+) -> None:
+    """Refuse once ``clock()`` is past *publish_by*; no deadline (None) refuses nothing.
+
+    The ONE deadline rule: :func:`commit_changes` applies it immediately before the replace, and
+    ``forward_ledger.runner`` applies it again before writing any side file (snapshot, artifact
+    or recipe copy), so a refused late decision leaves nothing in ``ledger/`` (34-REVIEW WR-25).
+
+    Args:
+        publish_by: The deadline (tz-aware), or None.
+        clock: The instant source; ``datetime.now(UTC)`` by default.
+        ready: What was ready, named in the refusal.
+
+    Raises:
+        backtest.weekly_bet_list.PublishDeadlinePassedError: the clock is past *publish_by*.
+    """
+    if publish_by is None:
+        return
+    from scripts.ingest_historical_odds import require_aware_snapshot_ts
+
+    deadline = require_aware_snapshot_ts(publish_by)
+    write_instant = clock() if clock is not None else datetime.now(tz=UTC)
+    if write_instant > deadline:
+        msg = (
+            f"{ready} was ready at {write_instant.isoformat()}, after its publish "
+            f"deadline {deadline.isoformat()}; nothing was written."
+        )
+        raise PublishDeadlinePassedError(msg)
+
+
 def commit_changes(
     ledger_dir: Path | str,
     *,
@@ -1110,17 +1145,7 @@ def _commit_under_lock(
     if working == old:
         return result
 
-    if publish_by is not None:
-        from scripts.ingest_historical_odds import require_aware_snapshot_ts
-
-        deadline = require_aware_snapshot_ts(publish_by)
-        write_instant = clock() if clock is not None else datetime.now(tz=UTC)
-        if write_instant > deadline:
-            msg = (
-                f"the ledger commit was ready at {write_instant.isoformat()}, after its publish "
-                f"deadline {deadline.isoformat()}; nothing was written."
-            )
-            raise PublishDeadlinePassedError(msg)
+    assert_before_publish_deadline(publish_by, clock)
 
     path = ledger_path(directory)
     if not current_sink().authorize(str(path), "ledger_commit", len(working)):

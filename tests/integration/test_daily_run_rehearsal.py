@@ -509,7 +509,8 @@ def test_the_cut_over_run_appends_the_slate_to_a_real_ledger_under_one_run_id(
 
     What stands in, beyond the stand-ins above: the decision bundle (no models are scored here)
     and the synthetic stores it reads, injected into the real ``record_forward_slate``; the
-    store's publish-deadline clock, which reads the rehearsal clock; the snapshot's ``uv.lock``
+    publish-deadline clock (``record_forward_slate``'s ``clock``, shared by its pre-write check and
+    the store's), which reads the rehearsal clock; the snapshot's ``uv.lock``
     path, read from the repository because the sandbox has none; and the push destinations,
     local bare repositories in place of the GitHub remotes.
     """
@@ -582,15 +583,10 @@ def test_the_cut_over_run_appends_the_slate_to_a_real_ledger_under_one_run_id(
             silver_dir=stores.silver,
             manifest_dir=stores.manifests,
             bundle_builder=_bundle,
+            clock=lambda: clock,
         )
 
     monkeypatch.setattr(runner, "record_forward_slate", _record)
-    real_commit = runner.commit_changes
-    monkeypatch.setattr(
-        runner,
-        "commit_changes",
-        lambda *a, **k: real_commit(*a, clock=lambda: clock, **k),
-    )
     monkeypatch.setattr(
         snapshots, "UV_LOCK_PATH", Path(__file__).parents[2] / "uv.lock"
     )
