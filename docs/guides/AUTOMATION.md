@@ -918,6 +918,30 @@ GitHub?" is answered by finding the run's `append` and then its `anchor_push` an
 with the same `run_id`. Events written outside a daily run (an owner CLI, a closing wake) carry
 `run_id` null. Every sync event also carries the `head_hash` and `entry_count` it published.
 
+### One ledger write the run log does not hold (2026-10-05, disclosed)
+
+The private backup's commit `b84cb7f` (2026-10-05 17:58:30 ET) has no `settle`,
+`closing_finalized` or `backup_commit` line in `logs/ledger_runs.jsonl`. It was a TEST run, not a
+production writer: `tests/unit/test_daily_lock_run.py` was re-run against the working tree in the
+minutes after the cutover commit flipped the switch ON and before the suite pinned it OFF
+(commit `1871840`, 18:30 ET). A test in it that does not set the switch itself ran the real
+settle pass and sync on the production `ledger/` while the file's fixture had redirected the run
+log into a temporary directory, so the events went there. Every production ledger writer records its events. Two fingerprints in the
+stored rows identify it, and neither can be corrected (closing and grading halves move from NULL
+once):
+
+- **7 week-4 rows carry `graded_at` 2026-09-26T14:00:00+00:00**, the test's fixed run instant,
+  not the real grading time (5:58 PM ET on 2026-10-05). Their outcomes and payouts re-grade
+  clean from the silver scores (D-19).
+- **42 week-4 rows carry `closing_null_reason` `capture_missed`** (the other 42 changed rows, all of
+  week 3, are `no_bet_side`). Every one of those games kicked off before `NFL_Predict_Closing`
+  was installed (17:52 ET that day), so for them `capture_missed` means no closing reading was ever scheduled,
+  not that the machine slept. The next real settle would have written the same reason. The three
+  `2026_W04_ATL@NO` rows also say `capture_missed`: that reading ran and wrote no row, before the
+  `capture_empty` reason existed.
+
+Every row it touched is a week-3 or week-4 `pre_verdict` row, never counted in the verdict.
+
 ---
 
 ## Cross-references
