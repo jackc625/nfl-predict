@@ -23,7 +23,7 @@ Because a fill column can never be corrected, implausible values are refused bef
 be positive, and ``--line`` is refused on a ``wp`` row, which has no line.
 
 Exit codes: 0 recorded; 1 refused by the ledger (already recorded, unknown key, busy, broken
-chain); 2 bad input (naive or unparseable ``--filled-at``, no fill value, an implausible value).
+chain, shorter than its anchor or an unreadable anchor); 2 bad input (naive or unparseable ``--filled-at``, no fill value, an implausible value).
 
 Usage:
     uv run python -m scripts.record_fill --game-id 2026_07_KC_BUF --season 2026 --week 7 \\
@@ -42,6 +42,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from forward_ledger.anchor import AnchorFormatError, read_local_anchor
 from forward_ledger.canonical import CanonicalValueError
 from forward_ledger.run_log import record_event
 from forward_ledger.schema import ARM_LIVE, ARMS
@@ -55,12 +56,15 @@ from forward_ledger.store import (
 )
 from forward_ledger.sync import publish_ledger_state
 from forward_ledger.transitions import ColumnSetViolationError, FillAlreadyRecordedError
+from forward_ledger.transport import GitCommandError
 from scripts.ingest_historical_odds import require_aware_snapshot_ts
 from scripts.sync_ledger import outcome_lines
 
-# Seams: tests replace these so nothing is pushed and nothing is appended to logs/.
+# Seams: tests replace these so nothing is pushed, nothing is appended to logs/ and the real
+# repository's anchor is never read.
 PUBLISH = publish_ledger_state
 LOG = record_event
+ANCHORED_HEAD = read_local_anchor
 
 # The repository whose ledger-anchor branch the sync reads (the working directory, as the daily
 # task and every owner CLI run from the repository root).
@@ -75,6 +79,8 @@ _REFUSALS: tuple[type[BaseException], ...] = (
     LedgerFormatError,
     ColumnSetViolationError,
     CanonicalValueError,
+    AnchorFormatError,
+    GitCommandError,
 )
 
 
@@ -151,7 +157,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        result = commit_changes(args.ledger_dir, fill_updates={key: fill})
+        # 34-REVIEW CR-01: a fill is refused on a ledger that no longer extends its anchored head,
+        # exactly like the daily run's record and settle writes.
+        anchored = ANCHORED_HEAD(REPO_DIR)
+        result = commit_changes(
+            args.ledger_dir, fill_updates={key: fill}, anchored_head=anchored
+        )
     except _REFUSALS as refusal:
         print(f"FILL_REFUSED= {type(refusal).__name__}: {refusal}")
         return 1

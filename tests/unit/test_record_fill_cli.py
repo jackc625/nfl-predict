@@ -78,6 +78,8 @@ def fill_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
     log, sync = _Recorder(), _Recorder()
     monkeypatch.setattr(record_fill, "LOG", log)
     monkeypatch.setattr(record_fill, "PUBLISH", sync)
+    # The tmp_path ledger has no anchor; never read the real repository's ledger-anchor.
+    monkeypatch.setattr(record_fill, "ANCHORED_HEAD", lambda _repo_dir: None)
     return {"ledger": ledger, "log": log, "sync": sync}
 
 
