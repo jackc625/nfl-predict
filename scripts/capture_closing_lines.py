@@ -33,7 +33,13 @@ ONE RUN, IN ORDER
    (targets that got no row) and the transform's ``unmatched`` / ``in_play`` / ``no_kickoff``
    lists.
 4. Any exception -> event ``failed`` with reason ``capture_failed`` and the exception's CLASS NAME
-   only (never its message, which could carry a request URL), exit 1.
+   only (never its message, which could carry a request URL), then one normal-priority failed
+   push (``notify.closing_task``, Phase 35 D-13), exit 1. The push does NOT depend on the record:
+   an event append that raises prints ``CLOSING_CAPTURE_LOG= failed <class>`` and the push still
+   goes out, saying the failure is not in the run log -- the outside watcher does not monitor this
+   task, so the push is its only external signal. A notifier failure prints
+   ``NOTIFY= failed <class>`` and never changes the exit code. This task never checks in with the
+   watcher; only the daily run does.
 
 Each outcome is exactly ONE ``closing_capture`` event in ``logs/ledger_runs.jsonl``
 (``forward_ledger.run_log``). The settle pass reads the ``skipped`` and ``failed`` events' reasons
@@ -104,12 +110,28 @@ def _clock() -> datetime:
     return datetime.now(UTC)
 
 
-# Seams: tests replace these so no real client is built, no clock is read and nothing is appended
-# to logs/. The ingester owns the Odds API client (``ingester.api_client``) and the transform.
+def _notify_closing_failure(
+    game_ids: list[str], error_type: str, *, log_written: bool
+) -> object:
+    """Send the failed reading's normal-priority push (``notify.closing_task``).
+
+    The import is LAZY, so a broken notify module can never break this script's import or a
+    reading that succeeds.
+    """
+    from notify.closing_task import notify_closing_failure
+
+    return notify_closing_failure(game_ids, error_type, log_written=log_written)
+
+
+# Seams: tests replace these so no real client is built, no clock is read, nothing is appended
+# to logs/ and nothing is sent. The ingester owns the Odds API client (``ingester.api_client``)
+# and the transform. The test suite keeps NOTIFY_CLOSING_FAILURE inert (tests/conftest.py); a
+# wiring test restores this default.
 LOAD_GAMES: Callable[[], pd.DataFrame] = _load_games
 CLOCK: Callable[[], datetime] = _clock
 MAKE_INGESTER: Callable[[], OddsDataIngester] = OddsDataIngester
 LOG: Callable[..., Any] = record_event
+NOTIFY_CLOSING_FAILURE: Callable[..., Any] = _notify_closing_failure
 
 
 def _aware_instant(text: str) -> datetime:
@@ -260,12 +282,24 @@ def main(argv: list[str] | None = None) -> int:
         return _capture(targets, games, now, game_ids)
     except Exception as error:  # noqa: BLE001 - every failure is recorded as one named outcome
         # The class name only: an exception message can carry a request URL with its parameters.
-        _record(
-            "failed",
-            game_ids,
-            reason=REASON_CAPTURE_FAILED,
-            error_type=type(error).__name__,
-        )
+        error_type = type(error).__name__
+        # The record and the push are INDEPENDENT: a run log that cannot be appended must not
+        # silence this task's only external signal (the watcher does not monitor it).
+        log_written = True
+        try:
+            _record(
+                "failed",
+                game_ids,
+                reason=REASON_CAPTURE_FAILED,
+                error_type=error_type,
+            )
+        except Exception as log_error:  # noqa: BLE001 - the push still goes out
+            log_written = False
+            print(f"CLOSING_CAPTURE_LOG= failed {type(log_error).__name__}")
+        try:
+            NOTIFY_CLOSING_FAILURE(game_ids, error_type, log_written=log_written)
+        except Exception as notify_error:  # noqa: BLE001 - sending never alters the exit code
+            print(f"NOTIFY= failed {type(notify_error).__name__}")
         return 1
 
 

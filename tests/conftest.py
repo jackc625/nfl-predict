@@ -487,11 +487,16 @@ def _notifications_inert_unless_a_test_turns_them_on(monkeypatch):
     here. A test that proves the wiring restores the real seam itself:
     ``monkeypatch.setattr(daily, "NOTIFY_END_OF_RUN", daily._notify_end_of_run)``.
 
-    Plan 35-10 adds the closing-line task's seam here, Plan 35-13 the season-window seam.
+    The closing-line task's failed-reading push is inert the same way (Plan 35-10); a test that
+    proves it restores ``capture_closing_lines._notify_closing_failure`` itself. Plan 35-13 adds
+    the season-window seam.
     """
-    from scripts import daily_lock_pipeline
+    from scripts import capture_closing_lines, daily_lock_pipeline
 
     monkeypatch.setattr(daily_lock_pipeline, "NOTIFY_END_OF_RUN", lambda _report: None)
+    monkeypatch.setattr(
+        capture_closing_lines, "NOTIFY_CLOSING_FAILURE", lambda *_a, **_k: None
+    )
 
 
 # 34-REVIEW WR-32: the ledger's real-git tests run ``git`` directly over tmp_path repositories.

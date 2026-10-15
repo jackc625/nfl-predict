@@ -9,12 +9,15 @@
 * otherwise requests one board bounded by those kickoffs, transforms it with the CLOSING kind
   and appends it to the odds store through the locked writer;
 * records exactly one ``closing_capture`` run-log event per outcome (``no_games``, ``skipped``,
-  ``captured``, ``failed``), which the settle pass reads for NULL reasons.
+  ``captured``, ``failed``), which the settle pass reads for NULL reasons;
+* on ``failed`` only, sends one normal-priority failed push of its own and never checks in with
+  the watcher (Phase 35, D-13, Plan 35-10), whether or not the failed event could be recorded.
 
 The decision capture never consults the credit rule (last test).
 
 EVERYTHING HERE IS OFFLINE: the client is a stand-in, the odds store is sandboxed under
-``tmp_path`` and the run log is a recorder. No Odds API call, no credit spent.
+``tmp_path`` and the run log is a recorder. No Odds API call, no credit spent. The notifier seam is
+inert unless a test restores it, and then ntfy is an ``httpx.MockTransport``.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -22,6 +25,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import ast
+import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -33,7 +37,16 @@ import data.storage as storage_mod
 import scripts.capture_closing_lines as capture_module
 import scripts.ingest_odds as ingest_odds_module
 from data.storage import ParquetManager
+from notify import closing_task
+from notify.log import read_notifications
 from scripts.ingest_odds import OddsDataIngester
+from tests.unit.test_notify_transport import (
+    DUMMY_RECEIPT_ID,
+    dummy_secrets,
+    install_sleep_recorder,
+    install_transport,
+    ntfy_ok,
+)
 from utils import ExternalAPIError
 from utils.game_lock import game_lock
 
@@ -375,6 +388,138 @@ class TestTheCapture:
         assert shown.value.code == 0
         # argparse wraps to the terminal width, so compare with whitespace collapsed.
         assert "no required arguments" in " ".join(capsys.readouterr().out.split())
+
+
+_WATCHER_HOSTS = ("hc-ping.com", "healthchecks.io")
+
+
+def _real_notifier(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Restore the real closing notifier over dummy secrets and a MockTransport ntfy."""
+    monkeypatch.setattr(
+        capture_module,
+        "NOTIFY_CLOSING_FAILURE",
+        capture_module._notify_closing_failure,
+    )
+    monkeypatch.setattr(closing_task, "LOAD_SECRETS", dummy_secrets)
+    install_sleep_recorder(monkeypatch)
+    return install_transport(monkeypatch, ntfy_ok())
+
+
+def _failing_client() -> _FakeClient:
+    return _FakeClient(error=ExternalAPIError("Request error: refused"))
+
+
+class TestTheClosingFailurePush:
+    """A failed reading is one normal-priority failed push; nothing else pushes (Plan 35-10)."""
+
+    def test_a_failed_reading_sends_one_normal_push_and_keeps_exit_1(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        requests = _real_notifier(monkeypatch)
+        run = _Run(tmp_path, monkeypatch, _games(), _failing_client())
+
+        assert run.main() == 1
+
+        assert run.event["outcome"] == "failed"
+        (request,) = requests
+        body = json.loads(request.content)
+        assert body["priority"] == 3
+        assert body["title"] == "FAILED: closing line capture"
+        assert "DAL @ PHI, NYG @ WAS" in body["message"]
+        assert "could not be written" not in body["message"]
+        assert not any(
+            host in request.url.host for request in requests for host in _WATCHER_HOSTS
+        ), "the closing task never checks in with the watcher (D-13)"
+        (record,) = read_notifications()
+        assert record["source"] == "closing_task"
+        assert record["event_class"] == "failed"
+        assert record["priority"] == 3
+        assert record["outcome"] == "delivered"
+        assert record["receipt_id"] == DUMMY_RECEIPT_ID
+        assert "NOTIFY_FAILED= delivered" in capsys.readouterr().out
+
+    def test_two_failures_in_one_night_send_two_pushes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        requests = _real_notifier(monkeypatch)
+        run = _Run(tmp_path, monkeypatch, _games(), _failing_client())
+
+        assert run.main() == 1
+        assert run.main() == 1
+
+        assert [event["outcome"] for event in run.events] == ["failed", "failed"]
+        assert len(requests) == 2, "no dedupe, cooldown or rate limit"
+        assert len(read_notifications()) == 2
+
+    def test_no_games_skipped_and_captured_send_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        games = _games()
+        in_window = games.loc[
+            games["game_id"].isin(["2026_W06_DAL@PHI", "2026_W06_NYG@WAS"])
+        ]
+        scenarios = {
+            "no_games": (games.loc[~games.index.isin(in_window.index)], _FakeClient()),
+            "skipped": (games, _FakeClient(remaining=20)),
+            "captured": (games, _FakeClient(payload=_payload(in_window))),
+        }
+        calls: list[Any] = []
+        monkeypatch.setattr(
+            capture_module,
+            "NOTIFY_CLOSING_FAILURE",
+            lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+        for outcome, (frame, client) in scenarios.items():
+            run = _Run(tmp_path / outcome, monkeypatch, frame, client)
+
+            assert run.main() == 0
+            assert run.event["outcome"] == outcome
+            assert calls == [], outcome
+
+    def test_a_raising_notifier_keeps_exit_1(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def _raising(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("the notifier exploded")
+
+        run = _Run(tmp_path, monkeypatch, _games(), _failing_client())
+        monkeypatch.setattr(capture_module, "NOTIFY_CLOSING_FAILURE", _raising)
+
+        assert run.main() == 1
+        assert run.event["outcome"] == "failed"
+        assert run.event["error_type"] == "ExternalAPIError"
+        assert "NOTIFY= failed RuntimeError" in capsys.readouterr().out
+
+    def test_a_failing_run_log_still_sends_the_push_and_keeps_exit_1(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        requests = _real_notifier(monkeypatch)
+        run = _Run(tmp_path, monkeypatch, _games(), _failing_client())
+
+        def _log_refusing_failed(event: str, **fields: Any) -> bool:
+            if fields.get("outcome") == "failed":
+                raise OSError("logs/ledger_runs.jsonl is not writable")
+            return run._log(event, **fields)
+
+        monkeypatch.setattr(capture_module, "LOG", _log_refusing_failed)
+
+        assert run.main() == 1
+
+        (request,) = requests
+        body = json.loads(request.content)
+        assert body["priority"] == 3
+        assert body["title"] == "FAILED: closing line capture"
+        assert "could not be written to logs/ledger_runs.jsonl" in body["message"]
+        assert "CLOSING_CAPTURE_LOG= failed OSError" in capsys.readouterr().out
 
 
 class TestTheDecisionCaptureIgnoresTheCreditRule:
