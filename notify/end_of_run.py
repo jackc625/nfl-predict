@@ -12,9 +12,11 @@ ORDER (D-13)
 ------------
 1. Every failed push the run owes (:func:`notify.messages.failed_messages`), top priority first.
 2. The one bets push for the live bets the run newly appended, or none.
+3. The weekly digest email, on its digest run only (:func:`notify.digest.send_digest_if_due`). An
+   email that is not delivered sends one normal-priority ``FAILED: weekly email`` push naming the
+   failure kind (SPEC R8), and both count toward :attr:`EndOfRunOutcome.any_undelivered`.
 
-Plan 35-11 adds the Saturday digest step and Plan 35-13 the watcher check-in, in that order, after
-these two.
+Plan 35-13 adds the watcher check-in after these three.
 
 NEVER RAISES ON A SEND
 ----------------------
@@ -31,8 +33,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from notify import secrets as notify_secrets
+from notify.digest import send_digest_if_due
 from notify.events import PushMessage, SendContext, send_push
-from notify.messages import bets_message, failed_messages
+from notify.messages import bets_message, email_failed_message, failed_messages
 from notify.report import RunReport
 from notify.secrets import NotifySecrets
 from notify.transport import OUTCOME_FAILED, Delivery
@@ -48,8 +51,9 @@ class EndOfRunOutcome:
     """Every message the end of one run tried to send, in send order.
 
     Attributes:
-        deliveries: ``(step, Delivery)`` pairs; ``step`` is ``failed`` or ``bets``. A step that
-            raised is one failed delivery with no attempt, its failure kind ``raised_<Class>``.
+        deliveries: ``(step, Delivery)`` pairs; ``step`` is ``failed``, ``bets`` or ``digest``. A
+            step that raised is one failed delivery with no attempt, its failure kind
+            ``raised_<Class>``.
     """
 
     deliveries: list[tuple[str, Delivery]] = field(default_factory=list)
@@ -98,7 +102,7 @@ def notify_end_of_run(
     secrets: NotifySecrets | None = None,
     now: datetime | None = None,
 ) -> EndOfRunOutcome:
-    """Send the run's failed pushes, then its bets push. Never raises an ``Exception``.
+    """Send the run's failed pushes, its bets push, then the digest. Never raises an ``Exception``.
 
     Args:
         report: What the run did.
@@ -117,11 +121,13 @@ def notify_end_of_run(
         return outcome
     instant = now if now is not None else datetime.now(UTC)
     context = SendContext("daily_run", report.run_date_et, loaded)
+    failed_titles: list[str] = []
 
     try:
         for message in failed_messages(
             report, now=instant, secret_values=loaded.secret_values()
         ):
+            failed_titles.append(message.title)
             _send_one("failed", message, context, outcome)
     except Exception as error:  # noqa: BLE001 - the bets push still goes out
         print(f"NOTIFY_FAILED= failed {type(error).__name__}")  # noqa: T201
@@ -137,4 +143,38 @@ def notify_end_of_run(
         print(f"NOTIFY_BETS= failed {type(error).__name__}")  # noqa: T201
         outcome.deliveries.append(("bets", _raised(error)))
 
+    try:
+        _send_digest(report, context, failed_titles, instant, outcome)
+    except Exception as error:  # noqa: BLE001 - a later step still runs
+        print(f"NOTIFY_DIGEST= failed {type(error).__name__}")  # noqa: T201
+        outcome.deliveries.append(("digest", _raised(error)))
+
     return outcome
+
+
+def _send_digest(
+    report: RunReport,
+    context: SendContext,
+    failed_titles: list[str],
+    now: datetime,
+    outcome: EndOfRunOutcome,
+) -> None:
+    """Step 3: the digest on its digest run; an undelivered one also sends a failed push (R8)."""
+    delivery = send_digest_if_due(
+        report, context=context, failed_titles=tuple(failed_titles), now=now
+    )
+    if delivery is None:
+        print("NOTIFY_DIGEST= not a digest day")  # noqa: T201
+        return
+    outcome.deliveries.append(("digest", delivery))
+    if delivery.delivered:
+        print(f"NOTIFY_DIGEST= delivered {delivery.receipt_id}")  # noqa: T201
+        return
+    failure_kind = delivery.failure_kind or "unknown"
+    print(f"NOTIFY_DIGEST= failed {failure_kind}")  # noqa: T201
+    _send_one(
+        "failed",
+        email_failed_message(report.run_date_et, failure_kind),
+        context,
+        outcome,
+    )

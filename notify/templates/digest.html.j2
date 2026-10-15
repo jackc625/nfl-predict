@@ -1,0 +1,144 @@
+{#- The Saturday digest email, HTML part (SPEC R4, D-07, D-19).
+
+    Pass: inputs (notify.digest.DigestInputs), heading, status_lines, populated_label, stale_notice,
+    zero_bets_line. Globals: not_advice_key, not_advice_line (api.presentation, via notify.rendering).
+
+    Plain HTML with INLINE styles only: no stylesheet, no image, no link, no URL (D-19). Nothing is
+    computed here: every figure was stored by the cache build, and the only transforms are /bets'
+    own unit renders (a stored fraction shown as a percent) and number formats:
+      - the pick: components/_bet_pick.html (pick_label; side_line with "%+.1f" for a spread);
+      - EV: "%+.2f" of per_bet_ev x 100, then "%"; stake: "%.2f" units;
+      - band: high or medium, anything else low (components/_ev_band_badge.html);
+      - the last week block: api.presentation.last_week_display's strings, with /bets' hooks;
+      - tracker totals: /bets' six labels; Hit rate "%.1f" of the fraction x 100 plus "%", Return
+        (flat, units) "%+.3f"; a NULL or NaN figure is "not measured", never a number.
+    Order (SPEC R4): status header, bets, games, last week, season to date, then the not-advice line
+    LAST. Each value a test reads sits in a data-* hook.
+
+    ASCII only, no emoji (CLAUDE.md hard constraint). -#}
+{%- import "components/_bet_pick.html" as bp -%}
+{%- set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} -%}
+{%- set H2 = "font-size:16px;margin:20px 0 8px 0;border-bottom:1px solid #cccccc;padding-bottom:4px;" -%}
+{%- set CELL = "padding:4px 8px;border-bottom:1px solid #eeeeee;text-align:left;" -%}
+{%- set MUTED = "color:#555555;font-size:12px;" -%}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="us-ascii">
+<title>{{ heading }}</title>
+</head>
+<body style="margin:0;padding:16px;background:#ffffff;color:#111111;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.4;">
+<h1 style="font-size:20px;margin:0 0 12px 0;">{{ heading }}</h1>
+
+<div data-digest-status style="margin:0 0 12px 0;">
+{%- if status_lines %}
+<p style="margin:0;font-weight:bold;">RUN FAILED:</p>
+<ul style="margin:4px 0 0 20px;padding:0;">
+{%- for line in status_lines %}
+<li data-digest-failed>{{ line }}</li>
+{%- endfor %}
+</ul>
+{%- else %}
+<p style="margin:0;font-weight:bold;">Run clean.</p>
+{%- endif %}
+</div>
+
+<h2 style="{{ H2 }}">Live bets</h2>
+{%- if not inputs.cache_current %}
+<p data-digest-stale style="margin:0;">{{ stale_notice }}</p>
+<p style="{{ MUTED }}margin:4px 0 0 0;">Bet list last populated: {{ populated_label }}.</p>
+{%- elif not inputs.bets %}
+<p data-digest-zero-bets style="margin:0;">{{ zero_bets_line }}</p>
+{%- else %}
+<table style="border-collapse:collapse;" data-digest-bets>
+<tr>
+<th style="{{ CELL }}">#</th><th style="{{ CELL }}">Game</th><th style="{{ CELL }}">Bet type</th><th style="{{ CELL }}">Pick</th><th style="{{ CELL }}">Line</th><th style="{{ CELL }}">EV %</th><th style="{{ CELL }}">Stake (units)</th><th style="{{ CELL }}">EV band</th>
+</tr>
+{%- for bet in inputs.bets %}
+<tr data-digest-row>
+<td style="{{ CELL }}">{{ loop.index }}</td>
+<td style="{{ CELL }}">{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }}</td>
+<td style="{{ CELL }}">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</td>
+<td style="{{ CELL }}" data-digest-pick>{{ bp.pick_label(bet) }}</td>
+<td style="{{ CELL }}" data-digest-line>
+  {%- if bet.line is none -%}--
+  {%- elif bet.target == "ats" -%}{{ bp.side_line(bet, "%+.1f") }}
+  {%- else -%}{{ "%.1f"|format(bet.line) }}
+  {%- endif -%}
+</td>
+<td style="{{ CELL }}" data-digest-ev>{{ "%+.2f"|format(bet.per_bet_ev * 100) ~ "%" }}</td>
+<td style="{{ CELL }}" data-digest-stake>{{ "%.2f"|format(bet.stake_units) }}</td>
+<td style="{{ CELL }}" data-digest-band>{{ bet.ev_tier if bet.ev_tier in ("high", "medium") else "low" }}</td>
+</tr>
+{%- endfor %}
+</table>
+{%- endif %}
+
+<h2 style="{{ H2 }}">Games this week</h2>
+{%- if inputs.games %}
+<table style="border-collapse:collapse;" data-digest-games>
+{%- for game in inputs.games %}
+<tr data-digest-game>
+<td style="{{ CELL }}">{{ game.label }}</td>
+<td style="{{ CELL }}" data-digest-game-state>{{ game.state }}</td>
+</tr>
+{%- endfor %}
+</table>
+{%- else %}
+<p style="margin:0;">No game of this week is recorded in the schedule.</p>
+{%- endif %}
+
+{%- if inputs.last_week is none %}
+<h2 style="{{ H2 }}">Last week</h2>
+<p style="margin:0;">Not available: the web cache could not be read.</p>
+{%- else %}
+<div data-last-week-block>
+<h2 style="{{ H2 }}">{{ inputs.last_week.heading }}</h2>
+{%- if inputs.last_week.nothing_graded %}
+<p data-last-week-nothing-graded style="margin:0;">{{ inputs.last_week.text_nothing_graded }}</p>
+{%- endif %}
+{%- for block in inputs.last_week.blocks %}
+<div data-last-week-row style="margin:0 0 8px 0;">
+<p data-last-week-class style="{{ MUTED }}margin:0;">{{ block.class_label }}</p>
+{%- if block.record %}
+<p style="margin:2px 0 0 0;"><span data-last-week-record style="font-weight:bold;">{{ block.record }}</span> &middot; <span data-last-week-actual>{{ block.actual }}</span> &middot; <span data-last-week-expected>{{ block.expected }}</span></p>
+{%- endif %}
+<p data-last-week-ungraded style="{{ MUTED }}margin:2px 0 0 0;">{{ block.ungraded }}</p>
+</div>
+{%- endfor %}
+{%- if not inputs.last_week.nothing_graded %}
+<p data-last-week-caveat style="{{ MUTED }}margin:4px 0 0 0;">{{ inputs.last_week.caveat }}</p>
+{%- endif %}
+</div>
+{%- endif %}
+
+<h2 style="{{ H2 }}">Season to date</h2>
+{%- if inputs.tracker_blocks is none %}
+<p style="margin:0;">Not available: the web cache could not be read.</p>
+{%- elif not inputs.tracker_blocks %}
+<p style="margin:0;">Nothing graded yet.</p>
+{%- else %}
+{%- for block in inputs.tracker_blocks %}
+<div data-digest-tracker-block style="margin:0 0 12px 0;">
+<p style="margin:0;font-weight:bold;">{{ block.heading }}</p>
+{%- if not block.bets_graded %}
+<p style="margin:2px 0 0 0;">Nothing graded yet.</p>
+{%- else %}
+{%- set hit_rate_measured = block.hit_rate is not none and block.hit_rate == block.hit_rate %}
+{%- set return_measured = block.flat_return_units is not none and block.flat_return_units == block.flat_return_units %}
+<table style="border-collapse:collapse;">
+<tr><td style="{{ CELL }}" data-figure-label>Bets graded</td><td style="{{ CELL }}" data-figure-value>{{ block.bets_graded }}</td></tr>
+<tr><td style="{{ CELL }}" data-figure-label>Wins</td><td style="{{ CELL }}" data-figure-value>{{ block.wins }}</td></tr>
+<tr><td style="{{ CELL }}" data-figure-label>Losses</td><td style="{{ CELL }}" data-figure-value>{{ block.losses }}</td></tr>
+<tr><td style="{{ CELL }}" data-figure-label>Pushes</td><td style="{{ CELL }}" data-figure-value>{{ block.pushes }}</td></tr>
+<tr><td style="{{ CELL }}" data-figure-label>Hit rate</td><td style="{{ CELL }}" data-figure-value>{{ ("%.1f"|format(block.hit_rate * 100) ~ "%") if hit_rate_measured else "not measured" }}</td></tr>
+<tr><td style="{{ CELL }}" data-figure-label>Return (flat, units)</td><td style="{{ CELL }}" data-figure-value>{{ "%+.3f"|format(block.flat_return_units) if return_measured else "not measured" }}</td></tr>
+</table>
+{%- endif %}
+</div>
+{%- endfor %}
+{%- endif %}
+
+<p data-not-advice style="{{ MUTED }}margin:24px 0 0 0;border-top:1px solid #cccccc;padding-top:8px;"><strong>{{ not_advice_key }}:</strong> {{ not_advice_line }}</p>
+</body>
+</html>

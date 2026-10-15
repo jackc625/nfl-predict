@@ -1,0 +1,79 @@
+{#- The Saturday digest email, plain-text alternative (SPEC R4, D-19).
+
+    The same content, order and formats as digest.html.j2 (read its header): status header, bets,
+    games, last week, season to date, then the not-advice line LAST. Nothing is computed here.
+
+    ASCII only, no emoji (CLAUDE.md hard constraint). -#}
+{%- import "components/_bet_pick.html" as bp -%}
+{%- set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} -%}
+{{ heading }}
+
+{% if status_lines -%}
+RUN FAILED:
+{% for line in status_lines -%}
+- {{ line }}
+{% endfor -%}
+{%- else -%}
+Run clean.
+{% endif %}
+LIVE BETS
+{% if not inputs.cache_current -%}
+{{ stale_notice }}
+Bet list last populated: {{ populated_label }}.
+{% elif not inputs.bets -%}
+{{ zero_bets_line }}
+{% else -%}
+{% for bet in inputs.bets -%}
+{{ loop.index }}. {{ bet.game_id.split('_')[-1].replace('@', ' @ ') }} | {{ BET_TYPE_LABELS.get(bet.target, bet.target) }} | {{ bp.pick_label(bet) }} | line {% if bet.line is none %}--{% elif bet.target == "ats" %}{{ bp.side_line(bet, "%+.1f") }}{% else %}{{ "%.1f"|format(bet.line) }}{% endif %} | EV {{ "%+.2f"|format(bet.per_bet_ev * 100) ~ "%" }} | stake {{ "%.2f"|format(bet.stake_units) }} units | EV band {{ bet.ev_tier if bet.ev_tier in ("high", "medium") else "low" }}
+{% endfor -%}
+{% endif %}
+GAMES THIS WEEK
+{% if inputs.games -%}
+{% for game in inputs.games -%}
+{{ game.label }}: {{ game.state }}
+{% endfor -%}
+{% else -%}
+No game of this week is recorded in the schedule.
+{% endif %}
+{% if inputs.last_week is none -%}
+LAST WEEK
+Not available: the web cache could not be read.
+{% else -%}
+{{ inputs.last_week.heading | upper }}
+{% if inputs.last_week.nothing_graded -%}
+{{ inputs.last_week.text_nothing_graded }}
+{% endif -%}
+{% for block in inputs.last_week.blocks -%}
+{{ block.class_label }}
+{% if block.record -%}
+{{ block.record }} | {{ block.actual }} | {{ block.expected }}
+{% endif -%}
+{{ block.ungraded }}
+{% endfor -%}
+{% if not inputs.last_week.nothing_graded -%}
+{{ inputs.last_week.caveat }}
+{% endif -%}
+{% endif %}
+SEASON TO DATE
+{% if inputs.tracker_blocks is none -%}
+Not available: the web cache could not be read.
+{% elif not inputs.tracker_blocks -%}
+Nothing graded yet.
+{% else -%}
+{% for block in inputs.tracker_blocks -%}
+{{ block.heading }}
+{% if not block.bets_graded -%}
+Nothing graded yet.
+{% else -%}
+{%- set hit_rate_measured = block.hit_rate is not none and block.hit_rate == block.hit_rate -%}
+{%- set return_measured = block.flat_return_units is not none and block.flat_return_units == block.flat_return_units -%}
+Bets graded: {{ block.bets_graded }}
+Wins: {{ block.wins }}
+Losses: {{ block.losses }}
+Pushes: {{ block.pushes }}
+Hit rate: {{ ("%.1f"|format(block.hit_rate * 100) ~ "%") if hit_rate_measured else "not measured" }}
+Return (flat, units): {{ "%+.3f"|format(block.flat_return_units) if return_measured else "not measured" }}
+{% endif -%}
+{% endfor -%}
+{% endif %}
+{{ not_advice_key }}: {{ not_advice_line }}

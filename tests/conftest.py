@@ -490,12 +490,26 @@ def _notifications_inert_unless_a_test_turns_them_on(monkeypatch):
     The closing-line task's failed-reading push is inert the same way (Plan 35-10); a test that
     proves it restores ``capture_closing_lines._notify_closing_failure`` itself. Plan 35-13 adds
     the season-window seam.
+
+    The weekly digest step (Plan 35-11) reads the recorded schedule through
+    ``notify.digest.LOAD_SCHEDULE``; here it reads an EMPTY schedule, so every run is "not a digest
+    day" and no test reads silver ``games`` or the real web cache. A digest test hands in its own
+    prepared schedule and points ``notify.digest.WEB_CACHE_PATH`` at a ``tmp_path`` cache.
     """
+    import pandas as pd
+
+    from notify import digest
     from scripts import capture_closing_lines, daily_lock_pipeline
+    from utils.current_slate import SCHEDULE_COLUMNS
 
     monkeypatch.setattr(daily_lock_pipeline, "NOTIFY_END_OF_RUN", lambda _report: None)
     monkeypatch.setattr(
         capture_closing_lines, "NOTIFY_CLOSING_FAILURE", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        digest,
+        "LOAD_SCHEDULE",
+        lambda: pd.DataFrame(columns=[*SCHEDULE_COLUMNS, "et_day", "et_ordinal"]),
     )
 
 
