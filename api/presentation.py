@@ -1,8 +1,9 @@
-"""Presentation helpers for the Broadcast UI: team colours, nicknames and kickoff windows.
+"""Presentation helpers for the Broadcast UI: team colours, nicknames, kickoff windows, last week.
 
-Pure functions over static team data and a game's own kickoff timestamp. Nothing here reads the
-cache or computes a metric (UIAP-01): which colour a team's block uses, what a team is called and
-which TV window a kickoff falls in are formatting decisions, made identically on every request.
+Pure functions over static team data, a game's own kickoff timestamp and stored figures. Nothing
+here reads the cache or computes a metric (UIAP-01): which colour a team's block uses, what a team
+is called, which TV window a kickoff falls in and how a stored return reads are formatting
+decisions, made identically on every request.
 
 ``predictions.game_date`` is a naive TIMESTAMP already in US Eastern time -- a 1 PM ET kickoff is
 stored as ``13:00:00`` -- so a naive value is read as Eastern as-is, and an aware one is converted
@@ -11,6 +12,8 @@ to Eastern and then made naive, so every kickoff in a group can be compared with
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any, NamedTuple
 
@@ -318,3 +321,77 @@ def group_games_by_window(games: list[dict[str, Any]]) -> list[dict[str, Any]]:
             label = _window_label(days[key], key[1], moments.get(key, []))
         groups.append({"label": label, "games": members_in_window})
     return groups
+
+
+# ---------------------------------------------------------------------------
+# Last week: actual vs expected (SPEC R5, D-08)
+# ---------------------------------------------------------------------------
+#
+# ONE formatter for two surfaces. /bets renders the dict below and the weekly email calls the same
+# function, so the two can never format a figure differently (SPEC R6). The figures were computed
+# at cache build by backtest.bet_week_results; nothing here counts, sums or divides.
+
+LAST_WEEK_CAVEAT = "One week is far too few bets to judge the model."
+NOTHING_GRADED = "nothing graded"
+NOT_MEASURED = "not measured"
+#: The stored counting class, as the reader is told it. A class outside this map is shown raw.
+COUNTING_CLASS_LABELS: dict[str, str] = {
+    "forward_realized": "Counted toward the verdict",
+    "pre_verdict": "Decided before the counting start week -- not counted",
+}
+
+
+def percent_of_stake(value: float | None) -> str:
+    """A stored return, a FRACTION of stake, as ``"+32.7% of stake"``; None or NaN is ``"not measured"``.
+
+    The x100 is a unit render (fraction -> percent), the same kind the EV column applies, not a
+    derivation (UIAP-01). An unmeasured figure is words, never ``+0.0%`` (D-08).
+    """
+    if value is None or math.isnan(value):
+        return NOT_MEASURED
+    return f"{value * 100:+.1f}% of stake"
+
+
+def _last_week_row_display(row: dict[str, Any]) -> dict[str, Any]:
+    """One counting class's display strings. A class with nothing graded carries no figure."""
+    counting_class = row["counting_class"]
+    display: dict[str, Any] = {
+        "class_label": COUNTING_CLASS_LABELS.get(counting_class, counting_class),
+        "record": None,
+        "actual": None,
+        "expected": None,
+        "ungraded": f"Not yet graded: {row['bets_ungraded']}",
+    }
+    if row["bets_graded"]:
+        display["record"] = f"{row['wins']}-{row['losses']}-{row['pushes']} (W-L-P)"
+        display["actual"] = "Actual return: " + percent_of_stake(
+            row["actual_return_units"]
+        )
+        display["expected"] = "Expected return: " + percent_of_stake(
+            row["expected_return_units"]
+        )
+    return display
+
+
+def last_week_display(
+    rows: Sequence[dict[str, Any]], season: int | None, week: int | None
+) -> dict[str, Any]:
+    """The last-week block's strings for the week before *week*, from its stored rows (D-08).
+
+    *rows* are ``DataService.get_bet_week_results(season, week - 1)`` in their stored class order;
+    each becomes one entry of ``blocks``. Week 1 (or no week) has no last week -- the caller never
+    reaches into the prior season -- so it, an empty *rows* and a week where no class graded
+    anything are all ``nothing_graded``.
+    """
+    heading = "Last week"
+    blocks: list[dict[str, Any]] = []
+    if season is not None and week is not None and week > 1:
+        heading = f"Last week -- {season} week {week - 1}"
+        blocks = [_last_week_row_display(row) for row in rows]
+    return {
+        "heading": heading,
+        "nothing_graded": not any(block["record"] for block in blocks),
+        "text_nothing_graded": NOTHING_GRADED,
+        "blocks": blocks,
+        "caveat": LAST_WEEK_CAVEAT,
+    }

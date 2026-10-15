@@ -33,7 +33,7 @@ from api.cache import (
 )
 from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
-from api.presentation import decorate_game, group_games_by_window
+from api.presentation import decorate_game, group_games_by_window, last_week_display
 from api.season_metrics import (
     _ats_outcome,
     _ou_outcome,
@@ -608,6 +608,14 @@ def _build_bets_context(
     freshness = _bet_week_coverage(service, season, week)
     bet_list_available = service.bet_list_table_exists()
     tracker_blocks = service.get_bet_tracker_blocks()
+    # Last week's stored actual vs expected (SPEC R5, D-08). ``week - 1`` selects the previous week
+    # of the one shown -- an index, not a metric -- and week 1 asks for nothing, so the page never
+    # wraps to the prior season.
+    last_week_rows = (
+        service.get_bet_week_results(season, week - 1)
+        if season is not None and week is not None and week > 1
+        else []
+    )
 
     return {
         "request": request,
@@ -647,6 +655,8 @@ def _build_bets_context(
         # its sections by matching the two stored labels; it never pools two classes into one
         # figure, because the pooled figure does not exist to render.
         "tracker_blocks": tracker_blocks,
+        # The last-week block's display strings, from the one formatter the weekly email shares.
+        "last_week": last_week_display(last_week_rows, season, week),
         # The graded rows behind those blocks, partitioned by the same class key the tracker
         # sections render, for the result strip (redesign spec 7.3). A read and a partition, not
         # a count: the template draws the strip only when it agrees with the stored block.

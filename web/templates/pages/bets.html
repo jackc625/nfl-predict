@@ -718,6 +718,42 @@
   {% endwith %}
 </section>
 {% else %}
+  {# Last week: actual vs expected (SPEC R5, D-08), at the TOP of the forward record and above its
+     season-to-date totals. Every string is formatted by api.presentation.last_week_display -- the
+     one formatter the weekly email calls too -- so this template formats nothing itself. An
+     unmeasured figure arrives as the words "not measured", and a week with nothing graded shows
+     "nothing graded" and no figure: never 0.0%. Monochrome on purpose: colour on this page is
+     reserved for the tracker's won and lost marks. Withheld with the forward record under the
+     hard-block, because it is the forward record's newest week. #}
+  {% if last_week is defined and last_week %}
+  <section class="mb-8" hx-indicator="#bets-loading" data-last-week-block>
+    <div class="mb-4">
+      <div class="section-head flex-wrap">
+        <h2 class="tag-ghost"><span class="unskew">{{ last_week.heading }}</span></h2>
+        <span class="flex-1 h-px bg-line min-w-[2rem]" aria-hidden="true"></span>
+      </div>
+    </div>
+    {% if last_week.nothing_graded %}
+    <p class="text-sm text-muted" data-last-week-nothing-graded>{{ last_week.text_nothing_graded }}</p>
+    {% endif %}
+    {% for block in last_week.blocks %}
+    <div class="mb-3" data-last-week-row>
+      <span class="label block" data-last-week-class>{{ block.class_label }}</span>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mt-1">
+        {% if block.record %}
+        <span class="display text-2xl text-fg whitespace-nowrap" data-last-week-record>{{ block.record }}</span>
+        <span class="num text-fg whitespace-nowrap" data-last-week-actual>{{ block.actual }}</span>
+        <span class="num text-fg whitespace-nowrap" data-last-week-expected>{{ block.expected }}</span>
+        {% endif %}
+        <span class="text-xs text-muted whitespace-nowrap" data-last-week-ungraded>{{ block.ungraded }}</span>
+      </div>
+    </div>
+    {% endfor %}
+    {% if not last_week.nothing_graded %}
+    <p class="text-xs text-muted mt-2 max-w-2xl" data-last-week-caveat>{{ last_week.caveat }}</p>
+    {% endif %}
+  </section>
+  {% endif %}
   {# The forward classes: the verdict record FIRST, then the "before counting started" block (kept
      on the record, never counted) after it, so the counted record is never read below an
      uncounted one (34-REVIEW WR-11). This departs from the weakest-to-strongest TRACKER_ORDER on

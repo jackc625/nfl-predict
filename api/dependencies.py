@@ -32,7 +32,12 @@ from jinja2_fragments.fastapi import Jinja2Blocks
 from api.exceptions import ModelUnavailableError
 from utils import get_logger
 
-from .presentation import et_timestamp_label, team_block_colors, team_nickname
+from .presentation import (
+    et_timestamp_label,
+    last_week_display,
+    team_block_colors,
+    team_nickname,
+)
 from .services import DataService, clear_cache
 
 logger = get_logger(__name__)
@@ -172,6 +177,8 @@ templates.env.filters["format_currency"] = format_currency
 # page that knows only a game_id -- a /bets slip -- needs a team's colours from its abbreviation.
 templates.env.globals["team_colors"] = team_block_colors
 templates.env.globals["team_nickname"] = team_nickname
+# The last-week block's one formatter (D-08): /bets and the weekly email format through it alike.
+templates.env.globals["last_week_display"] = last_week_display
 templates.env.filters["et_timestamp"] = et_timestamp_label
 
 
