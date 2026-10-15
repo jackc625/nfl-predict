@@ -1,11 +1,12 @@
 """Settings and configuration management using Pydantic."""
 
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, SecretStr, validator
 from pydantic_settings import BaseSettings
 
 # THE season partition rule (SPEC R6, D33.1-03, Plan 33.1-09). Imported RELATIVELY so this
@@ -313,6 +314,28 @@ class Settings(BaseSettings):
     odds_api_key: str | None = Field(default=None, env="ODDS_API_KEY")
     secret_key: str | None = Field(default=None, env="SECRET_KEY")
 
+    # Notifications (Phase 35, D-01 / D-09). Every one is a SecretStr so a repr, a log line or a
+    # traceback never prints it, and every one lives only in `.env`.
+    # The ntfy topic (at least 32 random characters: anyone who knows it can read and post).
+    ntfy_topic: SecretStr | None = Field(default=None, env="NTFY_TOPIC")
+    # The Resend API key the Saturday digest is sent with.
+    resend_api_key: SecretStr | None = Field(default=None, env="RESEND_API_KEY")
+    # The digest recipient; treated as a secret, so it never reaches a log record.
+    digest_to_address: SecretStr | None = Field(default=None, env="DIGEST_TO_ADDRESS")
+    # The healthchecks.io ping URL; it embeds the check uuid.
+    healthchecks_ping_url: SecretStr | None = Field(
+        default=None, env="HEALTHCHECKS_PING_URL"
+    )
+    # The healthchecks.io project's READ-WRITE API key (pause out of season, read back).
+    healthchecks_api_key: SecretStr | None = Field(
+        default=None, env="HEALTHCHECKS_API_KEY"
+    )
+    # D-16: the one ET date the daily run withholds its watcher check-in. Not a secret; set
+    # only for the watcher test day and deleted from `.env` afterwards.
+    watcher_test_withhold_date: date | None = Field(
+        default=None, env="WATCHER_TEST_WITHHOLD_DATE"
+    )
+
     # Database
     duckdb_path: str | None = Field(
         default="data/nfl_predictions.duckdb", env="DUCKDB_PATH"
@@ -336,6 +359,9 @@ class Settings(BaseSettings):
     enable_betting_recommendations: bool = Field(
         default=True, env="ENABLE_BETTING_RECOMMENDATIONS"
     )
+    # Read by nothing (Phase 35 D-05 retires the email/Slack alert branches). Kept so an owner
+    # `.env` that still carries these lines loads: unknown keys are forbidden, so removing them
+    # now would crash the 17:00 ET run. Plan 35-17 removes them once `.env` no longer has them.
     enable_email_reports: bool = Field(default=False, env="ENABLE_EMAIL_REPORTS")
     enable_slack_notifications: bool = Field(
         default=False, env="ENABLE_SLACK_NOTIFICATIONS"
@@ -354,6 +380,9 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        # Unknown `.env` keys stay forbidden (typo protection), but a validation error must
+        # never print a value: a mistyped secret name would otherwise echo the secret.
+        hide_input_in_errors = True
 
     def __init__(self, config_path: str = "conf/config.yaml", **kwargs):
         """Initialize settings with YAML config and environment variables."""
