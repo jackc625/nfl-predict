@@ -1,0 +1,17 @@
+{#- The bets push: one plain-text line per newly appended live bet (D-14, SPEC R3).
+
+    Pass: bets -- the appended ledger rows, already filtered to the live arm and live status and
+    put in /bets order by notify.messages.bets_message. Nothing is computed here.
+
+    Each line: matchup | bet type | pick | stake in units | EV band. The pick comes from the shared
+    components/_bet_pick.html macros, so the spread sign is /bets' own; the bet-type labels are set
+    inline exactly as components/_bet_headliners.html and pages/bets.html set them; the stake uses
+    /bets' "%.2f" units; the band follows components/_ev_band_badge.html (high or medium, anything
+    else low).
+
+    ASCII only, no emoji (CLAUDE.md hard constraint). -#}
+{%- import "components/_bet_pick.html" as bp -%}
+{%- set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} -%}
+{%- for bet in bets %}
+{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }} | {{ BET_TYPE_LABELS.get(bet.target, bet.target) }} | {{ bp.pick_label(bet) }} | {{ "%.2f"|format(bet.stake_units) }} units | EV band {{ bet.ev_tier if bet.ev_tier in ("high", "medium") else "low" }}
+{%- endfor %}

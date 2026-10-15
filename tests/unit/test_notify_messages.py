@@ -6,6 +6,8 @@
 * The one-line error is one ASCII line of at most 160 characters with every secret redacted and
   every URL cut to its scheme and host.
 * No title carries the app name; the weekly-email failure push names its date and failure kind.
+* The bets push lines use /bets' own labels and pick macros, and a 50-bet body is capped at
+  4,000 bytes ending ``... and N more`` when the router sends it.
 
 Reports are built directly; secrets are dummy values from ``tests/unit/test_notify_transport.py``.
 
@@ -14,14 +16,23 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
+import pytest
 from pydantic import SecretStr
 
-from notify.events import PRIORITY_NORMAL, PRIORITY_TOP
+from api.cache import ARM_LIVE, BET_STATUS_LIVE
+from notify.events import (
+    PRIORITY_NORMAL,
+    PRIORITY_TOP,
+    PUSH_BODY_LIMIT_BYTES,
+    send_push,
+)
 from notify.messages import (
     RERUN_COMMAND,
+    bets_message,
     closing_failure_message,
     email_failed_message,
     failed_messages,
@@ -38,12 +49,17 @@ from notify.report import (
     RunReport,
 )
 from pipeline.daily_steps import slate_lock
+from tests.unit.test_forward_ledger_store import make_row
 from tests.unit.test_notify_transport import (
     DUMMY_PING_URL,
     DUMMY_PING_UUID,
     DUMMY_TOPIC,
     RUN_DATE,
+    daily_context,
     dummy_secrets,
+    install_sleep_recorder,
+    install_transport,
+    ntfy_ok,
 )
 from utils.game_lock import ET
 
@@ -169,3 +185,88 @@ def test_the_weekly_email_failure_names_its_kind() -> None:
     assert "2026-10-17" in body
     assert "build_UndefinedError" in body
     assert "not re-sent automatically" in body
+
+
+# ---------------------------------------------------------------------------
+# The bets push lines (SPEC R1 encoding, R3, D-14)
+# ---------------------------------------------------------------------------
+
+
+def live_bet(game_id: str, **fields: Any) -> dict[str, Any]:
+    """One appended forward row of the live arm with ``status`` live, as the ledger stores it."""
+    values: dict[str, Any] = {
+        "game_id": game_id,
+        "season": 2026,
+        "week": 6,
+        "arm": ARM_LIVE,
+        "status": BET_STATUS_LIVE,
+    }
+    values.update(fields)
+    return make_row(**values)
+
+
+def test_each_line_uses_the_bets_labels() -> None:
+    rows = [
+        live_bet(
+            "2026_06_KC@DEN",
+            target="wp",
+            bet_side="away",
+            line=None,
+            per_bet_ev=0.031,
+            stake_units=0.5,
+            ev_tier=None,
+        ),
+        live_bet(
+            "2026_06_CIN@CLE",
+            target="ats",
+            bet_side="home_cover",
+            line=-5.5,
+            per_bet_ev=0.062,
+            stake_units=1.25,
+            ev_tier="high",
+        ),
+        live_bet(
+            "2026_06_DAL@PHI",
+            target="ou",
+            bet_side="under",
+            line=47.5,
+            per_bet_ev=0.041,
+            stake_units=2.0,
+            ev_tier="medium",
+        ),
+    ]
+
+    message = bets_message(_report(slate_season=2026, slate_week=6, appended_rows=rows))
+
+    assert message is not None
+    assert message.item_lines == (
+        "CIN @ CLE | Spread | CLE +5.5 | 1.25 units | EV band high",
+        "DAL @ PHI | Totals | Under 47.5 | 2.00 units | EV band medium",
+        "KC @ DEN | Winner | KC | 0.50 units | EV band low",
+    )
+
+
+def test_a_fifty_bet_body_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(monkeypatch, ntfy_ok())
+    # A real line is about 60 bytes, so 50 of them fit in 4,000; long synthetic team codes make
+    # each line about 120 bytes, so the cap has to cut.
+    away, home = "A" * 40, "H" * 40
+    rows = [
+        live_bet(f"2026_06_{away}{index:02d}@{home}", per_bet_ev=0.05 - index / 10000)
+        for index in range(50)
+    ]
+    message = bets_message(_report(slate_season=2026, slate_week=6, appended_rows=rows))
+    assert message is not None
+    assert len(message.item_lines) == 50
+
+    send_push(message, daily_context())
+
+    (request,) = requests
+    body = json.loads(request.content)["message"]
+    assert body.isascii()
+    assert len(body.encode("utf-8")) <= PUSH_BODY_LIMIT_BYTES
+    lines = body.splitlines()
+    kept = [line for line in lines if line.startswith(away)]
+    assert 0 < len(kept) < 50
+    assert lines[-1] == f"... and {50 - len(kept)} more"

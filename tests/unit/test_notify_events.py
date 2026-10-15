@@ -6,6 +6,9 @@
 * A delivered push whose log record could not be written is delivered but visibly unlogged.
 * Plan 35-07: every SPEC R2 outcome maps to exactly the right number and priority of failed
   pushes, and a crash before the orchestrator reaches ntfy as one top-priority push, logged once.
+* Plan 35-07: the bets push lists exactly the newly appended live bets, in ``/bets`` order (pinned
+  against ``DataService.get_bet_list``); an identical re-run sends none, a re-run adding one bet
+  lists exactly it. The runner cases reuse the forward-ledger runner's tmp_path environment.
 
 The MockTransport, sleep-recorder and dummy-secret helpers come from
 ``tests/unit/test_notify_transport.py``; Plan 35-08 extends this file.
@@ -17,18 +20,27 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
+import duckdb
+import pandas as pd
 import pytest
 
+from api.cache import (
+    ARM_SHADOW,
+    BET_LIST_COLUMNS,
+    GRADING_STATUS_PENDING,
+    materialize_bet_list,
+)
+from api.services import DataService, clear_cache
 from forward_ledger.closing_schedule import TriggerRegistration
 from forward_ledger.runner import SettleOutcome
 from forward_ledger.sync import BACKUP_REPO_MISSING, SyncOutcome
 from notify import log as notification_log
 from notify.events import PRIORITY_NORMAL, PRIORITY_TOP, PushMessage, send_push
 from notify.log import read_notifications
-from notify.messages import RERUN_COMMAND, failed_messages
+from notify.messages import RERUN_COMMAND, bets_message, failed_messages
 from notify.report import (
     STATUS_DEGRADED,
     STATUS_FAILED,
@@ -41,6 +53,15 @@ from notify.report import (
     RunReport,
 )
 from pipeline.daily_steps import slate_lock
+from tests.unit.test_forward_ledger_runner import (  # noqa: F401 -- env, run_log_path: fixtures
+    DECIDED_AT,
+    _Env,
+    env,
+    run_log_path,
+)
+from tests.unit.test_forward_ledger_runner import LOCK as RUNNER_LOCK
+from tests.unit.test_forward_ledger_runner_appended import EXTRA_GAME, _with_extra_game
+from tests.unit.test_notify_messages import live_bet
 from tests.unit.test_notify_transport import (
     DUMMY_PING_UUID,
     DUMMY_RECEIPT_ID,
@@ -57,6 +78,8 @@ from utils.file_lock import FileLockHeldError, exclusive_file_lock
 
 DUMMY_ODDS_KEY = "dummyoddsapikey0123456789abcdef"
 TOMORROW = ("2026_07_DAL@PHI", "2026_07_KC@BUF")
+# The forward-ledger runner environment's slate: run date Wednesday, games Thursday.
+RUNNER_SLATE_DATE = date(2026, 10, 14)
 
 
 @pytest.mark.parametrize("event_class", ["digest", "alert", "checkin"])
@@ -419,3 +442,107 @@ def test_failed_and_ledger_failures_together_put_the_top_message_first() -> None
         "FAILED: ledger settle",
         "FAILED: ledger anchor push",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Plan 35-07: the bets push (SPEC R3, D-14)
+# ---------------------------------------------------------------------------
+
+
+def _bets_report(rows: list[dict[str, Any]], **fields: Any) -> RunReport:
+    return _report(slate_season=2026, slate_week=6, appended_rows=rows, **fields)
+
+
+def _cache_order(rows: list[dict[str, Any]]) -> list[str]:
+    """The matchups ``/bets`` would list for these rows, read through ``DataService``."""
+    frame = pd.DataFrame(
+        [
+            {
+                **dict.fromkeys(BET_LIST_COLUMNS),
+                **{name: row[name] for name in BET_LIST_COLUMNS if name in row},
+                "grading_status": GRADING_STATUS_PENDING,
+            }
+            for row in rows
+        ]
+    )
+    conn = duckdb.connect(":memory:")
+    try:
+        materialize_bet_list(conn, frame)
+        clear_cache()
+        listed = DataService(conn).get_bet_list(2026, 6)
+    finally:
+        clear_cache()
+        conn.close()
+    return [str(row["game_id"]).split("_")[-1].replace("@", " @ ") for row in listed]
+
+
+def test_three_new_live_bets_give_one_push_with_three_lines_in_bets_order() -> None:
+    # Handed over out of order, with an EV tie the game_id tie-break has to settle.
+    rows = [
+        live_bet("2026_06_DAL@PHI", target="ou", bet_side="under", line=47.5),
+        live_bet("2026_06_CIN@CLE", per_bet_ev=0.0377),
+        live_bet("2026_06_KC@BUF", target="wp", bet_side="away", per_bet_ev=0.061),
+    ]
+
+    message = bets_message(_bets_report(rows))
+
+    assert message is not None
+    assert message.event_class == "bets"
+    assert message.priority == PRIORITY_NORMAL
+    assert message.title == "3 new bets: 2026 week 6, Sunday"
+    assert message.header_lines == ("2026 week 6, Sunday games",)
+    assert len(message.item_lines) == 3
+    matchups = [line.split(" | ")[0] for line in message.item_lines]
+    assert matchups == _cache_order(rows) == ["KC @ BUF", "CIN @ CLE", "DAL @ PHI"]
+
+
+def test_zero_new_live_bets_give_no_push() -> None:
+    shadow = live_bet("2026_06_CIN@CLE", arm=ARM_SHADOW)
+    suppressed = live_bet(
+        "2026_06_KC@BUF", status="suppressed", rejection_reason="below_floor"
+    )
+
+    assert bets_message(_bets_report([])) is None
+    assert bets_message(_bets_report([shadow, suppressed])) is None
+
+
+def _runner_report(outcome: Any) -> RunReport:
+    """A report carrying the rows one runner call appended, for its 2026 week 6 slate."""
+    return RunReport(
+        run_date_et=RUNNER_SLATE_DATE,
+        start=DECIDED_AT,
+        lock=RUNNER_LOCK,
+        slate_season=2026,
+        slate_week=6,
+        appended_rows=list(outcome.appended_rows),
+    )
+
+
+def test_an_identical_rerun_gives_no_push(env: _Env) -> None:  # noqa: F811
+    first = bets_message(_runner_report(env.record()))
+
+    again = bets_message(
+        _runner_report(env.record(decided_at=DECIDED_AT + timedelta(minutes=12)))
+    )
+
+    assert first is not None
+    assert len(first.item_lines) == 2
+    assert again is None
+
+
+def test_a_rerun_adding_one_bet_lists_exactly_it(env: _Env) -> None:  # noqa: F811
+    env.record()
+
+    message = bets_message(
+        _runner_report(
+            env.record(
+                decided_at=DECIDED_AT + timedelta(minutes=5),
+                bundle_builder=_with_extra_game(env),
+            )
+        )
+    )
+
+    assert message is not None
+    assert message.title == "1 new bet: 2026 week 6, Thursday"
+    (line,) = message.item_lines
+    assert line.startswith(f"{EXTRA_GAME.split('_')[-1]} | Spread | ")

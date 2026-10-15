@@ -22,6 +22,12 @@ The next-action line shows the lock instant the daily run supplies (``RunReport.
 ``utils.game_lock``), converted to ``utils.game_lock.ET``. This module never restates the lock
 hour, so its prose cannot drift from the one rule.
 
+THE BETS PUSH (D-14)
+--------------------
+It lists only the rows the run newly APPENDED to the forward ledger with the live arm and live
+status (``RunReport.appended_rows``, exactly as written), in ``/bets`` order, rendered through the
+shared ``components/_bet_pick.html`` macros so the pick reads as it does on ``/bets``.
+
 NO SECRET IN A MESSAGE (D-10)
 -----------------------------
 Error text is one line, with every configured secret value replaced by ``<redacted>`` and every URL
@@ -34,9 +40,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from operator import itemgetter
+from typing import Any
 
+from api.cache import ARM_LIVE, BET_STATUS_LIVE
 from notify.events import PRIORITY_NORMAL, PRIORITY_TOP, PushMessage, ascii_text
+from notify.rendering import template_environment
 from notify.report import (
     STATUS_DEGRADED,
     STATUS_FAILED,
@@ -51,6 +61,7 @@ from utils.game_lock import ET
 __all__ = [
     "ONE_LINE_ERROR_LIMIT",
     "RERUN_COMMAND",
+    "bets_message",
     "closing_failure_message",
     "email_failed_message",
     "failed_messages",
@@ -80,6 +91,18 @@ _FAILING_TRIGGER_SKIPS = frozenset(
 _URL = re.compile(r"(https?)://(?:[^\s/?#@]*@)?([^\s/?#:]+)\S*")
 
 _NOT_AFFECTED = "Games: none (predictions are not affected)"
+
+BETS_PUSH_TEMPLATE = "bets_push.txt.j2"
+# English weekday names by date.weekday(), independent of the machine's locale.
+_WEEKDAYS: tuple[str, ...] = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
 
 # What each top-priority daily-run outcome means, after "the daily run for <date>".
 _TOP_WHAT_FAILED: dict[str, str] = {
@@ -401,5 +424,53 @@ def closing_failure_message(
             "capture_failed.",
         ),
         item_lines=(),
+        priority=PRIORITY_NORMAL,
+    )
+
+
+def _bets_page_order(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*rows* in ``/bets`` order: ``per_bet_ev`` descending with NULLs last, then season, week,
+    game_id, target (``DataService.get_bet_list``'s ORDER BY).
+
+    A selection, not arithmetic: one stable sort on the tie-break, then a stable descending sort
+    on the stored EV, with the rows that have none kept last in tie-break order.
+    """
+    ranked = sorted(rows, key=itemgetter("season", "week", "game_id", "target"))
+    with_ev = [row for row in ranked if row["per_bet_ev"] is not None]
+    without_ev = [row for row in ranked if row["per_bet_ev"] is None]
+    return [*sorted(with_ev, key=itemgetter("per_bet_ev"), reverse=True), *without_ev]
+
+
+def bets_message(report: RunReport) -> PushMessage | None:
+    """The one bets push for the live bets this run newly appended, or None when there are none.
+
+    Only rows with the live arm AND live status count (the ledger also stores suppressed rows, and
+    Phase 37's shadow arm writes its own). An identical re-run appends nothing, so it gives None;
+    a re-run that adds a bet lists exactly that bet. The 4,000-byte cap and ``... and N more`` are
+    applied by the router (``notify.events.fit_lines``) when it sends the message.
+    """
+    live = [
+        row
+        for row in report.appended_rows
+        if row["arm"] == ARM_LIVE and row["status"] == BET_STATUS_LIVE
+    ]
+    if not live:
+        return None
+    ordered = _bets_page_order(live)
+    season = (
+        report.slate_season if report.slate_season is not None else ordered[0]["season"]
+    )
+    week = report.slate_week if report.slate_week is not None else ordered[0]["week"]
+    slate_day = _WEEKDAYS[(report.run_date_et + timedelta(days=1)).weekday()]
+    rendered = (
+        template_environment().get_template(BETS_PUSH_TEMPLATE).render(bets=ordered)
+    )
+    item_lines = tuple(line.strip() for line in rendered.splitlines() if line.strip())
+    noun = "new bet" if len(live) == 1 else "new bets"
+    return PushMessage(
+        event_class="bets",
+        title=f"{len(live)} {noun}: {season} week {week}, {slate_day}",
+        header_lines=(f"{season} week {week}, {slate_day} games",),
+        item_lines=item_lines,
         priority=PRIORITY_NORMAL,
     )
