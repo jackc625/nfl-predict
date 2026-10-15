@@ -476,6 +476,24 @@ def _no_real_notification_traffic(monkeypatch, _notification_log_quarantine):
     )
 
 
+@pytest.fixture(autouse=True)
+def _notifications_inert_unless_a_test_turns_them_on(monkeypatch):
+    """The daily run's end-of-run notifier is a no-op in every test that does not restore it.
+
+    About thirty tests call ``scripts.daily_lock_pipeline.run_daily`` for other reasons. Once the
+    run sends at its end (Phase 35, D-13), each of them would load the notification secrets from
+    the owner's real ``.env`` and try to send -- refused by the network guard above, but still a
+    read of real secrets and a failed test. So ``NOTIFY_END_OF_RUN`` is replaced with a no-op
+    here. A test that proves the wiring restores the real seam itself:
+    ``monkeypatch.setattr(daily, "NOTIFY_END_OF_RUN", daily._notify_end_of_run)``.
+
+    Plan 35-10 adds the closing-line task's seam here, Plan 35-13 the season-window seam.
+    """
+    from scripts import daily_lock_pipeline
+
+    monkeypatch.setattr(daily_lock_pipeline, "NOTIFY_END_OF_RUN", lambda _report: None)
+
+
 # 34-REVIEW WR-32: the ledger's real-git tests run ``git`` directly over tmp_path repositories.
 # Inherited ``GIT_DIR`` / ``GIT_WORK_TREE`` / ``GIT_INDEX_FILE`` (a run from inside a git hook, or
 # a shell that exported them) would point that git at THIS repository instead, and the owner's

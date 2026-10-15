@@ -24,8 +24,19 @@ import pandas as pd
 import pytest
 
 import scripts.daily_lock_pipeline as daily
+from notify import end_of_run
+from notify.log import read_notifications
+from notify.report import STATUS_RUN_FAILED, RunReport
 from pipeline import daily_steps, live_skip
 from pipeline.daily_steps import DailySlate, slate_lock
+from tests.unit.test_notify_transport import (
+    DUMMY_PING_UUID,
+    DUMMY_RECEIPT_ID,
+    dummy_secrets,
+    install_sleep_recorder,
+    install_transport,
+    ntfy_ok,
+)
 
 RUN_DATE = date(2026, 9, 26)
 
@@ -263,7 +274,9 @@ def test_a_refused_run_records_the_slate_as_getting_no_predictions(
     (record,) = _records(records)
     assert record["outcome"] == "run_failed"
     assert record["game_ids"] == ["2026_W03_LA@DEN", "2026_W03_LAC@BUF"]
-    assert "staleness" in record["error"]
+    # The record names the failure's class, never its message (D-10, review HIGH).
+    assert record["error"] == "RuntimeError"
+    assert "staleness" not in record["error"]
     assert "NOT_PREDICTED 2026_W03_LAC@BUF" in capsys.readouterr().out
 
 
@@ -282,6 +295,97 @@ def test_a_refresh_that_fails_records_tomorrows_recorded_games(monkeypatch, tmp_
         daily.run_daily(RUN_DATE, start=start, dry_run=False)
     (record,) = _records(records)
     assert (record["outcome"], record["game_ids"]) == ("run_failed", ["g1", "g2"])
+
+
+# ---------------------------------------------------------------------------
+# Phase 35 (Plan 35-08): the end-of-run notifier, after every write (D-13, D-10)
+# ---------------------------------------------------------------------------
+
+TOMORROW_IDS = ["2026_W03_LAC@BUF", "2026_W03_LA@DEN"]
+
+
+def _an_hour_before_the_lock() -> datetime:
+    return slate_lock(RUN_DATE).astimezone(UTC) - timedelta(hours=1)
+
+
+def _crash_at_refresh(monkeypatch, tmp_path) -> Path:
+    """A run whose schedule refresh raises; tomorrow's recorded games are TOMORROW_IDS."""
+    records = tmp_path / "daily.jsonl"
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", records)
+    monkeypatch.setattr(daily, "_recorded_tomorrow_ids", lambda _d: list(TOMORROW_IDS))
+
+    def _broken(*_a, **_k):
+        raise RuntimeError("the schedule refresh exploded")
+
+    monkeypatch.setattr(daily, "_refresh_schedule", _broken)
+    return records
+
+
+def test_a_refresh_crash_sends_one_top_priority_failed_push_end_to_end(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(daily, "NOTIFY_END_OF_RUN", daily._notify_end_of_run)
+    monkeypatch.setattr(end_of_run, "LOAD_SECRETS", dummy_secrets)
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(monkeypatch, ntfy_ok())
+    _crash_at_refresh(monkeypatch, tmp_path)
+
+    with pytest.raises(RuntimeError, match="exploded"):
+        daily.run_daily(RUN_DATE, start=_an_hour_before_the_lock(), dry_run=False)
+
+    (request,) = requests
+    body = json.loads(request.content)
+    assert body["priority"] == 5
+    assert body["title"] == "FAILED: 2 games not predicted"
+    (record,) = read_notifications()
+    assert record["outcome"] == "delivered"
+    assert record["receipt_id"] == DUMMY_RECEIPT_ID
+    assert record["priority"] == 5
+    assert "NOTIFY_FAILED= delivered" in capsys.readouterr().out
+
+
+def test_the_report_reaches_the_seam_after_the_failure_record(monkeypatch, tmp_path):
+    records = _crash_at_refresh(monkeypatch, tmp_path)
+    seen: list[tuple[RunReport, list[dict]]] = []
+    monkeypatch.setattr(
+        daily,
+        "NOTIFY_END_OF_RUN",
+        lambda report: seen.append((report, _records(records))),
+    )
+
+    with pytest.raises(RuntimeError):
+        daily.run_daily(RUN_DATE, start=_an_hour_before_the_lock(), dry_run=False)
+
+    ((report, written_before_the_seam),) = seen
+    assert report.status == STATUS_RUN_FAILED
+    assert report.unpredicted_game_ids == tuple(TOMORROW_IDS)
+    assert report.exception_class == "RuntimeError"
+    assert [r["outcome"] for r in written_before_the_seam] == ["run_failed"]
+
+
+def test_main_prints_and_logs_the_class_only(monkeypatch, capfd):
+    def _crash(*_a, **_k):
+        raise RuntimeError(f"boom https://hc-ping.com/{DUMMY_PING_UUID}")
+
+    monkeypatch.setattr(daily, "run_daily", _crash)
+    logged: list[tuple[str, str, dict]] = []
+
+    class _Recorder:
+        """Stands in for the module's structlog logger, which caches on first use."""
+
+        def __getattr__(self, level):
+            return lambda event, **kwargs: logged.append((level, event, kwargs))
+
+    monkeypatch.setattr(daily, "logger", _Recorder())
+
+    assert daily.main([]) == 1
+
+    captured = capfd.readouterr()
+    assert "RUN_STATUS= failed: RuntimeError" in captured.out
+    for text in (captured.out, captured.err, repr(logged)):
+        assert DUMMY_PING_UUID not in text
+        assert "hc-ping.com" not in text
+    assert logged == [("error", "Daily run failed", {"error": "RuntimeError"})]
 
 
 def test_a_missing_model_feature_raises_a_recordable_error_not_system_exit(

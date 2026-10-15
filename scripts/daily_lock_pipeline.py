@@ -57,6 +57,7 @@ from data.write_sink import (
 )
 from forward_ledger.cutover import forward_rows_go_to_ledger
 from forward_ledger.run_log import bound_run_id, new_run_id
+from notify.report import STATUS_RUN_FAILED, RunReport
 from pipeline import daily_steps
 from pipeline.daily_steps import (
     COLLECTION_STEP_NAMES,
@@ -69,6 +70,8 @@ from utils.date_utils import ET
 from utils.logging_config import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import pandas as pd
 
     from forward_ledger.runner import SettleOutcome
@@ -97,6 +100,38 @@ def _recorded_tomorrow_ids(run_date_et: date) -> list[str]:
         return []
     tomorrow = run_date_et + timedelta(days=1)
     return sorted(schedule.loc[schedule["et_day"] == tomorrow, "game_id"].astype(str))
+
+
+def _tomorrow_ids_or_unknown(run_date_et: date) -> list[str] | None:
+    """Tomorrow's games per the recorded schedule, or None when that schedule cannot be read.
+
+    :func:`_recorded_tomorrow_ids` reads an unreadable schedule as "no games". The notifier must
+    tell the two apart (silence could hide lost games), so an empty answer is checked once more:
+    only a schedule that cannot be loaded makes it unknown. The schedule loader caches by file
+    stamp, so the second look costs no re-read.
+    """
+    from utils.current_slate import SlateResolutionError, load_recorded_schedule
+
+    ids = _recorded_tomorrow_ids(run_date_et)
+    if ids:
+        return ids
+    try:
+        load_recorded_schedule()
+    except SlateResolutionError:
+        return None
+    return ids
+
+
+def _failure_text(exc: BaseException) -> str:
+    """How a failure is printed, logged and persisted: the exception's CLASS name only (D-10).
+
+    An exception message can carry a request URL with an API key in it, the watcher's ping uuid,
+    or a notification secret, so no failure text this script prints, logs or records ever
+    includes it. The message stays in memory on the :class:`RunReport` (``exception_text``) and
+    reaches the owner only through the failed push's scrubbed one-line error (Plan 35-07). This
+    mirrors ``scripts/capture_closing_lines.py``, which already records the class name only.
+    """
+    return type(exc).__name__
 
 
 def _record_no_prediction(
@@ -140,32 +175,39 @@ def _unpredicted_slate_games(slate: DailySlate) -> list[str]:
 
 def _record_run_failure(
     run_date_et: date, slate: DailySlate | None, exc: BaseException
-) -> None:
+) -> list[str] | None:
     """Record tomorrow's games as getting NO predictions from a run that could not finish.
 
     33.2 review C1 CR-05 = B WR-05: a run refused by the staleness gate, stopped by a critical
     step, or interrupted used to leave no record naming the games it failed -- unlike the
     lock-passed and no-games days, which each write one. The games are the slate's still
-    unpredicted ones when the slate is known, else tomorrow's games per the recorded schedule.
+    unpredicted ones when the slate is known, else tomorrow's games per the recorded schedule
+    (recorded as ``[]`` when that schedule cannot be read). The record's ``error`` is the
+    failure's class name only (:func:`_failure_text`).
+
     Never raises: the failure being recorded is the one the caller re-raises.
+
+    Returns:
+        The game ids it named; None when they are unknown or the record could not be written.
     """
     try:
-        game_ids = (
+        named = (
             _unpredicted_slate_games(slate)
             if slate is not None
-            else _recorded_tomorrow_ids(run_date_et)
+            else _tomorrow_ids_or_unknown(run_date_et)
         )
-        detail = f": {exc}" if str(exc) else ""
+        game_ids = named if named is not None else []
         _record_no_prediction(
-            run_date_et,
-            "run_failed",
-            game_ids,
-            error=f"{type(exc).__name__}{detail}",
+            run_date_et, "run_failed", game_ids, error=_failure_text(exc)
         )
         for game_id in game_ids:
-            print(f"NOT_PREDICTED {game_id}: the run failed ({type(exc).__name__})")
+            print(f"NOT_PREDICTED {game_id}: the run failed ({_failure_text(exc)})")
     except Exception as record_error:  # noqa: BLE001 - never mask the run's own failure
-        logger.error("Could not record the failed run", error=str(record_error))
+        logger.error(
+            "Could not record the failed run", error=_failure_text(record_error)
+        )
+        return None
+    return named
 
 
 class ScheduleNotPublishedError(RuntimeError):
@@ -600,19 +642,55 @@ def _sync_ledger() -> None:
         logger.error("Ledger sync failed", error=str(exc))
 
 
+# ---------------------------------------------------------------------------
+# The end-of-run notifier (Phase 35, D-13). It runs AFTER every decision is written and after the
+# ledger sync, and it can never change the run's result: it is called only through
+# _notify_quietly, which swallows any Exception it raises.
+# ---------------------------------------------------------------------------
+
+
+def _notify_end_of_run(report: RunReport) -> object:
+    """Send the run's failed and bets pushes (``notify.end_of_run``).
+
+    The import is LAZY, so a broken notify module can never break this script's import.
+    """
+    from notify.end_of_run import notify_end_of_run
+
+    return notify_end_of_run(report)
+
+
+#: Seam: the test suite keeps it inert (tests/conftest.py); a wiring test restores this default.
+NOTIFY_END_OF_RUN: Callable[[RunReport], object] = _notify_end_of_run
+
+
+def _notify_quietly(report: RunReport) -> None:
+    """Call the notifier; a failure prints and logs its class name and NEVER propagates.
+
+    Only ``Exception`` is caught: a Ctrl+C, and the test guard's ``pytest.fail``, still stop the
+    process. The run's own exception, if any, is therefore never masked by a sending failure.
+    """
+    try:
+        NOTIFY_END_OF_RUN(report)
+    except Exception as exc:  # noqa: BLE001 - sending never alters the run's result
+        print(f"NOTIFY= failed {_failure_text(exc)}")
+        logger.error("End-of-run notification failed", error=_failure_text(exc))
+
+
 def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
     """One daily run as of *run_date_et*, started at *start*. Returns the exit code.
 
     With the cutover switch on, ONE run id is bound around the whole day (printed as
     ``LEDGER_RUN_ID=``), so every ledger event it writes -- the append, the settle pass and the
     end-of-run sync's pushes -- names this run (review finding 8); and a non-dry run ends with
-    the ledger sync, whether the day returned or raised.
+    the ledger sync, whether the day returned or raised. After the sync, a non-dry run that was
+    not interrupted sends its notifications (D-13), filled from one :class:`RunReport`.
 
     Raises:
         RunDateRefusedError: *run_date_et* cannot be run at *start*; nothing was written.
     """
     _refuse_an_unrunnable_date(run_date_et, start, dry_run=dry_run)
     lock = slate_lock(run_date_et)
+    report = RunReport(run_date_et=run_date_et, start=start, lock=lock)
     sink: ProductionSink | RecordingSink = (
         _MeasuredRecordingSink() if dry_run else ProductionSink()
     )
@@ -641,6 +719,7 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
         progress: dict[str, DailySlate] = {}
         cut_over = forward_rows_go_to_ledger()
         with bound_run_id(new_run_id()) as run_id:
+            report.run_id = run_id
             if cut_over:
                 print(f"LEDGER_RUN_ID= {run_id}")
             try:
@@ -652,11 +731,21 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                     progress=progress,
                 )
             except BaseException as exc:
-                _record_run_failure(run_date_et, progress.get("slate"), exc)
+                named = _record_run_failure(run_date_et, progress.get("slate"), exc)
+                report.record_exception(exc)
+                report.status = STATUS_RUN_FAILED
+                report.unpredicted_game_ids = (
+                    tuple(named) if named is not None else None
+                )
+                if "slate" not in progress:
+                    report.tomorrow_game_ids = report.unpredicted_game_ids
                 raise
             finally:
                 if cut_over and not dry_run:
                     _sync_ledger()
+                # After every write and the sync; never on a dry run or a Ctrl+C (D-13).
+                if not dry_run and not report.interrupted:
+                    _notify_quietly(report)
 
 
 def _run_the_day(
@@ -768,8 +857,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.warning("Daily run interrupted")
         return 130
     except Exception as exc:  # noqa: BLE001 -- top-level CLI must catch all
-        logger.error("Daily run failed", error=str(exc))
-        print(f"RUN_STATUS= failed: {exc}")
+        logger.error("Daily run failed", error=_failure_text(exc))
+        print(f"RUN_STATUS= failed: {_failure_text(exc)}")
         return 1
 
 
