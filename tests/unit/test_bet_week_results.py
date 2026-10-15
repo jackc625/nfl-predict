@@ -171,7 +171,7 @@ def test_the_row_round_trips_through_the_cache_and_the_getter() -> None:
 
     rows = DataService(conn).get_bet_week_results(2026, 5)
 
-    assert len(rows) == 1
+    assert rows is not None and len(rows) == 1
     row = rows[0]
     assert list(row) == BET_WEEK_RESULTS_COLUMNS
     assert row["counting_class"] == VALIDATION_TYPE_FORWARD_REALIZED
@@ -291,7 +291,8 @@ def test_week_one_has_no_last_week_and_never_reaches_the_prior_season() -> None:
 
     assert service.get_bet_week_results(2026, 0) == []
     # The prior season's final week exists in the cache and is still not selected.
-    assert len(service.get_bet_week_results(2025, 22)) == 1
+    prior_final = service.get_bet_week_results(2025, 22)
+    assert prior_final is not None and len(prior_final) == 1
 
 
 def test_two_classes_in_one_week_are_two_rows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,10 +312,9 @@ def test_two_classes_in_one_week_are_two_rows(monkeypatch: pytest.MonkeyPatch) -
     assert int(by_class[VALIDATION_TYPE_FORWARD_REALIZED]["bets_graded"]) == 1
 
     conn = _cache_connection(result)
-    getter_classes = [
-        r["counting_class"] for r in DataService(conn).get_bet_week_results(2026, 5)
-    ]
-    assert getter_classes == list(BET_WEEK_CLASS_ORDER)
+    rows = DataService(conn).get_bet_week_results(2026, 5)
+    assert rows is not None
+    assert [r["counting_class"] for r in rows] == list(BET_WEEK_CLASS_ORDER)
 
     # The order follows the declared constant, not the alphabet.
     reversed_order = tuple(reversed(BET_WEEK_CLASS_ORDER))
@@ -325,10 +325,9 @@ def test_two_classes_in_one_week_are_two_rows(monkeypatch: pytest.MonkeyPatch) -
     clear_cache()
 
     assert list(aggregate_bet_weeks(frame)["counting_class"]) == list(reversed_order)
-    getter_classes = [
-        r["counting_class"] for r in DataService(conn).get_bet_week_results(2026, 5)
-    ]
-    assert getter_classes == list(reversed_order)
+    rows = DataService(conn).get_bet_week_results(2026, 5)
+    assert rows is not None
+    assert [r["counting_class"] for r in rows] == list(reversed_order)
 
 
 def test_a_playoff_week_selects_week_minus_one() -> None:
@@ -342,6 +341,6 @@ def test_a_playoff_week_selects_week_minus_one() -> None:
 
     rows = DataService(conn).get_bet_week_results(2026, 19)
 
-    assert len(rows) == 1
+    assert rows is not None and len(rows) == 1
     assert (rows[0]["season"], rows[0]["week"]) == (2026, 19)
     assert (rows[0]["wins"], rows[0]["losses"]) == (1, 0)

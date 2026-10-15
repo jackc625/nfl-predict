@@ -2493,6 +2493,7 @@ def test_getters_read_meta_and_table(tmp_path: Path) -> None:
         "start_week": _LEDGER_START_WEEK,
     }
     key = (_CORRECTED_GAME, _LEDGER_SEASON, 6, "ou", "live")
+    assert corrections is not None
     assert list(corrections) == [key], (
         "the corrections are not keyed by the ledger row key"
     )
@@ -4579,6 +4580,7 @@ def test_get_bet_list_filters_by_arm_only_when_asked(tmp_path: Path) -> None:
     finally:
         probe.close()
 
+    assert every_arm is not None and live_only is not None
     assert [(r["game_id"], r["arm"]) for r in every_arm] == [
         (_ARM_SHADOW_GAME, "shadow"),
         (_ARM_LIVE_GAME, "live"),
