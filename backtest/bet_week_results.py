@@ -177,12 +177,14 @@ def aggregate_bet_weeks(
     if live_forward.empty:
         return _empty_frame()
 
-    records = [
-        _week_record(int(season), int(week), str(counting_class), rows)
-        for (season, week, counting_class), rows in live_forward.groupby(
-            ["season", "week", "validation_type"], sort=False, dropna=False
-        )
-    ]
+    records: list[dict[str, Any]] = []
+    groups = live_forward.groupby(
+        ["season", "week", "validation_type"], sort=False, dropna=False
+    )
+    for keys, rows in groups:
+        # pandas-stubs types a multi-column group key as Hashable; it is a 3-tuple at runtime.
+        season, week, counting_class = cast(tuple[Any, Any, Any], keys)
+        records.append(_week_record(int(season), int(week), str(counting_class), rows))
     records.sort(
         key=lambda r: (
             r["season"],
