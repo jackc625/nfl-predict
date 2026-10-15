@@ -9,9 +9,11 @@
 * Plan 35-07: the bets push lists exactly the newly appended live bets, in ``/bets`` order (pinned
   against ``DataService.get_bet_list``); an identical re-run sends none, a re-run adding one bet
   lists exactly it. The runner cases reuse the forward-ledger runner's tmp_path environment.
+* Plan 35-08: the end of the daily run sends failed first, then bets -- two deliveries, two
+  records, in that order -- and reports a delivered message whose receipt was not logged.
 
 The MockTransport, sleep-recorder and dummy-secret helpers come from
-``tests/unit/test_notify_transport.py``; Plan 35-08 extends this file.
+``tests/unit/test_notify_transport.py``.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -38,6 +40,7 @@ from forward_ledger.closing_schedule import TriggerRegistration
 from forward_ledger.runner import SettleOutcome
 from forward_ledger.sync import BACKUP_REPO_MISSING, SyncOutcome
 from notify import log as notification_log
+from notify.end_of_run import notify_end_of_run
 from notify.events import PRIORITY_NORMAL, PRIORITY_TOP, PushMessage, send_push
 from notify.log import read_notifications
 from notify.messages import RERUN_COMMAND, bets_message, failed_messages
@@ -546,3 +549,72 @@ def test_a_rerun_adding_one_bet_lists_exactly_it(env: _Env) -> None:  # noqa: F8
     assert message.title == "1 new bet: 2026 week 6, Thursday"
     (line,) = message.item_lines
     assert line.startswith(f"{EXTRA_GAME.split('_')[-1]} | Spread | ")
+
+
+# ---------------------------------------------------------------------------
+# Plan 35-08: the end of the daily run sends failed first, then bets (SPEC R1/R3 adjacency)
+# ---------------------------------------------------------------------------
+
+
+def _skips_with_two_new_bets() -> RunReport:
+    """A finished-with-skips run that also appended two live bets."""
+    return _report(
+        status=STATUS_FINISHED_WITH_SKIPS,
+        skipped_game_ids=(TOMORROW[0],),
+        slate_season=2026,
+        slate_week=7,
+        appended_rows=[
+            live_bet("2026_07_KC@BUF", week=7, per_bet_ev=0.05),
+            live_bet("2026_07_CIN@CLE", week=7, per_bet_ev=0.04),
+        ],
+    )
+
+
+def test_failed_then_bets_are_two_deliveries_in_that_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(
+        monkeypatch, ntfy_ok("receiptFailed1"), ntfy_ok("receiptBets001")
+    )
+    report = _skips_with_two_new_bets()
+
+    outcome = notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
+
+    titles = [json.loads(request.content)["title"] for request in requests]
+    assert titles == ["FAILED: 1 game not predicted", "2 new bets: 2026 week 7, Sunday"]
+    assert [step for step, _delivery in outcome.deliveries] == ["failed", "bets"]
+    records = read_notifications()
+    assert [record["event_class"] for record in records] == ["failed", "bets"]
+    assert [record["receipt_id"] for record in records] == [
+        "receiptFailed1",
+        "receiptBets001",
+    ]
+    assert outcome.any_undelivered is False
+    assert outcome.any_unlogged is False
+
+
+def test_an_unlogged_receipt_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_sleep_recorder(monkeypatch)
+    install_transport(monkeypatch, ntfy_ok("receiptFailed1"), ntfy_ok("receiptBets001"))
+    locks_taken: list[int] = []
+
+    def _bets_record_lock_never_frees(*args: Any, **kwargs: Any) -> Any:
+        locks_taken.append(1)
+        if len(locks_taken) == 2:  # the bets record, after the failed one
+            msg = "the lock is held by another writer (waited 60s)."
+            raise FileLockHeldError(msg)
+        return exclusive_file_lock(*args, **kwargs)
+
+    monkeypatch.setattr(
+        notification_log, "exclusive_file_lock", _bets_record_lock_never_frees
+    )
+    report = _skips_with_two_new_bets()
+
+    outcome = notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
+
+    assert outcome.any_undelivered is False
+    assert outcome.any_unlogged is True
+    ((_, failed), (_, bets)) = outcome.deliveries
+    assert (failed.logged, bets.logged) == (True, False)
+    assert [record["event_class"] for record in read_notifications()] == ["failed"]

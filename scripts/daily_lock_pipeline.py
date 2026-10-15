@@ -57,7 +57,14 @@ from data.write_sink import (
 )
 from forward_ledger.cutover import forward_rows_go_to_ledger
 from forward_ledger.run_log import bound_run_id, new_run_id
-from notify.report import STATUS_RUN_FAILED, RunReport
+from notify.report import (
+    STATUS_LOCK_PASSED,
+    STATUS_NO_GAMES,
+    STATUS_OFFSEASON,
+    STATUS_RUN_FAILED,
+    STATUS_SUCCESS,
+    RunReport,
+)
 from pipeline import daily_steps
 from pipeline.daily_steps import (
     COLLECTION_STEP_NAMES,
@@ -74,6 +81,7 @@ if TYPE_CHECKING:
 
     import pandas as pd
 
+    from forward_ledger.closing_schedule import TriggerRegistration
     from forward_ledger.runner import SettleOutcome
 
 logger = get_logger(__name__)
@@ -171,6 +179,21 @@ def _unpredicted_slate_games(slate: DailySlate) -> list[str]:
                 rows.loc[cutoff == pd.Timestamp(slate.lock), "game_id"].astype(str)
             )
     return sorted(slate.game_ids - predicted)
+
+
+def _unpredicted_or_unknown(slate: DailySlate) -> tuple[str, ...] | None:
+    """:func:`_unpredicted_slate_games` for the report, or None when it cannot be read.
+
+    Read after the orchestrator has finished, so a failing read must not turn a completed run
+    into a raised one: the report says "unknown" instead.
+    """
+    try:
+        return tuple(_unpredicted_slate_games(slate))
+    except Exception as exc:  # noqa: BLE001 - a report read never alters the run's result
+        logger.error(
+            "Could not read the slate's unpredicted games", error=_failure_text(exc)
+        )
+        return None
 
 
 def _record_run_failure(
@@ -528,12 +551,18 @@ def _report_skips(skipped_games: list[str], start_time: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _regenerate_closing_triggers(games: pd.DataFrame, start: datetime) -> None:
+def _regenerate_closing_triggers(
+    games: pd.DataFrame, start: datetime
+) -> TriggerRegistration:
     """Re-register the closing wake task's triggers from the refreshed schedule (D-07).
 
     Runs every non-dry day the refresh returns a season, before the no-games return, so a day
     with no game tomorrow still keeps the next eight days' kickoff windows registered.
     ``register_closing_triggers`` itself skips when the closing task is not installed.
+
+    Returns:
+        The registration; on its own failure, the ``failed`` registration it records, whose
+        reason names the exception's class only (:func:`_failure_text`).
     """
     from forward_ledger import closing_schedule
     from forward_ledger.run_log import record_event
@@ -551,48 +580,56 @@ def _regenerate_closing_triggers(games: pd.DataFrame, start: datetime) -> None:
             trigger_count=len(registration.expected_starts),
         )
     except Exception as exc:  # noqa: BLE001 - the previous registration still covers the week
-        reason = f"{type(exc).__name__}: {exc}"
-        print(f"CLOSING_TRIGGERS= failed {reason}")
-        logger.error("Closing trigger regeneration failed", error=str(exc))
+        failed = closing_schedule.TriggerRegistration(
+            "failed", f"error: {_failure_text(exc)}", (), False
+        )
+        print(f"CLOSING_TRIGGERS= failed {_failure_text(exc)}")
+        logger.error("Closing trigger regeneration failed", error=_failure_text(exc))
         # Recorded, as both guides promise, so stale triggers are visible in the run log
         # (34-REVIEW WR-12). Its own try: a failing run log must not fail the run either.
         try:
             record_event(
                 "closing_triggers",
                 outcome="failed",
-                reason=f"error: {reason}",
+                reason=failed.reason,
                 readback_match=False,
                 trigger_count=0,
             )
         except Exception as log_error:  # noqa: BLE001 - nor does a failing run log
             logger.error(
                 "Ledger run log refused the closing-trigger failure",
-                error=str(log_error),
+                error=_failure_text(log_error),
             )
+        return failed
+    return registration
 
 
-def _settle_ledger(start: datetime) -> SettleOutcome | None:
+def _settle_ledger(start: datetime, *, report: RunReport) -> SettleOutcome | None:
     """Grade, correct and finalize the ledger from refreshed silver data. Never raises.
 
-    Its failure is printed and recorded, and NEVER stops the decision run (34-RESEARCH
-    Pitfall 11): tonight's decisions do not wait on last week's results.
+    Its failure is printed and recorded by the exception's class name only, and NEVER stops the
+    decision run (34-RESEARCH Pitfall 11): tonight's decisions do not wait on last week's
+    results. The outcome, or the failure's class, is noted on *report*.
     """
     from forward_ledger import runner
     from forward_ledger.run_log import record_event
 
+    report.settle_ran = True
     try:
         outcome = runner.settle_ledger(now=start, repo_dir=Path())
     except Exception as exc:  # noqa: BLE001 - recorded; the decision run goes on
-        reason = f"{type(exc).__name__}: {exc}"
-        print(f"LEDGER_SETTLE= failed {reason}")
-        logger.error("Ledger settle pass failed", error=reason)
+        report.settle_error = _failure_text(exc)
+        print(f"LEDGER_SETTLE= failed {_failure_text(exc)}")
+        logger.error("Ledger settle pass failed", error=_failure_text(exc))
         try:
-            record_event("settle", ok=False, error=reason)
+            record_event("settle", ok=False, error=_failure_text(exc))
         except Exception as log_error:  # noqa: BLE001 - nor does a failing run log
             logger.error(
-                "Ledger run log refused the settle failure", error=str(log_error)
+                "Ledger run log refused the settle failure",
+                error=_failure_text(log_error),
             )
         return None
+    report.settle = outcome
     state = "changed" if outcome.changed else "unchanged"
     print(
         f"LEDGER_SETTLE= {state} graded={outcome.graded} corrections={outcome.corrections} "
@@ -617,16 +654,22 @@ def _rebuild_cache_after_settle() -> None:
         steps.step_populate_web_cache()
         print("WEB_CACHE_AFTER_SETTLE= rebuilt")
     except Exception as exc:  # noqa: BLE001 - the cache is a convenience, never a run failure
-        print(f"WEB_CACHE_AFTER_SETTLE= failed {type(exc).__name__}: {exc}")
-        logger.error("Web cache rebuild after settle failed", error=str(exc))
+        print(f"WEB_CACHE_AFTER_SETTLE= failed {_failure_text(exc)}")
+        logger.error("Web cache rebuild after settle failed", error=_failure_text(exc))
 
 
-def _sync_ledger() -> None:
-    """Anchor the ledger head and back up the ledger directory. Never raises (LDGR-05, D-01)."""
+def _sync_ledger(*, report: RunReport) -> None:
+    """Anchor the ledger head and back up the ledger directory. Never raises (LDGR-05, D-01).
+
+    The outcome (None when the sync refused and recorded it), or the class name of what it
+    raised, is noted on *report*.
+    """
+    report.sync_ran = True
     try:
         from forward_ledger import runner
 
         outcome = runner.sync_after_run()
+        report.sync = outcome
         if outcome is None:
             print("LEDGER_SYNC= failed (recorded in logs/ledger_runs.jsonl)")
             return
@@ -638,8 +681,9 @@ def _sync_ledger() -> None:
             f"refused={outcome.refused_reason or 'none'}"
         )
     except Exception as exc:  # noqa: BLE001 - a sync never alters the run's exit code
-        print(f"LEDGER_SYNC= failed {type(exc).__name__}: {exc}")
-        logger.error("Ledger sync failed", error=str(exc))
+        report.sync_error = _failure_text(exc)
+        print(f"LEDGER_SYNC= failed {_failure_text(exc)}")
+        logger.error("Ledger sync failed", error=_failure_text(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +742,12 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
     with active_sink(sink):
         # 0. The passed-lock refusal, BEFORE any request.
         if start >= lock:
-            recorded = _recorded_tomorrow_ids(run_date_et)
+            ids = _tomorrow_ids_or_unknown(run_date_et)
+            recorded = ids if ids is not None else []
+            report.status = STATUS_LOCK_PASSED
+            report.tomorrow_game_ids = report.unpredicted_game_ids = (
+                tuple(ids) if ids is not None else None
+            )
             logger.warning(
                 "Tomorrow's lock has passed; nothing collected or predicted",
                 lock=lock.isoformat(),
@@ -712,6 +761,10 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                 lock_passed=len(recorded),
                 next_day_games=len(recorded),
             )
+            # Its own send point: this return precedes the try/finally below. Still no data
+            # request is made -- the notification providers are not data sources (D-13).
+            if not dry_run:
+                _notify_quietly(report)
             return 0
 
         # Everything after the lock check: a run that cannot finish records tomorrow's games
@@ -729,6 +782,7 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                     dry_run=dry_run,
                     sink=sink,
                     progress=progress,
+                    report=report,
                 )
             except BaseException as exc:
                 named = _record_run_failure(run_date_et, progress.get("slate"), exc)
@@ -742,7 +796,10 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                 raise
             finally:
                 if cut_over and not dry_run:
-                    _sync_ledger()
+                    _sync_ledger(report=report)
+                # Rows appended before a later failure are still reported (failed, then bets).
+                if "slate" in progress:
+                    report.appended_rows = list(progress["slate"].appended_rows)
                 # After every write and the sync; never on a dry run or a Ctrl+C (D-13).
                 if not dry_run and not report.interrupted:
                     _notify_quietly(report)
@@ -755,12 +812,22 @@ def _run_the_day(
     dry_run: bool,
     sink: ProductionSink | RecordingSink,
     progress: dict[str, DailySlate],
+    report: RunReport | None = None,
 ) -> int:
-    """Steps 1-3 of one daily run. The selected slate is left in *progress* for the caller."""
+    """Steps 1-3 of one daily run. The selected slate is left in *progress* for the caller.
+
+    Each outcome is noted on *report* as the run decides it (never re-derived); ``run_daily``
+    always passes one.
+    """
+    if report is None:
+        report = RunReport(
+            run_date_et=run_date_et, start=start, lock=slate_lock(run_date_et)
+        )
     # 1-2. Refresh the schedule, then select tomorrow's games.
     season = _refresh_schedule(run_date_et, dry_run=dry_run)
     if season is None:
         # The offseason: no season has a slate to predict, and nothing was refreshed.
+        report.status = STATUS_OFFSEASON
         _record_no_prediction(run_date_et, "offseason", [])
         _print_contract(sink, dry_run=dry_run, lock_passed=0, next_day_games=0)
         return 0
@@ -771,9 +838,9 @@ def _run_the_day(
     # wake triggers follow the schedule, and the ledger settles from the refreshed scores.
     settle: SettleOutcome | None = None
     if not dry_run:
-        _regenerate_closing_triggers(games, start)
+        report.triggers = _regenerate_closing_triggers(games, start)
         if forward_rows_go_to_ledger():
-            settle = _settle_ledger(start)
+            settle = _settle_ledger(start, report=report)
     slate = select_slate(
         games.loc[games["season"] == season], run_date_et, decided_at=start
     )
@@ -781,10 +848,15 @@ def _run_the_day(
         logger.info("No games tomorrow; no-op", run_date_et=run_date_et.isoformat())
         if settle is not None and settle.changed:
             _rebuild_cache_after_settle()
+        report.status = STATUS_NO_GAMES
+        report.tomorrow_game_ids = ()
         _record_no_prediction(run_date_et, "no_games", [])
         _print_contract(sink, dry_run=dry_run, lock_passed=0, next_day_games=0)
         return 0
     progress["slate"] = slate
+    report.slate_season = slate.season
+    report.slate_week = slate.week
+    report.tomorrow_game_ids = tuple(sorted(slate.game_ids))
     _require_slate_is_current_week(slate)
 
     if dry_run:
@@ -799,13 +871,22 @@ def _run_the_day(
 
     # 3. The real run.
     from pipeline.orchestrator import FridayPipeline
-    from pipeline.steps import RunStatus
+    from pipeline.steps import RunStatus, StepStatus
 
     # The deadline bounds live-skip re-runs by the slate's lock (33.2 review C1 WR-05).
     pipeline = FridayPipeline(
         steps=build_daily_step_registry(slate), deadline=slate.lock
     )
     log = pipeline.run()
+    report.status = log.status
+    report.skipped_game_ids = tuple(log.skipped_games)
+    report.failed_steps = tuple(
+        step.name
+        for step in getattr(log, "steps", ())
+        if step.status == StepStatus.FAILED.value
+    )
+    if log.status != STATUS_SUCCESS:
+        report.unpredicted_game_ids = _unpredicted_or_unknown(slate)
     _print_contract(
         sink, dry_run=False, lock_passed=0, next_day_games=len(slate.game_ids)
     )

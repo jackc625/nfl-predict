@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -1173,8 +1174,8 @@ def test_settle_failure_does_not_stop_the_run(monkeypatch, tmp_path, capsys):
     assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
 
     out = capsys.readouterr().out
-    assert "LEDGER_SETTLE= failed" in out
-    assert "silver games unreadable" in out
+    assert "LEDGER_SETTLE= failed RuntimeError" in out
+    assert "silver games unreadable" not in out
     assert "no_games" in order, "the run stopped before slate selection"
 
 
@@ -1202,7 +1203,9 @@ def test_cache_rebuilt_after_changing_settle_on_no_game_day(
 
     monkeypatch.setattr(steps_mod, "step_populate_web_cache", _cache_down)
     assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
-    assert "the cache file is locked" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "WEB_CACHE_AFTER_SETTLE= failed OSError" in out
+    assert "the cache file is locked" not in out
 
 
 def test_triggers_regenerated_before_no_games_return(
@@ -1234,13 +1237,15 @@ def test_triggers_regenerated_before_no_games_return(
 
     monkeypatch.setattr(closing_schedule, "register_closing_triggers", _broken)
     assert daily.run_daily(RUN_DATE, start=start, dry_run=False) == 0
-    assert "CLOSING_TRIGGERS= failed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "CLOSING_TRIGGERS= failed" in out
+    assert "schtasks is not on PATH" not in out
     # The failure is recorded in the run log, as both guides promise (WR-12).
     from forward_ledger import run_log
 
     failed = run_log.read_events(event="closing_triggers")[-1]
     assert failed["outcome"] == "failed"
-    assert "schtasks is not on PATH" in failed["reason"]
+    assert failed["reason"] == "error: RuntimeError"
     assert failed["trigger_count"] == 0
 
 
@@ -1392,3 +1397,423 @@ def test_generate_refuses_forward_mode_after_cutover(monkeypatch):
     _cut_over(monkeypatch, on=False)
     with pytest.raises(_Reached):
         weekly_bet_list.generate_weekly_bet_list(2026, 6, run_mode="forward")
+
+
+# ---------------------------------------------------------------------------
+# Phase 35 (Plan 35-08): every outcome reaches the report; the notifier runs last and never
+# changes the run's result (D-13, RESEARCH Pattern 1)
+# ---------------------------------------------------------------------------
+
+SLATE_IDS = ("2026_W03_LA@DEN", "2026_W03_LAC@BUF")  # tomorrow's two games, sorted
+
+
+def _seen_reports(monkeypatch) -> list[RunReport]:
+    """Replace the notifier seam with a recorder; return what it was handed."""
+    seen: list[RunReport] = []
+    monkeypatch.setattr(daily, "NOTIFY_END_OF_RUN", seen.append)
+    return seen
+
+
+def _orchestrator_log(status: str, *, skipped=(), failed=()) -> SimpleNamespace:
+    """What ``FridayPipeline.run`` returns, with the given status, skips and failed steps."""
+    steps = [SimpleNamespace(name=name, status="failed") for name in failed]
+    steps.append(SimpleNamespace(name="generate_predictions", status="success"))
+    return SimpleNamespace(
+        status=status,
+        skipped_games=list(skipped),
+        start_time=_start().isoformat(),
+        steps=steps,
+    )
+
+
+def _slate_env(monkeypatch, tmp_path, *, predicted=()) -> None:
+    """Tomorrow's two-game slate, selected for real; *predicted* already have this lock's rows."""
+    import pipeline.steps as steps_mod
+
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
+    monkeypatch.setattr(daily, "_refresh_schedule", lambda *_a, **_k: 2026)
+    monkeypatch.setattr(
+        "data.storage.load_dataframe", lambda *_a, **_k: _schedule().copy()
+    )
+    monkeypatch.setattr(daily, "_require_slate_is_current_week", lambda *_a: None)
+    monkeypatch.setattr(daily, "_report_skips", lambda *_a: None)
+    monkeypatch.setattr(steps_mod, "_predictions_output_dir", lambda: tmp_path)
+    pd.DataFrame(
+        {
+            "game_id": list(predicted),
+            "information_cutoff_utc": [slate_lock(RUN_DATE).isoformat()]
+            * len(predicted),
+        }
+    ).to_csv(tmp_path / "predictions_2026_week3.csv", index=False)
+
+
+def _pipeline_that(monkeypatch, outcome) -> None:
+    """The orchestrator runs the registry's steps in order, then returns or raises *outcome*."""
+    from pipeline import orchestrator
+
+    class _Pipeline:
+        def __init__(self, *, steps, deadline):
+            self.steps = steps
+
+        def run(self):
+            for step in self.steps:
+                step.callable()
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+    monkeypatch.setattr(orchestrator, "FridayPipeline", _Pipeline)
+
+
+def _arrange_lock_passed(monkeypatch, tmp_path) -> datetime:
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
+    monkeypatch.setattr(daily, "_recorded_tomorrow_ids", lambda _d: list(TOMORROW_IDS))
+    return slate_lock(RUN_DATE).astimezone(UTC)
+
+
+def _arrange_lock_passed_unreadable(monkeypatch, tmp_path) -> datetime:
+    from utils import current_slate
+
+    def _unreadable(*_a, **_k):
+        raise current_slate.ScheduleUnavailableError("the recorded schedule is missing")
+
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
+    monkeypatch.setattr(daily, "_recorded_tomorrow_ids", lambda _d: [])
+    monkeypatch.setattr(current_slate, "load_recorded_schedule", _unreadable)
+    return slate_lock(RUN_DATE).astimezone(UTC)
+
+
+def _arrange_offseason(monkeypatch, tmp_path) -> datetime:
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
+    monkeypatch.setattr(daily, "_refresh_schedule", lambda *_a, **_k: None)
+    return _start()
+
+
+def _arrange_no_games(monkeypatch, tmp_path) -> datetime:
+    _no_games_env(monkeypatch, tmp_path)
+    return _start()
+
+
+def _orchestrated(outcome, *, predicted=()):
+    """An arrangement whose orchestrator (no steps) returns or raises *outcome*."""
+
+    def _arrange(monkeypatch, tmp_path) -> datetime:
+        _slate_env(monkeypatch, tmp_path, predicted=predicted)
+        monkeypatch.setattr(daily, "build_daily_step_registry", lambda _slate: [])
+        _pipeline_that(monkeypatch, outcome)
+        return _start()
+
+    return _arrange
+
+
+# (case, arrangement, raises, the report fields it must carry)
+REPORT_CASES = [
+    (
+        "lock_passed_with_games",
+        _arrange_lock_passed,
+        False,
+        {
+            "status": "lock_passed",
+            "tomorrow_game_ids": tuple(TOMORROW_IDS),
+            "unpredicted_game_ids": tuple(TOMORROW_IDS),
+            "run_id": None,
+        },
+    ),
+    (
+        "lock_passed_unreadable_schedule",
+        _arrange_lock_passed_unreadable,
+        False,
+        {
+            "status": "lock_passed",
+            "tomorrow_game_ids": None,
+            "unpredicted_game_ids": None,
+            "run_id": None,
+        },
+    ),
+    ("offseason", _arrange_offseason, False, {"status": "offseason"}),
+    (
+        "no_games",
+        _arrange_no_games,
+        False,
+        {"status": "no_games", "tomorrow_game_ids": ()},
+    ),
+    (
+        "success",
+        _orchestrated(_orchestrator_log("success"), predicted=SLATE_IDS),
+        False,
+        {
+            "status": "success",
+            "tomorrow_game_ids": SLATE_IDS,
+            "slate_season": 2026,
+            "slate_week": 3,
+            "skipped_game_ids": (),
+            "failed_steps": (),
+            "unpredicted_game_ids": None,
+        },
+    ),
+    (
+        "finished_with_skips",
+        _orchestrated(
+            _orchestrator_log("finished_with_skips", skipped=["2026_W03_LA@DEN"]),
+            predicted=["2026_W03_LAC@BUF"],
+        ),
+        False,
+        {
+            "status": "finished_with_skips",
+            "skipped_game_ids": ("2026_W03_LA@DEN",),
+            "unpredicted_game_ids": ("2026_W03_LA@DEN",),
+        },
+    ),
+    (
+        "degraded",
+        _orchestrated(
+            _orchestrator_log("degraded", failed=["populate_web_cache"]),
+            predicted=SLATE_IDS,
+        ),
+        False,
+        {
+            "status": "degraded",
+            "failed_steps": ("populate_web_cache",),
+            "unpredicted_game_ids": (),
+        },
+    ),
+    (
+        "failed_without_raising",
+        _orchestrated(_orchestrator_log("failed", failed=["build_gold"])),
+        False,
+        {
+            "status": "failed",
+            "failed_steps": ("build_gold",),
+            "unpredicted_game_ids": SLATE_IDS,
+        },
+    ),
+    (
+        "critical_step_raised",
+        _orchestrated(
+            RuntimeError("Critical step failed: build_gold"),
+            predicted=["2026_W03_LAC@BUF"],
+        ),
+        True,
+        {
+            "status": "run_failed",
+            "tomorrow_game_ids": SLATE_IDS,
+            "unpredicted_game_ids": ("2026_W03_LA@DEN",),
+            "exception_class": "RuntimeError",
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("arrange", "raises", "expected"),
+    [
+        pytest.param(arrange, raises, expected, id=case)
+        for case, arrange, raises, expected in REPORT_CASES
+    ],
+)
+def test_each_outcome_fills_the_report(
+    monkeypatch, tmp_path, arrange, raises, expected
+):
+    seen = _seen_reports(monkeypatch)
+    start = arrange(monkeypatch, tmp_path)
+
+    if raises:
+        with pytest.raises(RuntimeError):
+            daily.run_daily(RUN_DATE, start=start, dry_run=False)
+    else:
+        daily.run_daily(RUN_DATE, start=start, dry_run=False)
+
+    (report,) = seen
+    assert {name: getattr(report, name) for name in expected} == expected
+    if "run_id" not in expected:
+        assert report.run_id is not None
+
+
+def test_settle_triggers_and_sync_outcomes_reach_the_report(monkeypatch, tmp_path):
+    from forward_ledger import closing_schedule, runner
+    from forward_ledger.sync import SyncOutcome
+
+    _cut_over(monkeypatch)
+    _no_games_env(monkeypatch, tmp_path)
+    seen = _seen_reports(monkeypatch)
+
+    def _one_run() -> RunReport:
+        seen.clear()
+        assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+        (report,) = seen
+        return report
+
+    def _raises(*_a, **_k):
+        raise RuntimeError("down at https://hc-ping.com/secret")
+
+    # The settle pass: raised, then returned an outcome with closing deferred.
+    monkeypatch.setattr(runner, "settle_ledger", _raises)
+    report = _one_run()
+    assert (report.settle_ran, report.settle, report.settle_error) == (
+        True,
+        None,
+        "RuntimeError",
+    )
+    deferred = runner.SettleOutcome(False, 0, 0, 0, 0, closing_deferred="ValueError")
+    monkeypatch.setattr(runner, "settle_ledger", lambda **_k: deferred)
+    report = _one_run()
+    assert (report.settle_ran, report.settle, report.settle_error) == (
+        True,
+        deferred,
+        None,
+    )
+
+    # The closing triggers: failed, skipped and a registration that did not read back.
+    for registration in (
+        closing_schedule.TriggerRegistration("failed", "error: OSError", (), False),
+        closing_schedule.TriggerRegistration(
+            "skipped", "closing_task_not_installed", (), False
+        ),
+        closing_schedule.TriggerRegistration(
+            "registered", "readback_mismatch", (), False
+        ),
+    ):
+        monkeypatch.setattr(
+            closing_schedule,
+            "register_closing_triggers",
+            lambda *_a, chosen=registration, **_k: chosen,
+        )
+        assert _one_run().triggers == registration
+    monkeypatch.setattr(closing_schedule, "register_closing_triggers", _raises)
+    triggers = _one_run().triggers
+    assert triggers is not None
+    assert (triggers.outcome, triggers.reason) == ("failed", "error: RuntimeError")
+
+    # The sync: an outcome with a backup error, None (refused and recorded), and a raise.
+    backed_up = SyncOutcome(False, False, None, False, False, "push refused", None)
+    monkeypatch.setattr(runner, "sync_after_run", lambda **_k: backed_up)
+    report = _one_run()
+    assert (report.sync_ran, report.sync, report.sync_error) == (True, backed_up, None)
+    monkeypatch.setattr(runner, "sync_after_run", lambda **_k: None)
+    report = _one_run()
+    assert (report.sync_ran, report.sync, report.sync_error) == (True, None, None)
+    monkeypatch.setattr(runner, "sync_after_run", _raises)
+    report = _one_run()
+    assert (report.sync_ran, report.sync, report.sync_error) == (
+        True,
+        None,
+        "RuntimeError",
+    )
+
+
+def _two_step_slate_env(monkeypatch, tmp_path, *, export, order=None) -> None:
+    """A slate whose recommend step appends one live row, then whose export step runs *export*."""
+    _slate_env(monkeypatch, tmp_path)
+    row = {"game_id": "2026_W03_LAC@BUF", "arm": "live", "status": "live"}
+
+    def _registry(slate):
+        def _recommend():
+            slate.appended_rows.append(row)
+            if order is not None:
+                order.append("recommend")
+
+        return [
+            SimpleNamespace(name="generate_recommendations", callable=_recommend),
+            SimpleNamespace(name="export_artifacts", callable=export),
+        ]
+
+    monkeypatch.setattr(daily, "build_daily_step_registry", _registry)
+    _pipeline_that(monkeypatch, _orchestrator_log("success"))
+
+
+def test_appended_rows_reach_the_report_even_when_a_later_step_raises(
+    monkeypatch, tmp_path
+):
+    def _export_fails():
+        raise RuntimeError("export_artifacts failed")
+
+    _two_step_slate_env(monkeypatch, tmp_path, export=_export_fails)
+    seen = _seen_reports(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="export_artifacts"):
+        daily.run_daily(RUN_DATE, start=_start(), dry_run=False)
+
+    (report,) = seen
+    assert report.status == STATUS_RUN_FAILED
+    assert [row["game_id"] for row in report.appended_rows] == ["2026_W03_LAC@BUF"]
+
+
+def test_the_notifier_runs_after_the_ledger_writes_and_the_sync(monkeypatch, tmp_path):
+    from forward_ledger import runner
+
+    _cut_over(monkeypatch)
+    order: list[str] = []
+    _two_step_slate_env(monkeypatch, tmp_path, export=lambda: None, order=order)
+    monkeypatch.setattr(
+        runner, "settle_ledger", lambda **_k: runner.SettleOutcome(False, 0, 0, 0, 0)
+    )
+    monkeypatch.setattr(
+        runner, "sync_after_run", lambda **_k: order.append("sync") or None
+    )
+    monkeypatch.setattr(
+        daily, "NOTIFY_END_OF_RUN", lambda _report: order.append("notify")
+    )
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert order == ["recommend", "sync", "notify"]
+
+
+def test_dry_run_sends_nothing(monkeypatch, tmp_path):
+    seen = _seen_reports(monkeypatch)
+    _no_games_env(monkeypatch, tmp_path)
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=True) == 0
+
+    _arrange_lock_passed(monkeypatch, tmp_path)
+    at_the_lock = slate_lock(RUN_DATE).astimezone(UTC)
+    assert daily.run_daily(RUN_DATE, start=at_the_lock, dry_run=True) == 0
+
+    assert seen == []
+
+
+def test_a_refused_date_sends_nothing(monkeypatch, tmp_path):
+    seen = _seen_reports(monkeypatch)
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
+    next_day = slate_lock(RUN_DATE).astimezone(UTC) + timedelta(hours=10)
+
+    with pytest.raises(daily.RunDateRefusedError):
+        daily.run_daily(RUN_DATE, start=next_day, dry_run=False)
+
+    assert seen == []
+
+
+def test_ctrl_c_sends_nothing_and_propagates(monkeypatch, tmp_path):
+    seen = _seen_reports(monkeypatch)
+    monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
+    monkeypatch.setattr(daily, "_recorded_tomorrow_ids", lambda _d: list(TOMORROW_IDS))
+
+    def _interrupted(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(daily, "_refresh_schedule", _interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        daily.run_daily(RUN_DATE, start=_start(), dry_run=False)
+
+    assert seen == []
+
+
+def test_a_raising_notifier_never_masks_the_run(monkeypatch, tmp_path, capsys):
+    def _notifier_down(_report):
+        raise RuntimeError("ntfy down at https://ntfy.sh/topic")
+
+    monkeypatch.setattr(daily, "NOTIFY_END_OF_RUN", _notifier_down)
+    _no_games_env(monkeypatch, tmp_path)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+    out = capsys.readouterr().out
+    assert "NOTIFY= failed RuntimeError" in out
+    assert "ntfy.sh" not in out
+
+    def _own_failure(*_a, **_k):
+        raise ValueError("the run's own failure")
+
+    monkeypatch.setattr(daily, "_refresh_schedule", _own_failure)
+    with pytest.raises(ValueError, match="the run's own failure"):
+        daily.run_daily(RUN_DATE, start=_start(), dry_run=False)
+    assert "NOTIFY= failed RuntimeError" in capsys.readouterr().out
