@@ -22,6 +22,14 @@ The cache is CURRENT for this run when its per-week ``bet_list_populated_at`` ma
 own freshness rule, D31-29) is at or after the run's start. An absent or older cache gives a stale
 notice and ``bets unknown``: a missing list is never rendered as zero bets (RESEARCH Pitfall 11).
 
+UPSTREAM DATA CHANGES AND CORRECTED GRADES (D-03, D-21)
+--------------------------------------------------------
+After the season-to-date block and before the not-advice line, the email lists the latest probe
+line's unacknowledged sealed changes, the live season's WARNING-or-louder verdicts and the corrected
+grades recorded since the previous delivered digest (:mod:`notify.digest_sections`). Each source is
+read on its own: one that cannot be read is named as unreadable in the section, never shown as
+nothing, and never costs the rest of the email.
+
 A SCHEDULE THAT CANNOT BE READ (D-24)
 ------------------------------------
 When the recorded schedule cannot be read, the run cannot tell which week is tomorrow or whether
@@ -55,6 +63,9 @@ import duckdb
 from api.cache import ARM_LIVE
 from api.presentation import et_timestamp_label, last_week_display
 from api.services import DataService, clear_cache
+from data.sealed_probe_log import latest_entry
+from data.upstream_live import load_live_manifest
+from notify import digest_sections
 from notify.events import (
     EmailMessage,
     SendContext,
@@ -163,6 +174,8 @@ class DigestInputs:
         label_prefix: Prepended to the subject and heading (``TEST - `` for the TEST command).
         schedule_readable: False when the recorded schedule could not be read (D-24): the games
             section then says so instead of listing games.
+        data_changes: :func:`notify.digest_sections.data_change_section`'s output (D-03, D-21);
+            None renders no section.
     """
 
     run_date_et: date
@@ -179,6 +192,7 @@ class DigestInputs:
     is_update: bool
     label_prefix: str = ""
     schedule_readable: bool = True
+    data_changes: dict[str, Any] | None = None
 
 
 def _week_of_day(schedule: pd.DataFrame, day: date) -> tuple[int, int] | None:
@@ -353,6 +367,45 @@ def _already_delivered(
     )
 
 
+def _data_change_section(
+    season: int | None, service: DataService | None, cutoff: datetime | None
+) -> dict[str, Any]:
+    """Read the three stored sources of the D-03 section, each on its own, and select its lines.
+
+    A source that cannot be read -- a corrupt probe log, an unreadable manifest, an unknown season,
+    no cache -- is named as unreadable in the section and never costs the other two. The seams
+    ``digest_sections.PROBE_LOG_PATH`` / ``MANIFEST_DIR`` are looked up at call time.
+    """
+    unreadable: list[str] = []
+    probe_line: dict[str, Any] | None = None
+    try:
+        probe_line = latest_entry(digest_sections.PROBE_LOG_PATH)
+    except Exception:  # noqa: BLE001 - named in the section, never read as "no change"
+        unreadable.append(digest_sections.UNREADABLE_PROBE_LOG)
+    manifest: dict[str, Any] | None = None
+    if season is None:
+        unreadable.append(digest_sections.UNREADABLE_MANIFEST)
+    else:
+        try:
+            manifest = load_live_manifest(
+                season, manifest_dir=digest_sections.MANIFEST_DIR
+            )
+        except Exception:  # noqa: BLE001 - named in the section, never read as "no change"
+            unreadable.append(digest_sections.UNREADABLE_MANIFEST)
+    corrections: list[dict[str, Any]] = []
+    if service is None:
+        unreadable.append(digest_sections.UNREADABLE_CORRECTIONS)
+    else:
+        corrections = list(service.get_bet_list_corrections(None, None).values())
+    return digest_sections.data_change_section(
+        probe_line=probe_line,
+        manifest=manifest,
+        corrections=corrections,
+        cutoff=cutoff,
+        unreadable=unreadable,
+    )
+
+
 def collect_digest_inputs(
     report: RunReport,
     *,
@@ -370,12 +423,14 @@ def collect_digest_inputs(
         schedule: The prepared recorded schedule, or None when it could not be read.
         service: The cache, or None when no cache could be read -- read as not current, with
             every cache-derived part unavailable, never zero.
-        notifications: The notification log's records (for the "(update)" mark).
+        notifications: The notification log's records (for the "(update)" mark and the
+            previous delivered digest's cutoff).
         failed_titles: The titles of this run's failed messages.
         now: The instant a game's lock is judged against.
         label_prefix: Prepended to the subject and heading.
     """
     season, week = _digest_week(report, schedule, service)
+    cutoff = digest_sections.previous_digest_cutoff(notifications, report.run_date_et)
     populated_at: str | None = None
     current = False
     bets: list[dict[str, Any]] = []
@@ -424,6 +479,7 @@ def collect_digest_inputs(
         is_update=_already_delivered(notifications, report.run_date_et),
         label_prefix=label_prefix,
         schedule_readable=schedule is not None,
+        data_changes=_data_change_section(season, service, cutoff),
     )
 
 

@@ -1,7 +1,8 @@
 {#- The Saturday digest email, plain-text alternative (SPEC R4, D-19).
 
     The same content, order and formats as digest.html.j2 (read its header): status header, bets,
-    games, last week, season to date, then the not-advice line LAST. Nothing is computed here.
+    games, last week, season to date, the upstream data changes and corrected grades, then the
+    not-advice line LAST. Nothing is computed here.
 
     ASCII only, no emoji (CLAUDE.md hard constraint). -#}
 {%- import "components/_bet_pick.html" as bp -%}
@@ -78,4 +79,15 @@ Return (flat, units): {{ "%+.3f"|format(block.flat_return_units) if return_measu
 {% endif -%}
 {% endfor -%}
 {% endif %}
+{% if inputs.data_changes is not none -%}
+UPSTREAM DATA CHANGES AND CORRECTED GRADES
+{% for line in inputs.data_changes.lines -%}
+- {{ line }}
+{% else -%}
+{{ inputs.data_changes.empty_line }}
+{% endfor -%}
+{{ inputs.data_changes.unaffected_line }}
+{{ inputs.data_changes.acknowledge_line }}
+
+{% endif -%}
 {{ not_advice_key }}: {{ not_advice_line }}

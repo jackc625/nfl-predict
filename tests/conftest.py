@@ -477,7 +477,9 @@ def _no_real_notification_traffic(monkeypatch, _notification_log_quarantine):
 
 
 @pytest.fixture(autouse=True)
-def _notifications_inert_unless_a_test_turns_them_on(monkeypatch):
+def _notifications_inert_unless_a_test_turns_them_on(
+    monkeypatch, _notification_log_quarantine
+):
     """The daily run's end-of-run notifier is a no-op in every test that does not restore it.
 
     About thirty tests call ``scripts.daily_lock_pipeline.run_daily`` for other reasons. Once the
@@ -496,10 +498,15 @@ def _notifications_inert_unless_a_test_turns_them_on(monkeypatch):
     ``notify.digest.LOAD_SCHEDULE``; here it reads an EMPTY schedule, so every run is "not a digest
     day" and no test reads silver ``games`` or the real web cache. A digest test hands in its own
     prepared schedule and points ``notify.digest.WEB_CACHE_PATH`` at a ``tmp_path`` cache.
+
+    The digest's data-change section (Plan 35-14) reads the sealed probe log and the live manifest
+    through ``notify.digest_sections.PROBE_LOG_PATH`` / ``MANIFEST_DIR``; here both point at paths
+    that never exist, so no test reads ``config/upstream_probe_log.jsonl`` or
+    ``config/upstream_live``. A section test points them at its own ``tmp_path`` files.
     """
     import pandas as pd
 
-    from notify import digest
+    from notify import digest, digest_sections
     from scripts import capture_closing_lines, daily_lock_pipeline
     from utils.current_slate import SCHEDULE_COLUMNS
 
@@ -513,6 +520,11 @@ def _notifications_inert_unless_a_test_turns_them_on(monkeypatch):
         "LOAD_SCHEDULE",
         lambda: pd.DataFrame(columns=[*SCHEDULE_COLUMNS, "et_day", "et_ordinal"]),
     )
+    absent = _notification_log_quarantine / "never_created"
+    monkeypatch.setattr(
+        digest_sections, "PROBE_LOG_PATH", absent / "upstream_probe_log.jsonl"
+    )
+    monkeypatch.setattr(digest_sections, "MANIFEST_DIR", absent / "upstream_live")
 
 
 # 34-REVIEW WR-32: the ledger's real-git tests run ``git`` directly over tmp_path repositories.

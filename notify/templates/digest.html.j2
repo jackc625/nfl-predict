@@ -12,8 +12,9 @@
       - the last week block: api.presentation.last_week_display's strings, with /bets' hooks;
       - tracker totals: /bets' six labels; Hit rate "%.1f" of the fraction x 100 plus "%", Return
         (flat, units) "%+.3f"; a NULL or NaN figure is "not measured", never a number.
-    Order (SPEC R4): status header, bets, games, last week, season to date, then the not-advice line
-    LAST. Each value a test reads sits in a data-* hook.
+    Order (SPEC R4): status header, bets, games, last week, season to date, the upstream data
+    changes and corrected grades (D-03, D-21: notify.digest_sections, inputs.data_changes), then
+    the not-advice line LAST. Each value a test reads sits in a data-* hook.
 
     ASCII only, no emoji (CLAUDE.md hard constraint). -#}
 {%- import "components/_bet_pick.html" as bp -%}
@@ -139,6 +140,23 @@
 {%- endif %}
 </div>
 {%- endfor %}
+{%- endif %}
+
+{%- if inputs.data_changes is not none %}
+<h2 style="{{ H2 }}">Upstream data changes and corrected grades</h2>
+<div data-digest-data-changes>
+{%- if inputs.data_changes.lines %}
+<ul style="margin:0 0 0 20px;padding:0;">
+{%- for line in inputs.data_changes.lines %}
+<li data-digest-data-change>{{ line }}</li>
+{%- endfor %}
+</ul>
+{%- else %}
+<p data-digest-data-changes-empty style="margin:0;">{{ inputs.data_changes.empty_line }}</p>
+{%- endif %}
+<p data-digest-unaffected style="{{ MUTED }}margin:4px 0 0 0;">{{ inputs.data_changes.unaffected_line }}</p>
+<p data-digest-acknowledge style="{{ MUTED }}margin:2px 0 0 0;">{{ inputs.data_changes.acknowledge_line }}</p>
+</div>
 {%- endif %}
 
 <p data-not-advice style="{{ MUTED }}margin:24px 0 0 0;border-top:1px solid #cccccc;padding-top:8px;"><strong>{{ not_advice_key }}:</strong> {{ not_advice_line }}</p>
