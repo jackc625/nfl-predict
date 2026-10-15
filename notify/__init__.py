@@ -11,9 +11,9 @@ WHAT LIVES HERE
 ---------------
 * :mod:`notify.secrets` -- the five secrets, read from ``conf.settings``, and the provider constants.
 * :mod:`notify.transport` -- one bounded, classified retry loop over httpx; the test seams.
-* :mod:`notify.channels` -- one function per provider call (ntfy here; Plan 35-05 adds the rest).
+* :mod:`notify.channels` -- one function per provider call: ntfy, Resend, healthchecks.io.
 * :mod:`notify.log` -- the append-only notification log and its reader.
-* :mod:`notify.events` -- the closed event-class vocabulary and the push router.
+* :mod:`notify.events` -- the closed event-class vocabulary and the push, email and watcher sends.
 
 WHO MAY IMPORT IT (D-20)
 ------------------------

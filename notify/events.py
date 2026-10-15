@@ -38,7 +38,9 @@ from notify.secrets import NotifySecrets
 from notify.transport import Delivery
 
 __all__ = [
+    "CHECKIN_BODY_LIMIT_BYTES",
     "EMAIL_EVENT_CLASSES",
+    "OUTCOME_WITHHELD",
     "PRIORITY_NORMAL",
     "PRIORITY_TOP",
     "PUSH_BODY_LIMIT_BYTES",
@@ -50,7 +52,10 @@ __all__ = [
     "SendContext",
     "ascii_text",
     "fit_lines",
+    "record_withheld_checkin",
+    "send_checkin",
     "send_email",
+    "send_pause",
     "send_push",
 ]
 
@@ -58,6 +63,8 @@ PUSH_EVENT_CLASSES: tuple[str, ...] = ("failed", "bets", "test")
 EMAIL_EVENT_CLASSES: tuple[str, ...] = ("digest", "test")
 # Log-only: the watcher check-in and the off-season pause never go to ntfy.
 WATCHER_EVENT_CLASSES: tuple[str, ...] = ("checkin", "pause")
+# A check-in deliberately withheld on the D-16 test day (``notify.log.NOTIFICATION_OUTCOMES``).
+OUTCOME_WITHHELD = "withheld"
 
 # ntfy priorities: 5 is max (urgent), 3 is the default.
 PRIORITY_TOP = 5
@@ -67,6 +74,8 @@ PRIORITY_NORMAL = 3
 PUSH_BODY_LIMIT_BYTES = 4000
 # ntfy refuses a title over 1 KB; a lock-screen title needs far less.
 PUSH_TITLE_LIMIT_CHARS = 200
+# The check-in body is a short run summary (D-15); healthchecks.io stores far more than this.
+CHECKIN_BODY_LIMIT_BYTES = 1000
 
 
 @dataclass(frozen=True)
@@ -255,6 +264,47 @@ def send_email(message: EmailMessage, context: SendContext) -> Delivery:
             idempotency_key=message.idempotency_key,
         ),
         event_class=message.event_class,
+        priority=None,
+        context=context,
+    )
+
+
+def send_checkin(*, body: str, fail: bool, context: SendContext) -> Delivery:
+    """Check in with the outside watcher (``/fail`` when *fail*) and record it once.
+
+    *body* is the ASCII run summary, cut to :data:`CHECKIN_BODY_LIMIT_BYTES`. Plan 35-13 owns when
+    this runs; it has exactly one production call site.
+    """
+    text = ascii_text(body)[:CHECKIN_BODY_LIMIT_BYTES]
+    return _send_and_record(
+        lambda: channels.hc_ping(context.secrets, body=text, fail=fail),
+        event_class="checkin",
+        priority=None,
+        context=context,
+    )
+
+
+def record_withheld_checkin(context: SendContext) -> None:
+    """Record the one deliberately withheld check-in (the D-16 test day): no request is made.
+
+    The record (outcome ``withheld``, attempts 0) keeps the log the one place to read what
+    reached the watcher.
+    """
+    _send_and_record(
+        lambda: Delivery(
+            outcome=OUTCOME_WITHHELD, attempts=0, receipt_id=None, failure_kind=None
+        ),
+        event_class="checkin",
+        priority=None,
+        context=context,
+    )
+
+
+def send_pause(context: SendContext) -> Delivery:
+    """Pause the watcher's check (out of season, D-01) and record it once."""
+    return _send_and_record(
+        lambda: channels.hc_pause(context.secrets),
+        event_class="pause",
         priority=None,
         context=context,
     )
