@@ -675,8 +675,13 @@ class DataService:
 
     def get_bet_list(
         self, season: int | None, week: int | None, *, arm: str | None = None
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | None:
         """Return the LIVE bet-list rows for *season* / *week*, ranked per D31-28.
+
+        None -- never ``[]`` -- when the rows cannot be read (a cache that predates the table, or
+        a failed query): absent is not zero (35-REVIEW WR-03). The weekly email reads None as
+        ``bets unknown``; ``/bets`` tells the two absences apart through
+        :meth:`bet_list_table_exists`.
 
         Order is per-bet EV DESCENDING, ties broken by ``(season, week, game_id, target)`` -- the
         SPEC R5 tie-break, so two requests render byte-identical order. ZERO computation happens
@@ -695,12 +700,14 @@ class DataService:
         if cached is not None:
             return cached
         result = self._get_bet_list_uncached(season, week, arm)
+        if result is None:
+            return None  # an unreadable list is never cached
         _cache_set(key, result)
         return copy.deepcopy(result)
 
     def _get_bet_list_uncached(
         self, season: int | None, week: int | None, arm: str | None = None
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | None:
         query = f"SELECT {_BET_LIST_COLUMNS_SQL} FROM bet_list WHERE status = ?"
         params: list[Any] = [BET_STATUS_LIVE]
         if season is not None:
@@ -718,10 +725,11 @@ class DataService:
         try:
             result = self._conn.execute(query, params)
         except duckdb.Error:
-            # The cache predates Phase 31 (no bet_list table). The route renders the
-            # cache-absent empty state rather than 500ing.
+            # The cache predates Phase 31 (no bet_list table), or the query failed. None, never
+            # [], so no caller can read it as zero bets; the route renders the cache-absent
+            # empty state rather than 500ing.
             logger.warning("bet_list table not available in cache")
-            return []
+            return None
         columns = [desc[0] for desc in result.description]
         return [dict(zip(columns, row)) for row in result.fetchall()]
 
@@ -782,7 +790,7 @@ class DataService:
         The page needs to tell TWO different absences apart, and an empty row list cannot:
         a cache that predates Phase 31 has no bet-list table and needs
         ``scripts/populate_cache.py`` run, while a populated cache whose week admitted nothing is
-        a RESULT and needs no action. Both return ``[]`` from :meth:`get_bet_list`, so the page
+        a RESULT and needs no action. The route reads :meth:`get_bet_list` as ``[]`` for both, so the page
         would otherwise tell a reader to rebuild a cache that is already correct -- or, worse,
         report a missing table as "no bets cleared the floor", which is a claim about the models
         made from the absence of a table.
@@ -1123,7 +1131,7 @@ class DataService:
 
     def get_bet_list_corrections(
         self, season: int | None, week: int | None
-    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+    ) -> dict[tuple[Any, ...], dict[str, Any]] | None:
         """Return *season* / *week*'s in-force corrections, keyed by the ledger row key (D-06).
 
         One stored ``bet_list_corrections`` row per corrected forward bet -- the latest correction
@@ -1131,19 +1139,22 @@ class DataService:
         the key a bet-list row carries, so /bets can mark a corrected row and show both grades by
         lookup alone. A read, not a computation (UIAP-01). Week filtering mirrors
         :meth:`get_bet_list`: an absent identifier applies no filter. A cache that predates the
-        table returns ``{}``.
+        table, or a failed query, returns None -- never ``{}``, which would read as "no
+        correction" (35-REVIEW WR-03).
         """
         key = ("bet_list_corrections", season, week)
         cached = _cache_get(key)
         if cached is not None:
             return cached
         result = self._get_bet_list_corrections_uncached(season, week)
+        if result is None:
+            return None  # an unreadable source is never cached
         _cache_set(key, result)
         return copy.deepcopy(result)
 
     def _get_bet_list_corrections_uncached(
         self, season: int | None, week: int | None
-    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+    ) -> dict[tuple[Any, ...], dict[str, Any]] | None:
         query = f"SELECT {_BET_LIST_CORRECTIONS_COLUMNS_SQL} FROM bet_list_corrections"
         conditions: list[str] = []
         params: list[Any] = []
@@ -1162,7 +1173,7 @@ class DataService:
         except duckdb.Error:
             # The cache predates Plan 34-16 (no bet_list_corrections table).
             logger.warning("bet_list_corrections table not available in cache")
-            return {}
+            return None
         columns = [desc[0] for desc in result.description]
         corrections: dict[tuple[Any, ...], dict[str, Any]] = {}
         for values in result.fetchall():
@@ -1179,7 +1190,7 @@ class DataService:
 
     def get_bet_week_results(
         self, season: int | None, week: int | None
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | None:
         """Return *season* / *week*'s stored actual vs expected rows, one per counting class.
 
         The rows were aggregated at cache build by ``backtest.bet_week_results`` (SPEC R5); this is
@@ -1187,7 +1198,8 @@ class DataService:
         come back in ``api.cache.BET_WEEK_CLASS_ORDER`` -- a selection order, never the
         alphabetical order of the labels. The caller asks for last week as ``(season, week - 1)``,
         so week 1 asks for week 0, finds no row and never reaches the prior season. Either
-        identifier ``None``, or a cache that predates the table, returns ``[]``.
+        identifier ``None`` returns ``[]``. A cache that predates the table, or a failed query,
+        returns None -- never ``[]``, which would render as "nothing graded" (35-REVIEW WR-03).
         """
         if season is None or week is None:
             return []
@@ -1196,12 +1208,14 @@ class DataService:
         if cached is not None:
             return cached
         result = self._get_bet_week_results_uncached(season, week)
+        if result is None:
+            return None  # an unreadable week is never cached
         _cache_set(key, result)
         return copy.deepcopy(result)
 
     def _get_bet_week_results_uncached(
         self, season: int, week: int
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | None:
         query = (
             f"SELECT {_BET_WEEK_RESULTS_COLUMNS_SQL} FROM bet_week_results "
             "WHERE season = ? AND week = ?"
@@ -1211,7 +1225,7 @@ class DataService:
         except duckdb.Error:
             # The cache predates Plan 35-03 (no bet_week_results table).
             logger.warning("bet_week_results table not available in cache")
-            return []
+            return None
         columns = [desc[0] for desc in result.description]
         rows = [dict(zip(columns, values)) for values in result.fetchall()]
         return sorted(

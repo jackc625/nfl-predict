@@ -90,7 +90,8 @@ class _CacheView:
 
     Attributes:
         slate: The cache's stamped current ``(season, week)``, or None.
-        bets: The slate's live-arm live bets in ``/bets`` order; None when no cache could be read.
+        bets: The slate's live-arm live bets in ``/bets`` order; None when no cache, or no bet
+            list in it, could be read.
         digest_inputs: The digest's selected inputs.
     """
 

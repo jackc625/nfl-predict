@@ -59,7 +59,7 @@ from api.cache import (
 )
 from api.presentation import NOT_ADVICE_KEY, NOT_ADVICE_LINE
 from api.services import DataService
-from notify import digest, transport
+from notify import digest, digest_sections, transport
 from notify import log as notification_log
 from notify.end_of_run import notify_end_of_run
 from notify.events import PRIORITY_NORMAL, SendContext
@@ -731,6 +731,34 @@ def test_an_absent_cache_shows_the_stale_notice_and_never_zero_bets(
         assert digest.ZERO_BETS_LINE not in part
     for part in (sent["html"], sent["text"]):
         assert digest.STALE_NOTICE in part
+
+
+def test_unreadable_cache_tables_read_unknown_never_zero(
+    monkeypatch: pytest.MonkeyPatch, cache_path: Path
+) -> None:
+    """35-REVIEW WR-03: a current cache whose tables cannot be read is unknown, never empty."""
+    report = saturday_report()
+    build_cache(
+        cache_path, bets=week6_bets(), stamped_at=report.start + timedelta(minutes=12)
+    )
+    conn = duckdb.connect(str(cache_path))
+    try:
+        for table in ("bet_list", "bet_week_results", "bet_list_corrections"):
+            conn.execute(f"DROP TABLE {table}")
+    finally:
+        conn.close()
+    requests = install_router(monkeypatch)
+
+    send_one(report)
+
+    sent = _sent_email(requests["api.resend.com"][0])
+    assert sent["subject"] == "NFL Predict - 2026 week 6 - bets unknown - run clean"
+    for part in (sent["html"], sent["text"]):
+        assert "0 bets" not in part
+        assert digest.STALE_NOTICE in part
+        assert "nothing graded" not in part
+        assert "not available" in part
+        assert digest_sections.UNREADABLE_CORRECTIONS in part
 
 
 def test_monday_reads_picked_sunday_evening(

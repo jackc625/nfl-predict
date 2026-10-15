@@ -58,7 +58,7 @@ def _bets_rows(
     can be dropped from the page.
     """
     return [
-        *service.get_bet_list(season, week),
+        *(service.get_bet_list(season, week) or []),
         *service.get_suppressed_bets(season, week),
     ]
 

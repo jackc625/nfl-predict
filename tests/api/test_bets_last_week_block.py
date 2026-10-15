@@ -134,12 +134,14 @@ def _serve(
     page_week: int = _THIS_WEEK,
     bet_weeks: tuple[int, ...] | None = None,
     locked_at: datetime | None = None,
+    without_week_results: bool = False,
 ) -> Any:
     """Build a cache holding *week_rows* and a schedule, and return a client context manager.
 
     The page's week is scheduled and carries a live bet in every week of *bet_weeks* (the page's
     week by default), so it renders normally. With *locked_at* every scheduled game of the page's
     week locks then; a week whose games have locked and none has a bet row is the hard block.
+    *without_week_results* drops the ``bet_week_results`` table: a cache built before it existed.
     """
     clear_cache()
     db_path = tmp_path / f"{name}.duckdb"
@@ -179,6 +181,8 @@ def _serve(
                 ["last_updated", _STAMPED_AT.isoformat(), _STAMPED_AT],
             ],
         )
+        if without_week_results:
+            conn.execute("DROP TABLE bet_week_results")
     finally:
         conn.close()
     return contextmanager(_client)(db_path)
@@ -268,6 +272,24 @@ def test_an_all_pending_week_shows_nothing_graded_and_the_ungraded_count(
     assert "Not yet graded: 3" in block
     assert "%" not in block, "an all-pending week rendered a figure"
     assert "data-last-week-record" not in block
+
+
+def test_a_cache_without_the_week_results_table_says_not_available(
+    tmp_path: Path,
+) -> None:
+    """35-REVIEW WR-03: a cache built before ``bet_week_results`` is unavailable, not empty."""
+    with _serve(
+        tmp_path,
+        "no_table",
+        week_rows=[_week_row(_LAST_WEEK)],
+        without_week_results=True,
+    ) as client:
+        block = _block(_get(client, _THIS_WEEK))
+
+    assert f"Last week -- {_SEASON} week {_LAST_WEEK}" in block
+    assert "not available" in block
+    assert "nothing graded" not in block
+    assert "%" not in block
 
 
 def test_a_null_expected_reads_not_measured(tmp_path: Path) -> None:

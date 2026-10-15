@@ -398,10 +398,14 @@ def _data_change_section(
         except Exception:  # noqa: BLE001 - named in the section, never read as "no change"
             unreadable.append(digest_sections.UNREADABLE_MANIFEST)
     corrections: list[dict[str, Any]] = []
-    if service is None:
+    stored = (
+        service.get_bet_list_corrections(None, None) if service is not None else None
+    )
+    if stored is None:
+        # No cache, or its corrections could not be read: named, never "no corrected grade".
         unreadable.append(digest_sections.UNREADABLE_CORRECTIONS)
     else:
-        corrections = list(service.get_bet_list_corrections(None, None).values())
+        corrections = list(stored.values())
     return digest_sections.data_change_section(
         probe_line=probe_line,
         manifest=manifest,
@@ -450,8 +454,13 @@ def collect_digest_inputs(
         current = schedule is not None and marker is not None and marker >= report.start
         if current:
             # The exact call /bets' ranked list makes, so the two rank the same rows (NOTIF-05).
-            bets = service.get_bet_list(season, week, arm=ARM_LIVE)
-            row_game_ids = set(service.get_bet_game_ids(season, week))
+            listed = service.get_bet_list(season, week, arm=ARM_LIVE)
+            if listed is None:
+                # The list could not be read: bets unknown, never "0 bets" (35-REVIEW WR-03).
+                current = False
+            else:
+                bets = listed
+                row_game_ids = set(service.get_bet_game_ids(season, week))
         last_rows = (
             service.get_bet_week_results(season, week - 1)
             if season is not None and week is not None and week > 1

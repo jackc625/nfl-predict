@@ -347,6 +347,8 @@ NOT_ADVICE_LINE = (
 
 LAST_WEEK_CAVEAT = "One week is far too few bets to judge the model."
 NOTHING_GRADED = "nothing graded"
+#: Last week's stored rows could not be read (a cache older than the table, or a failed query).
+LAST_WEEK_NOT_AVAILABLE = "not available"
 NOT_MEASURED = "not measured"
 #: The stored counting class, as the reader is told it. A class outside this map is shown raw.
 COUNTING_CLASS_LABELS: dict[str, str] = {
@@ -388,24 +390,30 @@ def _last_week_row_display(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def last_week_display(
-    rows: Sequence[dict[str, Any]], season: int | None, week: int | None
+    rows: Sequence[dict[str, Any]] | None, season: int | None, week: int | None
 ) -> dict[str, Any]:
     """The last-week block's strings for the week before *week*, from its stored rows (D-08).
 
     *rows* are ``DataService.get_bet_week_results(season, week - 1)`` in their stored class order;
     each becomes one entry of ``blocks``. Week 1 (or no week) has no last week -- the caller never
     reaches into the prior season -- so it, an empty *rows* and a week where no class graded
-    anything are all ``nothing_graded``.
+    anything are all ``nothing_graded``. *rows* None means they could not be read: the block
+    then shows no figure and says ``not available`` in the same place -- absent is never
+    "nothing graded" (35-REVIEW WR-03).
     """
     heading = "Last week"
     blocks: list[dict[str, Any]] = []
+    unavailable = False
     if season is not None and week is not None and week > 1:
         heading = f"Last week -- {season} week {week - 1}"
-        blocks = [_last_week_row_display(row) for row in rows]
+        unavailable = rows is None
+        blocks = [_last_week_row_display(row) for row in rows or ()]
     return {
         "heading": heading,
         "nothing_graded": not any(block["record"] for block in blocks),
-        "text_nothing_graded": NOTHING_GRADED,
+        "text_nothing_graded": LAST_WEEK_NOT_AVAILABLE
+        if unavailable
+        else NOTHING_GRADED,
         "blocks": blocks,
         "caveat": LAST_WEEK_CAVEAT,
     }

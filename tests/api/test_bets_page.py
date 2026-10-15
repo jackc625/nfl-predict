@@ -2504,7 +2504,11 @@ def test_getters_read_meta_and_table(tmp_path: Path) -> None:
 
 
 def test_getters_tolerate_a_cache_that_predates_the_ledger(tmp_path: Path) -> None:
-    """No meta and no corrections table: undeclared, empty and None -- never an exception."""
+    """No meta and no corrections table: undeclared and None -- never an exception.
+
+    The missing corrections table reads as None (unreadable), never ``{}`` -- which would say
+    "no correction" (35-REVIEW WR-03).
+    """
     clear_cache()
     db_path = tmp_path / "ledger_absent.duckdb"
     conn = _build_bare_cache(db_path)
@@ -2520,7 +2524,7 @@ def test_getters_tolerate_a_cache_that_predates_the_ledger(tmp_path: Path) -> No
             "season": None,
             "start_week": None,
         }
-        assert service.get_bet_list_corrections(_LEDGER_SEASON, 6) == {}
+        assert service.get_bet_list_corrections(_LEDGER_SEASON, 6) is None
         assert service.get_betting_sim_evidence_pair() is None
     finally:
         probe.close()

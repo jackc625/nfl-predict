@@ -611,7 +611,8 @@ def _build_bets_context(
     tracker_blocks = service.get_bet_tracker_blocks()
     # Last week's stored actual vs expected (SPEC R5, D-08). ``week - 1`` selects the previous week
     # of the one shown -- an index, not a metric -- and week 1 asks for nothing, so the page never
-    # wraps to the prior season.
+    # wraps to the prior season. None (the rows could not be read) renders "not available", never
+    # "nothing graded" (35-REVIEW WR-03).
     last_week_rows = (
         service.get_bet_week_results(season, week - 1)
         if season is not None and week is not None and week > 1
@@ -622,7 +623,9 @@ def _build_bets_context(
         "request": request,
         # The ranked list is the LIVE ARM only (shadow-arm rows are Phase 37's to show), and the
         # weekly email makes this exact call, so the two cannot rank different rows (NOTIF-05).
-        "bets": service.get_bet_list(season, week, arm=ARM_LIVE),
+        # An unreadable list (None) renders as no rows here: the page tells a missing table apart
+        # through ``bet_list_available`` below, never through this list.
+        "bets": service.get_bet_list(season, week, arm=ARM_LIVE) or [],
         # The declined half of the SAME candidate universe. It is READ here rather than derived
         # from the live list, because the live list is the complement -- deriving one from the
         # other would put the R6 "never silently dropped" guarantee in the request path instead of
@@ -669,7 +672,7 @@ def _build_bets_context(
         "forward_verdict": service.get_forward_verdict_context(),
         # The selected week's in-force corrections, keyed by the ledger row key a bet row
         # carries, so a corrected row is marked by lookup alone (D-06).
-        "bet_corrections": service.get_bet_list_corrections(season, week),
+        "bet_corrections": service.get_bet_list_corrections(season, week) or {},
         # Two blocks, two scopes. The selected week's list (a 2021-2025 week is a replay the old
         # models reconstructed), and the backtest-replay tracker sections. The forward tracker
         # section is 2026 by construction and carries no label.

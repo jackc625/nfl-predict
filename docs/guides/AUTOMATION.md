@@ -467,8 +467,9 @@ failure. The owner's setup steps, the TEST command and what each message means a
   corrected grades (below); (9) the same "not betting advice" line `/bets` carries, last.
 - **Read, never recomputed.** Every figure is read from the web cache through the same getters
   `/bets` uses. The cache counts as current when the week's bet-list populated-at marker is at or
-  after this run's start. An absent, unreadable or older cache gives a stale notice and
-  `bets unknown` -- never `0 bets`.
+  after this run's start. An absent, unreadable or older cache, or a bet list it cannot read, gives
+  a stale notice and `bets unknown` -- never `0 bets`. Last week's block says `not available` when
+  its stored rows cannot be read (as on `/bets`), never `nothing graded`.
 - **Upstream data changes and corrected grades.** The section lists the latest probe line's
   unacknowledged sealed-season changes at WARNING or louder, the live season's WARNING-or-louder
   verdicts recorded since the previous delivered digest (marked `fixed by ledger correction` when a
