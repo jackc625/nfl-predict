@@ -402,6 +402,80 @@ def _no_real_ledger_side_effects(request, monkeypatch, _ledger_run_log_quarantin
     monkeypatch.setattr(ProductionSink, "authorize", _authorize)
 
 
+# ---------------------------------------------------------------------------
+# Phase 35 must-NOT: the suite never reaches a real notification provider
+# ---------------------------------------------------------------------------
+#
+# A test request to ntfy.sh or Resend would put a real message on the owner's phone or in the
+# inbox, and a test check-in to healthchecks.io would make a dead laptop look alive. So every
+# request through a real httpx transport to one of ``notify.secrets.NOTIFY_HOSTS`` (or a subdomain)
+# fails the test with ``pytest.fail`` -- a BaseException, so the sender's ``except Exception``
+# cannot swallow it -- before a byte leaves the machine. Tests of the sender inject an
+# ``httpx.MockTransport`` client through ``notify.transport.CLIENT_FACTORY``; a MockTransport
+# never reaches ``HTTPTransport``, so it is untouched. The refusal names the HOST only: the path of
+# a healthchecks ping URL is the check's uuid.
+#
+# ``notify.log.NOTIFICATION_LOG`` points at a per-test file outside the repository, exactly as the
+# ledger run log is quarantined above.
+
+_NOTIFICATION_LOG_QUARANTINE_IDS = itertools.count(1)
+
+
+def notification_host_refusal(host) -> str | None:
+    """Why a real request to *host* must not be made under pytest, or None when it may."""
+    from notify.secrets import NOTIFY_HOSTS
+
+    name = str(host or "").lower().rstrip(".")
+    for refused in NOTIFY_HOSTS:
+        if name == refused or name.endswith(f".{refused}"):
+            return (
+                f"a real request to {name} was made under pytest and refused before sending "
+                "(Phase 35 must-NOT: the suite never reaches a real notification provider). "
+                "Inject notify.transport.CLIENT_FACTORY with an httpx.MockTransport client."
+            )
+    return None
+
+
+@pytest.fixture(scope="session")
+def _notification_log_quarantine(tmp_path_factory) -> Path:
+    """One directory, outside the repository, holding every test's quarantined notification log."""
+    return tmp_path_factory.mktemp("notification_log_quarantine")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_notification_traffic(monkeypatch, _notification_log_quarantine):
+    """No test reaches ntfy, Resend or healthchecks.io, or writes the real notification log."""
+    import httpx
+
+    from notify import log as notification_log
+
+    real_handle_request = httpx.HTTPTransport.handle_request
+    real_handle_async_request = httpx.AsyncHTTPTransport.handle_async_request
+
+    def _handle_request(self, request):
+        reason = notification_host_refusal(request.url.host)
+        if reason is not None:
+            pytest.fail(reason, pytrace=False)
+        return real_handle_request(self, request)
+
+    async def _handle_async_request(self, request):
+        reason = notification_host_refusal(request.url.host)
+        if reason is not None:
+            pytest.fail(reason, pytrace=False)
+        return await real_handle_async_request(self, request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _handle_request)
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport, "handle_async_request", _handle_async_request
+    )
+    monkeypatch.setattr(
+        notification_log,
+        "NOTIFICATION_LOG",
+        _notification_log_quarantine
+        / f"{next(_NOTIFICATION_LOG_QUARANTINE_IDS)}.jsonl",
+    )
+
+
 # 34-REVIEW WR-32: the ledger's real-git tests run ``git`` directly over tmp_path repositories.
 # Inherited ``GIT_DIR`` / ``GIT_WORK_TREE`` / ``GIT_INDEX_FILE`` (a run from inside a git hook, or
 # a shell that exported them) would point that git at THIS repository instead, and the owner's
