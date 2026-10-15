@@ -13,7 +13,10 @@ code it explains:
 - the outputs path (``outputs/predictions/``) and log path
   (``logs/friday_pipeline.json``) are documented,
 - the single-file-overwrite (no per-run history) note is present,
-- the log-only-alerts-by-default note is present,
+- section 7 describes the Phase 35 notification paths (no longer "console/log ONLY"): the five
+  secrets by env-var name, the TEST and watcher-setup commands, the watcher's 18:30 ET grace and
+  season window, the optional watcher test-day line, and that the orchestrator's own log-only
+  alert layer is not the notification path,
 - the D-04 success-signal triad (``success`` / ``degraded`` / ``failed`` plus the
   matching INFO / WARNING / CRITICAL alert levels) is present, and
 - the ``AUDIT-REPORT.md`` + ``PIPELINE.md`` cross-references are present.
@@ -31,6 +34,12 @@ AUTOMATION_MD = REPO_ROOT / "docs" / "guides" / "AUTOMATION.md"
 def _read_automation_md() -> str:
     """Read AUTOMATION.md from the repo root."""
     return AUTOMATION_MD.read_text(encoding="utf-8")
+
+
+def _section_seven() -> str:
+    """Section 7 of AUTOMATION.md: from its ``## 7.`` heading up to the ``## 8.`` heading."""
+    content = _read_automation_md()
+    return content[content.index("## 7.") : content.index("## 8.")]
 
 
 class TestAutomationMdExists:
@@ -74,30 +83,46 @@ class TestAutomationMdAnchors:
         assert "no per-run history" in lowered
 
     def test_documents_log_only_alerts_default(self):
-        """The log-only-alerts-by-default note is present."""
-        content = _read_automation_md()
-        assert "log-only" in content.lower()
+        """The orchestrator's own alert layer is still described as log-only (D-05).
 
-    def test_documents_email_slack_inert_reality(self):
-        """The honest D-05 finding -- email AND Slack are currently inert -- is present.
-
-        Guards against a regression back to the misleading "Slack works as
-        documented" claim. AUTOMATION.md must state plainly that both email and
-        Slack are inert in the current code (console/log alerts only), and name
-        the root cause (AlertManager reads the non-existent
-        ``self.settings.monitoring``).
+        Phase 35 kept ``pipeline/alert.py`` as one log line per run outcome; the notification
+        path is the separate ``notify/`` package. Section 7 must still say so.
         """
-        content = _read_automation_md()
-        lowered = content.lower()
-        assert "inert" in lowered, "missing the email/Slack-inert honesty note"
-        # The precise root cause must be named so the finding stays actionable.
-        assert "self.settings.monitoring" in content
+        section = _section_seven()
+        assert "pipeline/alert.py" in section
+        assert "log-only" in section.lower()
 
-    def test_documents_email_slack_enable_keys(self):
-        """The email + Slack channel switches are named (for the deferred remedy)."""
-        content = _read_automation_md()
-        assert "enable_email" in content
-        assert "enable_slack" in content
+    def test_section_7_describes_the_notification_paths(self):
+        """Section 7 tells the truth about the Phase 35 notification paths (SPEC R10).
+
+        It no longer claims alerts are console/log ONLY, names the five secrets by env-var name
+        (D-01), the TEST and watcher-setup commands, the watcher's 18:30 ET grace and its
+        7-days-before-first-lock season window, and says the old alert layer is not the
+        notification path (D-05).
+        """
+        section = _section_seven()
+        heading = section.splitlines()[0]
+        assert "console/log ONLY" not in heading, (
+            f"section 7 is still log-only: {heading!r}"
+        )
+        required = (
+            "NTFY_TOPIC",
+            "RESEND_API_KEY",
+            "DIGEST_TO_ADDRESS",
+            "HEALTHCHECKS_PING_URL",
+            "HEALTHCHECKS_API_KEY",
+            "scripts.notify_test",
+            "scripts.setup_watcher",
+            "18:30",
+            "7 days",
+            "not the notification path",
+        )
+        missing = [token for token in required if token not in section]
+        assert not missing, f"AUTOMATION.md section 7 is missing: {missing}"
+
+    def test_documents_the_watcher_test_day_line(self):
+        """The optional D-16 watcher test-day ``.env`` line is named."""
+        assert "WATCHER_TEST_WITHHOLD_DATE" in _section_seven()
 
     def test_documents_the_full_step_listing(self):
         """The orchestrator listing/table names EVERY registered step, and the live count.

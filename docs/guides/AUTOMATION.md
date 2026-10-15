@@ -11,6 +11,10 @@
 > Odds API credit budget, the ledger's push credentials and rulesets, and its run log. The daily
 > run's ledger steps are listed in `PIPELINE.md`; the owner procedures (restore, re-adding the
 > deploy keys, recording a real bet, verify and replay) are in `RUNBOOK.md`, "Forward ledger".
+>
+> **Changed 2026-10-15 (Phase 35):** alerts are no longer log-only. Section 7 now describes the
+> phone push, the Saturday email and the outside watcher; the owner's setup steps, the TEST
+> command and what each message means are in `RUNBOOK.md`, "Notifications".
 
 This is the single source of truth for HOW the Friday automation runs and how to
 tell whether a run succeeded. It explains what fires, when, what each of the 18
@@ -300,11 +304,12 @@ Three properties of that registration are load-bearing and are each pinned by a 
   prediction steps' results are still recorded. Failing the run would discard good prediction
   output because a downstream convenience failed.
 - **It needs no new alert code.** A degraded completion already routes to
-  `alert_degraded_completion`. Note honestly what that buys: alerts are log-only by default and
-  the email/Slack channels are inert (section 6), so the real protection against a silently stale
-  bet list is the `/bets` **hard-block** -- the page refuses to serve a week whose bet-list
-  populated-at marker predates that week's latest per-game line freeze. A failed run leaves that
-  marker unadvanced, which is what makes the block fire deterministically.
+  `alert_degraded_completion`, which is a log line. On the daily run (since Phase 35) a degraded
+  run also sends a top-priority failed push to the owner's phone (section 7); the manual Friday
+  tool sends nothing. Either way the real protection against a silently stale bet list is the
+  `/bets` **hard-block** -- the page refuses to serve a week whose bet-list populated-at marker
+  predates that week's latest per-game line freeze. A failed run leaves that marker unadvanced,
+  which is what makes the block fire deterministically.
 
 The orchestrator still does NOT train, promote, or backtest -- those remain the separate
 PIPELINE.md stages 3, 4 and 5. Stage 7 (build cache) is now ALSO run by the orchestrator; running
@@ -361,7 +366,9 @@ Stated plainly:
 
 For the daily run the same triad applies on a night with games, and `finished_with_skips`
 also exits `0`. A night with nothing to predict exits `0` with no predictions file; its
-signal is the new `no_games` / `lock_passed` line in `logs/daily_lock_runs.jsonl`.
+signal is the new `no_games` / `lock_passed` line in `logs/daily_lock_runs.jsonl`. Since Phase 35
+the daily run also tells the owner directly: every outcome other than clean sends a top-priority
+failed push, and every in-season run checks in with the outside watcher (section 7).
 
 The exit code is `0` for BOTH `success` and `degraded` (a degraded run still produced
 predictions; only a non-critical step like weather or output-file verification failed),
@@ -381,61 +388,199 @@ from the on-disk odds snapshot with NO live pull) with NO model artifact re-fit.
 
 ---
 
-## 7. Alerts -- console/log ONLY in the current code (D-05, empirically verified)
+## 7. Notifications -- phone push, weekly email and an outside watcher (Phase 35)
 
-Alerts are **log-only.** Every alert always fires to the console/log channel
-(`_send_console_alert` + the `logger.{info,warning,error,critical}` line in
-`AlertManager.create_alert`), so a normal run produces its alert with NO configuration.
-**Email and Slack are currently INERT** -- they cannot fire at all via `conf/config.yaml`
-today. This is a code-wiring gap, NOT a missing-secret problem: even with every key set,
-no email or Slack message would be sent. The D-05 verification (empirical, read-only) is
-recorded in Section 9; the alert-wiring gap is captured (NOT fixed) in Section 10 with the
-3-part remedy.
+Until Phase 35 every alert was a log line on the laptop, so nothing reached the owner. Since then
+the system reaches the owner in three ways, all built in the `notify/` package:
 
-The orchestrator's five alert methods (`pipeline/alert.py`) each map to exactly ONE event
-and level: failure -> CRITICAL, success -> INFO, staleness -> WARNING, degraded ->
-WARNING, finished with skips -> WARNING. They wrap `utils.alert_manager.AlertManager`, whose `send_alert` is supposed to
-route each alert to the channels configured for its severity, gated on the enable flags.
+- **Phone push** through ntfy (`https://ntfy.sh`), to the owner's secret topic. Exactly two kinds:
+  **failed** and **bets** (plus the TEST message the owner sends on purpose).
+- **One weekly email** through Resend, sent every in-season week by the Saturday run.
+- **An outside watcher**, a healthchecks.io check that alerts the owner by push AND by email when
+  the daily run has not checked in by 18:30 ET.
 
-### Why email/Slack are inert (the verified root cause)
+A message counts as delivered only when the provider answers with its own receipt: an ntfy message
+id, a Resend email id, or healthchecks.io's `OK` body. A success answer with no receipt is a
+failure. The owner's setup steps, the TEST command and what each message means are in
+`RUNBOOK.md`, "Notifications".
 
-A `conf/config.yaml` `monitoring.notifications` block (recipients, webhook URL, per-level
-channel lists) exists in spirit, but the running code never reads it. Three independent
-breaks, each sufficient on its own, keep email/Slack dark:
+### Who sends, and when
 
-1. **`AlertManager` reads a non-existent attribute.** `AlertManager.__init__` sets
-   `self.monitoring_config` from `self.settings.monitoring` -- but `conf.settings.Settings`
-   has NO `monitoring` attribute (the YAML monitoring block lives under
-   `self.settings.config.monitoring`). So `hasattr(self.settings, "monitoring")` is `False`
-   and `self.monitoring_config == {}` ALWAYS. `send_alert` then resolves
-   `notification_levels.get(<level>, ["console"])` to `["console"]` for EVERY level --
-   CRITICAL and INFO alike route to `["console"]` only, regardless of any config.
-2. **`MonitoringConfig` does not declare `notifications`.** Even via the correct path
-   (`self.settings.config.monitoring`), `conf.settings.MonitoringConfig` declares only
-   `enable_health_checks`, `health_check_interval`, `data_quality`, and
-   `model_performance` -- there is NO `notifications` field. Pydantic (extra=ignore) DROPS
-   `config.yaml`'s `monitoring.notifications` block, so `model_dump()` would never expose
-   `enable_email` / `enable_slack` / `email_recipients` / `slack_webhook_url` /
-   `notification_levels` even if break (1) were fixed.
-3. **`Settings` lacks the SMTP fields.** The email SEND path
-   (`AlertManager._send_email_alert`) references `self.settings.email_from`,
-   `self.settings.smtp_host`, `self.settings.smtp_port`, `self.settings.smtp_use_tls`,
-   `self.settings.smtp_username`, and `self.settings.smtp_password` -- NONE of which are
-   defined on `Settings`. If the email channel were ever reached it would raise
-   `AttributeError`. (The `.env` flags `ENABLE_EMAIL_REPORTS` / `ENABLE_SLACK_NOTIFICATIONS`
-   that DO exist on `Settings` are unrelated -- `AlertManager` never reads them.)
+- **The daily run** (`scripts/daily_lock_pipeline.py`) sends at its very END: after the bet-list and
+  ledger writes, after the web cache rebuild and after the ledger sync, on the returning path, on
+  the raising path, and on the `lock_passed` early return. The order is: the failed pushes (top
+  priority first), then the bets push, then the weekly email (on its digest day only), then the
+  watcher check-in LAST. Sending can never change the run's exit code, a prediction, the bet list
+  or a ledger byte, and a failing send never stops the next one.
+- It sends **nothing** on `--dry-run`, on a refused `--date`, or on Ctrl+C. A process killed
+  outright (power loss, out of memory) sends nothing either; the missing check-in is then the
+  alert.
+- **The closing-line task** sends only its own failed push for a failed reading, and never checks in
+  ("Closing-line wake task" below).
+- **The manual `scripts/friday_pipeline.py` tool sends nothing.**
 
-Net: the console/log alert (always fires) is the real, working behavior. **Both email AND
-Slack are currently inert** -- enabling them is NOT possible by configuration alone; it
-requires the code changes listed in Section 10. The rate-limit / cooldown logic in
-`should_send_alert` (`cooldown_minutes` default 30, `max_alerts_per_hour` default 20) reads
-the same empty `monitoring_config`, so it falls back to those defaults.
+### The two push events
 
-> Note (D-05 / honesty): an earlier draft of this section implied "Slack works as
-> documented; email needs SMTP settings." That was inaccurate -- in the current code BOTH
-> email and Slack are inert. The honest statement is: alerts are console/log ONLY, and
-> enabling email/Slack requires the deferred code changes in Section 10. The default is
-> log-only and a normal run requires no configuration.
+| Event | ntfy priority | Sent when | Title (examples) |
+|-------|---------------|-----------|------------------|
+| failed | 5 (top) | Any 17:00 ET daily-run outcome other than clean: orchestrator status `failed`, `degraded` or `finished_with_skips`; a `run_failed` record (a crash anywhere, including before the orchestrator exists, such as the schedule refresh); `lock_passed` with at least one game tomorrow (or tomorrow's games unknown). One message per run. | `FAILED: 3 games not predicted`, `FAILED: daily run degraded (1 step failed)`, `FAILED: daily run, tomorrow's games unknown` |
+| failed | 3 (normal) | One per ledger or closing failure: a settle pass that raised (`FAILED: ledger settle`) or deferred closing finalization (`FAILED: ledger closing finalization deferred`); a closing-trigger registration that failed or skipped with `closing_task_not_installed` / `machine_not_eastern` (`FAILED: closing line schedule`), or registered but read back wrong (`FAILED: closing line schedule read back wrong`); a failed anchor push (`FAILED: ledger anchor push`) or backup push (`FAILED: ledger backup push`); a refused or broken sync (`FAILED: ledger sync refused`); each failed closing reading (`FAILED: closing line capture`); a weekly email that was not delivered or not built (`FAILED: weekly email`). | as listed |
+| bets | 3 (normal) | The run newly appended at least one live-arm, `status = live` bet to the forward ledger. It lists only those rows, as written, in `/bets` order, one line each: matchup, bet type, pick and line, stake in units, EV band. | `3 new bets: 2026 week 6, Sunday` |
+
+- **Clean outcomes send nothing:** `success`, `no_games`, `offseason`, `lock_passed` with zero games
+  tomorrow, a closing-trigger skip because the closing task was running, and a closing reading
+  that ended `no_games`, `skipped` or `captured`.
+- **Failed comes first.** A run that is not clean and also appended bets sends the failed push,
+  then the bets push. A re-run of a slate lists only bets new to that run; an identical re-run
+  sends no bets push.
+- **No suppression.** There is no cooldown, dedupe window or rate limit: two failures in one night
+  are two pushes. The push router refuses every event class other than failed, bets and test.
+- **What a failed push says:** `What failed:`, `Games:` (the games left without a prediction,
+  `unknown` when they cannot be read, or `none (predictions are not affected)` for a ledger or
+  closing failure), `Error:` (one line: every configured secret replaced by `<redacted>`, every
+  URL cut to its scheme and host, at most 160 characters) and `Next:`. For the daily run, before
+  the lock the next action is the re-run command `uv run python -m scripts.daily_lock_pipeline`;
+  at or after the lock it says those games can no longer be predicted.
+- Bodies are plain ASCII, at most 4,000 bytes; a longer list is cut and ends `... and N more`, so
+  ntfy never turns it into an attachment. No title carries an app name: the owner names the ntfy
+  subscription "NFL Predict" in the app.
+
+### The weekly email
+
+- **Which run sends it:** the run whose tomorrow holds the week's Sunday games -- the Saturday
+  17:00 ET run. A week with no Sunday game falls back to the run before its LAST slate day. It is
+  sent on that run every week, playoffs included (`2026 week 19` keeps its number), and ALSO when
+  that run failed, including a Saturday run that recorded `lock_passed`. If the recorded schedule
+  cannot be read, a Saturday run still sends it (`RUN FAILED - bets unknown`); on any other
+  weekday no email is attempted.
+- **Subject:** `NFL Predict - <season> week <N> - <n> bets - run clean`, or
+  `NFL Predict - <season> week <N> - RUN FAILED - <n> bets` when the run was not clean. ` (update)`
+  is appended when a digest for the same run date was already delivered (a re-run sends one more
+  email). No CLV figure ever appears in the subject or the status header.
+- **Contents, in order:** (1) a status header -- `Run clean.` or `RUN FAILED:` with what broke;
+  (2) the week's live bets decided so far, ranked as on `/bets`, with EV band and stake; (3) every
+  game of the week as `bet`, `no bet`, `not predicted` (its lock passed with no row), or
+  `picked <day> evening` (its lock is still ahead); (4) `0 bets this week` when the list is empty;
+  (5) last week's actual vs expected return (the block `/bets` shows above the forward record);
+  (6) the season-to-date tracker totals; (7) the week's skipped or missed closing readings,
+  first-pick refusals and closing-schedule read-back failures; (8) the upstream data changes and
+  corrected grades (below); (9) the same "not betting advice" line `/bets` carries, last.
+- **Read, never recomputed.** Every figure is read from the web cache through the same getters
+  `/bets` uses. The cache counts as current when the week's bet-list populated-at marker is at or
+  after this run's start. An absent, unreadable or older cache gives a stale notice and
+  `bets unknown` -- never `0 bets`.
+- **Upstream data changes and corrected grades.** The section lists the latest probe line's
+  unacknowledged sealed-season changes at WARNING or louder, the live season's WARNING-or-louder
+  verdicts recorded since the previous delivered digest (marked `fixed by ledger correction` when a
+  stored ledger correction belongs to the change), and the graded live bets whose result was
+  corrected since then. A source it cannot read is named as unreadable, never shown as nothing.
+  It says runs are unaffected, because every run reads pinned bytes, and names the acknowledge
+  command, `uv run python -m scripts.acknowledge_upstream_change`. That command records an owner
+  ruling for ONE sealed-season change on `config/upstream_pin.sealed.lock`; it is not a re-freeze
+  (`config/upstream_pin.json` is never touched), and live-season changes have no acknowledgement.
+  A data change never sends a push.
+- **When it cannot be sent or built:** after 3 attempts, or when building it raised, one
+  normal-priority `FAILED: weekly email` push names the failure kind (`http_<status>`,
+  `transport_<ExceptionClass>`, `no_receipt`, `missing_secret`, or `build_<ExceptionClass>` for an
+  email that could not be built), and the run's check-in goes out as a failure. The email is not
+  re-sent automatically by a later run.
+
+### The outside watcher (healthchecks.io)
+
+- **The check:** cron `0 17 * * *` in `America/New_York` (the zone, so it follows daylight saving),
+  grace 5400 seconds: the check goes late at 17:00 ET and down -- and alerts -- at 18:30 ET. Its
+  alert channels are configured on the watcher itself: the integrations named `NFL Predict ntfy`
+  (the same ntfy topic) and `NFL Predict email`. `manual_resume` is false, so a paused check
+  resumes on its next check-in. The settings are applied and read back field by field by
+  `uv run python -m scripts.setup_watcher` (update-only, it never creates a check;
+  `--verify-only` reads back without updating). It prints one
+  `<field>= <want> | <got> | MATCH|MISMATCH` line each for `schedule`, `tz`, `grace`,
+  `manual_resume` and `channels`, then `WATCHER_READBACK_MATCH= True|False`.
+- **The check-in:** once, at the very end of every in-season daily run, whatever the outcome
+  (`success`, `no_games`, `failed`, `lock_passed` alike). Its body is a short ASCII run summary,
+  for example `NFL Predict daily run 2026-10-17: outcome=success; games tomorrow=13; bets
+  appended=3; failed pushes=0/0; bets push=delivered; digest=delivered; unlogged receipts=0`, so
+  the check's history page reads like a run log. It goes to the check's `/fail` URL when any
+  message stayed undelivered after its attempts, or when a delivered message's receipt could not be
+  written to the notification log; the watcher then alerts through its own channels. Only this one
+  end-of-run step checks in: the TEST command, the closing-line task and `friday_pipeline.py`
+  never do. If healthchecks.io cannot be reached, the missing check-in alerts at 18:30 ET -- a
+  false alarm beats silence.
+- **The season window,** read once at the run's start from the recorded schedule: in from 7 days
+  before the season's first lock day; out from the day after the later of the day the Super Bowl
+  result is recorded and the day after the Super Bowl, until 7 days before the next season's first
+  lock day. Out of season every daily run pauses the check (idempotent, with the read-write API
+  key) and never pings it; a failed pause is recorded in the notification log and not escalated.
+  The first in-window check-in resumes it. A run that cannot read the window (an unreadable
+  schedule) checks in as if in season.
+- **The one watcher test day:** the optional `.env` line `WATCHER_TEST_WITHHOLD_DATE=YYYY-MM-DD`
+  withholds the check-in on that exact ET date only, and only when that day is in season with
+  zero games tomorrow; the run prints `WATCHER_CHECKIN= withheld (test day)` and records a
+  `withheld` check-in. When the date matches but a condition fails, it prints
+  `WATCHER_TEST_DAY= not withheld: <reason>` and checks in normally. Any other date ignores the
+  line. Delete it after the test (`RUNBOOK.md`).
+- The run prints `WATCHER_CHECKIN=` with one of `delivered`, `delivered as failure`,
+  `failed <kind>`, `paused (out of season)`, `pause failed <kind>` or `withheld (test day)`.
+
+### Retries and the notification log
+
+- **Retries:** at most 3 attempts per message. Only transient failures are retried -- a network
+  error or timeout, HTTP 429, any 5xx (and Resend's 409) -- after about 10 s, then about 30 s, with
+  a 15 s timeout per request. A permanent failure (any other 4xx, a missing secret, a success with
+  no receipt) fails at once after 1 attempt. A missing secret is a recorded failure
+  (`missing_secret`), never a skip, and never crashes the run.
+- **`logs/notifications.jsonl`** (gitignored) gets one JSON line per MESSAGE, not per attempt:
+  `run_id`, `run_date_et`, `source` (`daily_run`, `closing_task` or `test_command`),
+  `event_class` (`failed`, `bets`, `test`, `digest`, `checkin` or `pause`), `priority` (5, 3, or
+  null for an email, check-in or pause), `attempts`, `outcome` (`delivered`, `failed` or
+  `withheld`), `receipt_id`, `failure_kind` and `sent_at`. The shape is closed: a record never
+  holds a topic, URL, key, recipient or message body. Each line is appended in one write under a
+  lock file, so the daily run and the closing task never interleave. It is the one place to read
+  what reached the owner. A dry run writes nothing to it.
+- **Console lines** on the daily run: `NOTIFY_FAILED=` and `NOTIFY_BETS=` (`delivered <receipt id>`
+  or `failed <kind>`, then the title; `NOTIFY_BETS= none` when there is no bets push),
+  `NOTIFY_DIGEST=` (`delivered <receipt id>`, `failed <kind>` or `not a digest day`), and the
+  `WATCHER_CHECKIN=` line above. A delivered message whose record could not be written also prints
+  `NOTIFICATION_LOG= failed <ExceptionClass>`.
+
+### The secrets
+
+Five values in `.env`, read through `conf.settings.Settings` as `SecretStr`, so a repr, log line or
+traceback never prints them; a mistyped key fails validation naming the field, never its value.
+`.env.example` lists the names with empty values. Never commit a value.
+
+| Env var | What it is |
+|---------|------------|
+| `NTFY_TOPIC` | The ntfy topic: at least 32 random characters. ntfy topics are public by design, so the name itself is the secret. |
+| `RESEND_API_KEY` | The Resend API key. |
+| `DIGEST_TO_ADDRESS` | The weekly email's recipient. Resend's free tier sends from `onboarding@resend.dev` only to the Resend account's own address, so it must be that address. Treated as a secret: never in a log record. |
+| `HEALTHCHECKS_PING_URL` | The check's ping URL, `https://hc-ping.com/<uuid>`. It embeds the check uuid. |
+| `HEALTHCHECKS_API_KEY` | The healthchecks.io project's READ-WRITE API key, used only to pause the check out of season and by the setup command's update and read-back. |
+
+Plus the optional, non-secret `WATCHER_TEST_WITHHOLD_DATE` (the one watcher test day). The ntfy
+server and the Resend sender are code constants, not `.env` values.
+
+### The TEST command
+
+`uv run python -m scripts.notify_test` sends, through the real sender, one
+`TEST - FAILED: notification test` push at priority 5, one `TEST - <n> new bets: notification test`
+push at priority 3 (the web cache's current-slate live bets), and one TEST digest email (the real
+weekly email from the current cache, its subject starting `TEST - NFL Predict`). It prints
+`NOTIFY_TEST_FAILED=`, `NOTIFY_TEST_BETS=` and `NOTIFY_TEST_DIGEST=`, each `delivered <receipt id>`
+or `failed <kind>`, and leaves three notification-log records with source `test_command`. Exit 0
+when all three were delivered, 1 otherwise. It never checks in with the watcher.
+
+### The old alert layer is not the notification path (D-05)
+
+The orchestrator's own alert layer, `pipeline/alert.py`, still writes exactly one log line per run
+outcome (the alert column of section 6's table) through
+`utils.alert_manager.AlertManager.create_alert`. It is log-only by design and is NOT the
+notification path: it is shared with the push-free manual `scripts/friday_pipeline.py` tool, so it
+is never rerouted into `notify/`. Phase 35 deleted the old email and Slack sending code, the
+cooldown and hourly-limit logic and the unused alert methods from `utils/alert_manager.py`, and the
+unread `monitoring.notifications` block of `conf/config.yaml`. The `.env` flags
+`ENABLE_EMAIL_REPORTS` and `ENABLE_SLACK_NOTIFICATIONS` are read by nothing. Sections 9 and 10 keep
+the Phase 21 record of why the old channels were inert.
 
 ---
 
@@ -639,6 +784,9 @@ mid-run is stopped (`StopIfGoingOnBatteries=true`).
 
 ### D-05 (alert path) -- documented-only; email + Slack are inert [PASS]
 
+> Superseded by Phase 35: the inert email/Slack code and its config block were deleted and rebuilt
+> as `notify/` (section 7). The record below is kept as history.
+
 The owner did NOT enable email/Slack. A read-only diagnostic of `utils/alert_manager.py`
 + `conf/settings.py` (recorded in Section 7) empirically confirmed that **email AND Slack
 are currently inert and cannot fire via config alone**: `AlertManager` reads the
@@ -686,6 +834,8 @@ Section 10 -- it is NOT a matter of populating config keys.
   to operation-specific exception tuples (the pattern `data/storage.py` adopted in
   Phase 15). The intentional CLI / per-step catches stay.
 - **ALERT-WIRING -- email/Slack alert channels are inert (D-05 finding).**
+  Superseded by Phase 35: the inert email/Slack code and its config block were deleted and rebuilt
+  as `notify/` (section 7); the original record follows.
   `utils/alert_manager.py` + `conf/settings.py`: the email and Slack alert channels cannot
   fire via configuration today (verified empirically in Section 7). Three independent
   breaks: (1) `AlertManager.__init__` reads `self.settings.monitoring`, which does not
@@ -753,6 +903,16 @@ which is report-only).
   `data/silver/.odds_snapshot.lock`, shared with the daily run's capture, so the two never write at
   once. A closing row never decides a bet: every decision reader judges a row by its capture time
   against the lock, and closing rows are captured after it.
+- **A failed reading pushes (Phase 35).** A `failed` reading sends one normal-priority push,
+  `FAILED: closing line capture`, naming the games, and the task still exits 1; `no_games`,
+  `skipped` and `captured` send nothing, and two failures in one night are two pushes. The failure
+  event and the push are independent: if the failure cannot even be written to
+  `logs/ledger_runs.jsonl` (the task prints `CLOSING_CAPTURE_LOG= failed <ExceptionClass>`), the
+  push still goes and says so, because the weekly email reads the run log and will not list that
+  failure. A push that raises prints `NOTIFY= failed <ExceptionClass>` and changes nothing else.
+  This task never checks in with the outside watcher, which watches the daily run only, so a
+  window MISSED because the laptop was off sends nothing; it shows up in the weekly email's
+  closing section instead.
 - **When it wakes:** only at real kickoff windows taken from the schedule, never on a repeating
   timer. A window opens 10 minutes before the earliest kickoff it serves and covers every kickoff
   within 60 minutes of that start, so 4:05 and 4:25 PM games share one reading. Each window is one
@@ -770,7 +930,11 @@ which is report-only).
   whether or not tomorrow has games, and it never fails the run: the outcome is printed as
   `CLOSING_TRIGGERS= <outcome> <reason>` and recorded as a `closing_triggers` event. It skips with
   `closing_task_not_installed`, `closing_task_running` or `machine_not_eastern`. Each registration
-  covers 8 days, so one missed or failed daily run loses nothing.
+  covers 8 days, so one missed or failed daily run loses nothing. Since Phase 35 a registration
+  that `failed`, or skipped with `closing_task_not_installed` or `machine_not_eastern`, sends one
+  normal-priority push (`FAILED: closing line schedule`), and so does one that registered but did
+  not read back as expected (`FAILED: closing line schedule read back wrong`, also listed in the
+  weekly email); a skip because the closing task was running sends nothing.
 - **The S4U task regenerates the triggers itself (measured).** The S4U push smoke on 2026-10-05
   (`tests/phase34_state.py`, `P34_S4U_PUSH_SMOKE`) showed the S4U context can create, read back
   and delete a scheduled task. So no owner-run weekly install is needed; the fallback planned for
@@ -883,6 +1047,15 @@ key on two repositories):
   head. Retry by hand with `uv run python -m scripts.sync_ledger`; audit with
   `uv run python -m scripts.verify_ledger`. Only a broken chain refuses a sync (`sync_refused`),
   because nothing is ever published from a broken chain.
+- **Each failure also reaches the owner's phone (Phase 35).** At the end of the daily run, each
+  failed anchor push (`FAILED: ledger anchor push`), each failed backup push
+  (`FAILED: ledger backup push`) and a refused or broken sync (`FAILED: ledger sync refused`) sends
+  one normal-priority push, read from the sync's error fields; so does a failed or skipped closing
+  schedule (`FAILED: closing line schedule`, "Closing-line wake task" above) and a settle pass that
+  raised or deferred closing finalization ("Ledger run log" below). The push's next action names
+  `uv run python -m scripts.sync_ledger` for a push failure, and for a refused sync
+  `uv run python -m scripts.verify_ledger` and then the restore procedure in `RUNBOOK.md`. A day
+  with no new row makes no ledger push, so it sends no such message.
 - **Read the whole setup back** with `uv run python -m scripts.setup_ledger_remote verify`: keys,
   file permissions, pinned host keys, the backup's visibility, both deploy keys, both rulesets and
   the nested `ledger/` repository. It ends `SETUP_READBACK_MATCH= True`.
@@ -917,6 +1090,17 @@ end-of-run sync's anchor and backup events -- carries that id. So "did this run'
 GitHub?" is answered by finding the run's `append` and then its `anchor_push` and `backup_push`
 with the same `run_id`. Events written outside a daily run (an owner CLI, a closing wake) carry
 `run_id` null. Every sync event also carries the `head_hash` and `entry_count` it published.
+
+**The notification log is a separate file.** What reached the owner -- each push, email,
+check-in and pause -- is recorded in `logs/notifications.jsonl` (section 7), never here. A settle
+pass that raised (`settle` with `ok` false) or deferred closing finalization also sends one
+normal-priority push (`FAILED: ledger settle`, `FAILED: ledger closing finalization deferred`).
+
+**A failure is recorded by its exception class name only** in the events the daily run writes
+itself when a side step raises -- a failed `settle` or `closing_triggers` -- and in the closing
+task's failed `closing_capture` (`error_type`), never by its message, which can carry a URL with a
+key in it (Phase 35). The ledger sync's own events (`anchor_commit`, `anchor_push`,
+`backup_commit`, `backup_push`, `sync_refused`) keep the error text they always carried.
 
 ### One ledger write the run log does not hold (2026-10-05, disclosed)
 

@@ -856,6 +856,201 @@ is forbidden. The test suite runs with the switch OFF unless a test turns it on
 
 ---
 
+## Notifications
+
+Added 2026-10-15 (Phase 35). The system reaches you in three ways: a phone push through ntfy (two
+kinds only, failed and bets), one email every in-season Saturday through Resend, and an outside
+watcher (healthchecks.io) that alerts you by push AND by email when the daily run has not checked in
+by 18:30 ET. How they work is explained in `AUTOMATION.md` section 7; this section is what you do.
+Every command runs in PowerShell from the repository root. This guide names the five `.env`
+variables only: never paste a value into a chat, a commit, an issue or a log.
+
+### One-time setup
+
+1. **ntfy (the phone push).** Install the ntfy app on your phone. Generate the topic in your OWN
+   terminal, so it never appears anywhere else:
+
+   ```powershell
+   uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+
+   That prints 43 random characters; at least 32 are needed, because ntfy topics are public and
+   anyone who knows the name can read and post to it. In the app, subscribe to that topic on
+   `https://ntfy.sh` and set the subscription's display name to `NFL Predict`. The push titles
+   carry no app name, so that display name is what tells you who sent them.
+2. **Resend (the weekly email).** Create a free Resend account with your own email address, then
+   create an API key. The free tier sends from `onboarding@resend.dev` and delivers only to the
+   account's own address, so the recipient must be the address you signed up with.
+3. **healthchecks.io (the outside watcher).** In a free account:
+   - create one check (any schedule: the setup command in step 5 sets it) and copy its ping URL,
+     which must be the uuid form `https://hc-ping.com/<uuid>`;
+   - create a READ-WRITE API key (Project Settings -> API Access); a read-only key can neither
+     pause the check nor read it back;
+   - create an ntfy integration (server `https://ntfy.sh`, the same topic) named exactly
+     `NFL Predict ntfy`;
+   - create an email integration to your own address named exactly `NFL Predict email`, and
+     confirm it if healthchecks.io asks you to.
+
+   The healthchecks.io API cannot create integrations, so these are by hand. The names matter:
+   the setup command finds the two integrations by name and refuses if either is missing or
+   duplicated.
+4. **`.env`.** Put the five values in `.env` (never commit it; `.env.example` lists the names with
+   empty values):
+
+   | Env var | Value |
+   |---------|-------|
+   | `NTFY_TOPIC` | the topic from step 1 |
+   | `RESEND_API_KEY` | the Resend API key |
+   | `DIGEST_TO_ADDRESS` | the address the Resend account was created with |
+   | `HEALTHCHECKS_PING_URL` | the check's `https://hc-ping.com/<uuid>` ping URL |
+   | `HEALTHCHECKS_API_KEY` | the read-write API key |
+
+   Delete the lines `ENABLE_EMAIL_REPORTS=...` and `ENABLE_SLACK_NOTIFICATIONS=...` if they are
+   there. Nothing reads those two flags, and `Settings` refuses keys it does not declare, so once
+   the flags are removed from `Settings` a leftover line would stop the daily run from loading its
+   settings. Do not add `WATCHER_TEST_WITHHOLD_DATE` yet. Until a value is set, every send on its
+   channel is recorded as a `missing_secret` failure in `logs/notifications.jsonl`; nothing
+   crashes.
+5. **Configure the watcher and read it back:**
+
+   ```powershell
+   uv run python -m scripts.setup_watcher
+   ```
+
+   It sets the check to cron `0 17 * * *` in `America/New_York`, grace 5400 seconds (late at
+   17:00 ET, down at 18:30 ET), `manual_resume` false and both integrations attached, then reads
+   it back and prints one `<field>= <want> | <got> | MATCH|MISMATCH` line each for `schedule`,
+   `tz`, `grace`, `manual_resume` and `channels`. Expect `WATCHER_READBACK_MATCH= True` and exit
+   0. Add `--verify-only` to read it back without changing anything. A
+   `WATCHER_SETUP_REFUSED=` line names what to fix: a missing or duplicated integration name, a
+   check that does not exist (HTTP 404 -- the command never creates one), a refused key (HTTP 401
+   or 403: it must be the read-write key), or a ping URL that is not the uuid form (all exit 1).
+   Exit 2 means `HEALTHCHECKS_PING_URL` or `HEALTHCHECKS_API_KEY` is not set.
+6. **Send the TEST messages** (next subsection) and check that all three arrive.
+
+### The TEST command
+
+```powershell
+uv run python -m scripts.notify_test
+```
+
+It sends three messages through the real sender, each labelled `TEST - ` so it can never be
+mistaken for a real one:
+
+- `TEST - FAILED: notification test` -- a top-priority push saying it is a test and no action is
+  needed;
+- `TEST - <n> new bets: notification test` -- a normal-priority push listing the live bets of the
+  web cache's current slate (`TEST - 0 new bets` when the cache holds none, `TEST - bets unknown`
+  when no cache could be read);
+- the TEST weekly email -- the real email built from the current web cache, its subject starting
+  `TEST - NFL Predict`.
+
+It prints `NOTIFY_TEST_FAILED=`, `NOTIFY_TEST_BETS=` and `NOTIFY_TEST_DIGEST=`, each
+`delivered <receipt id>` or `failed <kind>`. Exit 0 means all three were accepted; exit 1 means at
+least one was not (`failed missing_secret`: that channel's `.env` value is unset;
+`failed http_<status>`: the provider refused it). Then confirm on your phone and in your inbox that
+each one arrived. The command never checks in with the watcher, and it leaves exactly three lines in
+`logs/notifications.jsonl` with `source` `test_command`, priorities 5, 3 and null.
+
+### The watcher test day (once)
+
+This proves the watcher really alerts when the laptop goes quiet.
+
+1. Pick an in-season ET date whose NEXT day has no game (a day the 17:00 ET run records
+   `no_games`), and add this line to `.env`:
+
+   ```text
+   WATCHER_TEST_WITHHOLD_DATE=YYYY-MM-DD
+   ```
+
+2. That day's 17:00 ET run works as normal but withholds its check-in, printing
+   `WATCHER_CHECKIN= withheld (test day)` and recording a `withheld` check-in in
+   `logs/notifications.jsonl`. The check goes down at 18:30 ET: expect the watcher's alert on your
+   phone AND by email by 18:45 ET.
+3. Then DELETE the line from `.env`. It only ever acts on that one date, so a stale line is
+   harmless, but it is a test switch, not a setting.
+
+The run withholds only when every condition holds: the exact date, in season, zero games tomorrow.
+If one fails it checks in normally and prints `WATCHER_TEST_DAY= not withheld: <reason>` (for
+example `games tomorrow=13`); pick another date. The next day's normal check-in brings the check
+back up.
+
+### What each message means
+
+Push titles are "what happened + the count", so the lock screen alone tells the story. Every failed
+push carries `What failed:`, `Games:`, often `Error:` (one line, with any secret replaced by
+`<redacted>` and any URL cut to its host), and `Next:`.
+
+| Message | What it means | What to do |
+|---------|---------------|------------|
+| `FAILED: <n> games not predicted` (top priority) | The daily run stopped, started after the lock, or left games out; `Games:` names them. | Before the 6 PM ET lock, re-run `uv run python -m scripts.daily_lock_pipeline` (the `Next:` line says so, with the lock time). At or after the lock those games can no longer be predicted: read the `Error:` line and `logs/daily_lock_runs.jsonl` and fix the cause before tomorrow's run. |
+| `FAILED: daily run, tomorrow's games unknown` (top priority) | The run failed and tomorrow's games could not be read either. | As above; check that the schedule refresh works (`AUTOMATION.md` section 1). |
+| `FAILED: daily run degraded (<n> steps failed)` (top priority) | Predictions were made, but a non-critical step failed; `Steps:` names it. | Look at that step. If it was `populate_web_cache`, rebuild the cache by hand (operation 7). |
+| `FAILED: ledger settle`, `FAILED: ledger closing finalization deferred` | Grading, corrections or closing-line finalization did not complete. Predictions are not affected. | Nothing to run now: the next daily run retries it. |
+| `FAILED: closing line schedule`, `FAILED: closing line schedule read back wrong` | The closing-line wake task's triggers were not registered, or did not read back as expected. | Run `uv run python deployment/setup_scheduling.py --verify-installed`; if the task is missing, re-install it with `--install-closing` from an elevated terminal (`AUTOMATION.md`, "Closing-line wake task"). |
+| `FAILED: ledger anchor push`, `FAILED: ledger backup push` | A ledger push to GitHub failed; it is retried by the next sync. | Run `uv run python -m scripts.sync_ledger`; if it keeps failing, follow "If pushes start failing" above. |
+| `FAILED: ledger sync refused` | The end-of-run sync refused to publish or did not complete. | Run `uv run python -m scripts.verify_ledger`, then follow "Restore the ledger from the private backup" above. |
+| `FAILED: closing line capture` | A closing-line reading failed. Those games' closing columns stay empty with reason `capture_failed`. | Nothing to re-run. If the push adds that the failure could not be written to `logs/ledger_runs.jsonl`, the weekly email will not list it. |
+| `FAILED: weekly email` | The Saturday email was not delivered, or could not be built. The kind is in brackets: `http_<status>` (Resend refused it or was down for all three attempts), `transport_<ExceptionClass>` (a network failure), `no_receipt`, `missing_secret` (`RESEND_API_KEY` or `DIGEST_TO_ADDRESS` is unset), or `build_<ExceptionClass>` (the email could not be built). | The email is not re-sent automatically; this week's list is on `/bets`. `build_ValueError` usually means a malformed line in `logs/notifications.jsonl` (the email reads it for the `(update)` mark and the previous email's date, and a malformed log is never read as empty). Find the line with `uv run python -c "from notify.log import read_notifications; read_notifications()"` -- the error names the file and line number -- and fix or remove that one line. |
+| `<n> new bets: <season> week <N>, <day>` | The run newly recorded live bets for that slate; one line each: matchup, bet type, pick, stake in units, EV band. A re-run lists only bets new to it. | Nothing. It is a record, not betting advice. |
+| Email `NFL Predict - <season> week <N> - <n> bets - run clean` | The weekly summary. `RUN FAILED - ...` names what broke in its status header; ` (update)` marks a second email for the same day (a re-run); `bets unknown` and a stale notice mean the web cache was not current, never zero bets. | Read it. Its data-change section may name the acknowledge command (below). |
+| The watcher's alert (from healthchecks.io, through `NFL Predict ntfy` and `NFL Predict email`) | The daily run did not check in by 18:30 ET -- the laptop was off or asleep at 17:00, the run died outright, or healthchecks.io could not be reached -- or it checked in as a failure. | Open the check's page on healthchecks.io. No ping that day: the run never reported; check the laptop and `logs/daily_lock_runs.jsonl`. A `/fail` ping: its body is the run summary. `failed pushes=` with fewer delivered than sent, `bets push=failed` or `digest=failed` means a message was lost: read its `failure_kind` in `logs/notifications.jsonl`. `unlogged receipts=` above 0 means a message reached you but its receipt could not be written to `logs/notifications.jsonl` (when the write raised, the run printed `NOTIFICATION_LOG= failed <ExceptionClass>`): check that `logs/` is writable and nothing is holding `logs/.notifications.lock`. |
+
+Out of season the watcher check is paused by every daily run, so it sends nothing; the first run
+from 7 days before the next season's first lock day resumes it. A message that was not delivered is
+never re-sent by a later run.
+
+### Reading logs/notifications.jsonl
+
+`logs/notifications.jsonl` is the one place to read what reached you. It is append-only and holds
+one JSON line per message (not per attempt):
+
+| Field | Meaning |
+|-------|---------|
+| `run_id`, `run_date_et` | The daily run's id (null for the closing task, the TEST command and a run that started after the lock) and the ET date it was sent for. |
+| `source` | `daily_run`, `closing_task` or `test_command`. |
+| `event_class` | `failed`, `bets`, `test`, `digest`, `checkin` or `pause`. |
+| `priority` | 5 (top) or 3 (normal) for a push; null for an email, check-in or pause. |
+| `attempts` | Attempts made, at most 3 (0 for a withheld check-in or an email that could not be built). |
+| `outcome` | `delivered`, `failed`, or `withheld` (the watcher test day). |
+| `receipt_id` | The provider's message id when delivered. |
+| `failure_kind` | `missing_secret`, `no_receipt`, `invalid_url`, `http_<status>`, `transport_<ExceptionClass>` or `build_<ExceptionClass>`. |
+| `sent_at` | When the record was written (UTC). |
+
+It never holds a topic, URL, key, recipient or message body. Read the latest lines with
+`Get-Content logs/notifications.jsonl -Tail 20`.
+
+### Acknowledging a sealed upstream change
+
+The weekly email's `UPSTREAM DATA CHANGES AND CORRECTED GRADES` section lists every sealed-season
+change the latest probe line still holds unacknowledged at WARNING or louder, for example
+`schedules 2025: the upstream file changed after it was pinned (content digest moved)`. Runs are
+unaffected -- they read pinned bytes -- but the email keeps listing the change until you rule on it.
+Look at the change, then record your ruling:
+
+```powershell
+uv run python -m scripts.acknowledge_upstream_change --dataset schedules --season 2025 --reason "<why the change is accepted>"
+```
+
+- It copies the observed values from the latest probe line's finding for that pair (you never
+  type a digest) and writes them onto the pair's entry in `config/upstream_pin.sealed.lock` with
+  who ruled (`--ruled-by`, default `owner`), when (UTC) and your REQUIRED reason. The write is
+  atomic: an interrupted run leaves the previous lock intact.
+- It is NOT a re-freeze: `config/upstream_pin.json` is never opened, and every run keeps reading
+  the pinned bytes. A second ruling on the same pair supersedes the first and keeps it on record. A
+  later, different move is a new finding again.
+- Success prints `ACK_RECORDED= <dataset> <season>` and `ACK_NEXT=`. Then COMMIT
+  `config/upstream_pin.sealed.lock`: the acknowledgement is a committed owner ruling. From the next
+  probe line on, the change reads as acknowledged and the email stops listing it.
+- `ACK_REFUSED=` names why it refused: no finding for the pair in the latest probe line, a pair the
+  lock does not track, or a lock or probe log that cannot be read (exit 1); a blank reason is exit
+  2.
+- Sealed seasons only. Live-season (2026) changes have no acknowledgement: each is listed in the
+  email once, the week it is recorded, marked `fixed by ledger correction` when a stored correction
+  belongs to it.
+
+---
+
 ## Cross-references
 
 - **`PIPELINE.md`** -- the canonical 8-stage run sequence (ingest -> features -> train ->
@@ -863,7 +1058,8 @@ is forbidden. The test suite runs with the switch OFF unless a test turns it on
   runbook mirrors; it is the command source of truth.
 - **`AUTOMATION.md`** -- the Friday automation explanation: what fires and when, the 18
   orchestrator steps, where logs land, and the D-04 "did Friday succeed?" success triad. The
-  "Run automation" operation links it instead of re-explaining it.
+  "Run automation" operation links it instead of re-explaining it. Its section 7 explains the
+  notification paths (Phase 35) that the "Notifications" section above operates.
 - **`README.md`** -- the portfolio-facing system narrative and the single architecture
   diagram the DOC-02 section above cross-references (no duplicate diagram lives here).
 - **`MODEL-DIAGNOSIS.md`** -- the frozen v2.1 honest per-target accuracy diagnosis (WP/ATS =

@@ -425,3 +425,40 @@ class TestPhase34ForwardLedger:
         ), (
             "RUNBOOK.md restore does not clone jackc625/nfl-predict-ledger on main into ledger"
         )
+
+
+class TestPhase35Notifications:
+    """Plan 35-16: the owner can set up, test and read the notification paths from the RUNBOOK.
+
+    SPEC R10 as amended by D-01 (five secrets): the Notifications section names the five ``.env``
+    variables by name only, the three owner commands (TEST, watcher setup, acknowledge), the two
+    healthchecks.io integration names and the ntfy subscription name (D-06), the watcher test day's
+    18:45 ET deadline (D-16), the notification log, and the weekly-email failure kind that points
+    at a malformed log line.
+    """
+
+    def test_the_notifications_section_names_every_owner_fact(self):
+        """The section exists and carries each pinned name, command and string."""
+        content = _read_runbook_md()
+        assert "## Notifications" in content, "RUNBOOK.md has no Notifications section"
+        section = content[
+            content.index("## Notifications") : content.index("## Cross-references")
+        ]
+        required = (
+            "NTFY_TOPIC",
+            "RESEND_API_KEY",
+            "DIGEST_TO_ADDRESS",
+            "HEALTHCHECKS_PING_URL",
+            "HEALTHCHECKS_API_KEY",
+            "scripts.notify_test",
+            "scripts.setup_watcher",
+            "scripts.acknowledge_upstream_change",
+            "NFL Predict ntfy",
+            "NFL Predict email",
+            "NFL Predict",
+            "18:45",
+            "logs/notifications.jsonl",
+            "build_ValueError",
+        )
+        missing = [token for token in required if token not in section]
+        assert not missing, f"RUNBOOK.md Notifications section is missing: {missing}"
