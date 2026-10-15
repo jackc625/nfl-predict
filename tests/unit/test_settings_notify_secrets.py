@@ -8,9 +8,9 @@ keeping, but by default the validation error echoes the offending line's VALUE -
 secret name would print the secret into the task log. ``hide_input_in_errors = True`` keeps the
 field name in the error and drops the value.
 
-Stage 1 of the legacy-flag removal: ``enable_email_reports`` / ``enable_slack_notifications`` stay
-declared so an owner ``.env`` still carrying them loads. Plan 35-17 removes them and flips
-``test_the_legacy_flags_still_load_in_stage_one``.
+Stage 2 of the legacy-flag removal (Plan 35-17, D-05): ``enable_email_reports`` /
+``enable_slack_notifications`` are no longer declared, so a ``.env`` line naming either is refused
+by name with its value hidden.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -85,12 +85,19 @@ def test_the_test_day_line_parses_as_a_date(tmp_path: Path) -> None:
     assert settings.watcher_test_withhold_date == date(2026, 10, 16)
 
 
-def test_the_legacy_flags_still_load_in_stage_one(tmp_path: Path) -> None:
-    lines = [f"{name}=false" for name in LEGACY_FLAG_ENVS]
-    settings = Settings(_env_file=_env_file(tmp_path, lines))
+def test_a_legacy_key_is_now_refused_with_its_value_hidden(tmp_path: Path) -> None:
+    leaked = "dummy-legacy-value-xyz"
+    env_file = _env_file(tmp_path, [f"ENABLE_EMAIL_REPORTS={leaked}"])
 
-    assert settings.enable_email_reports is False
-    assert settings.enable_slack_notifications is False
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=env_file)
+
+    # extra_forbidden, not bool_parsing: the dummy is not a bool either, so only the error type
+    # proves the field is gone rather than merely given a bad value.
+    assert [error["type"] for error in caught.value.errors()] == ["extra_forbidden"]
+    message = str(caught.value)
+    assert "enable_email_reports" in message
+    assert leaked not in message
 
 
 def test_absent_secrets_are_none(tmp_path: Path) -> None:

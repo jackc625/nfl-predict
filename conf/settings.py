@@ -359,13 +359,6 @@ class Settings(BaseSettings):
     enable_betting_recommendations: bool = Field(
         default=True, env="ENABLE_BETTING_RECOMMENDATIONS"
     )
-    # Read by nothing (Phase 35 D-05 retires the email/Slack alert branches). Kept so an owner
-    # `.env` that still carries these lines loads: unknown keys are forbidden, so removing them
-    # now would crash the 17:00 ET run. Plan 35-17 removes them once `.env` no longer has them.
-    enable_email_reports: bool = Field(default=False, env="ENABLE_EMAIL_REPORTS")
-    enable_slack_notifications: bool = Field(
-        default=False, env="ENABLE_SLACK_NOTIFICATIONS"
-    )
     mock_external_apis: bool = Field(default=False, env="MOCK_EXTERNAL_APIS")
 
     # System settings
