@@ -977,11 +977,12 @@ def test_recommend_switch_on_uses_runner(monkeypatch, tmp_path):
 
     monkeypatch.setattr(weekly_bet_list, "generate_weekly_bet_list", _no_bet_list)
     calls: list[tuple] = []
-    monkeypatch.setattr(
-        runner,
-        "record_forward_slate",
-        lambda slate_arg, **kwargs: calls.append((slate_arg, kwargs)),
-    )
+
+    def _record(slate_arg, **kwargs):
+        calls.append((slate_arg, kwargs))
+        return runner.RecordOutcome(0, 0, 0, (), False, None, None)
+
+    monkeypatch.setattr(runner, "record_forward_slate", _record)
 
     daily_steps.recommend_slate(slate)
 
@@ -1205,6 +1206,7 @@ def test_one_run_id_per_daily_run(monkeypatch, tmp_path, capsys):
 
     def _record(_slate, **_kwargs):
         run_log.record_event("append", appended_rows=2)
+        return runner.RecordOutcome(2, 2, 0, (), True, "h", 2)
 
     def _settle(**_kwargs):
         run_log.record_event("settle", graded=0)

@@ -43,7 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pipeline.steps import (
     PipelinePhase,
@@ -121,6 +121,9 @@ class DailySlate:
         odds_missing: ``game_id -> reason`` for each slate game with no admissible pre-lock
             line on record; set by ``close_collection``. Such a game is still predicted -- the
             models use no market input -- with its market side blank and no bet.
+        appended_rows: The rows this run newly appended to the forward ledger (their canonical
+            stored values), accumulated across the live-skip re-runs of the recommend step;
+            extended by ``recommend_slate`` and read by the end-of-run notifier (Phase 35, D-14).
     """
 
     run_date_et: date
@@ -131,6 +134,7 @@ class DailySlate:
     weather_unknown: dict[str, str] = field(default_factory=dict)
     odds_failure: str | None = None
     odds_missing: dict[str, str] = field(default_factory=dict)
+    appended_rows: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def game_ids(self) -> frozenset[str]:
@@ -617,13 +621,14 @@ def recommend_slate(slate: DailySlate) -> None:
         if forward_rows_go_to_ledger():
             from forward_ledger import runner
 
-            runner.record_forward_slate(
+            outcome = runner.record_forward_slate(
                 slate,
                 decided_at=decided_at,
                 excluded_game_ids=live_skip.excluded_games() | outside_slate,
                 publish_by=slate.lock if in_scope else None,
                 repo_dir=Path(),
             )
+            slate.appended_rows.extend(outcome.appended_rows)
         else:
             generate_weekly_bet_list(
                 season=slate.season,

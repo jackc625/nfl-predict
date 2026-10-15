@@ -131,6 +131,8 @@ class RecordOutcome:
         wrote: Whether the ledger file was replaced.
         head_hash: The ledger head after the call (None when nothing was decided).
         entry_count: The ledger entry count after the call (None when nothing was decided).
+        appended_rows: The canonical row values written by this call; empty when nothing was
+            written. The notifier reads these, never a recomputation (Phase 35, D-14).
     """
 
     decided: int
@@ -140,6 +142,7 @@ class RecordOutcome:
     wrote: bool
     head_hash: str | None
     entry_count: int | None
+    appended_rows: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -362,6 +365,7 @@ def record_forward_slate(
         wrote=result.wrote,
         head_hash=result.head_hash,
         entry_count=result.entry_count,
+        appended_rows=tuple(classification.new) if result.wrote else (),
     )
 
 
