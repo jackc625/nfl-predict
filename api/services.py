@@ -47,6 +47,8 @@ from api.cache import (
     BET_LIST_CORRECTIONS_COLUMNS,
     BET_STATUS_LIVE,
     BET_TRACKER_BLOCK_COLUMNS,
+    BET_WEEK_CLASS_ORDER,
+    BET_WEEK_RESULTS_COLUMNS,
     BETTING_SIM_PROVENANCE_KEY,
     BETTING_SIM_VALIDATION_TYPE_KEY,
     CURRENT_SLATE_KEY,
@@ -153,6 +155,9 @@ _BET_TRACKER_BLOCK_COLUMNS_SQL = ", ".join(BET_TRACKER_BLOCK_COLUMNS)
 # in-force corrections, each read with the writer's own column list.
 _BET_GRADED_OUTCOMES_COLUMNS_SQL = ", ".join(BET_GRADED_OUTCOMES_COLUMNS)
 _BET_LIST_CORRECTIONS_COLUMNS_SQL = ", ".join(BET_LIST_CORRECTIONS_COLUMNS)
+
+# And for the per-week actual vs expected rows (SPEC R5), read with the writer's own column list.
+_BET_WEEK_RESULTS_COLUMNS_SQL = ", ".join(BET_WEEK_RESULTS_COLUMNS)
 
 # The strip's order: by class, then the bet list's key -- the order the producer
 # (``backtest.bet_tracker.graded_outcome_rows``) sorts the rows into before they are written.
@@ -1159,6 +1164,47 @@ class DataService:
             )
             corrections[row_key] = row
         return corrections
+
+    def get_bet_week_results(
+        self, season: int | None, week: int | None
+    ) -> list[dict[str, Any]]:
+        """Return *season* / *week*'s stored actual vs expected rows, one per counting class.
+
+        The rows were aggregated at cache build by ``backtest.bet_week_results`` (SPEC R5); this is
+        a plain keyed SELECT, with no aggregate and no arithmetic (UIAP-01, NOTIF-05). The rows
+        come back in ``api.cache.BET_WEEK_CLASS_ORDER`` -- a selection order, never the
+        alphabetical order of the labels. The caller asks for last week as ``(season, week - 1)``,
+        so week 1 asks for week 0, finds no row and never reaches the prior season. Either
+        identifier ``None``, or a cache that predates the table, returns ``[]``.
+        """
+        if season is None or week is None:
+            return []
+        key = ("bet_week_results", season, week)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_bet_week_results_uncached(season, week)
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_bet_week_results_uncached(
+        self, season: int, week: int
+    ) -> list[dict[str, Any]]:
+        query = (
+            f"SELECT {_BET_WEEK_RESULTS_COLUMNS_SQL} FROM bet_week_results "
+            "WHERE season = ? AND week = ?"
+        )
+        try:
+            result = self._conn.execute(query, [season, week])
+        except duckdb.Error:
+            # The cache predates Plan 35-03 (no bet_week_results table).
+            logger.warning("bet_week_results table not available in cache")
+            return []
+        columns = [desc[0] for desc in result.description]
+        rows = [dict(zip(columns, values)) for values in result.fetchall()]
+        return sorted(
+            rows, key=lambda row: BET_WEEK_CLASS_ORDER.index(row["counting_class"])
+        )
 
     def get_betting_sim_evidence_pair(self) -> tuple[str, str] | None:
         """Return the betting simulation's ``(provenance, validation_type)`` pair, or None.

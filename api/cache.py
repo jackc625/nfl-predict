@@ -307,6 +307,22 @@ CREATE TABLE IF NOT EXISTS bet_graded_outcomes (
     -- start week) and grading_status the in-force grade, so the strip cannot disagree with the
     -- tiles (review finding 4). The request path only selects these rows (UIAP-01).
 );
+
+CREATE TABLE IF NOT EXISTS bet_week_results (
+    season INTEGER,
+    week INTEGER,
+    counting_class VARCHAR,
+    wins INTEGER,
+    losses INTEGER,
+    pushes INTEGER,
+    bets_graded INTEGER,
+    bets_ungraded INTEGER,
+    actual_return_units DOUBLE,
+    expected_return_units DOUBLE
+    -- PRECOMPUTED per-week actual vs expected (SPEC R5), one row per season, week and counting
+    -- class. Built outside api/ by backtest/bet_week_results.py and only persisted here. A NULL
+    -- return means not measured, never zero.
+);
 """
 
 
@@ -1156,6 +1172,46 @@ CREATE TABLE IF NOT EXISTS bet_graded_outcomes (
 )
 """
 
+# The one declared display order of the counting classes, read by the per-week aggregation
+# (``backtest.bet_week_results``) and the getter (``DataService.get_bet_week_results``) alike, so
+# neither falls back to alphabetical order, which agrees with this only by accident of two labels.
+BET_WEEK_CLASS_ORDER: tuple[str, ...] = (
+    VALIDATION_TYPE_FORWARD_REALIZED,
+    VALIDATION_TYPE_PRE_VERDICT,
+)
+
+# Last week's actual versus expected (SPEC R5), one row per (season, week, counting class),
+# PRECOMPUTED at cache build by ``backtest.bet_week_results.aggregate_bet_weeks``. A NULL return is
+# "not measured", never zero. THREE SITES like ``bet_list``: the CACHE_SCHEMA literal, this
+# standalone CREATE, and the explicit-column INSERT in :func:`materialize_bet_week_results` --
+# ``tests/api/test_cache_betting.py`` builds and compares all three.
+BET_WEEK_RESULTS_COLUMNS: list[str] = [
+    "season",
+    "week",
+    "counting_class",
+    "wins",
+    "losses",
+    "pushes",
+    "bets_graded",
+    "bets_ungraded",
+    "actual_return_units",
+    "expected_return_units",
+]
+BET_WEEK_RESULTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bet_week_results (
+    season INTEGER,
+    week INTEGER,
+    counting_class VARCHAR,
+    wins INTEGER,
+    losses INTEGER,
+    pushes INTEGER,
+    bets_graded INTEGER,
+    bets_ungraded INTEGER,
+    actual_return_units DOUBLE,
+    expected_return_units DOUBLE
+)
+"""
+
 # The forward verdict context /bets needs to name its counting start week (D-15, D-16, LDGR-08),
 # stamped at cache build so the page computes nothing. ``declared`` is ``"true"`` / ``"false"``;
 # the season and start week are NULL while nothing is declared.
@@ -1882,6 +1938,42 @@ def materialize_bet_graded_outcomes(
     subset["arm"] = _null_as_none(subset["arm"])  # pyright: ignore[reportArgumentType]
     return _explicit_column_insert(
         conn, "bet_graded_outcomes", BET_GRADED_OUTCOMES_COLUMNS, subset
+    )
+
+
+def materialize_bet_week_results(
+    conn: duckdb.DuckDBPyConnection,
+    week_results_df: pd.DataFrame,
+) -> int:
+    """Persist the PRECOMPUTED per-week actual vs expected (SPEC R5). Pure persistence.
+
+    The rows come from ``backtest.bet_week_results.aggregate_bet_weeks``, computed at cache build
+    outside ``api/``; this writer counts nothing and divides nothing (UIAP-01, NOTIF-05). A NULL
+    return reaches DuckDB as SQL NULL ("not measured"), never as a coerced 0.0 or NaN.
+
+    Args:
+        conn: An open DuckDB connection. The table is created if absent.
+        week_results_df: Rows carrying every ``BET_WEEK_RESULTS_COLUMNS`` field.
+
+    Returns:
+        The number of rows inserted.
+    """
+    conn.execute(BET_WEEK_RESULTS_SCHEMA)
+    if week_results_df.empty:
+        return 0
+
+    _require_columns(
+        week_results_df,
+        BET_WEEK_RESULTS_COLUMNS,
+        "materialize_bet_week_results",
+        "week_results_df",
+    )
+    # Same pandas-stubs gap as materialize_bet_list_corrections above.
+    subset: pd.DataFrame = week_results_df[BET_WEEK_RESULTS_COLUMNS].copy()  # pyright: ignore[reportAssignmentType]
+    for column in ("actual_return_units", "expected_return_units"):
+        subset[column] = _null_as_none(subset[column])  # pyright: ignore[reportArgumentType]
+    return _explicit_column_insert(
+        conn, "bet_week_results", BET_WEEK_RESULTS_COLUMNS, subset
     )
 
 
@@ -3090,6 +3182,7 @@ def populate_cache(
     bet_corrections_df: pd.DataFrame | None = None,
     bet_graded_outcomes_df: pd.DataFrame | None = None,
     forward_verdict_context: dict[str, Any] | None = None,
+    bet_week_results_df: pd.DataFrame | None = None,
 ) -> None:
     """Populate the DuckDB web cache from artifacts and backtest outputs.
 
@@ -3158,6 +3251,10 @@ def populate_cache(
             ``bet_graded_outcomes`` table present and empty.
         forward_verdict_context: ``{"declared", "season", "start_week"}`` for the 2026 forward
             verdict; ``None`` is stamped as undeclared.
+        bet_week_results_df: The per-week actual vs expected rows (``BET_WEEK_RESULTS_COLUMNS``),
+            aggregated outside ``api/`` by ``backtest.bet_week_results`` from the same rows and
+            corrections as the tracker blocks (SPEC R5). ``None`` leaves the
+            ``bet_week_results`` table present and empty.
     """
     tmp_path = db_path.with_suffix(".tmp.duckdb")
     logger.info(
@@ -3322,6 +3419,11 @@ def populate_cache(
                 conn, bet_graded_outcomes_df
             )
             logger.info("Bet graded outcomes loaded", count=outcomes_count)
+        # Last week's actual vs expected (SPEC R5): the table exists from CACHE_SCHEMA, and a
+        # ``None`` source leaves it empty.
+        if bet_week_results_df is not None:
+            week_results_count = materialize_bet_week_results(conn, bet_week_results_df)
+            logger.info("Bet week results loaded", count=week_results_count)
 
         # Pre-render charts from populated data
         chart_count = _prerender_charts(conn)
