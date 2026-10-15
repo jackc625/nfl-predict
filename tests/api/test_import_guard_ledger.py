@@ -1,4 +1,4 @@
-"""UIAP-01 SIBLING guard: no module under ``api/`` imports ``forward_ledger`` or ``scripts``.
+"""UIAP-01 SIBLING guard: no module under ``api/`` imports ``forward_ledger``, ``scripts`` or ``notify``.
 
 Why this exists (Phase 34, LDGR-06, D-18). Verifying the forward ledger re-hashes the whole
 chain and re-grades every settled row; replaying it re-scores stored decisions. Both are linear
@@ -6,6 +6,11 @@ passes over the season, and both are CLIs under ``scripts/`` that the owner runs
 imported either, a page request could start one -- computation in the request path, which
 UIAP-01 forbids. The ledger package itself (``forward_ledger``) is likewise reached only by the
 daily run and the CLIs; the cache build hands the web layer precomputed tables.
+
+A route must never send a notification either (Phase 35, UIAP-01): the sender (``notify``) is
+reached only by the daily run and the CLIs, so a page request can never push, email or check in.
+The other direction stays allowed -- ``notify`` may read the cache through the selection
+functions ``/bets`` uses (D-19).
 
 What is scanned. Every ``.py`` under ``api/`` is parsed and every ``import`` / ``from ... import``
 node is checked at ANY depth (``ast.walk``), so a lazy import inside a route handler is caught
@@ -30,7 +35,7 @@ import pathlib
 
 import pytest
 
-_FORBIDDEN_ROOTS = frozenset({"forward_ledger", "scripts"})
+_FORBIDDEN_ROOTS = frozenset({"forward_ledger", "scripts", "notify"})
 
 # Call targets whose first string argument is a module path.
 _DYNAMIC_IMPORT_FUNCTIONS = frozenset({"import_module", "__import__"})
@@ -132,6 +137,7 @@ def test_the_scan_covers_the_api_tree_including_the_cache(
             "dynamic import 'scripts.replay_ledger'",
         ),
         ("__import__('forward_ledger')\n", "dynamic import 'forward_ledger'"),
+        ("from notify.events import send_push\n", "from notify.events import"),
     ],
 )
 def test_negative_control_the_scanner_flags_each_forbidden_form(
