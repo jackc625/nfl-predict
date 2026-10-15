@@ -16,9 +16,10 @@ The fifth method is a BRANCH on this existing log-only manager, not a new channe
 email, webhook or push call; Phase 35 owns notifications and reads the durable skip record
 (config/skip_records.jsonl) rather than this alert.
 
-Alerts default to log-only (console channel). Email/Slack channels are only used
-if configured in .env. This is already handled by the existing AlertManager's
-should_send_alert() and channel routing logic.
+Each method writes exactly one log line per outcome through AlertManager.create_alert, and
+nothing else: no send step, no channel, no cooldown. Phase 35's notify/ package (phone push,
+Saturday email, watcher) is never reached from here, because this layer is shared with the
+push-free manual scripts/friday_pipeline.py tool.
 
 Addresses review concern: Alert duplication (MEDIUM, Codex).
 """
@@ -65,7 +66,7 @@ class PipelineAlertManager:
             week: NFL week number.
             details: Optional additional details.
         """
-        alert = self._am.create_alert(
+        self._am.create_alert(
             level=AlertLevel.CRITICAL,
             alert_type=AlertType.SYSTEM_HEALTH,
             title="Pipeline Failed",
@@ -80,7 +81,6 @@ class PipelineAlertManager:
             },
             source="friday_pipeline",
         )
-        self._am.send_alert(alert)
 
     def alert_pipeline_success(
         self,
@@ -99,7 +99,7 @@ class PipelineAlertManager:
             season: NFL season year.
             week: NFL week number.
         """
-        alert = self._am.create_alert(
+        self._am.create_alert(
             level=AlertLevel.INFO,
             alert_type=AlertType.SYSTEM_HEALTH,
             title="Pipeline Completed Successfully",
@@ -113,7 +113,6 @@ class PipelineAlertManager:
             },
             source="friday_pipeline",
         )
-        self._am.send_alert(alert)
 
     def alert_staleness_warning(
         self,
@@ -131,7 +130,7 @@ class PipelineAlertManager:
             season: NFL season year.
             week: NFL week number.
         """
-        alert = self._am.create_alert(
+        self._am.create_alert(
             level=AlertLevel.WARNING,
             alert_type=AlertType.SYSTEM_HEALTH,
             title="Pipeline Staleness Warnings",
@@ -139,7 +138,6 @@ class PipelineAlertManager:
             details={"warnings": warnings},
             source="friday_pipeline",
         )
-        self._am.send_alert(alert)
 
     def alert_degraded_completion(
         self,
@@ -159,7 +157,7 @@ class PipelineAlertManager:
             season: NFL season year.
             week: NFL week number.
         """
-        alert = self._am.create_alert(
+        self._am.create_alert(
             level=AlertLevel.WARNING,
             alert_type=AlertType.SYSTEM_HEALTH,
             title="Pipeline Completed with Failures",
@@ -173,7 +171,6 @@ class PipelineAlertManager:
             },
             source="friday_pipeline",
         )
-        self._am.send_alert(alert)
 
     def alert_finished_with_skips(
         self,
@@ -188,7 +185,7 @@ class PipelineAlertManager:
         post-dated its lock. Replaces ``alert_pipeline_success`` for such a run: reporting it
         as a clean success would tell the owner a game was predicted when it was not
         (T-33.2-03-05). Modelled on :meth:`alert_degraded_completion`, and like it, log-only
-        by default -- the durable record of each skip is ``config/skip_records.jsonl``.
+        -- the durable record of each skip is ``config/skip_records.jsonl``.
 
         Args:
             skipped_games: The game ids the run dropped.
@@ -196,7 +193,7 @@ class PipelineAlertManager:
             season: NFL season year.
             week: NFL week number.
         """
-        alert = self._am.create_alert(
+        self._am.create_alert(
             level=AlertLevel.WARNING,
             alert_type=AlertType.SYSTEM_HEALTH,
             title="Pipeline Completed with Skipped Games",
@@ -211,4 +208,3 @@ class PipelineAlertManager:
             },
             source="friday_pipeline",
         )
-        self._am.send_alert(alert)

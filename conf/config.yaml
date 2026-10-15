@@ -205,25 +205,6 @@ monitoring:
       min_predictions_per_week: 12
       max_prediction_variance: 0.3
 
-  # Notification settings
-  notifications:
-    enable_email: false
-    enable_slack: false
-    enable_console: true
-    email_recipients: []
-    slack_webhook_url: ""
-
-    # Alert routing by severity
-    notification_levels:
-      critical: ["email", "slack", "console"]
-      error: ["slack", "console"]
-      warning: ["console"]
-      info: ["console"]
-
-    # Rate limiting
-    max_alerts_per_hour: 20
-    cooldown_minutes: 30  # Suppress repeat alerts
-
   # Health check endpoints
   health_checks:
     database: true

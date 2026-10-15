@@ -1,4 +1,4 @@
-"""Tests for pipeline.alert -- PipelineAlertManager with four non-overlapping methods."""
+"""Tests for pipeline.alert -- PipelineAlertManager with five non-overlapping, log-only methods."""
 
 from unittest.mock import MagicMock, patch
 
@@ -147,38 +147,87 @@ class TestAlertDegradedCompletion:
             assert "weather_ingest" in all_args["message"]
 
 
-class TestAlertSendAndNonOverlapping:
-    """Tests for send_alert and non-overlapping alert behavior."""
+class TestAlertLogOnlyAndNonOverlapping:
+    """The alert layer is log-only (Phase 35 D-05): one created alert per method, nothing else."""
+
+    # The deleted send / cooldown / email / Slack paths, listed once.
+    _REMOVED_ATTRIBUTES = (
+        "send_alert",
+        "should_send_alert",
+        "_send_console_alert",
+        "_send_email_alert",
+        "_send_slack_alert",
+        "last_alert_time",
+        "alert_history",
+        "save_alert_history",
+        "monitoring_config",
+        "settings",
+    )
 
     @patch("pipeline.alert.get_alert_manager")
-    def test_all_alerts_call_send_alert(self, mock_get_am):
-        """All four alert methods call send_alert()."""
+    def test_each_method_calls_create_alert_once_and_nothing_else(self, mock_get_am):
+        """Each of the five methods calls create_alert exactly once and touches nothing else."""
         mock_am = MagicMock()
         mock_get_am.return_value = mock_am
-        mock_am.create_alert.return_value = MagicMock()
 
         from pipeline.alert import PipelineAlertManager
 
-        mgr = PipelineAlertManager()
+        for method_name, kwargs in [
+            (
+                "alert_pipeline_failure",
+                {
+                    "error": "err",
+                    "steps_completed": 0,
+                    "steps_failed": 1,
+                    "season": 2025,
+                    "week": 5,
+                },
+            ),
+            (
+                "alert_pipeline_success",
+                {
+                    "predictions_count": 16,
+                    "execution_time_ms": 1000.0,
+                    "warnings": [],
+                    "season": 2025,
+                    "week": 5,
+                },
+            ),
+            (
+                "alert_staleness_warning",
+                {"warnings": ["w1"], "season": 2025, "week": 5},
+            ),
+            (
+                "alert_degraded_completion",
+                {
+                    "failed_steps": ["s1"],
+                    "completed_steps": 17,
+                    "season": 2025,
+                    "week": 5,
+                },
+            ),
+            (
+                "alert_finished_with_skips",
+                {
+                    "skipped_games": ["2025_05_KC_BUF"],
+                    "completed_steps": 17,
+                    "season": 2025,
+                    "week": 5,
+                },
+            ),
+        ]:
+            mock_am.reset_mock()
+            getattr(PipelineAlertManager(), method_name)(**kwargs)
+            called = [name for name, _args, _kwargs in mock_am.mock_calls]
+            assert called == ["create_alert"], f"{method_name} called {called}"
 
-        # Call each method
-        mgr.alert_pipeline_failure(
-            error="err", steps_completed=0, steps_failed=1, season=2025, week=5
-        )
-        mgr.alert_pipeline_success(
-            predictions_count=16,
-            execution_time_ms=1000.0,
-            warnings=[],
-            season=2025,
-            week=5,
-        )
-        mgr.alert_staleness_warning(warnings=["w1"], season=2025, week=5)
-        mgr.alert_degraded_completion(
-            failed_steps=["s1"], completed_steps=17, season=2025, week=5
-        )
+    def test_alert_manager_has_no_send_cooldown_email_or_slack_path(self):
+        """The stripped AlertManager exposes none of the deleted delivery paths."""
+        from utils.alert_manager import AlertManager
 
-        # send_alert should have been called 4 times (once per method)
-        assert mock_am.send_alert.call_count == 4
+        manager = AlertManager()
+        present = [name for name in self._REMOVED_ATTRIBUTES if hasattr(manager, name)]
+        assert present == []
 
     @patch("pipeline.alert.get_alert_manager")
     def test_alert_methods_are_non_overlapping(self, mock_get_am):

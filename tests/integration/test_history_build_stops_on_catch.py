@@ -335,18 +335,14 @@ class TestTheExecutionLogCarriesTheSkippedGames:
 
 
 class _RecordingAlertManager:
-    """Stands in for ``utils.alert_manager.AlertManager``: records, sends nothing."""
+    """Stands in for ``utils.alert_manager.AlertManager`` (log-only): records each created alert."""
 
     def __init__(self) -> None:
         self.created: list[dict[str, Any]] = []
-        self.sent: list[dict[str, Any]] = []
 
     def create_alert(self, **kwargs: Any) -> dict[str, Any]:
         self.created.append(kwargs)
         return kwargs
-
-    def send_alert(self, alert: dict[str, Any]) -> None:
-        self.sent.append(alert)
 
 
 class TestTheAlertManagerHasItsOwnBranch:
@@ -361,7 +357,7 @@ class TestTheAlertManagerHasItsOwnBranch:
         manager = alert_mod.PipelineAlertManager()
         manager.alert_finished_with_skips(["2026_W03_KC@BUF"], 21, 2026, 3)
 
-        assert len(recorder.sent) == 1
+        assert len(recorder.created) == 1
         alert = recorder.created[0]
         assert alert["level"] is AlertLevel.WARNING
         assert alert["details"]["skipped_games"] == ["2026_W03_KC@BUF"]
