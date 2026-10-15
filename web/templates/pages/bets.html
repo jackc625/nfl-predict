@@ -254,7 +254,7 @@
         <span class="label block" data-bet-type>{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</span>
         {# The pick names the TEAM, never the raw side code. The two teams come from the game
            id's AWAY@HOME matchup; an id without one falls back to the words. #}
-        <p class="display text-2xl md:text-3xl lg:text-xl xl:text-3xl leading-none text-accent mt-1 whitespace-nowrap">{{ bp.pick_label(bet) }}</p>
+        <p class="display text-2xl md:text-3xl lg:text-xl xl:text-3xl leading-none text-accent mt-1 whitespace-nowrap" data-slip-pick>{{ bp.pick_label(bet) }}</p>
       </div>
       <div class="col-start-2 lg:col-start-auto grid grid-cols-3 gap-3 lg:contents">
         <div class="lg:text-right">
@@ -271,7 +271,7 @@
            No metric is recomputed on the request path (UIAP-01). #}
         <div class="lg:text-right">
           <span class="label block">EV %</span>
-          <span class="num font-bold text-fg whitespace-nowrap">{{ "%+.2f"|format(bet.per_bet_ev * 100) }}%</span>
+          <span class="num font-bold text-fg whitespace-nowrap" data-slip-ev>{{ "%+.2f"|format(bet.per_bet_ev * 100) }}%</span>
         </div>
         <div class="lg:text-right">
           <span class="label block" title="1 unit = 1% of a notional bankroll">Stake (units)</span>

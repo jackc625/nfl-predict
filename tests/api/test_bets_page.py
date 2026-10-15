@@ -4525,6 +4525,72 @@ def test_corrected_row_marked(tmp_path: Path) -> None:
     assert "Score corrected after grading: counted as loss (originally win)" in marked
 
 
+# ---------------------------------------------------------------------------
+# /bets ranks the live arm only, through the call the weekly email makes (Plan 35-12 Task 2)
+# ---------------------------------------------------------------------------
+#
+# The ranked list and the weekly email both read ``get_bet_list(season, week, arm=ARM_LIVE)``, so a
+# shadow-arm row (Phase 37) can never be ranked on one surface and missing from the other. The CSV
+# export keeps the unfiltered pair, so the live/suppressed partition still covers every cache row.
+
+_ARM_LIVE_GAME = "2026_W06_BUF@MIA"
+_ARM_SHADOW_GAME = "2026_W06_DAL@CHI"
+
+
+def _arm_rows() -> list[dict[str, Any]]:
+    """Week 6: one live-arm and one shadow-arm row, both ``status`` live, the shadow ranked first."""
+    live = _forward_row(_ARM_LIVE_GAME, 6, "pending", verdict_scope="verdict")
+    shadow = _forward_row(_ARM_SHADOW_GAME, 6, "pending", verdict_scope="verdict")
+    shadow.update({"arm": "shadow", "per_bet_ev": 0.09})
+    return [live, shadow]
+
+
+def test_a_shadow_arm_row_is_not_ranked_on_the_page(tmp_path: Path) -> None:
+    with _ledger_client(tmp_path, "arm_page", _arm_rows()) as client:
+        page = client.get(f"/bets?season={_LEDGER_SEASON}&week=6")
+        export = client.get(f"/api/export/csv?type=bets&season={_LEDGER_SEASON}&week=6")
+
+    assert page.status_code == 200
+    assert _rendered_matchups(page.text) == ["BUF @ MIA"]
+    ranked = page.text.split('aria-label="Live bets', 1)[1].split("</ol>", 1)[0]
+    assert "DAL @ CHI" not in ranked
+    assert export.status_code == 200
+    assert _ARM_LIVE_GAME in export.text
+    assert _ARM_SHADOW_GAME in export.text
+
+
+def test_get_bet_list_filters_by_arm_only_when_asked(tmp_path: Path) -> None:
+    from api.cache import ARM_LIVE
+
+    with _ledger_client(tmp_path, "arm_getter", _arm_rows()):
+        pass
+    probe = duckdb.connect(str(tmp_path / "arm_getter.duckdb"), read_only=True)
+    try:
+        service = DataService(probe)
+        clear_cache()
+        # The filtered call first: were the two calls one TTL entry, the unfiltered one would
+        # be answered with the filtered list.
+        live_only = service.get_bet_list(_LEDGER_SEASON, 6, arm=ARM_LIVE)
+        every_arm = service.get_bet_list(_LEDGER_SEASON, 6)
+    finally:
+        probe.close()
+
+    assert [(r["game_id"], r["arm"]) for r in every_arm] == [
+        (_ARM_SHADOW_GAME, "shadow"),
+        (_ARM_LIVE_GAME, "live"),
+    ]
+    assert [(r["game_id"], r["arm"]) for r in live_only] == [(_ARM_LIVE_GAME, "live")]
+
+
+def test_the_slip_carries_pick_and_ev_hooks(tmp_path: Path) -> None:
+    with _ledger_client(tmp_path, "arm_hooks", _arm_rows()) as client:
+        body = client.get(f"/bets?season={_LEDGER_SEASON}&week=6").text
+
+    # Attributes only: the rendered text of both values is what the slip always showed.
+    assert re.findall(r"<p [^>]*data-slip-pick>([^<]*)</p>", body) == ["Under 47.5"]
+    assert re.findall(r"<span [^>]*data-slip-ev>([^<]*)</span>", body) == ["+6.25%"]
+
+
 def test_templates_ascii_only() -> None:
     """Both page templates and the badge component encode as ASCII (no emoji, no smart quotes)."""
     templates_dir = Path(__file__).resolve().parents[2] / "web" / "templates"

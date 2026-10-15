@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse, Response
 
 from api.cache import (
+    ARM_LIVE,
     BACKTEST_SEASON_RANGE_KEY,
     BETTING_SEASON_RANGE_KEY,
     PROVENANCE_BACKTEST_REPLAY,
@@ -619,7 +620,9 @@ def _build_bets_context(
 
     return {
         "request": request,
-        "bets": service.get_bet_list(season, week),
+        # The ranked list is the LIVE ARM only (shadow-arm rows are Phase 37's to show), and the
+        # weekly email makes this exact call, so the two cannot rank different rows (NOTIF-05).
+        "bets": service.get_bet_list(season, week, arm=ARM_LIVE),
         # The declined half of the SAME candidate universe. It is READ here rather than derived
         # from the live list, because the live list is the complement -- deriving one from the
         # other would put the R6 "never silently dropped" guarantee in the request path instead of

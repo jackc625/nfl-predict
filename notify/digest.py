@@ -389,11 +389,8 @@ def collect_digest_inputs(
         # Without the schedule nothing confirms the list is this week's (D-24): bets unknown.
         current = schedule is not None and marker is not None and marker >= report.start
         if current:
-            bets = [
-                row
-                for row in service.get_bet_list(season, week)
-                if row["arm"] == ARM_LIVE
-            ]
+            # The exact call /bets' ranked list makes, so the two rank the same rows (NOTIF-05).
+            bets = service.get_bet_list(season, week, arm=ARM_LIVE)
             row_game_ids = set(service.get_bet_game_ids(season, week))
         last_rows = (
             service.get_bet_week_results(season, week - 1)

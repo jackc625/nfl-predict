@@ -42,6 +42,7 @@ import duckdb
 from cachetools import TTLCache
 
 from api.cache import (
+    ARM_LIVE,
     BET_GRADED_OUTCOMES_COLUMNS,
     BET_LIST_COLUMNS,
     BET_LIST_CORRECTIONS_COLUMNS,
@@ -673,7 +674,7 @@ class DataService:
     # ------------------------------------------------------------------
 
     def get_bet_list(
-        self, season: int | None, week: int | None
+        self, season: int | None, week: int | None, *, arm: str | None = None
     ) -> list[dict[str, Any]]:
         """Return the LIVE bet-list rows for *season* / *week*, ranked per D31-28.
 
@@ -681,17 +682,24 @@ class DataService:
         SPEC R5 tie-break, so two requests render byte-identical order. ZERO computation happens
         here or in the route: every number was precomputed by the selector and written by
         ``api.cache.materialize_bet_list`` (UIAP-01).
+
+        ``arm=None`` keeps every arm: the exact complement of :meth:`get_suppressed_bets`, which
+        the export relies on to carry every cache row. The owner-facing ranked list -- ``/bets``
+        and the weekly email alike (NOTIF-05) -- passes ``api.cache.ARM_LIVE``, so a shadow-arm
+        row (Phase 37) is ranked on neither. A row with NO recorded arm is a backtest replay row
+        (it predates the arm column, and only the live rule ever produced one), so it reads as the
+        live arm and never as any other.
         """
-        key = ("bet_list", season, week)
+        key = ("bet_list", season, week, arm)
         cached = _cache_get(key)
         if cached is not None:
             return cached
-        result = self._get_bet_list_uncached(season, week)
+        result = self._get_bet_list_uncached(season, week, arm)
         _cache_set(key, result)
         return copy.deepcopy(result)
 
     def _get_bet_list_uncached(
-        self, season: int | None, week: int | None
+        self, season: int | None, week: int | None, arm: str | None = None
     ) -> list[dict[str, Any]]:
         query = f"SELECT {_BET_LIST_COLUMNS_SQL} FROM bet_list WHERE status = ?"
         params: list[Any] = [BET_STATUS_LIVE]
@@ -701,6 +709,10 @@ class DataService:
         if week is not None:
             query += " AND week = ?"
             params.append(week)
+        if arm is not None:
+            # Bound parameters, never interpolated. A NULL arm (a replay row) reads as the live arm.
+            query += " AND COALESCE(arm, ?) = ?"
+            params.extend([ARM_LIVE, arm])
         query += " ORDER BY per_bet_ev DESC NULLS LAST, season, week, game_id, target"
 
         try:
