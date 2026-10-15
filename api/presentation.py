@@ -324,6 +324,20 @@ def group_games_by_window(games: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# The not-advice line (SPEC must-NOT: the email carries /bets' not-betting-advice line)
+# ---------------------------------------------------------------------------
+#
+# ONE source. components/_not_advice_banner.html renders these word for word on /bets, and the
+# weekly email renders the same two constants, so the email can never carry a different line.
+
+NOT_ADVICE_KEY = "Not wagering advice"
+NOT_ADVICE_LINE = (
+    "Research tool: no wager is placed, stakes are units, and no edge over the betting market "
+    "has been demonstrated."
+)
+
+
+# ---------------------------------------------------------------------------
 # Last week: actual vs expected (SPEC R5, D-08)
 # ---------------------------------------------------------------------------
 #

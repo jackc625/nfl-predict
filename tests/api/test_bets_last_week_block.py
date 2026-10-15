@@ -16,7 +16,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +35,7 @@ from api.cache import (
     materialize_bet_week_freeze,
     materialize_bet_week_results,
 )
-from api.presentation import percent_of_stake
+from api.presentation import NOT_ADVICE_KEY, NOT_ADVICE_LINE, percent_of_stake
 from api.services import clear_cache
 
 _SEASON = 2026
@@ -229,3 +229,89 @@ def test_percent_of_stake_formats_with_one_decimal_and_a_sign() -> None:
     assert percent_of_stake(-0.1) == "-10.0% of stake"
     assert percent_of_stake(None) == "not measured"
     assert percent_of_stake(float("nan")) == "not measured"
+
+
+# ---------------------------------------------------------------------------
+# Task 2: empty, unmeasured and blocked states, and the one not-advice line
+# ---------------------------------------------------------------------------
+
+# A lock already in the past: a week whose games locked with no bet row is the hard block.
+_PAST_LOCK = datetime(2026, 10, 10, 22, 0, 0, tzinfo=UTC)
+
+
+def test_week_one_shows_nothing_graded_and_no_percent(tmp_path: Path) -> None:
+    """Week 1 has no last week; the prior season's final graded week is never reached for."""
+    prior_season_final = _week_row(
+        22, season=_SEASON - 1, record=(3, 2, 0), graded=5, actual=0.123, expected=0.04
+    )
+    with _serve(
+        tmp_path, "week_one", week_rows=[prior_season_final], page_week=1
+    ) as client:
+        block = _block(_get(client, 1))
+
+    assert "nothing graded" in block
+    assert "%" not in block, "a figure was rendered for a week that has no last week"
+    for text in ("3-2-0 (W-L-P)", "Not yet graded: 0", "week 22"):
+        assert text not in block, f"the prior season's row leaked into week 1: {text!r}"
+
+
+def test_an_all_pending_week_shows_nothing_graded_and_the_ungraded_count(
+    tmp_path: Path,
+) -> None:
+    pending = _week_row(
+        _LAST_WEEK, record=(0, 0, 0), graded=0, ungraded=3, actual=None, expected=None
+    )
+    with _serve(tmp_path, "all_pending", week_rows=[pending]) as client:
+        block = _block(_get(client, _THIS_WEEK))
+
+    assert "nothing graded" in block
+    assert "Not yet graded: 3" in block
+    assert "%" not in block, "an all-pending week rendered a figure"
+    assert "data-last-week-record" not in block
+
+
+def test_a_null_expected_reads_not_measured(tmp_path: Path) -> None:
+    with _serve(
+        tmp_path, "null_expected", week_rows=[_week_row(_LAST_WEEK, expected=None)]
+    ) as client:
+        block = _block(_get(client, _THIS_WEEK))
+
+    assert "Expected return: not measured" in block
+    assert "Actual return: +32.7% of stake" in block
+    assert "+0.0%" not in block, "an unmeasured expected return rendered as zero"
+
+
+def test_a_pre_verdict_week_names_its_class(tmp_path: Path) -> None:
+    pre_verdict = _week_row(_LAST_WEEK, counting_class="pre_verdict")
+    with _serve(tmp_path, "pre_verdict", week_rows=[pre_verdict]) as client:
+        block = _block(_get(client, _THIS_WEEK))
+
+    assert "Decided before the counting start week -- not counted" in block
+    assert "Counted toward the verdict" not in block
+
+
+def test_the_blocked_week_withholds_the_block(tmp_path: Path) -> None:
+    with _serve(
+        tmp_path,
+        "blocked",
+        week_rows=[_week_row(_LAST_WEEK)],
+        bet_weeks=(),
+        locked_at=_PAST_LOCK,
+    ) as client:
+        body = _get(client, _THIS_WEEK)
+
+    assert "The forward record is withheld" in body, (
+        "the fixture did not trigger the hard block"
+    )
+    assert "data-last-week-block" not in body
+    assert "2-1-1 (W-L-P)" not in body
+
+
+def test_the_banner_renders_the_shared_line_word_for_word() -> None:
+    from api.dependencies import templates
+
+    html = templates.env.get_template("components/_not_advice_banner.html").render()
+    summary = html[html.index("<summary>") : html.index("</summary>")]
+
+    assert NOT_ADVICE_KEY in summary
+    assert f'<span class="honesty-note-line">{NOT_ADVICE_LINE}</span>' in summary

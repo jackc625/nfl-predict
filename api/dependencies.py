@@ -33,6 +33,8 @@ from api.exceptions import ModelUnavailableError
 from utils import get_logger
 
 from .presentation import (
+    NOT_ADVICE_KEY,
+    NOT_ADVICE_LINE,
     et_timestamp_label,
     last_week_display,
     team_block_colors,
@@ -179,6 +181,9 @@ templates.env.globals["team_colors"] = team_block_colors
 templates.env.globals["team_nickname"] = team_nickname
 # The last-week block's one formatter (D-08): /bets and the weekly email format through it alike.
 templates.env.globals["last_week_display"] = last_week_display
+# The not-advice banner's two strings, from the one source the weekly email renders too.
+templates.env.globals["not_advice_key"] = NOT_ADVICE_KEY
+templates.env.globals["not_advice_line"] = NOT_ADVICE_LINE
 templates.env.filters["et_timestamp"] = et_timestamp_label
 
 
