@@ -21,6 +21,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pandas as pd
 import pytest
 
@@ -31,6 +32,7 @@ from notify.report import STATUS_RUN_FAILED, RunReport
 from pipeline import daily_steps, live_skip
 from pipeline.daily_steps import DailySlate, slate_lock
 from tests.unit.test_notify_transport import (
+    DUMMY_PING_URL,
     DUMMY_PING_UUID,
     DUMMY_RECEIPT_ID,
     dummy_secrets,
@@ -328,20 +330,26 @@ def test_a_refresh_crash_sends_one_top_priority_failed_push_end_to_end(
     monkeypatch.setattr(daily, "NOTIFY_END_OF_RUN", daily._notify_end_of_run)
     monkeypatch.setattr(end_of_run, "LOAD_SECRETS", dummy_secrets)
     install_sleep_recorder(monkeypatch)
-    requests = install_transport(monkeypatch, ntfy_ok())
+    # The failed push, then the watcher check-in that always ends the run (Plan 35-13).
+    requests = install_transport(
+        monkeypatch, ntfy_ok(), lambda: httpx.Response(200, text="OK")
+    )
     _crash_at_refresh(monkeypatch, tmp_path)
 
     with pytest.raises(RuntimeError, match="exploded"):
         daily.run_daily(RUN_DATE, start=_an_hour_before_the_lock(), dry_run=False)
 
-    (request,) = requests
+    request, checkin = requests
     body = json.loads(request.content)
     assert body["priority"] == 5
     assert body["title"] == "FAILED: 2 games not predicted"
-    (record,) = read_notifications()
+    # The push was delivered, so the check-in is a normal one.
+    assert str(checkin.url) == DUMMY_PING_URL
+    record, checkin_record = read_notifications()
     assert record["outcome"] == "delivered"
     assert record["receipt_id"] == DUMMY_RECEIPT_ID
     assert record["priority"] == 5
+    assert checkin_record["event_class"] == "checkin"
     assert "NOTIFY_FAILED= delivered" in capsys.readouterr().out
 
 

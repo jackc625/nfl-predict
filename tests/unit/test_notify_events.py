@@ -26,6 +26,7 @@ from datetime import date, timedelta
 from typing import Any
 
 import duckdb
+import httpx
 import pandas as pd
 import pytest
 
@@ -556,6 +557,11 @@ def test_a_rerun_adding_one_bet_lists_exactly_it(env: _Env) -> None:  # noqa: F8
 # ---------------------------------------------------------------------------
 
 
+def _ping_ok() -> httpx.Response:
+    """healthchecks.io's answer to a ping that did something: HTTP 200 with the body ``OK``."""
+    return httpx.Response(200, text="OK")
+
+
 def _skips_with_two_new_bets() -> RunReport:
     """A finished-with-skips run that also appended two live bets."""
     return _report(
@@ -575,18 +581,27 @@ def test_failed_then_bets_are_two_deliveries_in_that_order(
 ) -> None:
     install_sleep_recorder(monkeypatch)
     requests = install_transport(
-        monkeypatch, ntfy_ok("receiptFailed1"), ntfy_ok("receiptBets001")
+        monkeypatch,
+        ntfy_ok("receiptFailed1"),
+        ntfy_ok("receiptBets001"),
+        _ping_ok,  # the watcher check-in that ends every run (Plan 35-13)
     )
     report = _skips_with_two_new_bets()
 
     outcome = notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
 
-    titles = [json.loads(request.content)["title"] for request in requests]
+    *pushes, checkin = requests
+    titles = [json.loads(request.content)["title"] for request in pushes]
     assert titles == ["FAILED: 1 game not predicted", "2 new bets: 2026 week 7, Sunday"]
+    assert checkin.url.host == "hc-ping.com"
     assert [step for step, _delivery in outcome.deliveries] == ["failed", "bets"]
     records = read_notifications()
-    assert [record["event_class"] for record in records] == ["failed", "bets"]
-    assert [record["receipt_id"] for record in records] == [
+    assert [record["event_class"] for record in records] == [
+        "failed",
+        "bets",
+        "checkin",
+    ]
+    assert [record["receipt_id"] for record in records[:2]] == [
         "receiptFailed1",
         "receiptBets001",
     ]
@@ -596,7 +611,9 @@ def test_failed_then_bets_are_two_deliveries_in_that_order(
 
 def test_an_unlogged_receipt_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     install_sleep_recorder(monkeypatch)
-    install_transport(monkeypatch, ntfy_ok("receiptFailed1"), ntfy_ok("receiptBets001"))
+    install_transport(
+        monkeypatch, ntfy_ok("receiptFailed1"), ntfy_ok("receiptBets001"), _ping_ok
+    )
     locks_taken: list[int] = []
 
     def _bets_record_lock_never_frees(*args: Any, **kwargs: Any) -> Any:
@@ -617,4 +634,8 @@ def test_an_unlogged_receipt_is_reported(monkeypatch: pytest.MonkeyPatch) -> Non
     assert outcome.any_unlogged is True
     ((_, failed), (_, bets)) = outcome.deliveries
     assert (failed.logged, bets.logged) == (True, False)
-    assert [record["event_class"] for record in read_notifications()] == ["failed"]
+    # The bets record is missing; the check-in that follows it is recorded (Plan 35-13).
+    assert [record["event_class"] for record in read_notifications()] == [
+        "failed",
+        "checkin",
+    ]

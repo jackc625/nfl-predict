@@ -1,4 +1,4 @@
-"""What the daily run sends when it ends: the failed pushes, then the bets push (D-13).
+"""What the daily run sends when it ends: failed pushes, bets push, digest, then the check-in (D-13).
 
 WHEN THIS RUNS
 --------------
@@ -15,8 +15,11 @@ ORDER (D-13)
 3. The weekly digest email, on its digest run only (:func:`notify.digest.send_digest_if_due`). An
    email that is not delivered sends one normal-priority ``FAILED: weekly email`` push naming the
    failure kind (SPEC R8), and both count toward :attr:`EndOfRunOutcome.any_undelivered`.
-
-Plan 35-13 adds the watcher check-in after these three.
+4. The watcher check-in, LAST, after every message (:func:`_watcher_step`, Plan 35-13): one ping
+   whose body is :func:`checkin_summary` (D-15). It goes to ``<ping_url>/fail`` when any message
+   stayed undelivered or a delivered message's receipt never reached the notification log, so
+   the watcher alerts through its own channels (SPEC R8). This is the ONE production call of
+   :func:`notify.events.send_checkin`.
 
 NEVER RAISES ON A SEND
 ----------------------
@@ -32,15 +35,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from api.cache import ARM_LIVE, BET_STATUS_LIVE
 from notify import secrets as notify_secrets
 from notify.digest import send_digest_if_due
-from notify.events import PushMessage, SendContext, send_push
+from notify.events import PushMessage, SendContext, send_checkin, send_push
 from notify.messages import bets_message, email_failed_message, failed_messages
 from notify.report import RunReport
 from notify.secrets import NotifySecrets
 from notify.transport import OUTCOME_FAILED, Delivery
 
-__all__ = ["LOAD_SECRETS", "EndOfRunOutcome", "notify_end_of_run"]
+__all__ = ["LOAD_SECRETS", "EndOfRunOutcome", "checkin_summary", "notify_end_of_run"]
+
+# The season-window values that check in (Plan 35-13 Task 2 adds the "out" pause); "unknown"
+# checks in because a resumed watcher can only cause a false alarm, never silence (D-17).
+_CHECK_IN_WINDOWS = frozenset({"in", "unknown"})
 
 # Seam, read at call time: tests hand in dummy secrets so the owner's .env is never read.
 LOAD_SECRETS = notify_secrets.load_secrets
@@ -102,7 +110,7 @@ def notify_end_of_run(
     secrets: NotifySecrets | None = None,
     now: datetime | None = None,
 ) -> EndOfRunOutcome:
-    """Send the run's failed pushes, its bets push, then the digest. Never raises an ``Exception``.
+    """Send the failed pushes, the bets push, the digest, then check in. Never raises ``Exception``.
 
     Args:
         report: What the run did.
@@ -149,6 +157,11 @@ def notify_end_of_run(
         print(f"NOTIFY_DIGEST= failed {type(error).__name__}")  # noqa: T201
         outcome.deliveries.append(("digest", _raised(error)))
 
+    try:
+        _watcher_step(report, outcome, context)
+    except Exception as error:  # noqa: BLE001 - the missing check-in is itself the alert
+        print(f"WATCHER_CHECKIN= failed {type(error).__name__}")  # noqa: T201
+
     return outcome
 
 
@@ -178,3 +191,60 @@ def _send_digest(
         context,
         outcome,
     )
+
+
+def _step_outcome(outcome: EndOfRunOutcome, step: str) -> str:
+    """The outcome of *step*'s last delivery (``delivered`` / ``failed``), or ``none``."""
+    found = [delivery.outcome for name, delivery in outcome.deliveries if name == step]
+    return found[-1] if found else "none"
+
+
+def checkin_summary(report: RunReport, outcome: EndOfRunOutcome) -> str:
+    """The D-15 ping body: one ASCII line of stored facts, never a secret or an error text."""
+    games = (
+        "unknown"
+        if report.tomorrow_game_ids is None
+        else str(len(report.tomorrow_game_ids))
+    )
+    live_bets = sum(
+        1
+        for row in report.appended_rows
+        if row.get("arm") == ARM_LIVE and row.get("status") == BET_STATUS_LIVE
+    )
+    failed = [delivery for step, delivery in outcome.deliveries if step == "failed"]
+    delivered_failed = sum(1 for delivery in failed if delivery.delivered)
+    unlogged = sum(
+        1
+        for _step, delivery in outcome.deliveries
+        if delivery.delivered and not delivery.logged
+    )
+    return (
+        f"NFL Predict daily run {report.run_date_et.isoformat()}: "
+        f"outcome={report.status or 'unknown'}; games tomorrow={games}; "
+        f"bets appended={live_bets}; failed pushes={delivered_failed}/{len(failed)}; "
+        f"bets push={_step_outcome(outcome, 'bets')}; "
+        f"digest={_step_outcome(outcome, 'digest')}; unlogged receipts={unlogged}"
+    )
+
+
+def _watcher_step(
+    report: RunReport, outcome: EndOfRunOutcome, context: SendContext
+) -> None:
+    """Step 4, LAST: check in with the outside watcher (D-13, D-15; SPEC R7, R8).
+
+    The check-in is the failure signal (``/fail``) when any message stayed undelivered -- a step
+    that raised counts -- or was delivered without its receipt reaching the log (T-35-47).
+    """
+    if report.season_window not in _CHECK_IN_WINDOWS:
+        return
+    fail = outcome.any_undelivered or outcome.any_unlogged
+    delivery = send_checkin(
+        body=checkin_summary(report, outcome), fail=fail, context=context
+    )
+    if not delivery.delivered:
+        state = f"failed {delivery.failure_kind}"
+    elif fail:
+        state = "delivered as failure"
+    else:
+        state = "delivered"
+    print(f"WATCHER_CHECKIN= {state}")  # noqa: T201
