@@ -85,6 +85,16 @@ def test_the_test_day_line_parses_as_a_date(tmp_path: Path) -> None:
     assert settings.watcher_test_withhold_date == date(2026, 10, 16)
 
 
+@pytest.mark.parametrize("value", ["", "   ", "YYYY-MM-DD"])
+def test_a_blank_or_placeholder_test_day_reads_as_unset(
+    tmp_path: Path, value: str
+) -> None:
+    """35-REVIEW IN-05: a blank or unedited test-day line never stops the settings load."""
+    settings = Settings(_env_file=_env_file(tmp_path, [f"{TEST_DAY_ENV}={value}"]))
+
+    assert settings.watcher_test_withhold_date is None
+
+
 def test_a_legacy_key_is_now_refused_with_its_value_hidden(tmp_path: Path) -> None:
     leaked = "dummy-legacy-value-xyz"
     env_file = _env_file(tmp_path, [f"ENABLE_EMAIL_REPORTS={leaked}"])

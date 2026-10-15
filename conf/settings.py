@@ -424,6 +424,18 @@ class Settings(BaseSettings):
 
         return ConfigFromYAML(**config_dict)
 
+    @validator("watcher_test_withhold_date", pre=True)
+    def blank_withhold_date_is_unset(cls, v):
+        """A blank value, or the ``.env.example`` placeholder left unedited, reads as unset.
+
+        Without this, ``WATCHER_TEST_WITHHOLD_DATE=`` or ``=YYYY-MM-DD`` fails the whole settings
+        load -- and with it the run and every notification secret (35-REVIEW IN-05).
+        """
+        if isinstance(v, str):
+            text = v.strip()
+            return None if text.upper() in ("", "YYYY-MM-DD") else text
+        return v
+
     @validator("secret_key")
     def validate_secret_key(cls, v):
         """Validate secret key length in production."""
