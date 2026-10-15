@@ -30,14 +30,24 @@ SEVERITY IS RANKED, NEVER COMPARED AS TEXT
 "warning"``. Every comparison here goes through ``data.live_revision.verdict_severity_rank`` and
 ``data.revision_events.severity_rank``.
 
+THE CLOSING SECTION (SPEC R4 item 7, D-23)
+------------------------------------------
+Before the data-change section, the email lists, from ``logs/ledger_runs.jsonl``
+(``forward_ledger.run_log.read_events``) since the previous delivered digest: every skipped or
+failed closing reading, every game whose closing value was finalized as missing, every first-pick
+refusal, and every closing-trigger registration whose read-back did not match. A run log that
+cannot be read is named, with its line number -- never shown as "nothing missed".
+
 Seams read at call time, so no test reads the real config files: :data:`PROBE_LOG_PATH` and
-:data:`MANIFEST_DIR` (None = ``data.upstream_live.LIVE_MANIFEST_DIR``).
+:data:`MANIFEST_DIR` (None = ``data.upstream_live.LIVE_MANIFEST_DIR``); the run log is
+``forward_ledger.run_log.LEDGER_RUN_LOG``, which the test suite quarantines.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -55,11 +65,13 @@ from data.revision_events import (
 from data.sealed_probe import PROBE_STRATEGY_CONTENT, PROBE_STRATEGY_METADATA
 from data.sealed_probe_log import SEALED_PROBE_LOG_PATH
 from data.upstream_live import CAPTURE_VERDICT_KEY
+from forward_ledger import run_log
 from notify.messages import game_labels
 from notify.transport import OUTCOME_DELIVERED
 
 __all__ = [
     "ACKNOWLEDGE_COMMAND",
+    "CLOSING_EMPTY_LINE",
     "DATA_CHANGE_EMPTY_LINE",
     "MANIFEST_DIR",
     "PROBE_LOG_PATH",
@@ -67,6 +79,8 @@ __all__ = [
     "UNREADABLE_CORRECTIONS",
     "UNREADABLE_MANIFEST",
     "UNREADABLE_PROBE_LOG",
+    "closing_section",
+    "closing_section_lines",
     "corrected_grades",
     "data_change_section",
     "live_changes",
@@ -100,6 +114,12 @@ UNREADABLE_MANIFEST = (
 UNREADABLE_CORRECTIONS = (
     "The corrected grades in the web cache could not be read, so they are not listed."
 )
+
+CLOSING_EMPTY_LINE = "No skipped or missed closing reading and no first-pick refusal since the last digest."
+TRIGGER_READBACK_LINE = "the closing-line schedule read back wrong"
+
+# The ledger run log's line number inside read_events' refusal message.
+_LINE_NUMBER = re.compile(r"\bline (\d+)\b")
 
 # What moved, by the probe strategy that ruled on the pair (data.sealed_probe).
 _WHAT_MOVED: dict[str, str] = {
@@ -327,3 +347,73 @@ def data_change_section(
         "unaffected_line": UNAFFECTED_LINE,
         "acknowledge_line": ACKNOWLEDGE_LINE,
     }
+
+
+def _closing_line(event: Mapping[str, Any]) -> str | None:
+    """One plain line for a run-log record worth the owner's attention, else None."""
+    kind = event.get("event")
+    if kind == "closing_capture" and event.get("outcome") in ("skipped", "failed"):
+        return (
+            f"closing reading {event.get('outcome')} ({event.get('reason')}): "
+            f"{game_labels(event.get('game_ids') or ())}"
+        )
+    if kind == "closing_triggers":
+        registered_wrong = (
+            event.get("outcome") == "registered"
+            and event.get("readback_match") is False
+        )
+        return TRIGGER_READBACK_LINE if registered_wrong else None
+    if kind not in ("closing_finalized", "first_pick_refusal"):
+        return None
+    game_id, _season, _week, target, arm = event.get("key") or (None,) * 5
+    if not _live_arm(arm):
+        return None
+    if kind == "first_pick_refusal":
+        fields = ", ".join(str(name) for name in event.get("fields") or ())
+        return (
+            f"{_bet_label(game_id, target)}: a later pick was refused, the first pick "
+            f"stands (differing {fields})"
+        )
+    reason = event.get("closing_null_reason")
+    if reason is None:
+        return None
+    return f"{_bet_label(game_id, target)}: no closing reading ({reason})"
+
+
+def closing_section_lines(
+    events: Sequence[Mapping[str, Any]], cutoff: datetime | None
+) -> list[str]:
+    """SPEC R4 item 7: the run log's skipped, failed or missed closing readings, first-pick
+    refusals and mismatched closing-schedule read-backs (D-23) after *cutoff* (all when None),
+    one plain line each, in log order."""
+    lines: list[str] = []
+    for event in events:
+        if not _after(event.get("at_utc"), cutoff):
+            continue
+        line = _closing_line(event)
+        if line is not None:
+            lines.append(line)
+    return lines
+
+
+def closing_section(cutoff: datetime | None) -> dict[str, Any]:
+    """The closing section from ``forward_ledger.run_log.read_events()`` (path read at call time).
+
+    A run log that cannot be read is ONE line naming the log and, when known, the line number:
+    a malformed log is never shown as "nothing missed".
+
+    Returns:
+        ``{lines, empty_line}``.
+    """
+    try:
+        events = run_log.read_events()
+    except Exception as exc:  # noqa: BLE001 - named in the email, never read as "nothing"
+        found = _LINE_NUMBER.search(str(exc))
+        where = f"at line {found.group(1)}" if found else f"({type(exc).__name__})"
+        lines = [
+            f"The ledger run log {run_log.LEDGER_RUN_LOG.as_posix()} could not be read "
+            f"{where}, so missed closing readings and first-pick refusals are not listed."
+        ]
+    else:
+        lines = closing_section_lines(events, cutoff)
+    return {"lines": lines, "empty_line": CLOSING_EMPTY_LINE}

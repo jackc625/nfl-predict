@@ -24,7 +24,9 @@ notice and ``bets unknown``: a missing list is never rendered as zero bets (RESE
 
 UPSTREAM DATA CHANGES AND CORRECTED GRADES (D-03, D-21)
 --------------------------------------------------------
-After the season-to-date block and before the not-advice line, the email lists the latest probe
+After the season-to-date block comes the week's closing section (SPEC R4 item 7, D-23: skipped or
+missed closing readings, first-pick refusals and closing-schedule read-back failures from the ledger
+run log). Then, before the not-advice line, the email lists the latest probe
 line's unacknowledged sealed changes, the live season's WARNING-or-louder verdicts and the corrected
 grades recorded since the previous delivered digest (:mod:`notify.digest_sections`). Each source is
 read on its own: one that cannot be read is named as unreadable in the section, never shown as
@@ -176,6 +178,8 @@ class DigestInputs:
             section then says so instead of listing games.
         data_changes: :func:`notify.digest_sections.data_change_section`'s output (D-03, D-21);
             None renders no section.
+        closing: :func:`notify.digest_sections.closing_section`'s output (SPEC R4 item 7, D-23);
+            None renders no section.
     """
 
     run_date_et: date
@@ -193,6 +197,7 @@ class DigestInputs:
     label_prefix: str = ""
     schedule_readable: bool = True
     data_changes: dict[str, Any] | None = None
+    closing: dict[str, Any] | None = None
 
 
 def _week_of_day(schedule: pd.DataFrame, day: date) -> tuple[int, int] | None:
@@ -480,6 +485,7 @@ def collect_digest_inputs(
         label_prefix=label_prefix,
         schedule_readable=schedule is not None,
         data_changes=_data_change_section(season, service, cutoff),
+        closing=digest_sections.closing_section(cutoff),
     )
 
 

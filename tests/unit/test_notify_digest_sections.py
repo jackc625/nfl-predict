@@ -10,6 +10,9 @@
 * Corrected grades since the previous digest are listed from the cache's corrections.
 * Nothing to list is one line; the section says runs are unaffected and names the acknowledge
   command; severity is ranked, never compared as text.
+* SPEC R4 item 7 / D-23: the ledger run log's skipped, failed or missed closing readings, first-pick
+  refusals and mismatched closing-schedule read-backs since the previous digest are listed before
+  the data-change section; an unreadable run log is named with its line number.
 
 Every input is a ``tmp_path`` file or a dict: the real probe log, live manifest and web cache are
 never read, and every request goes through an ``httpx.MockTransport``.
@@ -34,6 +37,7 @@ import pytest
 from api.cache import BET_LIST_CORRECTIONS_COLUMNS, materialize_bet_list_corrections
 from api.presentation import NOT_ADVICE_LINE
 from data.sealed_probe_log import latest_entry
+from forward_ledger import run_log
 from notify import digest, digest_sections
 from tests.unit.test_notify_channels import email_secrets
 from tests.unit.test_notify_digest import (
@@ -512,4 +516,193 @@ def test_severity_is_ranked_not_compared_as_text() -> None:
     assert (
         digest_sections.sealed_changes(probe_line(finding(), severity="informational"))
         == []
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 2: the week's closing gaps, first-pick refusals and read-back failures (R4 item 7, D-23)
+# ---------------------------------------------------------------------------
+
+CLOSING_CUTOFF = datetime(2026, 10, 10, 21, 20, tzinfo=UTC)
+BUF_LA_ATS = ["2026_05_BUF@LA", 2026, 5, "ats", "live"]
+
+
+def event(kind: str, at_utc: str = "2026-10-12T20:05:00+00:00", **fields: Any) -> dict:
+    """One ledger run-log record, as ``forward_ledger.run_log.record_event`` writes it."""
+    return {"event": kind, "at_utc": at_utc, "run_id": None, **fields}
+
+
+def test_skipped_and_failed_readings_since_the_cutoff_are_listed() -> None:
+    events = [
+        event(
+            "closing_capture",
+            outcome="skipped",
+            reason="credit_reserve",
+            game_ids=["2026_05_TB@DAL", "2026_05_BUF@LA"],
+            remaining_credits=40,
+        ),
+        event(
+            "closing_capture",
+            outcome="failed",
+            reason="capture_failed",
+            game_ids=["2026_05_KC@JAX"],
+            error_type="RuntimeError",
+        ),
+        event("closing_capture", outcome="captured", game_ids=["2026_05_SF@LAR"]),
+        event("closing_capture", outcome="no_games", game_ids=[]),
+    ]
+
+    assert digest_sections.closing_section_lines(events, CLOSING_CUTOFF) == [
+        "closing reading skipped (credit_reserve): TB @ DAL, BUF @ LA",
+        "closing reading failed (capture_failed): KC @ JAX",
+    ]
+
+
+def test_a_missed_reading_is_listed_from_the_finalized_closing_reason() -> None:
+    events = [
+        event(
+            "closing_finalized",
+            key=BUF_LA_ATS,
+            closing_null_reason="capture_missed",
+            forward_clv=None,
+        ),
+        event(
+            "closing_finalized",
+            key=["2026_05_TB@DAL", 2026, 5, "ou", "live"],
+            closing_null_reason=None,
+            forward_clv=-1.0,
+        ),
+    ]
+
+    assert digest_sections.closing_section_lines(events, None) == [
+        "BUF @ LA Spread: no closing reading (capture_missed)"
+    ]
+
+
+def test_first_pick_refusals_are_listed() -> None:
+    events = [
+        event(
+            "first_pick_refusal",
+            key=["2026_06_CIN@CLE", 2026, 6, "wp", "live"],
+            fields=["bet_side", "per_bet_ev"],
+        )
+    ]
+
+    assert digest_sections.closing_section_lines(events, None) == [
+        "CIN @ CLE Winner: a later pick was refused, the first pick stands "
+        "(differing bet_side, per_bet_ev)"
+    ]
+
+
+def test_a_mismatched_closing_schedule_is_listed() -> None:
+    """D-23: a registration that read back wrong is listed; a clean one is not."""
+    events = [
+        event(
+            "closing_triggers",
+            outcome="registered",
+            reason=None,
+            readback_match=False,
+            trigger_count=9,
+        ),
+        event(
+            "closing_triggers",
+            outcome="registered",
+            reason=None,
+            readback_match=True,
+            trigger_count=9,
+        ),
+    ]
+
+    assert digest_sections.closing_section_lines(events, None) == [
+        "the closing-line schedule read back wrong"
+    ]
+
+
+def test_events_before_the_cutoff_are_not_listed() -> None:
+    before = "2026-10-10T20:05:00+00:00"
+    events = [
+        event(
+            "closing_capture",
+            before,
+            outcome="failed",
+            reason="capture_failed",
+            game_ids=["2026_05_KC@JAX"],
+        ),
+        event(
+            "closing_finalized",
+            before,
+            key=BUF_LA_ATS,
+            closing_null_reason="capture_missed",
+        ),
+        event(
+            "closing_triggers",
+            before,
+            outcome="registered",
+            readback_match=False,
+        ),
+    ]
+
+    assert digest_sections.closing_section_lines(events, CLOSING_CUTOFF) == []
+    assert len(digest_sections.closing_section_lines(events, None)) == 3
+
+
+def test_an_unreadable_run_log_is_named() -> None:
+    log_path = run_log.LEDGER_RUN_LOG  # the suite's per-test quarantined run log
+    log_path.write_text(
+        json.dumps(event("closing_capture", outcome="no_games", game_ids=[]))
+        + "\nthis line is not JSON\n",
+        encoding="utf-8",
+    )
+
+    section = digest_sections.closing_section(None)
+
+    (line,) = section["lines"]
+    assert line == (
+        f"The ledger run log {log_path.as_posix()} could not be read at line 2, so missed "
+        "closing readings and first-pick refusals are not listed."
+    )
+    assert section["empty_line"] not in line
+
+
+def test_nothing_to_list_in_the_closing_section_is_one_line(
+    monkeypatch: pytest.MonkeyPatch, section_env: dict[str, Path]
+) -> None:
+    """An empty week's closing section is one line, between the tracker totals and the data
+    changes, both of which come before the not-advice line."""
+    run_log.record_event("closing_capture", outcome="no_games", game_ids=[])
+    report = saturday_report()
+    build_cache(
+        section_env["cache"],
+        bets=week6_bets(),
+        stamped_at=report.start + timedelta(minutes=12),
+    )
+    requests = install_router(monkeypatch)
+
+    delivery = digest.send_digest_if_due(
+        report,
+        context=daily_context(email_secrets()),
+        failed_titles=(),
+        now=report.start + timedelta(minutes=20),
+    )
+
+    assert delivery is not None and delivery.delivered
+    sent = json.loads(requests["api.resend.com"][0].content)
+    text, raw_html = sent["text"], sent["html"]
+    body = text.split("CLOSING READINGS AND FIRST-PICK REFUSALS\n", 1)[1]
+    assert body.split("\n\n", 1)[0].splitlines() == [
+        "No skipped or missed closing reading and no first-pick refusal since the last digest."
+    ]
+    assert "data-digest-closing-line>" not in raw_html
+    assert raw_html.count(digest_sections.CLOSING_EMPTY_LINE) == 1
+    assert (
+        text.index("Return (flat, units)")
+        < text.index("CLOSING READINGS AND FIRST-PICK REFUSALS")
+        < text.index("UPSTREAM DATA CHANGES AND CORRECTED GRADES")
+        < text.index(NOT_ADVICE_LINE)
+    )
+    assert (
+        raw_html.rindex("data-digest-tracker-block")
+        < raw_html.index("data-digest-closing")
+        < raw_html.index("data-digest-data-changes")
+        < raw_html.index("data-not-advice")
     )
