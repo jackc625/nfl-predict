@@ -35,7 +35,7 @@ from forward_ledger.run_log import current_run_id
 from notify import channels
 from notify.log import NOTIFICATION_SOURCES, append_notification
 from notify.secrets import NotifySecrets
-from notify.transport import Delivery
+from notify.transport import OUTCOME_FAILED, Delivery
 
 __all__ = [
     "CHECKIN_BODY_LIMIT_BYTES",
@@ -52,6 +52,7 @@ __all__ = [
     "SendContext",
     "ascii_text",
     "fit_lines",
+    "record_unbuilt_email",
     "record_withheld_checkin",
     "send_checkin",
     "send_email",
@@ -295,6 +296,26 @@ def record_withheld_checkin(context: SendContext) -> None:
             outcome=OUTCOME_WITHHELD, attempts=0, receipt_id=None, failure_kind=None
         ),
         event_class="checkin",
+        priority=None,
+        context=context,
+    )
+
+
+def record_unbuilt_email(failure_kind: str, context: SendContext) -> Delivery:
+    """Record a weekly email that could not be BUILT: no request is made (SPEC R4, R8).
+
+    The email twin of :func:`record_withheld_checkin`: one ``digest`` record, outcome ``failed``,
+    attempts 0, no receipt, the given *failure_kind* (``build_<ExceptionClass>``). The returned
+    failed delivery is what the caller escalates, so a due digest never disappears silently.
+    """
+    return _send_and_record(
+        lambda: Delivery(
+            outcome=OUTCOME_FAILED,
+            attempts=0,
+            receipt_id=None,
+            failure_kind=failure_kind,
+        ),
+        event_class="digest",
         priority=None,
         context=context,
     )

@@ -46,7 +46,13 @@ import duckdb
 from api.cache import ARM_LIVE
 from api.presentation import et_timestamp_label, last_week_display
 from api.services import DataService, clear_cache
-from notify.events import EmailMessage, SendContext, ascii_text, send_email
+from notify.events import (
+    EmailMessage,
+    SendContext,
+    ascii_text,
+    record_unbuilt_email,
+    send_email,
+)
 from notify.log import read_notifications
 from notify.messages import game_labels
 from notify.rendering import template_environment
@@ -83,7 +89,11 @@ LOAD_SCHEDULE = load_recorded_schedule
 DIGEST_HTML_TEMPLATE = "digest.html.j2"
 DIGEST_TEXT_TEMPLATE = "digest.txt.j2"
 
-STALE_NOTICE = "The web cache is not current for this run, so this week's bets are not shown: bets unknown."
+# No character HTML escapes, so the notice reads byte-identical in both parts of the email.
+STALE_NOTICE = (
+    "The web cache is not current for this run: bets unknown. "
+    "The list is not shown until the cache is rebuilt."
+)
 ZERO_BETS_LINE = "0 bets this week"
 
 STATE_BET = "bet"
@@ -186,7 +196,12 @@ def digest_week_for_run(
 
 @contextmanager
 def open_cache_service(path: Path | None = None) -> Iterator[DataService | None]:
-    """A ``DataService`` over the web cache opened read-only, or None when the file is absent.
+    """A ``DataService`` over the web cache opened read-only, or None when it cannot be read.
+
+    An absent file and a file that exists but cannot be opened (``duckdb.connect`` raising
+    ``duckdb.Error`` -- a locked or corrupt file) both yield None: the email then says the cache
+    is not current and reads ``bets unknown``, never ``0 bets``. An unopenable file prints
+    ``NOTIFY_DIGEST_CACHE= unreadable <ExceptionClass>`` (the class name only).
 
     The getters' TTL cache is cleared before the read (and after it, so no figure outlives the
     connection), and the connection is closed on exit, on every path.
@@ -199,7 +214,15 @@ def open_cache_service(path: Path | None = None) -> Iterator[DataService | None]
         yield None
         return
     clear_cache()
-    conn = duckdb.connect(str(cache_path), read_only=True)
+    conn: duckdb.DuckDBPyConnection | None
+    try:
+        conn = duckdb.connect(str(cache_path), read_only=True)
+    except duckdb.Error as error:
+        print(f"NOTIFY_DIGEST_CACHE= unreadable {type(error).__name__}")  # noqa: T201
+        conn = None
+    if conn is None:
+        yield None
+        return
     try:
         yield DataService(conn)
     finally:
@@ -445,21 +468,32 @@ def send_digest_if_due(
     """Send this week's digest when this run is its digest run; None on any other day.
 
     The schedule is read through :data:`LOAD_SCHEDULE` and the cache at :data:`WEB_CACHE_PATH`,
-    both at call time. A malformed notification log raises ``ValueError`` (Plan 35-01) and is
-    never read as "no earlier digest".
+    both at call time.
+
+    A DUE DIGEST NEVER VANISHES. Once the run is known to be the digest run, any exception while
+    opening the cache, reading the notification log, collecting or rendering becomes ONE recorded
+    failed digest (attempts 0, ``build_<ExceptionClass>``, the class name only) returned for the
+    caller to escalate. That one handler is the only treatment of a notification-log read failure:
+    a malformed log raises ``ValueError`` (Plan 35-01) and is never read as "no earlier digest".
+    The cache connection is closed before the handler runs. Only ``Exception`` is caught, so a
+    Ctrl+C and the test suite's network guard still propagate. A failed SEND is not an exception:
+    :func:`notify.events.send_email` already returns a failed delivery.
     """
     schedule = LOAD_SCHEDULE()
     if digest_week_for_run(schedule, report.run_date_et) is None:
         return None
-    with open_cache_service(WEB_CACHE_PATH) as service:
-        notifications = read_notifications()
-        inputs = collect_digest_inputs(
-            report,
-            schedule=schedule,
-            service=service,
-            notifications=notifications,
-            failed_titles=failed_titles,
-            now=now,
-        )
-    message = render_digest(inputs)
+    try:
+        with open_cache_service(WEB_CACHE_PATH) as service:
+            notifications = read_notifications()
+            inputs = collect_digest_inputs(
+                report,
+                schedule=schedule,
+                service=service,
+                notifications=notifications,
+                failed_titles=failed_titles,
+                now=now,
+            )
+        message = render_digest(inputs)
+    except Exception as exc:  # noqa: BLE001 - a digest that cannot be built is escalated, not lost
+        return record_unbuilt_email(f"build_{type(exc).__name__}", context)
     return send_email(message, context)

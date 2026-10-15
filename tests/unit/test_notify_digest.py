@@ -7,6 +7,10 @@
 * A day that is not a digest day sends no email.
 * An email still undelivered after its attempts sends one normal-priority ``FAILED: weekly email``
   push naming the failure kind (SPEC R8).
+* A due digest never vanishes: a cache file that cannot be opened still emails as not current
+  (``bets unknown``, never ``0 bets``); a failure while building -- the render, the collect, or a
+  malformed notification log -- records one failed digest (attempts 0, ``build_<Class>``) and sends
+  the ``FAILED: weekly email`` push; and every run sends under its own Idempotency-Key.
 
 Every request goes through ``notify.transport.CLIENT_FACTORY`` replaced by an ``httpx.MockTransport``
 that answers per host, and every retry delay through a recording ``SLEEP``. The schedule is a
@@ -29,6 +33,7 @@ from typing import Any
 
 import duckdb
 import httpx
+import jinja2
 import pandas as pd
 import pytest
 
@@ -44,17 +49,20 @@ from api.cache import (
     materialize_bet_week_results,
 )
 from api.presentation import NOT_ADVICE_LINE
+from api.services import DataService
 from notify import digest, transport
+from notify import log as notification_log
 from notify.end_of_run import notify_end_of_run
 from notify.events import PRIORITY_NORMAL
 from notify.log import read_notifications
-from notify.report import STATUS_SUCCESS, RunReport
+from notify.report import STATUS_LOCK_PASSED, STATUS_SUCCESS, RunReport
 from pipeline.daily_steps import slate_lock
 from tests.unit.test_notify_channels import DUMMY_EMAIL_ID, email_secrets, resend_ok
 from tests.unit.test_notify_messages import live_bet
 from tests.unit.test_notify_transport import (
     DUMMY_RECEIPT_ID,
     RUN_DATE,
+    daily_context,
     install_sleep_recorder,
     ntfy_ok,
 )
@@ -371,3 +379,171 @@ def test_an_undelivered_email_sends_one_normal_failed_push(
         ("failed", "delivered"),
     ]
     assert records[0]["failure_kind"] == "http_500"
+
+
+# ---------------------------------------------------------------------------
+# Task 2: a due digest never vanishes, and every run sends under its own key
+# ---------------------------------------------------------------------------
+
+
+def _assert_one_build_failure(
+    requests: dict[str, list[httpx.Request]], records: list[dict[str, Any]], kind: str
+) -> None:
+    """No email left; one failed digest record (no attempt) then one FAILED: weekly email push."""
+    assert requests["api.resend.com"] == []
+    (push,) = requests["ntfy.sh"]
+    body = json.loads(push.content)
+    assert body["priority"] == PRIORITY_NORMAL
+    assert body["title"] == "FAILED: weekly email"
+    assert kind in body["message"]
+    assert [(r["event_class"], r["outcome"]) for r in records] == [
+        ("digest", "failed"),
+        ("failed", "delivered"),
+    ]
+    assert records[0]["attempts"] == 0
+    assert records[0]["receipt_id"] is None
+    assert records[0]["failure_kind"] == kind
+
+
+def test_an_unopenable_cache_still_sends_the_email_as_not_current(
+    monkeypatch: pytest.MonkeyPatch,
+    cache_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cache_path.write_bytes(b"this is not a duckdb database file" * 64)
+    report = saturday_report()
+    requests = install_router(monkeypatch)
+
+    notify_end_of_run(
+        report, secrets=email_secrets(), now=report.start + timedelta(minutes=20)
+    )
+
+    (request,) = requests["api.resend.com"]
+    sent = _sent_email(request)
+    assert "bets unknown" in sent["subject"]
+    for part in (sent["html"], sent["text"]):
+        assert digest.STALE_NOTICE in part
+        assert "0 bets" not in part
+    assert "0 bets" not in sent["subject"]
+    out = capsys.readouterr().out
+    (cache_line,) = [
+        line for line in out.splitlines() if line.startswith("NOTIFY_DIGEST_CACHE=")
+    ]
+    assert cache_line.startswith("NOTIFY_DIGEST_CACHE= unreadable ")
+    assert cache_line.split()[-1].isidentifier()
+    assert f"NOTIFY_DIGEST= delivered {DUMMY_EMAIL_ID}" in out
+
+
+def test_a_render_failure_records_a_failed_digest_and_pushes(
+    monkeypatch: pytest.MonkeyPatch,
+    cache_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = saturday_report()
+    build_cache(
+        cache_path, bets=week6_bets(), stamped_at=report.start + timedelta(minutes=12)
+    )
+    requests = install_router(monkeypatch)
+
+    def _typo(_inputs: digest.DigestInputs) -> Any:
+        msg = "'inputs' has no attribute 'betz'"
+        raise jinja2.UndefinedError(msg)
+
+    monkeypatch.setattr(digest, "render_digest", _typo)
+
+    outcome = notify_end_of_run(
+        report, secrets=email_secrets(), now=report.start + timedelta(minutes=20)
+    )
+
+    _assert_one_build_failure(requests, read_notifications(), "build_UndefinedError")
+    assert "NOTIFY_DIGEST= failed build_UndefinedError" in capsys.readouterr().out
+    assert outcome.any_undelivered is True
+
+
+def test_a_collect_failure_is_handled_the_same_way(
+    monkeypatch: pytest.MonkeyPatch, cache_path: Path
+) -> None:
+    report = saturday_report()
+    build_cache(
+        cache_path, bets=week6_bets(), stamped_at=report.start + timedelta(minutes=12)
+    )
+    requests = install_router(monkeypatch)
+
+    def _broken_getter(*_args: Any, **_kwargs: Any) -> Any:
+        msg = "the bet list could not be read"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(DataService, "get_bet_list", _broken_getter)
+
+    outcome = notify_end_of_run(
+        report, secrets=email_secrets(), now=report.start + timedelta(minutes=20)
+    )
+
+    _assert_one_build_failure(requests, read_notifications(), "build_RuntimeError")
+    assert outcome.any_undelivered is True
+    # The read-only handle was closed on the failure path: the cache can be rebuilt in place.
+    cache_path.unlink()
+    build_cache(cache_path, bets=[], stamped_at=None)
+
+
+def test_two_runs_on_one_day_use_two_idempotency_keys(
+    monkeypatch: pytest.MonkeyPatch, cache_path: Path
+) -> None:
+    lock = slate_lock(RUN_DATE)
+    first, second = (
+        saturday_report(
+            status=STATUS_LOCK_PASSED,
+            start=lock + timedelta(minutes=minutes),
+            unpredicted_game_ids=SUNDAY_GAMES,
+            run_id=None,
+        )
+        for minutes in (5, 40)
+    )
+    build_cache(cache_path, bets=week6_bets(), stamped_at=None)
+    context = daily_context(email_secrets())
+    titles = ("FAILED: 3 games not predicted",)
+    requests = install_router(monkeypatch)
+
+    for report in (first, second):
+        delivery = digest.send_digest_if_due(
+            report, context=context, failed_titles=titles, now=report.start
+        )
+        assert delivery is not None and delivery.delivered
+
+    keys = [r.headers["Idempotency-Key"] for r in requests["api.resend.com"]]
+    assert len(keys) == 2
+    assert keys[0] != keys[1]
+
+    retried = install_router(
+        monkeypatch, resend=(lambda: httpx.Response(500), resend_ok())
+    )
+    delivery = digest.send_digest_if_due(
+        first, context=context, failed_titles=titles, now=first.start
+    )
+
+    assert delivery is not None and delivery.attempts == 2
+    retry_keys = [r.headers["Idempotency-Key"] for r in retried["api.resend.com"]]
+    assert retry_keys == [keys[0], keys[0]]
+
+
+def test_a_malformed_notification_log_records_a_failed_digest_and_pushes(
+    monkeypatch: pytest.MonkeyPatch, cache_path: Path
+) -> None:
+    report = saturday_report()
+    build_cache(
+        cache_path, bets=week6_bets(), stamped_at=report.start + timedelta(minutes=12)
+    )
+    log_path = notification_log.NOTIFICATION_LOG
+    log_path.write_text("this line is not JSON\n", encoding="utf-8")
+    requests = install_router(monkeypatch)
+
+    outcome = notify_end_of_run(
+        report, secrets=email_secrets(), now=report.start + timedelta(minutes=20)
+    )
+
+    malformed, *appended = log_path.read_text(encoding="utf-8").splitlines()
+    assert malformed == "this line is not JSON"
+    _assert_one_build_failure(
+        requests, [json.loads(line) for line in appended], "build_ValueError"
+    )
+    assert outcome.any_undelivered is True
