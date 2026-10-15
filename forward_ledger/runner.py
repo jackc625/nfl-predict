@@ -508,12 +508,15 @@ def sync_after_run(
     try:
         return publish(ledger_dir=Path(ledger_dir), repo_dir=Path(repo_dir), log=emit)
     except Exception as error:  # noqa: BLE001 - a sync failure never fails the run
-        reason = f"the sync raised {type(error).__name__}: {error}"
-        logger.error("Ledger sync failed", error=reason)
+        # The class name only (D-10): an exception message can carry a URL or a secret, and
+        # this reason is logged and written to logs/ledger_runs.jsonl.
+        reason = f"the sync raised {type(error).__name__}"
+        logger.error("Ledger sync failed", error=type(error).__name__)
         try:
             emit("sync_refused", ok=False, reason=reason)
         except Exception as log_error:  # noqa: BLE001 - nor does a failing run log
             logger.error(
-                "Ledger run log refused the sync failure", error=str(log_error)
+                "Ledger run log refused the sync failure",
+                error=type(log_error).__name__,
             )
         return None

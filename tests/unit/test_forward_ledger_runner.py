@@ -578,7 +578,8 @@ def test_sync_after_run_never_raises(env: _Env, run_log_path: Path) -> None:
 
     assert outcome is None
     (refused,) = _events(run_log_path, "sync_refused")
-    assert "git could not start" in refused["reason"]
+    # The class name only (D-10): the exception message never reaches the run log.
+    assert refused["reason"] == "the sync raised RuntimeError"
 
 
 def test_read_events_filters_by_event(tmp_path: Path) -> None:

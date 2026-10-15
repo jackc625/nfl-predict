@@ -637,8 +637,11 @@ def _settle_ledger(start: datetime, *, report: RunReport) -> SettleOutcome | Non
     )
     if outcome.closing_deferred is not None:
         # Loud, not fatal: grading and corrections landed; closing rows stay NULL until the run
-        # log parses again (34-REVIEW WR-01).
-        print(f"LEDGER_CLOSING_DEFERRED= {outcome.closing_deferred}")
+        # log parses again (34-REVIEW WR-01). The reason text is not printed (D-10).
+        print(
+            "LEDGER_CLOSING_DEFERRED= yes: the ledger run log could not be parsed; closing "
+            "rows stay NULL until it does"
+        )
     return outcome
 
 
@@ -678,7 +681,9 @@ def _sync_ledger(*, report: RunReport) -> None:
             f"anchor_pushed={outcome.anchor_pushed} "
             f"backup_committed={outcome.backup_committed} "
             f"backup_pushed={outcome.backup_pushed} "
-            f"refused={outcome.refused_reason or 'none'}"
+            # Whether, never why: the reason can carry exception text (D-10); it is recorded
+            # in logs/ledger_runs.jsonl as the sync_refused event.
+            f"refused={'yes' if outcome.refused_reason else 'none'}"
         )
     except Exception as exc:  # noqa: BLE001 - a sync never alters the run's exit code
         report.sync_error = _failure_text(exc)
