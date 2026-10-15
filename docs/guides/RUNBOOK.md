@@ -877,7 +877,9 @@ variables only: never paste a value into a chat, a commit, an issue or a log.
    That prints 43 random characters; at least 32 are needed, because ntfy topics are public and
    anyone who knows the name can read and post to it. In the app, subscribe to that topic on
    `https://ntfy.sh` and set the subscription's display name to `NFL Predict`. The push titles
-   carry no app name, so that display name is what tells you who sent them.
+   carry no app name, so that display name is what tells you who sent them. The Android app and
+   the ntfy web app have this setting; the iPhone app does not, so on an iPhone the pushes arrive
+   under the ntfy app's own name.
 2. **Resend (the weekly email).** Create a free Resend account with your own email address, then
    create an API key. The free tier sends from `onboarding@resend.dev` and delivers only to the
    account's own address, so the recipient must be the address you signed up with.
