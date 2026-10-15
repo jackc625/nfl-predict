@@ -22,6 +22,15 @@ The cache is CURRENT for this run when its per-week ``bet_list_populated_at`` ma
 own freshness rule, D31-29) is at or after the run's start. An absent or older cache gives a stale
 notice and ``bets unknown``: a missing list is never rendered as zero bets (RESEARCH Pitfall 11).
 
+A SCHEDULE THAT CANNOT BE READ (D-24)
+------------------------------------
+When the recorded schedule cannot be read, the run cannot tell which week is tomorrow or whether
+it is the digest run. On a SATURDAY it emails anyway, so a schedule-read failure never costs the
+weekly signal: the week comes from the cache's stamped current slate (else the run's selected
+slate, else ``week unknown``), the status reads ``RUN FAILED``, the bets read ``bets unknown`` (no
+schedule confirms the list is this week's) and the games section says the schedule could not be
+read. On any other weekday no email is attempted.
+
 ONE EMAIL PER RUN
 -----------------
 The Resend Idempotency-Key is ``digest/<run_date_et>/<the run's start instant, UTC>``: the message is
@@ -68,6 +77,8 @@ if (
 
 __all__ = [
     "LOAD_SCHEDULE",
+    "SCHEDULE_UNREADABLE_LINE",
+    "SCHEDULE_UNREADABLE_TITLE",
     "STALE_NOTICE",
     "WEB_CACHE_PATH",
     "ZERO_BETS_LINE",
@@ -96,6 +107,13 @@ STALE_NOTICE = (
 )
 ZERO_BETS_LINE = "0 bets this week"
 
+# D-24: the status line and the games-section line of a Saturday whose schedule cannot be read.
+# Like STALE_NOTICE, no character HTML escapes, so the line reads the same in both parts.
+SCHEDULE_UNREADABLE_TITLE = "FAILED: recorded schedule could not be read"
+SCHEDULE_UNREADABLE_LINE = (
+    "The recorded schedule could not be read, so the games of this week are not listed."
+)
+
 STATE_BET = "bet"
 STATE_NO_BET = "no bet"
 STATE_NOT_PREDICTED = "not predicted"
@@ -118,6 +136,7 @@ _WEEKDAYS: tuple[str, ...] = (
     "Saturday",
     "Sunday",
 )
+_SATURDAY = 5
 _SUNDAY = 6
 _FAILED_PREFIX = "FAILED: "
 
@@ -142,6 +161,8 @@ class DigestInputs:
         failed_titles: The titles of this run's failed messages; empty for a clean run.
         is_update: True when a digest for this run date was already delivered (D-07).
         label_prefix: Prepended to the subject and heading (``TEST - `` for the TEST command).
+        schedule_readable: False when the recorded schedule could not be read (D-24): the games
+            section then says so instead of listing games.
     """
 
     run_date_et: date
@@ -157,6 +178,7 @@ class DigestInputs:
     failed_titles: list[str]
     is_update: bool
     label_prefix: str = ""
+    schedule_readable: bool = True
 
 
 def _week_of_day(schedule: pd.DataFrame, day: date) -> tuple[int, int] | None:
@@ -245,13 +267,21 @@ def _instant(value: object) -> datetime | None:
 
 
 def _digest_week(
-    report: RunReport, schedule: pd.DataFrame | None
+    report: RunReport, schedule: pd.DataFrame | None, service: DataService | None
 ) -> tuple[int | None, int | None]:
-    """Tomorrow's week from the recorded schedule, else the run's selected slate, else unknown."""
+    """Tomorrow's week from the recorded schedule, else the run's selected slate, else unknown.
+
+    When the schedule could not be read at all (D-24), the cache's stamped current slate comes
+    first: it is the week the cache build itself resolved.
+    """
     if schedule is not None:
         week_key = _week_of_day(schedule, report.run_date_et + timedelta(days=1))
         if week_key is not None:
             return week_key
+    elif service is not None:
+        stamped = service.get_current_slate()
+        if stamped is not None:
+            return stamped
     return report.slate_season, report.slate_week
 
 
@@ -345,7 +375,7 @@ def collect_digest_inputs(
         now: The instant a game's lock is judged against.
         label_prefix: Prepended to the subject and heading.
     """
-    season, week = _digest_week(report, schedule)
+    season, week = _digest_week(report, schedule, service)
     populated_at: str | None = None
     current = False
     bets: list[dict[str, Any]] = []
@@ -356,7 +386,8 @@ def collect_digest_inputs(
         stored = service.get_bet_list_populated_at(season, week)
         populated_at = None if stored is None else str(stored)
         marker = _instant(stored)
-        current = marker is not None and marker >= report.start
+        # Without the schedule nothing confirms the list is this week's (D-24): bets unknown.
+        current = schedule is not None and marker is not None and marker >= report.start
         if current:
             bets = [
                 row
@@ -395,6 +426,7 @@ def collect_digest_inputs(
         failed_titles=list(failed_titles),
         is_update=_already_delivered(notifications, report.run_date_et),
         label_prefix=label_prefix,
+        schedule_readable=schedule is not None,
     )
 
 
@@ -445,6 +477,7 @@ def render_digest(inputs: DigestInputs) -> EmailMessage:
         or "not recorded",
         "stale_notice": STALE_NOTICE,
         "zero_bets_line": ZERO_BETS_LINE,
+        "schedule_unreadable_line": SCHEDULE_UNREADABLE_LINE,
     }
     html = environment.get_template(DIGEST_HTML_TEMPLATE).render(**context)
     text = environment.get_template(DIGEST_TEXT_TEMPLATE).render(**context)
@@ -478,10 +511,23 @@ def send_digest_if_due(
     The cache connection is closed before the handler runs. Only ``Exception`` is caught, so a
     Ctrl+C and the test suite's network guard still propagate. A failed SEND is not an exception:
     :func:`notify.events.send_email` already returns a failed delivery.
+
+    A SCHEDULE THAT CANNOT BE READ (D-24): any ``Exception`` from :data:`LOAD_SCHEDULE` prints
+    ``NOTIFY_DIGEST_SCHEDULE= unreadable <ExceptionClass>``. On a Saturday the email is still sent,
+    its status naming :data:`SCHEDULE_UNREADABLE_TITLE`; on any other weekday this returns None.
     """
-    schedule = LOAD_SCHEDULE()
-    if digest_week_for_run(schedule, report.run_date_et) is None:
-        return None
+    schedule: pd.DataFrame | None
+    try:
+        schedule = LOAD_SCHEDULE()
+    except Exception as exc:  # noqa: BLE001 - D-24: an unreadable schedule never costs the email
+        print(f"NOTIFY_DIGEST_SCHEDULE= unreadable {type(exc).__name__}")  # noqa: T201
+        if report.run_date_et.weekday() != _SATURDAY:
+            return None
+        schedule = None
+        failed_titles = (*failed_titles, SCHEDULE_UNREADABLE_TITLE)
+    else:
+        if digest_week_for_run(schedule, report.run_date_et) is None:
+            return None
     try:
         with open_cache_service(WEB_CACHE_PATH) as service:
             notifications = read_notifications()

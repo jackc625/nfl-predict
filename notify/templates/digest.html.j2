@@ -1,7 +1,7 @@
 {#- The Saturday digest email, HTML part (SPEC R4, D-07, D-19).
 
     Pass: inputs (notify.digest.DigestInputs), heading, status_lines, populated_label, stale_notice,
-    zero_bets_line. Globals: not_advice_key, not_advice_line (api.presentation, via notify.rendering).
+    zero_bets_line, schedule_unreadable_line (D-24). Globals: not_advice_key, not_advice_line (api.presentation, via notify.rendering).
 
     Plain HTML with INLINE styles only: no stylesheet, no image, no link, no URL (D-19). Nothing is
     computed here: every figure was stored by the cache build, and the only transforms are /bets'
@@ -75,7 +75,9 @@
 {%- endif %}
 
 <h2 style="{{ H2 }}">Games this week</h2>
-{%- if inputs.games %}
+{%- if not inputs.schedule_readable %}
+<p data-digest-schedule-unreadable style="margin:0;">{{ schedule_unreadable_line }}</p>
+{%- elif inputs.games %}
 <table style="border-collapse:collapse;" data-digest-games>
 {%- for game in inputs.games %}
 <tr data-digest-game>

@@ -28,7 +28,9 @@ Bet list last populated: {{ populated_label }}.
 {% endfor -%}
 {% endif %}
 GAMES THIS WEEK
-{% if inputs.games -%}
+{% if not inputs.schedule_readable -%}
+{{ schedule_unreadable_line }}
+{% elif inputs.games -%}
 {% for game in inputs.games -%}
 {{ game.label }}: {{ game.state }}
 {% endfor -%}
