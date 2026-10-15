@@ -488,8 +488,9 @@ def _notifications_inert_unless_a_test_turns_them_on(monkeypatch):
     ``monkeypatch.setattr(daily, "NOTIFY_END_OF_RUN", daily._notify_end_of_run)``.
 
     The closing-line task's failed-reading push is inert the same way (Plan 35-10); a test that
-    proves it restores ``capture_closing_lines._notify_closing_failure`` itself. Plan 35-13 adds
-    the season-window seam.
+    proves it restores ``capture_closing_lines._notify_closing_failure`` itself. The daily run's
+    season-window seam (Plan 35-13) reads ``unknown`` here, so no unrelated test reads silver
+    ``games``; a window test replaces ``SEASON_WINDOW`` itself.
 
     The weekly digest step (Plan 35-11) reads the recorded schedule through
     ``notify.digest.LOAD_SCHEDULE``; here it reads an EMPTY schedule, so every run is "not a digest
@@ -503,6 +504,7 @@ def _notifications_inert_unless_a_test_turns_them_on(monkeypatch):
     from utils.current_slate import SCHEDULE_COLUMNS
 
     monkeypatch.setattr(daily_lock_pipeline, "NOTIFY_END_OF_RUN", lambda _report: None)
+    monkeypatch.setattr(daily_lock_pipeline, "SEASON_WINDOW", lambda _d: "unknown")
     monkeypatch.setattr(
         capture_closing_lines, "NOTIFY_CLOSING_FAILURE", lambda *_a, **_k: None
     )

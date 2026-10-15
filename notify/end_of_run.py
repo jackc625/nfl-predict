@@ -19,7 +19,9 @@ ORDER (D-13)
    whose body is :func:`checkin_summary` (D-15). It goes to ``<ping_url>/fail`` when any message
    stayed undelivered or a delivered message's receipt never reached the notification log, so
    the watcher alerts through its own channels (SPEC R8). This is the ONE production call of
-   :func:`notify.events.send_checkin`.
+   :func:`notify.events.send_checkin`. Out of season (``RunReport.season_window``, read by the
+   daily run at its start) the check is paused instead and never pinged (D-01); the one watcher
+   test day withholds the check-in (D-16).
 
 NEVER RAISES ON A SEND
 ----------------------
@@ -38,17 +40,21 @@ from datetime import UTC, datetime
 from api.cache import ARM_LIVE, BET_STATUS_LIVE
 from notify import secrets as notify_secrets
 from notify.digest import send_digest_if_due
-from notify.events import PushMessage, SendContext, send_checkin, send_push
+from notify.events import (
+    PushMessage,
+    SendContext,
+    record_withheld_checkin,
+    send_checkin,
+    send_pause,
+    send_push,
+)
 from notify.messages import bets_message, email_failed_message, failed_messages
 from notify.report import RunReport
+from notify.season_window import SEASON_WINDOW_IN, SEASON_WINDOW_OUT
 from notify.secrets import NotifySecrets
 from notify.transport import OUTCOME_FAILED, Delivery
 
 __all__ = ["LOAD_SECRETS", "EndOfRunOutcome", "checkin_summary", "notify_end_of_run"]
-
-# The season-window values that check in (Plan 35-13 Task 2 adds the "out" pause); "unknown"
-# checks in because a resumed watcher can only cause a false alarm, never silence (D-17).
-_CHECK_IN_WINDOWS = frozenset({"in", "unknown"})
 
 # Seam, read at call time: tests hand in dummy secrets so the owner's .env is never read.
 LOAD_SECRETS = notify_secrets.load_secrets
@@ -227,16 +233,46 @@ def checkin_summary(report: RunReport, outcome: EndOfRunOutcome) -> str:
     )
 
 
+def _not_withheld_reason(report: RunReport) -> str | None:
+    """Why the D-16 test day does not withhold the check-in, or None when every condition holds."""
+    if report.season_window != SEASON_WINDOW_IN:
+        return f"season window {report.season_window}"
+    if report.tomorrow_game_ids is None:
+        return "games tomorrow=unknown"
+    if report.tomorrow_game_ids:
+        return f"games tomorrow={len(report.tomorrow_game_ids)}"
+    return None
+
+
 def _watcher_step(
     report: RunReport, outcome: EndOfRunOutcome, context: SendContext
 ) -> None:
     """Step 4, LAST: check in with the outside watcher (D-13, D-15; SPEC R7, R8).
 
-    The check-in is the failure signal (``/fail``) when any message stayed undelivered -- a step
-    that raised counts -- or was delivered without its receipt reaching the log (T-35-47).
+    * Out of season: pause the check (idempotent) and never ping. A failed pause is recorded by
+      :func:`send_pause` and never escalated (D-01).
+    * The D-16 test day: withheld only on that exact date, in season, with zero games tomorrow;
+      when the date matches but a condition fails, the run says why and checks in normally.
+    * Otherwise -- in season, or an unknown window (D-17) -- one ping. It is the failure signal
+      (``/fail``) when any message stayed undelivered -- a step that raised counts -- or was
+      delivered without its receipt reaching the log (T-35-47).
     """
-    if report.season_window not in _CHECK_IN_WINDOWS:
+    if report.season_window == SEASON_WINDOW_OUT:
+        pause = send_pause(context)
+        state = (
+            "paused (out of season)"
+            if pause.delivered
+            else f"pause failed {pause.failure_kind}"
+        )
+        print(f"WATCHER_CHECKIN= {state}")  # noqa: T201
         return
+    if context.secrets.withhold_checkin_on == report.run_date_et:
+        reason = _not_withheld_reason(report)
+        if reason is None:
+            record_withheld_checkin(context)
+            print("WATCHER_CHECKIN= withheld (test day)")  # noqa: T201
+            return
+        print(f"WATCHER_TEST_DAY= not withheld: {reason}")  # noqa: T201
     fail = outcome.any_undelivered or outcome.any_unlogged
     delivery = send_checkin(
         body=checkin_summary(report, outcome), fail=fail, context=context

@@ -720,6 +720,34 @@ def _notify_quietly(report: RunReport) -> None:
         logger.error("End-of-run notification failed", error=_failure_text(exc))
 
 
+def _season_window(run_date_et: date) -> str:
+    """The watcher's season window for *run_date_et* (``notify.season_window``, Plan 35-13).
+
+    The import is LAZY, like the notifier's, so a broken notify module can never break this
+    script's import.
+    """
+    from notify.season_window import current_season_window
+
+    return current_season_window(run_date_et)
+
+
+#: Seam: the test suite reads "unknown" here (tests/conftest.py), so no unrelated test reads silver.
+SEASON_WINDOW: Callable[[date], str] = _season_window
+
+
+def _read_season_window(report: RunReport) -> None:
+    """Note the watcher's season window on *report*, read once at RUN START (SPEC R7).
+
+    Read before the lock check and before the schedule refresh, so the run that ingests the
+    Super Bowl result still checks in. Never raises: on any failure the report keeps its
+    ``unknown`` default, which checks in (D-17).
+    """
+    try:
+        report.season_window = SEASON_WINDOW(report.run_date_et)
+    except Exception as exc:  # noqa: BLE001 - an unknown window checks in; the run goes on
+        logger.error("Season window could not be read", error=_failure_text(exc))
+
+
 def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
     """One daily run as of *run_date_et*, started at *start*. Returns the exit code.
 
@@ -727,7 +755,8 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
     ``LEDGER_RUN_ID=``), so every ledger event it writes -- the append, the settle pass and the
     end-of-run sync's pushes -- names this run (review finding 8); and a non-dry run ends with
     the ledger sync, whether the day returned or raised. After the sync, a non-dry run that was
-    not interrupted sends its notifications (D-13), filled from one :class:`RunReport`.
+    not interrupted sends its notifications (D-13), filled from one :class:`RunReport`; the
+    watcher's season window on that report is read once, at the run's start (Plan 35-13).
 
     Raises:
         RunDateRefusedError: *run_date_et* cannot be run at *start*; nothing was written.
@@ -735,6 +764,9 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
     _refuse_an_unrunnable_date(run_date_et, start, dry_run=dry_run)
     lock = slate_lock(run_date_et)
     report = RunReport(run_date_et=run_date_et, start=start, lock=lock)
+    # The watcher's season window, at run start: before the lock check and the refresh.
+    if not dry_run:
+        _read_season_window(report)
     sink: ProductionSink | RecordingSink = (
         _MeasuredRecordingSink() if dry_run else ProductionSink()
     )
