@@ -12,6 +12,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import date
 from typing import Any
@@ -97,12 +98,17 @@ def install_transport(
     return requests
 
 
-@pytest.fixture
-def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Every retry delay the transport asked for, in order; nothing actually sleeps."""
+def install_sleep_recorder(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record every retry delay the transport asks for, in order; nothing actually sleeps."""
     recorded: list[float] = []
     monkeypatch.setattr(transport, "SLEEP", recorded.append)
     return recorded
+
+
+@pytest.fixture
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Every retry delay the transport asked for, in order; nothing actually sleeps."""
+    return install_sleep_recorder(monkeypatch)
 
 
 def test_one_failed_push_is_delivered_and_logged(
@@ -195,3 +201,88 @@ def test_non_success_is_a_failure(
     (record,) = read_notifications()
     assert record["failure_kind"] == "http_400"
     assert record["outcome"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# D-12: only transient failures are retried, with the documented delays
+# ---------------------------------------------------------------------------
+
+
+def test_transient_5xx_retries_three_times_with_the_documented_delays(
+    monkeypatch: pytest.MonkeyPatch, sleeps: list[float]
+) -> None:
+    requests = install_transport(monkeypatch, lambda: httpx.Response(503))
+
+    delivery = send_push(failed_push(), daily_context())
+
+    assert not delivery.delivered
+    assert delivery.failure_kind == "http_503"
+    assert delivery.attempts == 3
+    assert len(requests) == 3
+    # A wait before attempts 2 and 3, and never one after the last attempt.
+    assert sleeps == [10.0, 30.0]
+    (record,) = read_notifications()
+    assert record["attempts"] == 3
+    assert record["failure_kind"] == "http_503"
+
+
+def test_429_then_success_is_delivered_on_attempt_two(
+    monkeypatch: pytest.MonkeyPatch, sleeps: list[float]
+) -> None:
+    requests = install_transport(monkeypatch, lambda: httpx.Response(429), ntfy_ok())
+
+    delivery = send_push(failed_push(), daily_context())
+
+    assert delivery.delivered
+    assert delivery.attempts == 2
+    assert delivery.receipt_id == DUMMY_RECEIPT_ID
+    assert len(requests) == 2
+    assert sleeps == [10.0]
+    (record,) = read_notifications()
+    assert record["outcome"] == "delivered"
+    assert record["attempts"] == 2
+    assert record["receipt_id"] == DUMMY_RECEIPT_ID
+
+
+def test_timeout_is_transient_and_recorded_by_class_only(
+    monkeypatch: pytest.MonkeyPatch,
+    sleeps: list[float],
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    requests = install_transport(
+        monkeypatch,
+        httpx.ReadTimeout(
+            f"timed out reading {DUMMY_PING_URL} for topic {DUMMY_TOPIC}"
+        ),
+    )
+
+    delivery = send_push(failed_push(), daily_context())
+
+    assert not delivery.delivered
+    assert delivery.failure_kind == "transport_ReadTimeout"
+    assert delivery.attempts == 3
+    assert len(requests) == 3
+    assert sleeps == [10.0, 30.0]
+    log_text = notification_log.NOTIFICATION_LOG.read_text(encoding="utf-8")
+    captured = capsys.readouterr()
+    for secret in (DUMMY_PING_URL, DUMMY_PING_UUID, DUMMY_TOPIC):
+        assert secret not in log_text
+        assert secret not in captured.out
+        assert secret not in captured.err
+        assert secret not in caplog.text
+
+
+def test_permanent_4xx_fails_at_once(
+    monkeypatch: pytest.MonkeyPatch, sleeps: list[float]
+) -> None:
+    requests = install_transport(monkeypatch, lambda: httpx.Response(401))
+
+    delivery = send_push(failed_push(), daily_context())
+
+    assert not delivery.delivered
+    assert delivery.failure_kind == "http_401"
+    assert delivery.attempts == 1
+    assert len(requests) == 1
+    assert sleeps == []
