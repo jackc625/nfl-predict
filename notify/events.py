@@ -5,8 +5,8 @@ WHY CLOSED
 NOTIF-01 allows exactly two kinds of phone push -- a FAILED run and new BETS -- plus the TEST message
 the owner sends on purpose. :func:`send_push` refuses every other class with a ValueError BEFORE any
 request is made, so a new caller cannot quietly invent a third kind of push. The email and watcher
-classes are declared here too, so the whole vocabulary lives in one place (Plan 35-05 adds their send
-functions).
+classes are declared here too, so the whole vocabulary lives in one place, and each has its own
+router below (:func:`send_email`, the watcher sends).
 
 NO SUPPRESSION
 --------------
@@ -50,6 +50,7 @@ __all__ = [
     "SendContext",
     "ascii_text",
     "fit_lines",
+    "send_email",
     "send_push",
 ]
 
@@ -89,7 +90,7 @@ class PushMessage:
 
 @dataclass(frozen=True)
 class EmailMessage:
-    """One email (the Saturday digest or the TEST email); Plan 35-05 adds its send function.
+    """One email (the Saturday digest or the TEST email), sent by :func:`send_email`.
 
     Attributes:
         event_class: One of :data:`EMAIL_EVENT_CLASSES`.
@@ -228,5 +229,32 @@ def send_push(message: PushMessage, context: SendContext) -> Delivery:
         ),
         event_class=message.event_class,
         priority=message.priority,
+        context=context,
+    )
+
+
+def send_email(message: EmailMessage, context: SendContext) -> Delivery:
+    """Send one email through Resend and record it once (priority None; never the recipient).
+
+    Raises:
+        ValueError: the event class is outside :data:`EMAIL_EVENT_CLASSES` (before any request).
+    """
+    if message.event_class not in EMAIL_EVENT_CLASSES:
+        msg = (
+            f"email event class {message.event_class!r} is outside the closed vocabulary "
+            f"{EMAIL_EVENT_CLASSES}"
+        )
+        raise ValueError(msg)
+    subject = ascii_text(message.subject)
+    return _send_and_record(
+        lambda: channels.resend_send(
+            context.secrets,
+            subject=subject,
+            html=message.html,
+            text=message.text,
+            idempotency_key=message.idempotency_key,
+        ),
+        event_class=message.event_class,
+        priority=None,
         context=context,
     )
