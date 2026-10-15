@@ -124,6 +124,25 @@ def test_two_failures_back_to_back_are_two_deliveries(
     assert [record["outcome"] for record in records] == ["delivered", "delivered"]
 
 
+def test_a_send_that_raises_is_one_recorded_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """35-REVIEW WR-02: an exception the transport does not classify still leaves one record."""
+    install_sleep_recorder(monkeypatch)
+    install_transport(monkeypatch, httpx.DecodingError("bad body at https://x/secret"))
+
+    delivery = send_push(failed_push(), daily_context())
+
+    assert not delivery.delivered
+    assert (delivery.attempts, delivery.failure_kind) == (0, "raised_DecodingError")
+    (record,) = read_notifications()
+    assert (record["event_class"], record["outcome"], record["failure_kind"]) == (
+        "failed",
+        "failed",
+        "raised_DecodingError",
+    )
+
+
 def test_records_are_appended_in_send_order(monkeypatch: pytest.MonkeyPatch) -> None:
     install_sleep_recorder(monkeypatch)
     receipts = ["receiptFirst1", "receiptSecond", "receiptThird3"]

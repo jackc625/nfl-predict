@@ -204,11 +204,17 @@ def install_router(
     resend: tuple[Reply, ...] = (resend_ok(),),
     ntfy: tuple[Reply, ...] = (ntfy_ok(),),
 ) -> dict[str, list[httpx.Request]]:
-    """Answer Resend and ntfy requests from their own reply lists; return the requests per host.
+    """Answer Resend, ntfy and watcher-ping requests from their own reply lists; return them per host.
 
-    The last reply of each list repeats once the list runs out.
+    The last reply of each list repeats once the list runs out. The watcher host answers every
+    check-in with healthchecks.io's ``OK``, so ``notify_end_of_run``'s last step really runs
+    (35-REVIEW WR-02: an unanswered host used to raise inside the handler and be swallowed).
     """
-    replies = {"api.resend.com": resend, "ntfy.sh": ntfy}
+    replies = {
+        "api.resend.com": resend,
+        "ntfy.sh": ntfy,
+        "hc-ping.com": (lambda: httpx.Response(200, text="OK"),),
+    }
     requests: dict[str, list[httpx.Request]] = {host: [] for host in replies}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -330,13 +336,19 @@ def test_a_clean_saturday_sends_one_email_with_a_receipt(
         assert NOT_ADVICE_LINE in part
     assert text.rstrip().endswith(NOT_ADVICE_LINE)
 
-    (record,) = read_notifications()
+    record, checkin = read_notifications()
     assert record["event_class"] == "digest"
     assert record["outcome"] == "delivered"
     assert record["receipt_id"] == DUMMY_EMAIL_ID
     assert [step for step, _delivery in outcome.deliveries] == ["digest"]
     assert outcome.any_undelivered is False
-    assert f"NOTIFY_DIGEST= delivered {DUMMY_EMAIL_ID}" in capsys.readouterr().out
+    # The watcher check-in ran last and checked in clean.
+    (ping,) = requests["hc-ping.com"]
+    assert not ping.url.path.endswith("/fail")
+    assert (checkin["event_class"], checkin["outcome"]) == ("checkin", "delivered")
+    out = capsys.readouterr().out
+    assert f"NOTIFY_DIGEST= delivered {DUMMY_EMAIL_ID}" in out
+    assert "WATCHER_CHECKIN= delivered" in out
 
 
 def test_a_non_digest_day_sends_no_email(
@@ -356,10 +368,16 @@ def test_a_non_digest_day_sends_no_email(
 
     outcome = notify_end_of_run(report, secrets=email_secrets(), now=report.start)
 
-    assert requests == {"api.resend.com": [], "ntfy.sh": []}
-    assert read_notifications() == []
+    assert requests["api.resend.com"] == [] and requests["ntfy.sh"] == []
+    # Only the watcher check-in left the run.
+    assert len(requests["hc-ping.com"]) == 1
+    assert [(r["event_class"], r["outcome"]) for r in read_notifications()] == [
+        ("checkin", "delivered")
+    ]
     assert outcome.deliveries == []
-    assert "NOTIFY_DIGEST= not a digest day" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "NOTIFY_DIGEST= not a digest day" in out
+    assert "WATCHER_CHECKIN= delivered" in out
 
 
 def test_an_undelivered_email_sends_one_normal_failed_push(
@@ -391,8 +409,12 @@ def test_an_undelivered_email_sends_one_normal_failed_push(
     assert [(r["event_class"], r["outcome"]) for r in records] == [
         ("digest", "failed"),
         ("failed", "delivered"),
+        ("checkin", "delivered"),
     ]
     assert records[0]["failure_kind"] == "http_500"
+    # An undelivered email makes the check-in the watcher's failure signal.
+    (ping,) = requests["hc-ping.com"]
+    assert ping.url.path.endswith("/fail")
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +425,8 @@ def test_an_undelivered_email_sends_one_normal_failed_push(
 def _assert_one_build_failure(
     requests: dict[str, list[httpx.Request]], records: list[dict[str, Any]], kind: str
 ) -> None:
-    """No email left; one failed digest record (no attempt) then one FAILED: weekly email push."""
+    """No email left; one failed digest record (no attempt), one FAILED: weekly email push, then
+    the watcher check-in sent as the failure signal."""
     assert requests["api.resend.com"] == []
     (push,) = requests["ntfy.sh"]
     body = json.loads(push.content)
@@ -413,7 +436,10 @@ def _assert_one_build_failure(
     assert [(r["event_class"], r["outcome"]) for r in records] == [
         ("digest", "failed"),
         ("failed", "delivered"),
+        ("checkin", "delivered"),
     ]
+    (ping,) = requests["hc-ping.com"]
+    assert ping.url.path.endswith("/fail")
     assert records[0]["attempts"] == 0
     assert records[0]["receipt_id"] is None
     assert records[0]["failure_kind"] == kind
@@ -662,6 +688,11 @@ def test_a_failed_saturday_names_the_failure_and_marks_sunday_not_predicted(
     assert html.count("data-digest-game-state>not predicted<") == len(SUNDAY_GAMES)
     assert digest.STALE_NOTICE in html and digest.STALE_NOTICE in text
     assert [step for step, _delivery in outcome.deliveries] == ["failed", "digest"]
+    # Every message was delivered, so the check-in is a plain one, and it was recorded.
+    (ping,) = requests["hc-ping.com"]
+    assert not ping.url.path.endswith("/fail")
+    assert read_notifications()[-1]["event_class"] == "checkin"
+    assert read_notifications()[-1]["outcome"] == "delivered"
 
 
 def test_a_zero_bet_week_says_so(
@@ -829,7 +860,7 @@ def test_an_unreadable_schedule_on_saturday_still_emails(
     )
     requests = install_router(monkeypatch)
     assert send_one(wednesday) is None
-    assert requests == {"api.resend.com": [], "ntfy.sh": []}
+    assert requests == {"api.resend.com": [], "ntfy.sh": [], "hc-ping.com": []}
 
 
 def test_a_playoff_week_keeps_its_number(

@@ -193,8 +193,21 @@ def _send_and_record(
 
     A record that is not durably written leaves the outcome, attempts and receipt unchanged and
     returns the delivery with ``logged=False``. The append error is printed by class name only.
+
+    A send that RAISES (anything the transport does not classify, or a builder bug) is still one
+    recorded message: a failed delivery, no attempt counted, failure kind ``raised_<Class>`` --
+    never a message with no log record. Only ``Exception`` is caught, so a Ctrl+C and the test
+    suite's network guard still propagate.
     """
-    delivery = send()
+    try:
+        delivery = send()
+    except Exception as error:  # noqa: BLE001 - one record per message, even a raising one
+        delivery = Delivery(
+            outcome=OUTCOME_FAILED,
+            attempts=0,
+            receipt_id=None,
+            failure_kind=f"raised_{type(error).__name__}",
+        )
     record = {
         "run_id": current_run_id(),
         "run_date_et": (
