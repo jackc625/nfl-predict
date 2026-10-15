@@ -908,9 +908,8 @@ variables only: never paste a value into a chat, a commit, an issue or a log.
    | `HEALTHCHECKS_API_KEY` | the read-write API key |
 
    Delete the lines `ENABLE_EMAIL_REPORTS=...` and `ENABLE_SLACK_NOTIFICATIONS=...` if they are
-   there. Nothing reads those two flags, and `Settings` refuses keys it does not declare, so once
-   the flags are removed from `Settings` a leftover line would stop the daily run from loading its
-   settings. Do not add `WATCHER_TEST_WITHHOLD_DATE` yet. Until a value is set, every send on its
+   there. `Settings` no longer declares those two flags and refuses keys it does not declare, so a
+   leftover line stops the daily run from loading its settings. Do not add `WATCHER_TEST_WITHHOLD_DATE` yet. Until a value is set, every send on its
    channel is recorded as a `missing_secret` failure in `logs/notifications.jsonl`; nothing
    crashes.
 5. **Configure the watcher and read it back:**

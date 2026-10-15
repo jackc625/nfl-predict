@@ -579,7 +579,9 @@ notification path: it is shared with the push-free manual `scripts/friday_pipeli
 is never rerouted into `notify/`. Phase 35 deleted the old email and Slack sending code, the
 cooldown and hourly-limit logic and the unused alert methods from `utils/alert_manager.py`, and the
 unread `monitoring.notifications` block of `conf/config.yaml`. The `.env` flags
-`ENABLE_EMAIL_REPORTS` and `ENABLE_SLACK_NOTIFICATIONS` are read by nothing. Sections 9 and 10 keep
+`ENABLE_EMAIL_REPORTS` and `ENABLE_SLACK_NOTIFICATIONS` are no longer declared in `Settings`, which
+refuses keys it does not declare: a leftover line naming either stops every settings load, so it
+must not be in `.env`. Sections 9 and 10 keep
 the Phase 21 record of why the old channels were inert.
 
 ---
