@@ -1491,6 +1491,20 @@ def _arrange_lock_passed_unreadable(monkeypatch, tmp_path) -> datetime:
     return slate_lock(RUN_DATE).astimezone(UTC)
 
 
+def _arrange_lock_passed_record_fails(monkeypatch, tmp_path) -> datetime:
+    """The lock-passed record cannot be written (35-REVIEW WR-05): a failed run, still notified."""
+    start = _arrange_lock_passed(monkeypatch, tmp_path)
+    real_record = daily._record_no_prediction
+
+    def _record(run_date_et, outcome, game_ids, **kwargs):
+        if outcome == "lock_passed":
+            raise OSError("the run record is locked")
+        real_record(run_date_et, outcome, game_ids, **kwargs)
+
+    monkeypatch.setattr(daily, "_record_no_prediction", _record)
+    return start
+
+
 def _arrange_offseason(monkeypatch, tmp_path) -> datetime:
     monkeypatch.setattr(daily, "DAILY_RUN_RECORDS", tmp_path / "daily.jsonl")
     monkeypatch.setattr(daily, "_refresh_schedule", lambda *_a, **_k: None)
@@ -1535,6 +1549,18 @@ REPORT_CASES = [
             "status": "lock_passed",
             "tomorrow_game_ids": None,
             "unpredicted_game_ids": None,
+            "run_id": None,
+        },
+    ),
+    (
+        "lock_passed_record_write_raised",
+        _arrange_lock_passed_record_fails,
+        True,
+        {
+            "status": "run_failed",
+            "tomorrow_game_ids": tuple(TOMORROW_IDS),
+            "unpredicted_game_ids": tuple(TOMORROW_IDS),
+            "exception_class": "OSError",
             "run_id": None,
         },
     ),
@@ -1626,7 +1652,7 @@ def test_each_outcome_fills_the_report(
     start = arrange(monkeypatch, tmp_path)
 
     if raises:
-        with pytest.raises(RuntimeError):
+        with pytest.raises((RuntimeError, OSError)):
             daily.run_daily(RUN_DATE, start=start, dry_run=False)
     else:
         daily.run_daily(RUN_DATE, start=start, dry_run=False)

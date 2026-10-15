@@ -779,40 +779,56 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
     with active_sink(sink):
         # 0. The passed-lock refusal, BEFORE any request.
         if start >= lock:
-            ids = _tomorrow_ids_or_unknown(run_date_et)
-            recorded = ids if ids is not None else []
             report.status = STATUS_LOCK_PASSED
-            report.tomorrow_game_ids = report.unpredicted_game_ids = (
-                tuple(ids) if ids is not None else None
-            )
-            logger.warning(
-                "Tomorrow's lock has passed; nothing collected or predicted",
-                lock=lock.isoformat(),
-                start=start.isoformat(),
-                games=recorded,
-            )
-            _record_no_prediction(run_date_et, "lock_passed", recorded)
-            _print_contract(
-                sink,
-                dry_run=dry_run,
-                lock_passed=len(recorded),
-                next_day_games=len(recorded),
-            )
-            # Its own send point: this return precedes the try/finally below. Still no data
-            # request is made -- the notification providers are not data sources (D-13).
-            if not dry_run:
-                _notify_quietly(report)
+            try:
+                ids = _tomorrow_ids_or_unknown(run_date_et)
+                recorded = ids if ids is not None else []
+                report.tomorrow_game_ids = report.unpredicted_game_ids = (
+                    tuple(ids) if ids is not None else None
+                )
+                logger.warning(
+                    "Tomorrow's lock has passed; nothing collected or predicted",
+                    lock=lock.isoformat(),
+                    start=start.isoformat(),
+                    games=recorded,
+                )
+                _record_no_prediction(run_date_et, "lock_passed", recorded)
+                _print_contract(
+                    sink,
+                    dry_run=dry_run,
+                    lock_passed=len(recorded),
+                    next_day_games=len(recorded),
+                )
+            except BaseException as exc:
+                # A crash on this branch (a schedule read or a record write that raised) is a
+                # failed run like any other: recorded, pushed, then re-raised (35-REVIEW WR-05).
+                named = _record_run_failure(run_date_et, None, exc)
+                report.record_exception(exc)
+                report.status = STATUS_RUN_FAILED
+                if named is not None:
+                    report.tomorrow_game_ids = report.unpredicted_game_ids = tuple(
+                        named
+                    )
+                raise
+            finally:
+                # Its own send point: this branch precedes the try/finally below. Still no data
+                # request is made -- the notification providers are not data sources (D-13).
+                if not dry_run and not report.interrupted:
+                    _notify_quietly(report)
             return 0
 
         # Everything after the lock check: a run that cannot finish records tomorrow's games
         # as getting no predictions, then re-raises (33.2 review C1 CR-05 = B WR-05).
         progress: dict[str, DailySlate] = {}
-        cut_over = forward_rows_go_to_ledger()
+        cut_over = False
+        # The binding encloses the try so the end-of-run sync's events carry the run id; it is a
+        # uuid and a context-variable set, which cannot raise. Everything that can is inside.
         with bound_run_id(new_run_id()) as run_id:
             report.run_id = run_id
-            if cut_over:
-                print(f"LEDGER_RUN_ID= {run_id}")
             try:
+                cut_over = forward_rows_go_to_ledger()
+                if cut_over:
+                    print(f"LEDGER_RUN_ID= {run_id}")
                 return _run_the_day(
                     run_date_et,
                     start=start,
