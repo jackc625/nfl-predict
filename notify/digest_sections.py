@@ -79,6 +79,7 @@ __all__ = [
     "UNREADABLE_CORRECTIONS",
     "UNREADABLE_MANIFEST",
     "UNREADABLE_PROBE_LOG",
+    "UNREADABLE_RUN_LOG_RECORD",
     "closing_section",
     "closing_section_lines",
     "corrected_grades",
@@ -116,6 +117,9 @@ UNREADABLE_CORRECTIONS = (
 )
 
 CLOSING_EMPTY_LINE = "No skipped or missed closing reading and no first-pick refusal since the last digest."
+UNREADABLE_RUN_LOG_RECORD = (
+    "A ledger run log record could not be read, so it is not listed."
+)
 TRIGGER_READBACK_LINE = "the closing-line schedule read back wrong"
 
 # The ledger run log's line number inside read_events' refusal message.
@@ -334,13 +338,24 @@ def data_change_section(
 
     Returns:
         ``{lines, empty_line, unaffected_line, acknowledge_line}``.
+
+    Each selector is guarded on its own, like its load (35-REVIEW WR-04): a stored value of an
+    unexpected shape that makes one raise names that source as unreadable and never costs the
+    other two, nor the email.
     """
-    lines = [
-        *sealed_changes(probe_line),
-        *live_changes(manifest, cutoff, corrections),
-        *corrected_grades(corrections, cutoff),
-        *unreadable,
-    ]
+    named = list(unreadable)
+    selected: list[str] = []
+    for select, unreadable_line in (
+        (lambda: sealed_changes(probe_line), UNREADABLE_PROBE_LOG),
+        (lambda: live_changes(manifest, cutoff, corrections), UNREADABLE_MANIFEST),
+        (lambda: corrected_grades(corrections, cutoff), UNREADABLE_CORRECTIONS),
+    ):
+        try:
+            selected.extend(select())
+        except Exception:  # noqa: BLE001 - named in the section, never read as "no change"
+            if unreadable_line not in named:
+                named.append(unreadable_line)
+    lines = [*selected, *named]
     return {
         "lines": lines,
         "empty_line": DATA_CHANGE_EMPTY_LINE,
@@ -385,12 +400,17 @@ def closing_section_lines(
 ) -> list[str]:
     """SPEC R4 item 7: the run log's skipped, failed or missed closing readings, first-pick
     refusals and mismatched closing-schedule read-backs (D-23) after *cutoff* (all when None),
-    one plain line each, in log order."""
+    one plain line each, in log order. A record of an unexpected shape is named as unreadable
+    (:data:`UNREADABLE_RUN_LOG_RECORD`), never dropped and never allowed to cost the email
+    (35-REVIEW WR-04)."""
     lines: list[str] = []
     for event in events:
-        if not _after(event.get("at_utc"), cutoff):
-            continue
-        line = _closing_line(event)
+        try:
+            if not _after(event.get("at_utc"), cutoff):
+                continue
+            line = _closing_line(event)
+        except Exception:  # noqa: BLE001 - one bad record never costs the section
+            line = UNREADABLE_RUN_LOG_RECORD
         if line is not None:
             lines.append(line)
     return lines

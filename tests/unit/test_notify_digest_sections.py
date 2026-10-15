@@ -482,6 +482,37 @@ def test_nothing_to_list_is_one_line() -> None:
     assert digest_sections.DATA_CHANGE_EMPTY_LINE not in text
 
 
+def test_a_malformed_manifest_is_named_and_costs_nothing_else() -> None:
+    """35-REVIEW WR-04: a selector that raises on a bad stored value names only its source."""
+    malformed = {
+        "season": 2026,
+        "datasets": {
+            "pbp": [],  # a dataset block that is a list, not a mapping
+            "schedules": {
+                "captures": [
+                    {
+                        **capture(1, FIRST_CAPTURE_AT, verdict("unknown", "warning")),
+                        "sequence": "x",
+                    }
+                ]
+            },
+        },
+    }
+
+    section = digest_sections.data_change_section(
+        probe_line=probe_line(finding()),
+        manifest=malformed,
+        corrections=[correction(target="ou")],
+        cutoff=None,
+    )
+
+    assert section["lines"] == [
+        SCHEDULES_2025_LINE,
+        "BUF @ LA Totals: graded win, corrected to loss",
+        digest_sections.UNREADABLE_MANIFEST,
+    ]
+
+
 def test_runs_are_said_to_be_unaffected() -> None:
     section = digest_sections.data_change_section(
         probe_line=probe_line(finding()), manifest=None, corrections=[], cutoff=None
@@ -644,6 +675,24 @@ def test_events_before_the_cutoff_are_not_listed() -> None:
 
     assert digest_sections.closing_section_lines(events, CLOSING_CUTOFF) == []
     assert len(digest_sections.closing_section_lines(events, None)) == 3
+
+
+def test_a_malformed_run_log_record_is_named_and_the_rest_still_listed() -> None:
+    """35-REVIEW WR-04: a record of an unexpected shape costs only itself."""
+    events = [
+        event("first_pick_refusal", key=["2026_06_CIN@CLE", 2026, 6], fields=[]),
+        event(
+            "closing_finalized",
+            key=BUF_LA_ATS,
+            closing_null_reason="capture_missed",
+            forward_clv=None,
+        ),
+    ]
+
+    assert digest_sections.closing_section_lines(events, None) == [
+        digest_sections.UNREADABLE_RUN_LOG_RECORD,
+        "BUF @ LA Spread: no closing reading (capture_missed)",
+    ]
 
 
 def test_an_unreadable_run_log_is_named() -> None:

@@ -398,9 +398,12 @@ def _data_change_section(
         except Exception:  # noqa: BLE001 - named in the section, never read as "no change"
             unreadable.append(digest_sections.UNREADABLE_MANIFEST)
     corrections: list[dict[str, Any]] = []
-    stored = (
-        service.get_bet_list_corrections(None, None) if service is not None else None
-    )
+    stored: Mapping[Any, dict[str, Any]] | None = None
+    if service is not None:
+        try:
+            stored = service.get_bet_list_corrections(None, None)
+        except Exception:  # noqa: BLE001 - named in the section, never read as "no change"
+            stored = None
     if stored is None:
         # No cache, or its corrections could not be read: named, never "no corrected grade".
         unreadable.append(digest_sections.UNREADABLE_CORRECTIONS)
