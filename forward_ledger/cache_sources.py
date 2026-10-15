@@ -28,7 +28,9 @@ degrades the run and the ``/bets`` stale-cache hard-block fires (T-34-57).
 
 In both states the ``/bets`` result strip's rows are ``backtest.bet_tracker.graded_outcome_rows``
 over the very bet-list frame returned, with the same corrections the tracker uses, so the strip and
-the tiles are drawn from one frame (review finding 4).
+the tiles are drawn from one frame (review finding 4). Last week's actual vs expected
+(``backtest.bet_week_results.aggregate_bet_weeks``, Phase 35 SPEC R5) is computed from that same
+frame and those same corrections, so it can never disagree with the tracker about which rows count.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -36,7 +38,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,7 @@ import pandas as pd
 from api.cache import (
     BET_LIST_COLUMNS,
     BET_LIST_CORRECTIONS_COLUMNS,
+    BET_WEEK_RESULTS_COLUMNS,
     PROVENANCE_FORWARD,
 )
 from backtest.bet_tracker import (
@@ -52,6 +55,7 @@ from backtest.bet_tracker import (
     graded_outcome_rows,
     to_tracker_frame,
 )
+from backtest.bet_week_results import aggregate_bet_weeks
 from backtest.weekly_bet_list import (
     DEFAULT_BET_LIST_DIR,
     build_bet_week_schedule,
@@ -94,6 +98,10 @@ class LedgerAbsentAfterCutoverError(Exception):
     """The switch is on but the ledger file does not exist: a cutover without its migration."""
 
 
+def _empty_week_results() -> pd.DataFrame:
+    return pd.DataFrame(columns=pd.Index(BET_WEEK_RESULTS_COLUMNS))
+
+
 @dataclass(frozen=True)
 class BetCacheSources:
     """Every frame ``api.cache.populate_cache`` loads for ``/bets`` and Track Record.
@@ -105,6 +113,9 @@ class BetCacheSources:
         corrections: The in-force corrections (``BET_LIST_CORRECTIONS_COLUMNS``); empty when off.
         graded_outcomes: The result strip's rows (``BET_GRADED_OUTCOMES_COLUMNS``).
         verdict_context: ``{"declared", "season", "start_week"}`` for the 2026 forward verdict.
+        week_results: Last week's actual vs expected rows (``BET_WEEK_RESULTS_COLUMNS``), one per
+            season, week and counting class, aggregated from the same rows and corrections as
+            the tracker (SPEC R5). Defaults to an empty frame with those columns.
     """
 
     bet_list: pd.DataFrame
@@ -113,6 +124,7 @@ class BetCacheSources:
     corrections: pd.DataFrame
     graded_outcomes: pd.DataFrame
     verdict_context: dict[str, Any]
+    week_results: pd.DataFrame = field(default_factory=_empty_week_results)
 
 
 def _empty_corrections() -> pd.DataFrame:
@@ -231,6 +243,7 @@ def read_bet_cache_sources(
             corrections=_empty_corrections(),
             graded_outcomes=graded_outcome_rows(today.bet_list),
             verdict_context=dict(_UNDECLARED),
+            week_results=aggregate_bet_weeks(today.bet_list),
         )
 
     replay = _replay_rows_only(Path(output_dir))
@@ -244,4 +257,5 @@ def read_bet_cache_sources(
         corrections=corrections,
         graded_outcomes=graded_outcome_rows(union, corrections=corrections),
         verdict_context=_verdict_context(),
+        week_results=aggregate_bet_weeks(union, corrections=corrections),
     )

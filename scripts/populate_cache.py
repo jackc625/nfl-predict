@@ -98,6 +98,7 @@ def main() -> None:
         bet_corrections_df=sources.corrections,
         bet_graded_outcomes_df=sources.graded_outcomes,
         forward_verdict_context=sources.verdict_context,
+        bet_week_results_df=sources.week_results,
     )
 
 

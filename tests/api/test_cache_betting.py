@@ -755,6 +755,81 @@ def test_graded_outcomes_table_three_sites(tmp_path: Path) -> None:
     assert corrections == (0,)
 
 
+def test_week_results_table_three_sites(tmp_path: Path) -> None:
+    """Phase 35 (Plan 35-03): last week's actual vs expected agrees at all three sites.
+
+    A NULL return is "not measured" and must come back NULL, never 0.0; a ``None`` source leaves
+    the table present and empty.
+    """
+    from api.cache import (
+        BET_WEEK_RESULTS_COLUMNS,
+        BET_WEEK_RESULTS_SCHEMA,
+        materialize_bet_week_results,
+        populate_cache,
+    )
+
+    standalone = _typed_columns(BET_WEEK_RESULTS_SCHEMA, "bet_week_results")
+    embedded = _typed_columns(
+        _embedded_statement("bet_week_results"), "bet_week_results"
+    )
+    assert standalone == embedded
+    assert [name for name, _type in standalone] == list(BET_WEEK_RESULTS_COLUMNS)
+
+    measured = {
+        "season": 2026,
+        "week": 5,
+        "counting_class": "forward_realized",
+        "wins": 2,
+        "losses": 1,
+        "pushes": 1,
+        "bets_graded": 4,
+        "bets_ungraded": 0,
+        "actual_return_units": 0.32725,
+        "expected_return_units": 0.05,
+    }
+    nothing_graded = {
+        **measured,
+        "week": 6,
+        "wins": 0,
+        "losses": 0,
+        "pushes": 0,
+        "bets_graded": 0,
+        "bets_ungraded": 3,
+        "actual_return_units": None,
+        "expected_return_units": None,
+    }
+    frame = pd.DataFrame([measured, nothing_graded])
+    for column in ("actual_return_units", "expected_return_units"):
+        frame[column] = frame[column].astype(object).where(frame[column].notna(), None)
+    conn = duckdb.connect(":memory:")
+    # Shuffled column order: the INSERT is by name, never positional.
+    shuffled = frame[list(reversed(BET_WEEK_RESULTS_COLUMNS))]
+    assert materialize_bet_week_results(conn, shuffled) == 2
+    stored = conn.execute(
+        f"SELECT {', '.join(BET_WEEK_RESULTS_COLUMNS)} FROM bet_week_results ORDER BY week"
+    ).fetchall()
+    assert stored == [
+        tuple(measured[name] for name in BET_WEEK_RESULTS_COLUMNS),
+        tuple(nothing_graded[name] for name in BET_WEEK_RESULTS_COLUMNS),
+    ]
+
+    db_path = tmp_path / "cache.duckdb"
+    populate_cache(
+        db_path=db_path,
+        artifacts_dir=tmp_path / "artifacts",
+        outputs_dir=tmp_path / "outputs",
+        gold_dir=tmp_path / "gold",
+        silver_dir=tmp_path / "silver",
+        bet_week_results_df=None,
+    )
+    built = duckdb.connect(str(db_path), read_only=True)
+    try:
+        count = built.execute("SELECT COUNT(*) FROM bet_week_results").fetchone()
+    finally:
+        built.close()
+    assert count == (0,)
+
+
 def _meta(db_path: Path) -> dict[str, str | None]:
     conn = duckdb.connect(str(db_path), read_only=True)
     try:
