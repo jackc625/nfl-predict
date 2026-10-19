@@ -93,8 +93,9 @@ SITE_PUSH_FIELDS: tuple[str, ...] = (
     "data_format_expected",
 )
 
-# The production alias. Plan 36-09 corrects it from the real project alias.
-PRODUCTION_URL = "https://nfl-predict.vercel.app"
+# The production alias Vercel assigned to the project at its first deployment (Plan 36-09, recorded
+# 2026-10-19): the CLI's reported productionUrl. Vercel added the suffix to the bare project name.
+PRODUCTION_URL = "https://nfl-predict-psi.vercel.app"
 
 # The ONE CLI, by absolute path (D-16): the version-specific nvm install survives `nvm use`, which
 # re-points C:\nvm4w\nodejs, and the S4U task has no user PATH to find a bare `vercel` on.
