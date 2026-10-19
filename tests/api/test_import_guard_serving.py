@@ -28,14 +28,23 @@ listed.
 What this proves and what it does not. It proves the SOURCE closure: what this code imports. What
 Vercel actually installed is proven by the build log Plan 36-09 records.
 
+The run-time check (review WR-06). A library can import a package at RUN time that no project
+``import`` statement names: DuckDB imports ``pytz`` to hand back a TIMESTAMPTZ, which is how the
+first real push served ``/``, ``/bets`` and ``/fragments/games`` as 500 on the host (Plan 36-10).
+So one test serves every route of the live check's own list from a fresh interpreter in which the
+packages the host lacks cannot be imported, and requires each to answer as the live check expects.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -94,6 +103,33 @@ for name, module in list(sys.modules.items()):
         modules[name] = rel.as_posix()
 print(json.dumps({"top_level": sorted({n.split(".")[0] for n in sys.modules}),
                   "modules": modules}))
+"""
+
+
+# The packages the hosted copy does not install, made unimportable for the run-time check.
+HOSTED_MISSING = ("pandas", "numpy", "pyarrow", "pytz", "scipy", "plotly", "sklearn")
+
+# Serve every path in argv[2] from the cache in argv[1], with every package in argv[3] blocked
+# before anything is imported, as the hosted copy would (VERCEL=1 is set by the caller). Prints
+# each answer's status, the two headers the live check reads, and its body, as one JSON line.
+HOSTED_PROBE = """
+import json, sys
+for name in json.loads(sys.argv[3]):
+    sys.modules[name] = None
+from pathlib import Path
+import api.dependencies as deps
+import api.routes.health as health
+deps.DB_PATH = health.DB_PATH = Path(sys.argv[1])
+from fastapi.testclient import TestClient
+from api.main import app
+answers = []
+with TestClient(app, raise_server_exceptions=False) as client:
+    for path in json.loads(sys.argv[2]):
+        response = client.get(path, follow_redirects=False)
+        headers = {k: v for k, v in response.headers.items() if k in ("content-type", "location")}
+        answers.append({"path": path, "status": response.status_code, "headers": headers,
+                        "body": response.text})
+print(json.dumps(answers))
 """
 
 
@@ -423,6 +459,76 @@ def test_no_serving_module_imports_an_http_client_or_writes_a_file(
 ) -> None:
     """SPEC must-NOT: no HTTP client and no write-mode open in the request-serving modules."""
     assert must_not_findings(serving.modules) == []
+
+
+def _hosted_cache(test_db: Path, served: Path) -> None:
+    """The fixture cache plus one scheduled bet week, so ``/bets`` reads its TIMESTAMPTZ locks."""
+    import duckdb
+    import pandas as pd
+
+    from api.cache import materialize_available_bet_weeks, materialize_bet_week_freeze
+
+    shutil.copyfile(test_db, served)
+    lock = pd.Timestamp("2024-09-04 22:00", tz="UTC")
+    schedule = pd.DataFrame(
+        [
+            {"game_id": game_id, "season": 2024, "week": 1, "game_freeze_ts": lock}
+            for game_id in ("2024_W01_BUF@KC", "2024_W01_PHI@GB")
+        ]
+    )
+    conn = duckdb.connect(str(served))
+    try:
+        materialize_available_bet_weeks(conn, schedule)
+        materialize_bet_week_freeze(conn, schedule)
+    finally:
+        conn.close()
+
+
+def test_every_route_answers_without_the_packages_the_host_lacks(
+    test_db: Path, tmp_path: Path
+) -> None:
+    """Every route of the live check passes with pandas, numpy, pyarrow, pytz, ... unimportable."""
+    import httpx
+
+    from scripts.fetch_hosted_routes import check_route, routes
+
+    served = tmp_path / "web_cache.duckdb"
+    _hosted_cache(test_db, served)
+    expected_health = (
+        "test-publish-id",
+        hashlib.sha256(served.read_bytes()).hexdigest(),
+    )
+    route_list = routes("2024_W01_BUF@KC")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            HOSTED_PROBE,
+            str(served),
+            json.dumps([route.path for route in route_list]),
+            json.dumps(HOSTED_MISSING),
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "VERCEL": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-2000:]
+    answers = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    failures = []
+    for route, answer in zip(route_list, answers, strict=True):
+        response = httpx.Response(
+            answer["status"], headers=answer["headers"], text=answer["body"]
+        )
+        if not check_route(route, response, expected_health):
+            failures.append(f"{route.path} -> {answer['status']}")
+    assert failures == [], (
+        "these routes do not answer on a copy without the packages the host lacks (a library "
+        f"imported one at run time): {failures}"
+    )
 
 
 def test_requirements_pins_equal_uv_lock_and_name_no_scientific_package() -> None:
