@@ -574,3 +574,42 @@ def test_the_stamp_is_written_on_a_copy_and_swapped_in(built_cache: Path) -> Non
         PUSH_TIME_KEY: _NOW.isoformat(),
     }
     assert _row_counts(built_cache) == counts_before
+
+
+def _publish_stamp(db_path: Path) -> dict[str, str]:
+    """The cache's publish id and push time rows, as stored."""
+    conn = open_cache_readonly(db_path)
+    try:
+        return dict(
+            conn.execute(
+                "SELECT key, value FROM cache_meta WHERE key IN (?, ?)",
+                [PUBLISH_ID_KEY, PUSH_TIME_KEY],
+            ).fetchall()
+        )
+    finally:
+        conn.close()
+
+
+def test_a_rebuild_keeps_the_last_push_s_stamp(built_cache: Path) -> None:
+    """review WR-05: a rebuild is not a push, so the bar must not start reading "no push recorded"."""
+    assert _publish_stamp(built_cache) == {}, "a first build invented a push"
+    stamp_publish(built_cache, publish_id="publish-test-0002", push_time=_NOW)
+    stamped = _publish_stamp(built_cache)
+
+    empty = built_cache.parent / "empty"
+    populate_cache(
+        db_path=built_cache,
+        artifacts_dir=empty,
+        outputs_dir=empty,
+        gold_dir=empty,
+        silver_dir=empty,
+    )
+
+    assert (
+        _publish_stamp(built_cache)
+        == stamped
+        == {
+            PUBLISH_ID_KEY: "publish-test-0002",
+            PUSH_TIME_KEY: _NOW.isoformat(),
+        }
+    )

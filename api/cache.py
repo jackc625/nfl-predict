@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 from scipy.special import expit, logit
 
+from api.cache_reader import open_cache_readonly
+
 # The names the request path reads live in the standard-library leaf api/cache_schema.py
 # (Phase 36, D-11) and are imported back here, so each keeps one definition. A name carrying
 # the F401 marker is not used in this module: it is re-exported because code outside api/
@@ -2902,7 +2904,8 @@ def populate_cache(
     5. Loading the bet list, its per-week marker, the schedule-derived navigation and
        freshness tables, and the precomputed tracker blocks
     6. Pre-rendering chart placeholders
-    7. Setting cache metadata
+    7. Setting cache metadata, carrying the replaced cache's publish stamp over
+       (:func:`_last_publish_stamp`)
 
     Uses atomic rename: writes to a .tmp.duckdb file, then renames.
 
@@ -3155,6 +3158,7 @@ def populate_cache(
             # The data format this cache was built in (D-20); the server and the push compare it
             # with the version their code expects.
             (DATA_FORMAT_VERSION_KEY, str(DATA_FORMAT_VERSION), now),
+            *_last_publish_stamp(db_path),
         ]
         conn.executemany(
             "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
@@ -3187,6 +3191,37 @@ def populate_cache(
     _replace_cache_file(tmp_path, db_path)
 
     logger.info("Web cache populated successfully", db_path=str(db_path))
+
+
+def _last_publish_stamp(db_path: Path) -> list[tuple[Any, ...]]:
+    """The publish stamp rows of the cache at *db_path*, which a rebuild is about to replace.
+
+    WHY A REBUILD CARRIES THE STAMP OVER (review WR-05). The stamp records the LAST PUSH, not the
+    build: it is written only by :func:`stamp_publish`. A rebuild that dropped it would make the
+    laptop's bar read "no push recorded" and its ``/health`` report no publish id after every
+    rebuild that no successful stamp follows (a manual rebuild, a refused push, the gap between the
+    17:00 rebuild and its push), though the push log shows a push hours earlier. The values are
+    copied unchanged, so the next push still mints and stamps its own (SPEC must-NOT).
+
+    Returns:
+        The ``(key, value, updated_at)`` rows of the publish id and push time; empty when there is
+        no previous cache, it has no stamp, or it cannot be read.
+    """
+    if not db_path.exists():
+        return []
+    try:
+        conn = open_cache_readonly(db_path)
+    except (duckdb.Error, OSError):
+        return []
+    try:
+        return conn.execute(
+            "SELECT key, value, updated_at FROM cache_meta WHERE key IN (?, ?)",
+            [PUBLISH_ID_KEY, PUSH_TIME_KEY],
+        ).fetchall()
+    except duckdb.Error:
+        return []
+    finally:
+        conn.close()
 
 
 def _replace_cache_file(tmp_path: Path, db_path: Path) -> None:

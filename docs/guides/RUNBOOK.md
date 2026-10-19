@@ -1275,6 +1275,9 @@ wrong bypass value instead of none; it must be refused the same way.
   push by hand. **Expected right now:** from the day the bar shipped until the first real push, the
   laptop's own pages read "Out of date: no push recorded." -- the laptop's cache has never been
   pushed, and the bar follows the same rule on both copies. It goes away after the first push.
+  A cache rebuild (the 17:00 run's, or operation 7 by hand) keeps the last push's publish id and
+  time, so after a rebuild the laptop's bar and `/health` still describe the last push, not "no
+  push recorded".
 - **The data-format notice** is a plain page answered with HTTP 503 on every page, fragment and
   export: "This copy of the site can't show its data yet. The pages expect data format <n>; the data
   file is format <m>." It means the code and the cache were built for different versions. Locally,
