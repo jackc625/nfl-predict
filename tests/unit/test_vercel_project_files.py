@@ -96,6 +96,16 @@ def test_a_loosened_allowlist_is_caught(
         "tests/conftest.py",
         ".planning/STATE.md",
         "pipeline/steps.py",
+        # Outside the allowlist without being on any deny list (review WR-03).
+        "tools/vercel-global-config/auth.json",
+        ".git/config",
+        ".vercel/project.json",
+        "HANDOFF.md",
+        "config/site_push_enabled.json",
+        # Inside an admitted folder, but excluded by a deny rule.
+        "api/server.pem",
+        "web/static/old.bak",
+        "api/__pycache__/main.cpython-313.pyc",
     ],
 )
 def test_an_upload_list_is_judged(forbidden: str) -> None:

@@ -6,11 +6,13 @@ WHAT IT PROVES
 Only files the hosted app needs may ever reach Vercel. Before any deploy (Plan 36-09) the CLI's own
 upload list is written to a file and this command judges it:
 
+- every path is one the ``.vercelignore`` allowlist admits: one of :data:`ALLOWED_ROOT_FILES`,
+  ``data/web_cache.duckdb``, or a file under one of :data:`ALLOWED_DIRS` -- anything else (another
+  folder, another root file, ``.git/``, ``.vercel/``, ``tools/``) is outside the allowlist;
 - ``data/web_cache.duckdb`` is the only file under ``data/`` (its temp, WAL and backup siblings are
   forbidden like any other data file);
-- nothing under ``.planning/``, ``artifacts/``, ``ledger/``, ``logs/``, ``outputs/``, ``tests/``,
-  ``models/``, ``features/``, ``backtest/``, ``pipeline/``, ``scripts/`` or ``notify/``;
-- no ``.env*`` file anywhere;
+- nothing anywhere that the allowlist's deny rules exclude: a ``.env*`` file, a ``__pycache__/``
+  file, a ``*.tmp.duckdb``, ``*.wal``, ``*.bak``, ``*.pem`` or ``*.key`` file;
 - no ``pyproject.toml`` or ``uv.lock`` (either would make Vercel install the full local stack
   instead of the hosted ``requirements.txt``);
 - ``index.py``, ``requirements.txt`` and ``data/web_cache.duckdb`` are present.
@@ -39,45 +41,33 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Iterable, Sequence
+from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 CACHE_FILE = "data/web_cache.duckdb"
 
-FORBIDDEN_TOP_LEVEL: frozenset[str] = frozenset(
-    {
-        ".planning",
-        "artifacts",
-        "ledger",
-        "logs",
-        "outputs",
-        "tests",
-        "models",
-        "features",
-        "backtest",
-        "pipeline",
-        "scripts",
-        "notify",
-    }
+# What the .vercelignore allowlist admits: these root files, the cache, and these folders' files.
+ALLOWED_ROOT_FILES: frozenset[str] = frozenset(
+    {"index.py", "requirements.txt", ".python-version", "vercel.json"}
+)
+ALLOWED_DIRS: frozenset[str] = frozenset({"api", "web", "utils", "conf"})
+# File names its deny rules exclude anywhere, even inside an admitted folder.
+DENIED_NAME_PATTERNS: tuple[str, ...] = (
+    ".env*",
+    "*.tmp.duckdb",
+    "*.wal",
+    "*.bak",
+    "*.pem",
+    "*.key",
 )
 FORBIDDEN_FILES: frozenset[str] = frozenset({"pyproject.toml", "uv.lock"})
 REQUIRED_FILES: tuple[str, ...] = ("index.py", "requirements.txt", CACHE_FILE)
 
 # The exact names .vercelignore may re-admit, and the deny rules that must follow the last one.
-ALLOWED_REINCLUDES: frozenset[str] = frozenset(
-    {
-        "index.py",
-        "requirements.txt",
-        ".python-version",
-        "vercel.json",
-        "api",
-        "web",
-        "utils",
-        "conf",
-        "data",
-        CACHE_FILE,
-    }
+ALLOWED_REINCLUDES: frozenset[str] = (
+    ALLOWED_ROOT_FILES | ALLOWED_DIRS | {"data", CACHE_FILE}
 )
 REQUIRED_DENY_RULES: tuple[str, ...] = (
     "**/.env*",
@@ -111,13 +101,19 @@ def _path_reasons(path: str) -> list[str]:
     """Every R2 rule *path* breaks, as reason texts."""
     parts = PurePosixPath(path).parts
     reasons: list[str] = []
-    if parts and parts[0] in FORBIDDEN_TOP_LEVEL:
-        reasons.append(f"under the forbidden folder {parts[0]}/")
-    if parts and parts[0] == "data" and path != CACHE_FILE:
-        reasons.append(f"a data/ file other than {CACHE_FILE}")
     name = parts[-1] if parts else ""
-    if name.startswith(".env"):
-        reasons.append("a .env file")
+    if parts and parts[0] == "data":
+        if path != CACHE_FILE:
+            reasons.append(f"a data/ file other than {CACHE_FILE}")
+    elif not (
+        path in ALLOWED_ROOT_FILES or (len(parts) > 1 and parts[0] in ALLOWED_DIRS)
+    ):
+        reasons.append("outside the upload allowlist")
+    denied = [pattern for pattern in DENIED_NAME_PATTERNS if fnmatch(name, pattern)]
+    if denied:
+        reasons.append(f"a denied file ({denied[0]})")
+    if "__pycache__" in parts:
+        reasons.append("a __pycache__ file")
     if name in FORBIDDEN_FILES:
         reasons.append(
             f"{name} must not be uploaded (Vercel would install the full local stack)"
