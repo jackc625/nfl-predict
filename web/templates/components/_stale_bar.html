@@ -1,0 +1,26 @@
+{# Out-of-date bar (Phase 36, SPEC R8, D-06, D-07). No parameters: it reads the page's own
+   cache_meta through the stale_bar Jinja global, i.e. api.presentation.stale_bar_state -- one
+   stored push time against the one 36-hour rule (api.cache_schema.push_is_stale), which hosted
+   /health applies too. The same code runs on the laptop and on the hosted copy.
+
+   WHY IT EXISTS. The hosted copy is read from a phone while the laptop may be off. A copy the
+   laptop stopped refreshing must never look live, so once the newest push is more than 36 hours
+   old, or there is no push record at all, every HTML page says so before anything else.
+
+   PLACEMENT (D-06). base.html includes it ABOVE the <nav>, so it is the first thing on screen. It
+   is in normal page flow and scrolls away with the page (no sticky or fixed position). It sits
+   outside every HTMX swap target and every named block, so a swap never removes it and a
+   /fragments/* response, which renders one block, never carries it.
+
+   NON-DISMISSIBLE by construction, like _not_advice_banner.html: no close button, no `hidden`
+   class, no JS. It is server-rendered, so it is present in the first byte of the response.
+
+   COLOUR (D-07). A solid orange band with dark text on its own two tokens, --color-stale and
+   --color-stale-ink (web/static/input.css). It reuses none of the failure red _error_state.html
+   keeps for "a request failed", the honesty-note grey of permanent statements, or the brand
+   yellow. role="status", not "alert": an alert would interrupt a screen reader on every page load
+   of a stale copy. #}
+{% set _bar = stale_bar(cache_meta if cache_meta is defined else none) %}
+{% if _bar.show %}
+<div class="stale-bar" role="status"><div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2">{{ _bar.text }}</div></div>
+{% endif %}

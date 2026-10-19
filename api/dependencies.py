@@ -38,6 +38,7 @@ from .presentation import (
     NOT_ADVICE_LINE,
     et_timestamp_label,
     last_week_display,
+    stale_bar_state,
     team_block_colors,
     team_nickname,
 )
@@ -186,6 +187,9 @@ templates.env.globals["last_week_display"] = last_week_display
 templates.env.globals["not_advice_key"] = NOT_ADVICE_KEY
 templates.env.globals["not_advice_line"] = NOT_ADVICE_LINE
 templates.env.filters["et_timestamp"] = et_timestamp_label
+# The out-of-date bar's state (SPEC R8, D-06): base.html's bar include calls it with the page's
+# cache_meta. One stored push time against the shared 36-hour rule, nothing computed (UIAP-01).
+templates.env.globals["stale_bar"] = stale_bar_state
 
 
 def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:

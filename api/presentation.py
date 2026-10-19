@@ -3,7 +3,8 @@
 Pure functions over static team data, a game's own kickoff timestamp and stored figures. Nothing
 here reads the cache or computes a metric (UIAP-01): which colour a team's block uses, what a team
 is called, which TV window a kickoff falls in and how a stored return reads are formatting
-decisions, made identically on every request.
+decisions, made identically on every request. The out-of-date bar's state is one stored push
+time against the shared 36-hour rule (``api.cache_schema.push_is_stale``), not a computation.
 
 ``predictions.game_date`` is a naive TIMESTAMP already in US Eastern time -- a 1 PM ET kickoff is
 stored as ``13:00:00`` -- so a naive value is read as Eastern as-is, and an aware one is converted
@@ -13,13 +14,15 @@ to Eastern and then made naive, so every kickoff in a group can be compared with
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime
 from typing import Any, NamedTuple
 
 # The project's one America/New_York constant, not a third copy of it.
 from utils.date_utils import ET
 from utils.team_data import get_team_info, validate_team_abbreviation
+
+from .cache_schema import PUSH_TIME_KEY, push_is_stale
 
 #: The card colour team blocks sit on (``--color-panel`` in web/static/input.css).
 PANEL_HEX = "#151B29"
@@ -239,14 +242,15 @@ def kickoff_window(game_date: datetime | date | str | None) -> str:
     return _window_label(day, _band(moment), [moment])
 
 
-def et_timestamp_label(value: object) -> str:
-    """A stored timestamp as Eastern wall-clock text: ``"Sep 6, 2025, 6:00 PM ET"``.
+def _stored_instant_in_eastern(value: object) -> datetime | str:
+    """A stored instant converted to Eastern time, or the text to show when there is none.
 
-    Accepts an ISO-8601 string, a ``datetime`` or a ``pandas.Timestamp``. The cache writes its
-    instants in UTC (``datetime.now(tz=UTC).isoformat()``) or with an explicit offset, so an
-    aware value is converted to Eastern and a NAIVE one is read as UTC. Nothing usable gives
-    ``""`` for None and empty, and ``str(value)`` unchanged for anything unparseable: the page
-    shows what is stored rather than a guess.
+    The ONE conversion both Eastern timestamp labels share, so the two can never disagree about a
+    zone or the 2026-11-01 DST change (research Pitfall 8). The cache writes its instants in UTC
+    (``datetime.now(tz=UTC).isoformat()``) or with an explicit offset, so an aware value is
+    converted to Eastern and a NAIVE one is read as UTC. Returns an aware Eastern ``datetime``;
+    otherwise ``""`` for None, empty and NaT, and ``str(value)`` unchanged for anything
+    unparseable -- the page shows what is stored rather than a guess.
     """
     if value is None:
         return ""
@@ -268,9 +272,90 @@ def et_timestamp_label(value: object) -> str:
         return ""
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
-    local = moment.astimezone(ET)
+    return moment.astimezone(ET)
+
+
+def et_timestamp_label(value: object) -> str:
+    """A stored timestamp as Eastern wall-clock text: ``"Sep 6, 2025, 6:00 PM ET"``.
+
+    Accepts an ISO-8601 string, a ``datetime`` or a ``pandas.Timestamp``; see
+    ``_stored_instant_in_eastern`` for the zone rule and what an unusable value renders as.
+    """
+    local = _stored_instant_in_eastern(value)
+    if isinstance(local, str):
+        return local
     month = _MONTH_ABBR[local.month - 1]
     return f"{month} {local.day}, {local.year}, {_clock(local)} {_meridiem(local)} ET"
+
+
+def _weekday_label(local: datetime) -> str:
+    return (
+        f"{_DAY_ABBR[local.weekday()]}, {_MONTH_ABBR[local.month - 1]} {local.day}, "
+        f"{_clock(local)} {_meridiem(local)} ET"
+    )
+
+
+def et_weekday_timestamp_label(value: object) -> str:
+    """A stored timestamp as Eastern text with its weekday: ``"Sat, Oct 31, 5:12 PM ET"``.
+
+    The out-of-date bar's label (SPEC R8, the owner's mock). No year: the bar only ever names an
+    instant from the last day or two. Same conversion and fallbacks as ``et_timestamp_label``.
+    """
+    local = _stored_instant_in_eastern(value)
+    if isinstance(local, str):
+        return local
+    return _weekday_label(local)
+
+
+# ---------------------------------------------------------------------------
+# The out-of-date bar (Phase 36, SPEC R8, D-06, D-07)
+# ---------------------------------------------------------------------------
+#
+# ONE stored-value read (cache_meta's push_time, which every page already receives) and ONE
+# comparison through the shared 36-hour rule -- nothing is computed beyond that (UIAP-01). The same
+# code runs on the laptop and on the hosted copy, so the laptop shows the bar too when no push has
+# landed (SPEC R8: same rule locally).
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+#: The clock the bar and hosted ``/health`` both read, looked up at CALL time so one patch of
+#: ``api.presentation.NOW`` pins both in a test.
+NOW: Callable[[], datetime] = _utc_now
+
+STALE_BAR_NO_PUSH = "Out of date: no push recorded."
+
+
+class StaleBar(NamedTuple):
+    """Whether a page shows the out-of-date bar, and the bar's exact text."""
+
+    show: bool
+    text: str
+
+
+def stale_bar_state(cache_meta: Mapping[str, Any] | None) -> StaleBar:
+    """The bar for a page whose cache_meta is *cache_meta* (None when the page has none).
+
+    Not stale -> no bar. Stale with a readable push time -> "Out of date: last update <weekday
+    label>. The laptop has not reported since." Stale with no push time, or one that cannot be
+    read -> "Out of date: no push recorded." (absent is a stated state, never a blank).
+    """
+    raw = cache_meta.get(PUSH_TIME_KEY) if cache_meta else None
+    push_time = raw if isinstance(raw, str) else None
+    if not push_is_stale(push_time, NOW()):
+        return StaleBar(show=False, text="")
+    local = _stored_instant_in_eastern(push_time)
+    if isinstance(local, str):
+        return StaleBar(show=True, text=STALE_BAR_NO_PUSH)
+    return StaleBar(
+        show=True,
+        text=(
+            f"Out of date: last update {_weekday_label(local)}. "
+            "The laptop has not reported since."
+        ),
+    )
 
 
 def decorate_game(game: dict[str, Any]) -> dict[str, Any]:
