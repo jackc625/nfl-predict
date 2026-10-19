@@ -98,8 +98,11 @@ cover/
 profile_default/
 ipython_config.py
 
-# pyenv
-.python-version
+# pyenv: .python-version is COMMITTED on purpose. Vercel reads it for the hosted Python version,
+# because pyproject.toml is kept out of the upload (Phase 36 D-12); uv reads it locally too.
+
+# Vercel CLI project link (written by `vercel link`, Plan 36-09). Local machine state, never committed.
+.vercel/
 
 # pipenv
 Pipfile.lock
@@ -450,6 +453,20 @@ graphify-out/
 #
 # Deliberately NARROW: one glob over one directory, and every other JSON stays ignored.
 !config/upstream_live/*.json
+
+# Phase 36 (D-23): the website-push SWITCH. config/site_push_enabled.json is created and
+# committed only by Plan 36-10, after the owner's go-ahead, and `git rm`-ed to pause every
+# push. The same `*.json` rule that swallowed the two records above would swallow it too, and
+# a plain `git add` would then silently skip it -- a switch that is never tracked can never
+# be seen in history. It is never uploaded: .vercelignore does not admit config/.
+#
+# Deliberately NARROW: this one path only, and every other config JSON stays ignored.
+!config/site_push_enabled.json
+
+# Phase 36: the Vercel project configuration. The blanket `*.json` rule swallowed the root
+# vercel.json, so a plain `git add vercel.json` would skip it. The leading slash re-includes
+# the ROOT file only; a vercel.json anywhere else stays ignored.
+!/vercel.json
 
 # Local scratch for AI-assisted work: superpowers plan ledgers and Playwright screenshots.
 .superpowers/
