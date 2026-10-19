@@ -436,6 +436,24 @@ def notification_host_refusal(host) -> str | None:
     return None
 
 
+def vercel_host_refusal(host) -> str | None:
+    """Why a real request to *host* (Vercel, or a subdomain of it) must not be made under pytest.
+
+    Phase 36: a test deploy or read-back would publish or probe the real site. Names the host only.
+    """
+    from pipeline.site_push import VERCEL_HOSTS
+
+    name = str(host or "").lower().rstrip(".")
+    for refused in VERCEL_HOSTS:
+        if name == refused or name.endswith(f".{refused}"):
+            return (
+                f"a real request to {name} was made under pytest and refused before sending "
+                "(Phase 36: the suite never deploys or probes the real site). Inject "
+                "pipeline.site_push.CLIENT_FACTORY with an httpx.MockTransport client."
+            )
+    return None
+
+
 @pytest.fixture(scope="session")
 def _notification_log_quarantine(tmp_path_factory) -> Path:
     """One directory, outside the repository, holding every test's quarantined notification log."""
@@ -444,7 +462,11 @@ def _notification_log_quarantine(tmp_path_factory) -> Path:
 
 @pytest.fixture(autouse=True)
 def _no_real_notification_traffic(monkeypatch, _notification_log_quarantine):
-    """No test reaches ntfy, Resend or healthchecks.io, or writes the real notification log."""
+    """No test reaches ntfy, Resend, healthchecks.io or Vercel, or writes the real notification log.
+
+    One transport patch carries both refusals: the notification hosts (Phase 35) and the Vercel
+    hosts (Phase 36, :func:`vercel_host_refusal`).
+    """
     import httpx
 
     from notify import log as notification_log
@@ -452,14 +474,17 @@ def _no_real_notification_traffic(monkeypatch, _notification_log_quarantine):
     real_handle_request = httpx.HTTPTransport.handle_request
     real_handle_async_request = httpx.AsyncHTTPTransport.handle_async_request
 
+    def _refusal(host) -> str | None:
+        return notification_host_refusal(host) or vercel_host_refusal(host)
+
     def _handle_request(self, request):
-        reason = notification_host_refusal(request.url.host)
+        reason = _refusal(request.url.host)
         if reason is not None:
             pytest.fail(reason, pytrace=False)
         return real_handle_request(self, request)
 
     async def _handle_async_request(self, request):
-        reason = notification_host_refusal(request.url.host)
+        reason = _refusal(request.url.host)
         if reason is not None:
             pytest.fail(reason, pytrace=False)
         return await real_handle_async_request(self, request)
@@ -474,6 +499,47 @@ def _no_real_notification_traffic(monkeypatch, _notification_log_quarantine):
         _notification_log_quarantine
         / f"{next(_NOTIFICATION_LOG_QUARANTINE_IDS)}.jsonl",
     )
+
+
+_WEBSITE_PUSH_QUARANTINE_IDS = itertools.count(1)
+
+
+@pytest.fixture(scope="session")
+def _website_push_quarantine(tmp_path_factory) -> Path:
+    """One directory, outside the repository, holding every test's website-push paths."""
+    return tmp_path_factory.mktemp("website_push_quarantine")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_website_push(monkeypatch, _website_push_quarantine):
+    """No test deploys the site or writes the real push log, lock, switch or CLI config.
+
+    A test deploy or read-back would publish or probe the real site. So the push's CLI seam
+    (``pipeline.site_push.RUN_CLI``) fails the test unless the test injects its own runner -- and
+    ``pytest.fail`` is a BaseException, so the push's ``except Exception`` cannot swallow it. The
+    push log, the publish lock, the D-23 switch and the CLI's config directory point at a per-test
+    directory outside the repository; the switch is never created here, so every push is switched
+    off unless a test writes it.
+    """
+    from pipeline import cache_lock, site_push
+
+    def _refuse_cli(*_args, **_kwargs):
+        pytest.fail(
+            "the Vercel CLI is not allowed in tests (Phase 36: the suite never deploys). "
+            "Inject pipeline.site_push.RUN_CLI with a fake runner.",
+            pytrace=False,
+        )
+
+    slot = _website_push_quarantine / str(next(_WEBSITE_PUSH_QUARANTINE_IDS))
+    monkeypatch.setattr(site_push, "RUN_CLI", _refuse_cli)
+    monkeypatch.setattr(site_push, "SITE_PUSH_LOG", slot / "site_pushes.jsonl")
+    monkeypatch.setattr(
+        site_push, "PUSH_ENABLED_MARKER", slot / "site_push_enabled.json"
+    )
+    monkeypatch.setattr(
+        site_push, "VERCEL_GLOBAL_CONFIG", slot / "vercel-global-config"
+    )
+    monkeypatch.setattr(cache_lock, "CACHE_PUBLISH_LOCK", slot / ".cache_publish.lock")
 
 
 @pytest.fixture(autouse=True)
