@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+{# The data-format notice (Phase 36, SPEC R9, D-08), served with HTTP 503 on every page route
+   when the cache was built for a different data format than the code expects.
+
+   It stands alone on purpose and does not build on the shared page layout, because that layout
+   reads the cache. The rules, in plain words:
+   - no navigation bar: every link on it would lead straight back to this notice;
+   - no page footer: the shared footer prints when the cache was last updated, read from the cache;
+   - no script tag: nothing here needs one;
+   - no read of the cache's metadata table, or of anything else in the cache.
+   It keeps the site's own head (fonts, colours, stylesheets) and uses only class names the shared
+   layout already uses, so it adds no stylesheet selector (D-17). The one sentence comes from
+   api.data_format_gate.notice_sentence and is autoescaped here. ASCII only. #}
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0B0F17">
+  <title>Data format mismatch | NFL Predict</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230B0F17'/%3E%3Cpath d='M19 5h5L13 27H8z' fill='%23FFD400'/%3E%3C/svg%3E">
+  <link rel="preload" href="{{ url_for('static', path='fonts/barlow-condensed-latin-800-italic.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ url_for('static', path='fonts/inter-latin-wght-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/tailwind-compiled.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/custom.css') }}">
+</head>
+<body class="min-h-screen flex flex-col bg-ink text-fg font-sans antialiased">
+  <header class="border-b border-line">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <span class="wordmark">NFL<span class="text-accent">/</span>Predict</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+    <h1 class="wordmark">Data format mismatch</h1>
+    <p>{{ notice }}</p>
+  </main>
+</body>
+</html>

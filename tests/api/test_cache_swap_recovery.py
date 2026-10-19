@@ -487,7 +487,11 @@ def test_a_swap_inside_the_reconnect_connect_window_is_still_detected(
 
         # 4. The request that reconnects. Its own body is not asserted on: this request is
         #    legitimately serving the file it just opened, which the swap has already superseded.
-        _bets(swap_client)
+        #    It is /health, which runs the swap detector exactly once. A page request now runs it
+        #    twice -- the Phase 36 data-format gate reconnects before judging, then the route's
+        #    own get_db checks again -- so it would self-heal inside this one request and leave no
+        #    in-between state for the assertion below to inspect.
+        assert swap_client.get("/health").status_code == 200
         assert fired["swapped"], (
             "the stand-in never fired, so no swap landed inside the connect window and this "
             "test would pass under either ordering"

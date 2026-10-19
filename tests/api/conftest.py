@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -908,6 +909,30 @@ def _isolate_data_service_cache() -> Iterator[None]:
         yield
     finally:
         clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_app_connection_state() -> Iterator[None]:
+    """Clear the shared app's connection, its file identity and its format claim after each test.
+
+    ``api.main.app`` is a module-level singleton. A test whose request reaches the REAL ``get_db``
+    -- for example one whose ``get_db`` override was cleared by a nested helper -- leaves a
+    connection, the identity of the file it opened and that file's data-format verdict (Phase 36,
+    D-19) on ``app.state``. Left there, the format gate would judge every later test's pages by a
+    cache that test never built, and the swap detector would compare a stranger's file identity.
+    """
+    try:
+        yield
+    finally:
+        from api.main import app
+
+        leaked = getattr(app.state, "db_conn", None)
+        if leaked is not None:
+            with suppress(duckdb.Error):
+                leaked.close()
+        app.state.db_conn = None
+        app.state.db_identity = None
+        app.state.data_format = None
 
 
 def _sample_game_data() -> list[dict]:

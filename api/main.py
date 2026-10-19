@@ -19,13 +19,21 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import duckdb
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from utils import get_logger
 
 from . import dependencies as deps
 from .cache_reader import open_cache_readonly, read_data_format
+from .data_format_gate import (
+    EXPORT,
+    FRAGMENT,
+    PAGE,
+    data_format_gate,
+    data_format_mismatch_handler,
+)
+from .exceptions import DataFormatMismatchError
 from .routes.api_export import router as export_router
 from .routes.fragments import router as fragments_router
 from .routes.health import router as health_router
@@ -173,8 +181,13 @@ app = FastAPI(
 mimetypes.add_type("font/woff2", ".woff2")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# A cache built for a different data format answers HTTP 503 with a notice (SPEC R9, D-08):
+# every page, fragment and export route carries the gate; /health and /static do not. The why of
+# this shape is in api/data_format_gate.py's docstring.
+app.add_exception_handler(DataFormatMismatchError, data_format_mismatch_handler)
+
 # Include routers -- pages_router last so its catch-all "/" doesn't shadow others
 app.include_router(health_router)
-app.include_router(export_router)
-app.include_router(fragments_router)
-app.include_router(pages_router)
+app.include_router(export_router, dependencies=[Depends(data_format_gate(EXPORT))])
+app.include_router(fragments_router, dependencies=[Depends(data_format_gate(FRAGMENT))])
+app.include_router(pages_router, dependencies=[Depends(data_format_gate(PAGE))])
