@@ -1160,6 +1160,7 @@ including attempts that did not push:
 | `local_sha256` | The SHA-256 of the cache file as it was uploaded. |
 | `readback` | What the last read of the live `/health` saw: `matched`, `old_id`, `digest_mismatch`, `no_id`, `http_<status>` or `transport_<ExceptionClass>`. On a `pages_failed` push, the first page that failed instead: `page_<route>_http_<status>`, `page_<route>_no_marker` or `page_<route>_transport_<ExceptionClass>`, where `<route>` is the path with `/` turned into `_` (`root` for the home page). |
 | `data_format_found`, `data_format_expected` | The cache's data-format version and the one the code expects, once read. |
+| `code_commit` | The commit the deployed code came from (null if the attempt stopped before deploying, or git could not say). The push uploads the files on disk, not a commit, so it ends in `+dirty` when `api/`, `web/`, `utils/`, `conf/` or an uploaded root file had uncommitted changes: the hosted site then runs code that is in no commit. Commit or discard the change, then push by hand. |
 
 A push is `succeeded` only when the live `/health` returned this attempt's publish id AND the
 SHA-256 of the file it serves equals `local_sha256`, AND each page it then fetches once -- the five

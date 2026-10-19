@@ -233,6 +233,23 @@ def rebuild_must_not_run() -> None:
     pytest.fail("the push rebuilt a cache whose data format already matched")
 
 
+def git(repo: Path, *args: str) -> str:
+    """Run git in *repo* (no signing, a fixed identity) and return its stripped output."""
+    completed = subprocess.run(
+        [
+            "git",
+            *("-C", str(repo)),
+            *("-c", "user.name=test", "-c", "user.email=test@example.invalid"),
+            *("-c", "commit.gpgsign=false"),
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return completed.stdout.strip()
+
+
 def assert_no_secret_in(*texts: str) -> None:
     """Neither dummy secret appears in any of *texts*."""
     for text in texts:
@@ -288,6 +305,9 @@ def test_one_push_succeeds_end_to_end(
     assert record["deployment_url"] == DEPLOYMENT_URL
     assert record["local_sha256"] == file_sha256(harness.cache_path)
     assert record["readback"] == "matched"
+    # The deployed code is this repository's HEAD (dirty or not, depending on the working tree).
+    head = git(REPOSITORY_ROOT, "rev-parse", "HEAD")
+    assert record["code_commit"] in (head, head + site_push.DIRTY_SUFFIX)
 
     assert len(harness.cli.calls) == 1
     call = harness.cli.calls[0]
@@ -350,6 +370,31 @@ def test_two_pushes_mint_two_ids(
         second.publish_id,
     ]
     assert cache_meta(harness.cache_path)[PUBLISH_ID_KEY] == records[1]["publish_id"]
+
+
+def test_the_code_commit_says_when_the_uploaded_code_is_in_no_commit(
+    tmp_path: Path,
+) -> None:
+    """review WR-01: the deploy uploads the working tree, so the record marks an unsaved edit."""
+    repo = tmp_path / "repo"
+    (repo / "api").mkdir(parents=True)
+    (repo / "api" / "main.py").write_text("one\n", encoding="utf-8")
+    (repo / "notes.md").write_text("one\n", encoding="utf-8")
+    git(repo, "init", "-q")
+    git(repo, "add", "api/main.py", "notes.md")
+    git(repo, "commit", "-q", "-m", "first")
+    head = git(repo, "rev-parse", "HEAD")
+
+    assert site_push._code_commit(repo) == head
+    (repo / "notes.md").write_text("two\n", encoding="utf-8")
+    assert site_push._code_commit(repo) == head, "an edit that is not uploaded is clean"
+    (repo / "api" / "main.py").write_text("two\n", encoding="utf-8")
+    assert site_push._code_commit(repo) == head + site_push.DIRTY_SUFFIX
+    git(repo, "checkout", "--", "api/main.py")
+    (repo / "web").mkdir()
+    (repo / "web" / "new.html").write_text("<p>new</p>\n", encoding="utf-8")
+    assert site_push._code_commit(repo) == head + site_push.DIRTY_SUFFIX
+    assert site_push._code_commit(tmp_path / "not_a_repo") is None
 
 
 def test_the_suite_cannot_reach_vercel() -> None:

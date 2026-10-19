@@ -14,7 +14,9 @@ THE ORDER, and every step is load-bearing
 5. A fresh publish id (uuid4) and push time (UTC), stamped on a COPY of the cache and swapped in
    (D-14, ``api.cache.stamp_publish``). They are minted here, per attempt, and never copied from
    the cache build or a previous push (SPEC must-NOT).
-6. The SHA-256 of the stamped file, then ONE production deploy of code and cache together.
+6. The SHA-256 of the stamped file, then ONE production deploy of code and cache together. The
+   deploy uploads the WORKING TREE, so the record names the code it shipped: HEAD's SHA, marked
+   ``+dirty`` when an uploaded path has an uncommitted change (:func:`_code_commit`).
 7. The read-back: a fixed number of GETs of the production ``/health``. The push SUCCEEDED only when
    it returns this attempt's publish id AND the served file's SHA-256 equals the local digest. The
    CLI's exit code is never the evidence -- a deploy can exit 0 and serve something else. A
@@ -95,7 +97,24 @@ SITE_PUSH_FIELDS: tuple[str, ...] = (
     "readback",
     "data_format_found",
     "data_format_expected",
+    "code_commit",
 )
+
+# The code paths the deploy uploads (the .vercelignore allowlist, the cache aside): an uncommitted
+# change under any of them marks the record's code_commit dirty.
+UPLOADED_CODE_PATHS: tuple[str, ...] = (
+    "api",
+    "web",
+    "utils",
+    "conf",
+    "index.py",
+    "requirements.txt",
+    ".python-version",
+    "vercel.json",
+    ".vercelignore",
+)
+DIRTY_SUFFIX = "+dirty"
+GIT_TIMEOUT_SECONDS = 30
 
 # The production alias Vercel assigned to the project at its first deployment (Plan 36-09, recorded
 # 2026-10-19): the CLI's reported productionUrl. Vercel added the suffix to the bare project name.
@@ -190,6 +209,7 @@ class PushOutcome:
         readback: The last read-back observation.
         data_format_found: The cache's data-format label, once read.
         data_format_expected: The data-format version this code expects, once read.
+        code_commit: The commit the deployed code came from, once about to deploy.
     """
 
     outcome: str
@@ -201,6 +221,7 @@ class PushOutcome:
     readback: str | None = None
     data_format_found: str | None = None
     data_format_expected: int | None = None
+    code_commit: str | None = None
 
 
 def load_push_secrets(settings: Settings | None = None) -> PushSecrets:
@@ -333,6 +354,7 @@ def _finish(
             "readback": outcome.readback,
             "data_format_found": outcome.data_format_found,
             "data_format_expected": outcome.data_format_expected,
+            "code_commit": outcome.code_commit,
         }
     )
     said = (
@@ -364,6 +386,7 @@ class _Attempt:
     readback: str | None = None
     data_format_found: str | None = None
     data_format_expected: int | None = None
+    code_commit: str | None = None
     rebuild_error: str | None = None
 
     def outcome(self, outcome: str, reason: str | None = None) -> PushOutcome:
@@ -377,6 +400,7 @@ class _Attempt:
             readback=self.readback,
             data_format_found=self.data_format_found,
             data_format_expected=self.data_format_expected,
+            code_commit=self.code_commit,
         )
 
     def note_format(self, state: DataFormatState) -> None:
@@ -410,6 +434,37 @@ def _read_format(cache_path: Path) -> DataFormatState:
         return read_data_format(conn)
     finally:
         conn.close()
+
+
+def _code_commit(repo_root: Path = REPO_ROOT) -> str | None:
+    """HEAD's SHA, plus :data:`DIRTY_SUFFIX` when an uploaded path differs from it; None if unknown.
+
+    The deploy uploads what is on disk, so an edit or an untracked file under
+    :data:`UPLOADED_CODE_PATHS` ships too: the suffix says the deployed code is in no commit.
+    Gitignored files (``__pycache__``) are not changes.
+    """
+    git = ("git", "-C", str(repo_root))
+    try:
+        head = subprocess.run(
+            [*git, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+        status = subprocess.run(
+            [*git, "status", "--porcelain", "--", *UPLOADED_CODE_PATHS],
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    sha = head.stdout.strip()
+    if head.returncode != 0 or status.returncode != 0 or not sha:
+        return None
+    return f"{sha}{DIRTY_SUFFIX}" if status.stdout.strip() else sha
 
 
 def _file_sha256(path: Path) -> str:
@@ -571,6 +626,7 @@ def _run_attempt(
             push_time=now if now is not None else datetime.now(tz=UTC),
         )
         attempt.local_sha256 = _file_sha256(cache_path)
+        attempt.code_commit = _code_commit()
 
         try:
             completed = run_vercel(

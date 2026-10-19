@@ -1188,6 +1188,9 @@ commit pause every push, daily and manual, the same way.
 5. A fresh publish id (uuid4) and push time (UTC), minted for this attempt and stamped into the
    cache's `cache_meta` table on a COPY of the cache, which is then swapped in.
 6. The SHA-256 of the stamped file, then ONE production deploy of the code and the cache together.
+   The deploy uploads the files on disk, so the record's `code_commit` names HEAD, ending in
+   `+dirty` when an uploaded folder or root file has uncommitted changes. It is recorded, not
+   refused: the push has exactly the refusals in step 4.
 7. The read-back: up to 13 GETs of the production `/health`, 10 s apart, sending the bypass value
    only in the `x-vercel-protection-bypass` header and never following a redirect. The push counts
    as succeeded only when `/health` returns this attempt's publish id AND the SHA-256 of the file
