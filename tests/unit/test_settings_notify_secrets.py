@@ -12,6 +12,9 @@ Stage 2 of the legacy-flag removal (Plan 35-17, D-05): ``enable_email_reports`` 
 ``enable_slack_notifications`` are no longer declared, so a ``.env`` line naming either is refused
 by name with its value hidden.
 
+The two optional website-push secrets (Phase 36 D-01, D-15), ``VERCEL_TOKEN`` and
+``VERCEL_BYPASS_SECRET``, load the same way.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -38,12 +41,23 @@ SECRET_FIELDS: dict[str, tuple[str, str]] = {
 }
 TEST_DAY_ENV = "WATCHER_TEST_WITHHOLD_DATE"
 LEGACY_FLAG_ENVS = ("ENABLE_EMAIL_REPORTS", "ENABLE_SLACK_NOTIFICATIONS")
+# The two website-push secrets (Phase 36 D-01, D-15): env-var name -> (Settings field, dummy value).
+VERCEL_FIELDS: dict[str, tuple[str, str]] = {
+    "VERCEL_TOKEN": ("vercel_token", "dummy-token-value-123"),
+    "VERCEL_BYPASS_SECRET": ("vercel_bypass_secret", "dummy-bypass-value-456"),
+}
 
 
 @pytest.fixture(autouse=True)
 def _no_inherited_notification_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Process environment beats the env file in pydantic-settings; clear every name under test."""
-    for name in (*SECRET_FIELDS, TEST_DAY_ENV, *LEGACY_FLAG_ENVS, "NTFY_TOPICS"):
+    for name in (
+        *SECRET_FIELDS,
+        *VERCEL_FIELDS,
+        TEST_DAY_ENV,
+        *LEGACY_FLAG_ENVS,
+        "NTFY_TOPICS",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -108,6 +122,22 @@ def test_a_legacy_key_is_now_refused_with_its_value_hidden(tmp_path: Path) -> No
     message = str(caught.value)
     assert "enable_email_reports" in message
     assert leaked not in message
+
+
+def test_the_two_vercel_secrets_load_as_secret_str(tmp_path: Path) -> None:
+    lines = [f"{env}={dummy}" for env, (_, dummy) in VERCEL_FIELDS.items()]
+    settings = Settings(_env_file=_env_file(tmp_path, lines))
+
+    shown = repr(settings)
+    for _, (field_name, dummy) in VERCEL_FIELDS.items():
+        value = getattr(settings, field_name)
+        assert isinstance(value, SecretStr), field_name
+        assert value.get_secret_value() == dummy, field_name
+        assert dummy not in shown, f"{field_name} value appears in repr(Settings)"
+
+    unset = Settings(_env_file=_env_file(tmp_path, []))
+    for _, (field_name, _) in VERCEL_FIELDS.items():
+        assert getattr(unset, field_name) is None, field_name
 
 
 def test_absent_secrets_are_none(tmp_path: Path) -> None:

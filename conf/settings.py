@@ -336,6 +336,16 @@ class Settings(BaseSettings):
         default=None, env="WATCHER_TEST_WITHHOLD_DATE"
     )
 
+    # Website push (Phase 36). Optional SecretStr values, like the notification secrets above.
+    # D-01: a DEDICATED team-scoped Vercel access token (about a one-year expiry); it reaches the
+    # Vercel CLI only through the child process environment, never argv, a URL or a log.
+    vercel_token: SecretStr | None = Field(default=None, env="VERCEL_TOKEN")
+    # D-15: the Protection Bypass for Automation value, sent only as the
+    # x-vercel-protection-bypass request header (never a query string).
+    vercel_bypass_secret: SecretStr | None = Field(
+        default=None, env="VERCEL_BYPASS_SECRET"
+    )
+
     # Database
     duckdb_path: str | None = Field(
         default="data/nfl_predictions.duckdb", env="DUCKDB_PATH"

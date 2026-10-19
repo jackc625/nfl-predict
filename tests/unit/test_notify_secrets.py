@@ -11,10 +11,13 @@
   ``run_daily`` -> ``_record_run_failure`` and every side step's failure path, which the direct
   ``notify_end_of_run`` test never reaches (review HIGH, 35-08 + 35-15).
 * The values configured in ``.env`` (ntfy topic, Resend key, ping URL and its uuid, healthchecks
-  API key) are in no committed file and no file under ``logs/``; the recipient address is in
-  neither the notification log nor the daily-run records. A hit names the file, the line and the
-  ENV NAME -- never the value. The recipient is not scanned in committed files: it is the owner's
-  own address, committed on purpose as the ledger's git identity.
+  API key, and the two website-push secrets of Phase 36, ``VERCEL_TOKEN`` and
+  ``VERCEL_BYPASS_SECRET``) are in no committed file and no file under ``logs/`` (which includes
+  the push log ``logs/site_pushes.jsonl``); the recipient address is in neither the notification
+  log nor the daily-run records. Each value is searched as UTF-8 AND UTF-16-LE bytes, because
+  ``deployment/*.xml`` is UTF-16. A hit names the file, the line and the ENV NAME -- never the
+  value. The recipient is not scanned in committed files: it is the owner's own address,
+  committed on purpose as the ledger's git identity.
 
 The two hermetic tests use dummy values only. Every request goes through
 ``notify.transport.CLIENT_FACTORY`` replaced by an ``httpx.MockTransport`` (any other host fails the
@@ -95,6 +98,12 @@ COMMITTED_SECRET_FIELDS: dict[str, str] = {
     "RESEND_API_KEY": "resend_api_key",
     "HEALTHCHECKS_PING_URL": "healthchecks_ping_url",
     "HEALTHCHECKS_API_KEY": "healthchecks_api_key",
+}
+# The website-push secrets (Phase 36 D-01, D-15). Not notification secrets, so they are read
+# straight from Settings; scanned in committed files and logs like the set above.
+VERCEL_SECRET_FIELDS: dict[str, str] = {
+    "VERCEL_TOKEN": "vercel_token",
+    "VERCEL_BYPASS_SECRET": "vercel_bypass_secret",
 }
 # A value this short could be a placeholder matching everywhere; none of the real five is.
 MIN_SCANNED_LENGTH = 12
@@ -392,10 +401,15 @@ def _configured_values() -> tuple[dict[str, SecretStr], dict[str, SecretStr]]:
     Read in memory from the real ``.env`` through ``Settings`` and ``load_secrets``; kept wrapped
     so no repr, assertion or traceback can show one.
     """
-    secrets = load_secrets(Settings(_env_file=REPO_ROOT / ".env"))
+    settings = Settings(_env_file=REPO_ROOT / ".env")
+    secrets = load_secrets(settings)
     committed: dict[str, SecretStr] = {}
     for env_name, field_name in COMMITTED_SECRET_FIELDS.items():
         value = _configured(getattr(secrets, field_name))
+        if value is not None:
+            committed[env_name] = value
+    for env_name, field_name in VERCEL_SECRET_FIELDS.items():
+        value = _configured(getattr(settings, field_name))
         if value is not None:
             committed[env_name] = value
     ping_url = committed.get("HEALTHCHECKS_PING_URL")
@@ -413,18 +427,37 @@ def _configured_values() -> tuple[dict[str, SecretStr], dict[str, SecretStr]]:
 def _first_hit(
     paths: Iterable[Path], values: Mapping[str, SecretStr]
 ) -> tuple[str, int, str] | None:
-    """The first ``(file, 1-based line, env name)`` whose bytes hold a value, or None."""
+    """The first ``(file, 1-based line, env name)`` whose bytes hold a value, or None.
+
+    Each value is searched as UTF-8 and as UTF-16-LE bytes (``deployment/*.xml`` is UTF-16).
+    """
     for path in paths:
         try:
             data = path.read_bytes()
         except OSError:
             continue
         for env_name, secret in values.items():
-            at = data.find(secret.get_secret_value().encode("utf-8"))
-            if at >= 0:
-                where = path.relative_to(REPO_ROOT).as_posix()
-                return where, data.count(b"\n", 0, at) + 1, env_name
+            for encoding in ("utf-8", "utf-16-le"):
+                at = data.find(secret.get_secret_value().encode(encoding))
+                if at >= 0:
+                    where = (
+                        path.relative_to(REPO_ROOT).as_posix()
+                        if path.is_relative_to(REPO_ROOT)
+                        else path.as_posix()
+                    )
+                    line = data.count("\n".encode(encoding), 0, at) + 1
+                    return where, line, env_name
     return None
+
+
+def test_a_utf16_file_holding_a_value_is_found(tmp_path: Path) -> None:
+    dummy = "dummy-utf16-value-789"
+    xml = tmp_path / "task.xml"
+    xml.write_bytes(f"<Task>\n  <Arg>{dummy}</Arg>\n</Task>\n".encode("utf-16-le"))
+
+    hit = _first_hit([xml], {"VERCEL_TOKEN": SecretStr(dummy)})
+
+    assert hit == (xml.as_posix(), 2, "VERCEL_TOKEN")
 
 
 def test_no_configured_secret_is_committed_or_logged() -> None:
