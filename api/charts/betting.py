@@ -52,6 +52,11 @@ from api.betting_metrics import (
     edge_bucket_for,
     filter_scope,
 )
+from api.chart_ids import (  # noqa: F401 -- base constants re-exported from their old home
+    _BETTING_CHART_BASES,
+    BETTING_CHART_IDS,
+    BETTING_SCOPES,
+)
 from api.charts.core import (
     _apply_layout_defaults,
     _empty_chart_div,
@@ -97,33 +102,10 @@ __all__ = [
 _ = BREAKEVEN_WIN_RATE  # honesty reference constant (kept in the contract surface)
 
 
-# ---------------------------------------------------------------------------
-# Authoritative chart-id tuple (must match tests/api/conftest.py BETTING_CHART_IDS)
-# ---------------------------------------------------------------------------
-# Naming convention: ``betting_<chart>_<scope>`` for scope in ("all",
-# "recommended"). 12 chart bases x 2 scopes = 24 ids (D-20). The two JSON-blob
-# bases (kpis, roi_table) carry decodable JSON rather than chart HTML; their ids
-# are part of this tuple so the prerender self-check covers them too.
-
-_BETTING_CHART_BASES: tuple[str, ...] = (
-    "betting_equity",
-    "betting_equity_mini_wp",
-    "betting_equity_mini_ats",
-    "betting_equity_mini_ou",
-    "betting_roi_type",
-    "betting_roi_season",
-    "betting_roi_bucket",
-    "betting_edge_hist_wp",
-    "betting_edge_hist_ats",
-    "betting_edge_hist_ou",
-    "betting_kpis",
-    "betting_roi_table",
-)
-BETTING_SCOPES: tuple[str, ...] = ("all", "recommended")
-BETTING_CHART_IDS: tuple[str, ...] = tuple(
-    f"{base}_{scope}" for base in _BETTING_CHART_BASES for scope in BETTING_SCOPES
-)
-assert len(BETTING_CHART_IDS) == 24  # 12 chart bases x 2 scopes
+# The authoritative chart-id tuple and the two constants it is built from live in the
+# import-free leaf api/chart_ids.py, so the page routes can read them without loading plotly
+# (Phase 36 D-11). They are imported back here so this module still exposes them; the two base
+# constants are not used in this module itself.
 
 
 # Empty-state copy shared by every generator (matches _safe_render fallback +

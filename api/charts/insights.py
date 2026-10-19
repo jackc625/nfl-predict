@@ -30,6 +30,9 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# The authoritative chart-id tuple lives in the import-free leaf api/chart_ids.py, so the page
+# routes can read it without loading plotly (Phase 36 D-11); re-exported here for api.charts.
+from api.chart_ids import INSIGHTS_CHART_IDS  # noqa: F401
 from api.charts.core import (
     _apply_layout_defaults,
     _empty_chart_div,
@@ -55,24 +58,6 @@ from api.insights_metrics import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Authoritative chart-id tuple (Codex HIGH #7)
-# ---------------------------------------------------------------------------
-
-INSIGHTS_CHART_IDS: tuple[str, ...] = (
-    "insights_calibration_ats",
-    "insights_calibration_ou",
-    "insights_feature_importance_wp",
-    "insights_feature_importance_ats",
-    "insights_feature_importance_ou",
-    "insights_accuracy_trend",
-    "insights_model_vs_market_wp",
-    "insights_model_vs_market_ats",
-    "insights_model_vs_market_ou",
-)
-assert len(INSIGHTS_CHART_IDS) == 9  # Codex HIGH #7
 
 
 _MIN_WP_ROWS_PER_SEASON = 10

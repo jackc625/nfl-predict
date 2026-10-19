@@ -32,7 +32,7 @@ from api.cache_schema import (
     PROVENANCE_BACKTEST_REPLAY,
     REPLAY_VALIDATION_TYPE_SEASONS,
 )
-from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
+from api.chart_ids import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
 from api.presentation import decorate_game, group_games_by_window, last_week_display
 from api.season_metrics import (
