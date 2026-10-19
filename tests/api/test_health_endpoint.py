@@ -259,7 +259,7 @@ class TestHealthDegraded:
             assert data["status"] == "degraded"
             assert data["pipeline"] is None
 
-    def test_health_stale_pipeline_log(self) -> None:
+    def test_health_stale_pipeline_log(self, tmp_path: Path) -> None:
         """Pipeline log exists, valid JSON, but start_time >7 days old. Status=degraded."""
         from datetime import datetime, timedelta
 
@@ -269,6 +269,10 @@ class TestHealthDegraded:
         with (
             patch("api.routes.health.DB_PATH") as mock_db_path,
             patch("api.routes.health.PIPELINE_LOG_PATH") as mock_log_path,
+            # No daily-run record, or the laptop's real one from a recent quiet day keeps it fresh.
+            patch(
+                "api.routes.health.DAILY_RUN_RECORDS_PATH", tmp_path / "absent.jsonl"
+            ),
             patch("api.routes.health.SILVER_GAMES_PATH") as mock_games_path,
             patch("api.routes.health.SILVER_ODDS_PATH") as mock_odds_path,
             patch("api.routes.health.SILVER_WEATHER_DIR") as mock_weather_dir,
