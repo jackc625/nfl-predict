@@ -1,0 +1,34 @@
+# Vercel upload ALLOWLIST (SPEC R2, HOST-04). Ignore everything, then re-admit what the hosted app needs.
+#
+# Why an allowlist: the Vercel CLI does not read .gitignore and does not ignore .env by default, so
+# without this file a push would upload .env, the data lake, the ledger, the logs and the planning
+# files. pyproject.toml and uv.lock stay out on purpose: without them Vercel installs only the root
+# requirements.txt (D-12).
+#
+# Why `!data`, then `data/*`, then the one file: a file under an excluded directory cannot be
+# re-included, so the folder is re-admitted, its contents re-ignored, and the cache alone re-admitted.
+#
+# Why the deny rules come LAST: gitignore semantics are last-match-wins, so these re-exclude anything
+# nested inside an admitted folder (a stray .env, a cache, a backup or a key) that would otherwise ship.
+#
+# tests/unit/test_vercel_project_files.py fails if this file is loosened; scripts/check_upload_list.py
+# judges the CLI's real upload list before any deploy.
+/*
+!index.py
+!requirements.txt
+!.python-version
+!vercel.json
+!api
+!web
+!utils
+!conf
+!data
+data/*
+!data/web_cache.duckdb
+**/.env*
+**/__pycache__/
+*.tmp.duckdb
+*.wal
+*.bak
+*.pem
+*.key
