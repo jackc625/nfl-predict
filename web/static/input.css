@@ -87,6 +87,11 @@
   --color-target-wp: #FFD400;
   --color-target-ats: #4CC9F0;
   --color-target-ou: #C77DFF;
+  /* Single purpose: the out-of-date bar (components/_stale_bar.html, Phase 36 D-07). Orange on
+     purpose: not the failure red of _error_state.html, not the honesty-note grey of permanent
+     statements, not the brand yellow. The ink on it is the site ink, about 6.8:1 (WCAG AA). */
+  --color-stale: #F97316;
+  --color-stale-ink: #0B0F17;
 
   --font-display: "Barlow Condensed", "Arial Narrow", sans-serif;
   --font-sans: "Inter", system-ui, sans-serif;
@@ -180,6 +185,17 @@
 
   .skip-link:focus {
     top: 8px;
+  }
+
+  /* The out-of-date bar (components/_stale_bar.html, SPEC R8, D-06/D-07): a full-width solid
+     band above the nav. No position property on purpose -- it sits in normal page flow and
+     scrolls away with the page. */
+  .stale-bar {
+    background: var(--color-stale);
+    color: var(--color-stale-ink);
+    font-size: 14px;
+    font-weight: 600;
+    border-bottom: 1px solid rgb(0 0 0 / 0.25);
   }
 
   /* -- Surfaces --------------------------------------------------------------------------- */

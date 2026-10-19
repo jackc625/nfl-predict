@@ -144,6 +144,13 @@ html {
     --color-target-wp: #7a6000;
     --color-target-ats: #00708a;
     --color-target-ou: #6b21a8;
+    --color-stale: #fff;
+    --color-stale-ink: #000;
+  }
+
+  /* The out-of-date bar keeps a visible edge on paper, where its orange fill is gone. */
+  .stale-bar {
+    border: 1px solid #000;
   }
 
   nav,

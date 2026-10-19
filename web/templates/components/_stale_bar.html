@@ -8,7 +8,7 @@
    old, or there is no push record at all, every HTML page says so before anything else.
 
    PLACEMENT (D-06). base.html includes it ABOVE the <nav>, so it is the first thing on screen. It
-   is in normal page flow and scrolls away with the page (no sticky or fixed position). It sits
+   is in normal page flow and scrolls away with the page; it is never pinned to the screen. It sits
    outside every HTMX swap target and every named block, so a swap never removes it and a
    /fragments/* response, which renders one block, never carries it.
 
