@@ -9,7 +9,8 @@ its two outside edges faked:
 * the Vercel CLI is :class:`FakeCli`, injected through ``site_push.RUN_CLI``;
 * the hosted site is :class:`ReadbackHost`, an ``httpx.MockTransport`` handler that answers
   ``/health`` by reading the tmp cache file AT REQUEST TIME, so a success can only come from the
-  values the push really stamped and the bytes it really left on disk.
+  values the push really stamped and the bytes it really left on disk; it answers each page the
+  push then checks with just enough to carry that route's marker (:func:`page_answer`).
 
 ``tests/conftest.py`` refuses every real Vercel request and every un-injected CLI spawn, and points
 the push log, the publish lock, the switch and the CLI's config directory at per-test paths outside
@@ -45,6 +46,7 @@ from api.cache_schema import (
     PUSH_TIME_KEY,
 )
 from pipeline import cache_lock, site_push, steps
+from scripts import fetch_hosted_routes
 from scripts import populate_cache as populate_cache_script
 from utils.file_lock import FileLockHeldError
 
@@ -114,13 +116,23 @@ def cache_meta(path: Path) -> dict[str, str]:
         conn.close()
 
 
+def page_answer(path: str) -> httpx.Response:
+    """A page route answered as the live check expects: its title, a fragment, or JSON."""
+    if path.startswith("/fragments/"):
+        return httpx.Response(200, html="<div>fragment</div>")
+    if path.startswith("/api/export/"):
+        return httpx.Response(200, json=[])
+    (route,) = [route for route in fetch_hosted_routes.routes("") if route.path == path]
+    return httpx.Response(200, html=f"<html><title>{route.marker}</title></html>")
+
+
 @dataclass
 class ReadbackHost:
-    """The hosted site's ``/health``, served from the tmp cache file at request time.
+    """The hosted site: ``/health`` served from the tmp cache file at request time, and its pages.
 
     By default it answers what a correct deployment of the cache would serve: the cache's own
-    ``publish_id`` and the SHA-256 of the file. *answer* replaces that with a fixed response, for
-    the read-back failure cases.
+    ``publish_id`` and the SHA-256 of the file at ``/health``, and :func:`page_answer` for every
+    other path. *answer* replaces that with a response of its own, for the failure cases.
 
     Attributes:
         cache_path: The tmp cache the host "serves".
@@ -136,6 +148,12 @@ class ReadbackHost:
         self.requests.append(request)
         if self.answer is not None:
             return self.answer(request)
+        return self.default(request)
+
+    def default(self, request: httpx.Request) -> httpx.Response:
+        """What a correct deployment of the tmp cache answers."""
+        if request.url.path != "/health":
+            return page_answer(request.url.path)
         return httpx.Response(
             200,
             json={
@@ -284,9 +302,13 @@ def test_one_push_succeeds_end_to_end(
     assert "-t" not in argv
     assert call["env"]["VERCEL_TOKEN"] == DUMMY_TOKEN
 
-    assert harness.host.requests, "the push made no read-back request"
+    # One matching /health, then one GET of each page the push checks, in order.
+    assert [request.url.path for request in harness.host.requests] == [
+        "/health",
+        *site_push.SMOKE_PATHS,
+    ]
     for request in harness.host.requests:
-        assert str(request.url) == f"{site_push.PRODUCTION_URL}/health"
+        assert str(request.url) == f"{site_push.PRODUCTION_URL}{request.url.path}"
         assert request.url.query == b""
         assert request.headers[site_push.BYPASS_HEADER] == DUMMY_BYPASS
         carried = [
@@ -709,6 +731,58 @@ def test_a_read_back_that_never_matches_fails_after_a_fixed_number_of_attempts(
         captured.out,
         captured.err,
     )
+
+
+@pytest.mark.parametrize(
+    ("broken_path", "broken_answer", "readback"),
+    [
+        (
+            "/bets",
+            httpx.Response(500, text="Internal Server Error"),
+            "page_bets_http_500",
+        ),
+        (
+            "/",
+            httpx.Response(200, html="<html><title>Login - Vercel</title></html>"),
+            "page_root_no_marker",
+        ),
+    ],
+    ids=["a_page_answers_500", "a_page_lacks_its_marker"],
+)
+@pytest.mark.usefixtures("switched_on")
+def test_a_broken_page_fails_a_push_whose_health_matched(
+    broken_path: str,
+    broken_answer: httpx.Response,
+    readback: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The 36-10 incident: /health read back while the pages answered 500 (review CR-01)."""
+    assert set(site_push.SMOKE_PATHS) <= {
+        route.path for route in fetch_hosted_routes.routes("")
+    }, "a checked page is not in the live check's route list, so it would be skipped"
+    harness = push_harness(monkeypatch, tmp_path)
+    harness.host.answer = lambda request: (
+        broken_answer
+        if request.url.path == broken_path
+        else harness.host.default(request)
+    )
+
+    outcome = site_push.push_site(
+        source="daily",
+        cache_path=harness.cache_path,
+        rebuild=rebuild_must_not_run,
+        check_stylesheet=no_stylesheet_problem,
+    )
+
+    assert (outcome.outcome, outcome.reason, outcome.readback) == (
+        "failed",
+        "pages_failed",
+        readback,
+    )
+    assert len(harness.cli.calls) == 1, "a failed page check must not deploy again"
+    (record,) = harness.records()
+    assert (record["reason"], record["readback"]) == ("pages_failed", readback)
 
 
 @pytest.mark.parametrize(

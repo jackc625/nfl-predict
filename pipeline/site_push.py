@@ -19,6 +19,10 @@ THE ORDER, and every step is load-bearing
    it returns this attempt's publish id AND the served file's SHA-256 equals the local digest. The
    CLI's exit code is never the evidence -- a deploy can exit 0 and serve something else. A
    read-back that never matches is a failed push: no rollback and no second deploy.
+   Then ONE GET of each :data:`SMOKE_PATHS` route through the same client and header, each judged
+   by the live check's own ``check_route``. ``/health`` reads four ``cache_meta`` keys and hashes a
+   file, so a deployment can answer it while every page answers 500 -- the first real push did
+   exactly that (Plan 36-10). Any page that fails makes the push failed (``pages_failed``).
 8. Exactly one push-log record (``logs/site_pushes.jsonl``) and one ``SITE_PUSH=`` line.
 
 SECRETS
@@ -113,6 +117,17 @@ READBACK_WINDOW_SECONDS = 120
 READBACK_INTERVAL_SECONDS = 10
 READBACK_ATTEMPTS = READBACK_WINDOW_SECONDS // READBACK_INTERVAL_SECONDS + 1
 READBACK_REQUEST_TIMEOUT_SECONDS = 15
+# The routes fetched once each after /health matches: every nav page, one fragment and one export.
+# Their expected answers come from scripts.fetch_hosted_routes.routes, the live check's own list.
+SMOKE_PATHS: tuple[str, ...] = (
+    "/",
+    "/bets",
+    "/season",
+    "/track-record",
+    "/how-it-works",
+    "/fragments/games",
+    "/api/export/json",
+)
 # The daily push waits for a rebuild to finish; the manual push refuses at once (SPEC R11).
 DAILY_LOCK_WAIT_SECONDS = 600
 MANUAL_LOCK_WAIT_SECONDS = 0
@@ -141,8 +156,12 @@ REASON_CLI_MISSING = "cli_missing"
 REASON_DEPLOY_TIMEOUT = "deploy_timeout"
 REASON_DEPLOY_OUTPUT_UNPARSEABLE = "deploy_output_unparseable"
 REASON_READBACK_FAILED = "readback_failed"
+REASON_PAGES_FAILED = "pages_failed"
 
-# What one read-back GET saw (also ``http_<status>`` and ``transport_<ExceptionClass>``).
+# What one read-back GET saw (also ``http_<status>`` and ``transport_<ExceptionClass>``). A failed
+# page check records ``page_<route>_http_<status>``, ``page_<route>_no_marker`` or
+# ``page_<route>_transport_<ExceptionClass>`` instead, ``<route>`` being the path with its slashes
+# turned into underscores (``root`` for ``/``).
 READBACK_MATCHED = "matched"
 READBACK_OLD_ID = "old_id"
 READBACK_DIGEST_MISMATCH = "digest_mismatch"
@@ -465,6 +484,30 @@ def _read_back(*, bypass: str, publish_id: str, local_sha256: str) -> str:
     return observed
 
 
+def _check_pages(*, bypass: str) -> str | None:
+    """One GET of each :data:`SMOKE_PATHS` route; the first failure's observation, None if all pass.
+
+    Called only after ``/health`` matched, so the new deployment is already serving: no retry.
+    """
+    from scripts.fetch_hosted_routes import check_route, routes
+
+    smoke = [route for route in routes(game_id="") if route.path in SMOKE_PATHS]
+    with CLIENT_FACTORY() as client:
+        for route in smoke:
+            name = route.path.strip("/").replace("/", "_") or "root"
+            try:
+                response = client.get(
+                    f"{PRODUCTION_URL}{route.path}", headers={BYPASS_HEADER: bypass}
+                )
+            except httpx.TransportError as error:
+                return f"page_{name}_transport_{type(error).__name__}"
+            if response.status_code != route.status:
+                return f"page_{name}_http_{response.status_code}"
+            if not check_route(route, response):
+                return f"page_{name}_no_marker"
+    return None
+
+
 def _run_attempt(
     attempt: _Attempt,
     *,
@@ -556,6 +599,10 @@ def _run_attempt(
         )
         if attempt.readback != READBACK_MATCHED:
             return attempt.outcome(OUTCOME_FAILED, REASON_READBACK_FAILED)
+        page_problem = _check_pages(bypass=secrets.bypass_secret.get_secret_value())
+        if page_problem is not None:
+            attempt.readback = page_problem
+            return attempt.outcome(OUTCOME_FAILED, REASON_PAGES_FAILED)
         return attempt.outcome(OUTCOME_SUCCEEDED)
 
 

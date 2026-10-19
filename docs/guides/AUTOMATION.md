@@ -1192,7 +1192,12 @@ commit pause every push, daily and manual, the same way.
    only in the `x-vercel-protection-bypass` header and never following a redirect. The push counts
    as succeeded only when `/health` returns this attempt's publish id AND the SHA-256 of the file
    it serves equals the local digest. The CLI's exit code is never the evidence. A read-back that
-   never matches is a failed push (`readback_failed`): no rollback and no second deploy.
+   never matches is a failed push (`readback_failed`): no rollback and no second deploy. Once
+   `/health` matches, the push GETs each of the five nav pages, `/fragments/games` and
+   `/api/export/json` once, through the same client and header, judged by the live check's own
+   route list (`scripts/fetch_hosted_routes.py`). `/health` uses a much smaller code path than the
+   pages, so the first real push read back while `/`, `/bets` and `/fragments/games` answered 500;
+   now any page that fails makes the push failed (`pages_failed`).
 8. Exactly one record in `logs/site_pushes.jsonl` and one `SITE_PUSH= <outcome> <publish id |
    reason>` console line. Anything unexpected that raises after the switch is still recorded, as
    a failed push named by its exception class only.
@@ -1221,7 +1226,8 @@ byte.
 
 The healthchecks.io check-in is unchanged: it is still the last thing the run does. The push runs
 before it, so it can delay the check-in by at most its own worst case: a 600 s lock wait, a 900 s
-deploy bound, 13 read-back attempts (about 130 s) and a 45 s self-heal rebuild -- about 28 minutes.
+deploy bound, 13 read-back attempts (about 130 s), seven page checks (at most 105 s) and a 45 s
+self-heal rebuild -- about 30 minutes.
 The 2026-10-17 prediction day ran 17:00-17:14 ET, so even the worst case checks in around
 17:45 ET, well before the watcher's 18:30 ET down time. A push that is switched off returns in
 milliseconds.

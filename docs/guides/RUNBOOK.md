@@ -1158,11 +1158,13 @@ including attempts that did not push:
 | `reason` | Why it did not succeed (table below); null on success. |
 | `deployment_id`, `deployment_url` | The Vercel deployment the CLI reported, and its own per-deployment URL. |
 | `local_sha256` | The SHA-256 of the cache file as it was uploaded. |
-| `readback` | What the last read of the live `/health` saw: `matched`, `old_id`, `digest_mismatch`, `no_id`, `http_<status>` or `transport_<ExceptionClass>`. |
+| `readback` | What the last read of the live `/health` saw: `matched`, `old_id`, `digest_mismatch`, `no_id`, `http_<status>` or `transport_<ExceptionClass>`. On a `pages_failed` push, the first page that failed instead: `page_<route>_http_<status>`, `page_<route>_no_marker` or `page_<route>_transport_<ExceptionClass>`, where `<route>` is the path with `/` turned into `_` (`root` for the home page). |
 | `data_format_found`, `data_format_expected` | The cache's data-format version and the one the code expects, once read. |
 
 A push is `succeeded` only when the live `/health` returned this attempt's publish id AND the
-SHA-256 of the file it serves equals `local_sha256`. The CLI's exit code is never the evidence. The
+SHA-256 of the file it serves equals `local_sha256`, AND each page it then fetches once -- the five
+nav pages, `/fragments/games` and `/api/export/json` -- answers as the laptop does (the same check
+as "Checking the live site from the laptop" below). The CLI's exit code is never the evidence. The
 log never holds a token, a bypass value or a URL secret. Read the latest lines with
 `Get-Content logs/site_pushes.jsonl -Tail 20`.
 
@@ -1179,6 +1181,7 @@ log never holds a token, a bypass value or a URL secret. Read the latest lines w
 | `deploy_exit_<n>` (`failed`) | The Vercel CLI refused the deploy. Most often the token has expired or been revoked. | Check the token; renew it if it expired (below), then push by hand. |
 | `cli_missing`, `deploy_timeout`, `deploy_output_unparseable` (`failed`) | The CLI was not where `NODE_EXE` says, ran longer than 15 minutes, or printed something the push could not read. | `cli_missing`: see One-time setup step 4. Otherwise push by hand again. |
 | `readback_failed` (`failed`) | The deploy ran, but the live `/health` never showed this attempt's publish id and digest within about two minutes. | Push by hand again, then check `/health` (below). |
+| `pages_failed` (`failed`) | `/health` read back, but a page on the live site failed; `readback` names the first one (for example `page_bets_http_500`). The phone copy is broken even though it carries the new data. | Run the live check (below) to see every route, fix the code, then push by hand. |
 | any other name, such as `OSError` | An unexpected error inside the push, named by its exception class only. | Push by hand again. If the same class repeats, it names what broke. |
 
 ### What "FAILED: website push" means
