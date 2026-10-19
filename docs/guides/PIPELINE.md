@@ -1,4 +1,4 @@
-# PIPELINE.md — Canonical Run Sequence
+# PIPELINE.md -- Canonical Run Sequence
 
 This is the single source of truth for how to run the NFL prediction system end to
 end. There are **8 stages**: ingest -> features -> train -> promote -> backtest ->
@@ -231,7 +231,7 @@ uv run python scripts/generate_bet_list.py --season <YEAR> --week <WEEK>
 
 Build the read-only DuckDB web cache the API serves from. This stage sits **between
 predict and serve** because, under the UIAP-01 boundary, the FastAPI app reads ONLY
-from `data/web_cache.duckdb` — skip this and `serve` shows stale or empty data.
+from `data/web_cache.duckdb` -- skip this and `serve` shows stale or empty data.
 
 ```powershell
 uv run python scripts/populate_cache.py
@@ -252,7 +252,7 @@ uv run python scripts/populate_cache.py
 
 ### 8. Serve
 
-Start the FastAPI app + web UI (single worker — the shared DuckDB connection and
+Start the FastAPI app + web UI (single worker -- the shared DuckDB connection and
 in-process cache require `--workers 1`).
 
 ```powershell
@@ -262,10 +262,15 @@ uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 > **Recompile the stylesheet when a template introduces a new utility class.** The app serves
 > `web/static/css/tailwind-compiled.css`, which is generated from `web/static/input.css` by the
 > VENDORED Tailwind v4 CLI. There is **no `make` target for it** and no stage of its own: it is
-> not part of the 8-stage sequence, the Makefile does not wrap it, and nothing in the build
-> notices when it is stale. That omission is why compiled-style drift exists in this repository --
-> a template can introduce a utility class that was never compiled, and the page then renders
-> unstyled with no error anywhere. After editing anything under `web/templates/`, run:
+> not part of the 8-stage sequence and the Makefile does not wrap it. That omission is why
+> compiled-style drift exists in this repository -- a template can introduce a utility class
+> that was never compiled, and the page then renders unstyled with no error. Since Phase 36 the
+> website push notices: before it deploys, it compiles the stylesheet into a temporary file and
+> refuses (reason `stylesheet_out_of_step`) when that fresh compile differs from the committed
+> sheet, so a forgotten recompile shows up as a failed push (a `FAILED: website push` on the
+> phone). The laptop's own server still does not notice. The fix is still the hand recompile
+> (D-17); the push never writes the committed sheet. After editing anything under
+> `web/templates/`, run:
 >
 > ```powershell
 > ./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
@@ -275,7 +280,7 @@ uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 > recompile; when in doubt, run it -- it is idempotent and takes about a second.
 
 - **Live entry point:** `api/main.py:app`.
-- **Produces:** FastAPI at http://localhost:8000 — the five top-nav pages `/`
+- **Produces:** FastAPI at http://localhost:8000 -- the five top-nav pages `/`
   (This Week), `/bets`, `/season`, `/track-record` and `/how-it-works`, plus the
   `/games/{id}` game-detail drill-down and a `/health` endpoint. The retired URLs
   `/performance`, `/backtest`, `/insights` and `/betting` answer with a 301 to the merged
@@ -310,7 +315,7 @@ uv run python scripts/friday_pipeline.py --log-level INFO
 - **Scope:** ingest games/weather -> data QA -> build Elo/form/contextual/weather ->
   ingest odds -> market anchors -> build features -> validate features/models ->
   generate predictions/recommendations -> export -> validate outputs -> **populate the
-  web cache**. It does **not** train, promote, or backtest — run stages 3 (train), 4
+  web cache**. It does **not** train, promote, or backtest -- run stages 3 (train), 4
   (promote) and 5 (backtest) above for those.
 - **Stage 7 is now part of the weekly run (changed by plan 31-18).** This document
   previously said the orchestrator does not rebuild the web cache; that is no longer

@@ -15,6 +15,10 @@
 > **Changed 2026-10-15 (Phase 35):** alerts are no longer log-only. Section 7 now describes the
 > phone push, the Saturday email and the outside watcher; the owner's setup steps, the TEST
 > command and what each message means are in `RUNBOOK.md`, "Notifications".
+>
+> **Added 2026-10-18 (Phase 36):** the daily run now ends by pushing the dashboard to Vercel.
+> "Website push", before the cross-references, explains it; the owner procedures are in
+> `RUNBOOK.md`, "Website (hosted dashboard)".
 
 This is the single source of truth for HOW the Friday automation runs and how to
 tell whether a run succeeded. It explains what fires, when, what each of the 18
@@ -128,6 +132,9 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
 
    A defective row refuses only its own game (the live-skip rule), never tomorrow's slate.
    The run prints `RUN_STATUS=` and a `SKIPPED <game>` line per dropped game.
+4. **The website push (Phase 36)** -- after the ledger sync and before the phone pushes, every
+   run that did not fail pushes the dashboard to Vercel (a run that failed records "not pushed"
+   instead). See "Website push" near the end of this document.
 
 `--date YYYY-MM-DD` runs as of another ET day; `--dry-run` runs the schedule refresh and
 the collection stage under a recording write sink, writing nothing (it stops before the
@@ -337,6 +344,11 @@ orchestrator). A night that predicts nothing -- no games tomorrow, or the lock a
 passed -- returns before any orchestrator exists, so it leaves `logs/friday_pipeline.json`
 as the last real run wrote it and instead appends one line (`run_date_et`, `outcome` =
 `no_games` or `lock_passed`, `game_ids`, `recorded_at`) to `logs/daily_lock_runs.jsonl`.
+
+Every daily run (and every manual push) also appends exactly one line to
+`logs/site_pushes.jsonl`, the website push log (Phase 36): one record per push attempt,
+including the attempts that did not push, never rewritten. Its fields and reasons are explained
+in `RUNBOOK.md`, "Reading logs/site_pushes.jsonl"; how the push runs is in "Website push" below.
 
 > Note: per-run log history is a deferred FUTURE enhancement (D-11). It is deliberately
 > NOT added in this phase (documentation / verification only); the single-file overwrite
@@ -1128,6 +1140,104 @@ once):
   `capture_empty` reason existed.
 
 Every row it touched is a week-3 or week-4 `pre_verdict` row, never counted in the verdict.
+
+## Website push
+
+Added 2026-10-18 (Phase 36). The daily run ends by publishing the dashboard to Vercel, so the
+owner can read it on the phone while the laptop is off. One routine,
+`pipeline.site_push.push_site`, does every push; the manual command
+`uv run python -m scripts.push_site` calls the same routine. The owner's setup, the push log and
+what each reason means are in `RUNBOOK.md`, "Website (hosted dashboard)".
+
+### The switch comes first
+
+Until `config/site_push_enabled.json` is committed, every run records one `not_pushed` /
+`push_not_enabled` line in `logs/site_pushes.jsonl` and sends nothing: no secret is read, no lock
+is taken, nothing is rebuilt or stamped, the Vercel CLI is not run, and no phone push is sent.
+The owner commits that file as the last setup step. `git rm config/site_push_enabled.json` and a
+commit pause every push, daily and manual, the same way.
+
+### Where it runs, and which runs push
+
+- **Inside `run_daily`** (`scripts/daily_lock_pipeline.py`): on the main path after the ledger
+  sync (`_sync_ledger`) and immediately before the end-of-run notifier, whether the day returned
+  or raised; and on the `lock_passed` branch immediately before that branch's own notify point.
+  So the push has finished -- succeeded or failed -- before the phone pushes are decided, and a
+  successful run's bets push never arrives before the site carries those bets.
+- **Outcomes that push:** `offseason`, `no_games`, `lock_passed`, `success`,
+  `finished_with_skips` and `degraded` -- quiet days included, so the push is a daily heartbeat.
+- **Outcomes that do not push:** an orchestrator `failed` and a `run_failed` record. They write
+  one `not_pushed` line whose reason is that status, with the run id, so a failed day can never
+  refresh the site.
+- **Never:** on `--dry-run`, on a refused `--date`, or on Ctrl+C -- no push and no record.
+
+### One attempt, in order
+
+1. The switch (above).
+2. The secrets, `VERCEL_TOKEN` and `VERCEL_BYPASS_SECRET` from `.env`. A missing one is a
+   failed push (`missing_token`, `missing_bypass_secret`) before the lock.
+3. The publish lock, `logs/.cache_publish.lock`. The daily push waits up to 600 s for it; the
+   manual push refuses at once (`lock_held`).
+4. The refusals: this run's cache rebuild did not complete, or `data/web_cache.duckdb` is missing
+   (`rebuild_incomplete`, `cache_missing`); the stylesheet is out of step with the templates or
+   cannot be checked (`stylesheet_out_of_step`, `stylesheet_unverifiable`); the cache's
+   data-format version does not match the code's. A format mismatch first HEALS itself (D-03):
+   the push rebuilds the cache once, under the lock it already holds, and carries on when the
+   rebuilt cache matches; it refuses only when that rebuild raises
+   (`format_mismatch_rebuild_failed`) or still does not match (`format_mismatch_after_rebuild`).
+5. A fresh publish id (uuid4) and push time (UTC), minted for this attempt and stamped into the
+   cache's `cache_meta` table on a COPY of the cache, which is then swapped in.
+6. The SHA-256 of the stamped file, then ONE production deploy of the code and the cache together.
+7. The read-back: up to 13 GETs of the production `/health`, 10 s apart, sending the bypass value
+   only in the `x-vercel-protection-bypass` header and never following a redirect. The push counts
+   as succeeded only when `/health` returns this attempt's publish id AND the SHA-256 of the file
+   it serves equals the local digest. The CLI's exit code is never the evidence. A read-back that
+   never matches is a failed push (`readback_failed`): no rollback and no second deploy.
+8. Exactly one record in `logs/site_pushes.jsonl` and one `SITE_PUSH= <outcome> <publish id |
+   reason>` console line. Anything unexpected that raises after the switch is still recorded, as
+   a failed push named by its exception class only.
+
+### One lock for the push and every rebuild
+
+The push and every web-cache rebuild hold the same publish lock: the daily run's
+`populate_web_cache` step, the settle-day rebuild on a no-game day, and
+`scripts/populate_cache.py` (which refuses with `POPULATE_CACHE= refused` and exit 1 while a push
+holds it). So a push never uploads a cache that is being replaced underneath it, and a manual push
+refuses while a rebuild runs.
+
+### A failed push reaches the phone and changes nothing else
+
+A failed or refused push sends one normal-priority (3) `FAILED: website push` through the existing
+failed event class, after the run's other failed messages. It names the outcome and the reason,
+both data-format versions on a format refusal, the exception class when the routine itself raised,
+and the next step (`uv run python -m scripts.push_site`, or wait for the next 5 PM run). A
+succeeded push and a `not_pushed` record send nothing. There is no third push kind: the router
+still accepts only failed, bets and test, and a run that appended live bets still sends its bets
+push too. The push never changes the run's exit code, its ledger rows or its saved outputs -- a
+committed test runs the same day with the push succeeding, failing and raising and compares every
+byte.
+
+### The check-in and its timing
+
+The healthchecks.io check-in is unchanged: it is still the last thing the run does. The push runs
+before it, so it can delay the check-in by at most its own worst case: a 600 s lock wait, a 900 s
+deploy bound, 13 read-back attempts (about 130 s) and a 45 s self-heal rebuild -- about 28 minutes.
+The 2026-10-17 prediction day ran 17:00-17:14 ET, so even the worst case checks in around
+17:45 ET, well before the watcher's 18:30 ET down time. A push that is switched off returns in
+milliseconds.
+
+### Under the S4U scheduled task
+
+- The push runs the Vercel CLI by absolute path: `node.exe` and the CLI's `vc.js` under nvm Node
+  24.18.0 (`NODE_EXE` and `VERCEL_CLI_JS` in `pipeline/site_push.py`). The S4U logon has no user
+  PATH, so a bare `vercel` would fail with the same `0x80070002` "file not found" that a bare `uv`
+  did (section 8).
+- `VERCEL_TOKEN` is read from `.env` through `Settings` and handed to the CLI only in the child
+  process's environment -- never on the command line, in the task XML, a log or the push log.
+- The CLI runs with `--global-config` pointing at the gitignored `tools/vercel-global-config`, so
+  the owner's interactive `vercel login` is never used.
+- No task re-registration is needed: the existing `NFL_Predict_Pipeline` task runs the push as
+  part of the daily run, and `deployment/windows_scheduler.xml` is unchanged.
 
 ---
 

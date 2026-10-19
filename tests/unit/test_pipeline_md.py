@@ -16,10 +16,9 @@ Phase 23.1 corrected two critical errors in this document:
 This committed test guards both corrections as drift regressions — the document cannot
 silently revert to the broken names or lose the two pages without this test failing.
 
-NOTE: PIPELINE.md intentionally retains a pre-existing non-ASCII em-dash on the Stage 7
-line (normalizing it was out of scope per the 23.1-03 SUMMARY deviation).  An
-``assert content.isascii()`` assertion WILL FAIL and is therefore deliberately omitted
-here.  Unlike ``test_automation_md.py``, this guard does NOT include an ASCII check.
+NOTE: PIPELINE.md carried pre-existing non-ASCII em-dashes until Plan 36-08 normalized them
+to ``--``, so the document is ASCII now.  Unlike ``test_automation_md.py``, this guard still
+does NOT include an ASCII check.
 
 This is a permanent committed test, NOT a throwaway script.
 """
