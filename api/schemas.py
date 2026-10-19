@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -158,11 +159,22 @@ class ModelStatusResponse(BaseModel):
     )
 
 
+#: What a laptop-only /health section reads on the hosted copy (SPEC R10, D-21): the host has no
+#: pipeline log, silver files or model artifacts, so it states that instead of judging their absence.
+HostedUnavailable = Literal["not available on the hosted copy"]
+HOSTED_UNAVAILABLE: HostedUnavailable = "not available on the hosted copy"
+
+
 class HealthResponse(BaseModel):
     """Health check response.
 
     Backward compatible: existing status, cache_ready, last_updated fields
     remain. New pipeline, data_freshness, model_status fields default to None.
+
+    Phase 36 (SPEC R10) adds the publish fields below, on both copies. On the hosted copy the three
+    laptop sections read ``HOSTED_UNAVAILABLE``. The publish stamp is whatever the LATEST push
+    attempt stamped into this cache; on the laptop that is the latest attempt's stamp, not proof
+    these local bytes were deployed (an attempt whose upload failed still stamped the local copy).
     """
 
     status: str = Field(
@@ -174,12 +186,53 @@ class HealthResponse(BaseModel):
     last_updated: datetime | None = Field(
         default=None, description="Last cache update timestamp"
     )
-    pipeline: PipelineStatusResponse | None = Field(
+    pipeline: PipelineStatusResponse | HostedUnavailable | None = Field(
         default=None, description="Pipeline execution status from latest log"
     )
-    data_freshness: DataFreshnessResponse | None = Field(
+    data_freshness: DataFreshnessResponse | HostedUnavailable | None = Field(
         default=None, description="Data freshness status from Silver layer files"
     )
-    model_status: ModelStatusResponse | None = Field(
+    model_status: ModelStatusResponse | HostedUnavailable | None = Field(
         default=None, description="Model artifact status"
+    )
+    publish_id: str | None = Field(
+        default=None,
+        description=(
+            "Publish id the latest push attempt stamped into this cache; on the laptop the latest "
+            "attempt's stamp, not proof these local bytes were deployed"
+        ),
+    )
+    push_time: datetime | None = Field(
+        default=None,
+        description=(
+            "UTC time the latest push attempt stamped into this cache (never the cache build "
+            "time); on the laptop the latest attempt's stamp, not proof of a deployment"
+        ),
+    )
+    data_season: int | None = Field(
+        default=None,
+        description="Season of the stamped current slate, None when unstamped",
+    )
+    data_week: int | None = Field(
+        default=None,
+        description="Week of the stamped current slate, None when unstamped",
+    )
+    cache_data_format: str | None = Field(
+        default=None,
+        description="The cache's stored data-format version text, None when it carries none",
+    )
+    code_data_format: int | None = Field(
+        default=None, description="The data-format version this code expects"
+    )
+    data_format_matches: bool | None = Field(
+        default=None,
+        description="Whether the cache's data format is the one the code expects",
+    )
+    stale: bool | None = Field(
+        default=None,
+        description="Whether the last push is more than 36 hours old or absent (SPEC R8 rule)",
+    )
+    cache_sha256: str | None = Field(
+        default=None,
+        description="SHA-256 of the cache file this copy serves, read on this request",
     )

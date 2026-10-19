@@ -18,11 +18,24 @@ the offseason, a lock already passed) appends one record to ``logs/daily_lock_ru
 the newer of the two says when the task last ran, and more than 36 hours without either means a
 day was missed. The old 7-day window was sized for the retired weekly Friday run and let a task
 that had stopped firing read "ok" for a week.
+
+THE HOSTED COPY (Phase 36, SPEC R10, D-21). The same code runs on Vercel, told apart only by a fact
+Vercel itself sets (``running_on_vercel``). The host has no pipeline log, silver files or model
+artifacts, so those three sections read "not available on the hosted copy" and their absence never
+makes it "unhealthy". It reports what it can know: the publish stamp the latest push attempt wrote
+into cache_meta, the season and week of the pushed data, both data-format versions, staleness (the
+36-hour rule the out-of-date bar uses), and the SHA-256 of the cache file it serves. The push's
+read-back (``pipeline/site_push.py``) counts a push only when ``publish_id`` and ``cache_sha256``
+here match what it uploaded. Hosted status: "unhealthy" when the cache is missing, unreadable or of
+another data format, "degraded" when stale, otherwise "ok". The laptop keeps its own verdict and
+gains the same fields (plus "unhealthy" on a recorded data-format mismatch, D-19).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -30,10 +43,22 @@ from pathlib import Path
 import duckdb
 from fastapi import APIRouter, Request
 
+from api import presentation
 from api.cache_reader import open_cache_readonly
+from api.cache_schema import (
+    CURRENT_SLATE_KEY,
+    DATA_FORMAT_VERSION_KEY,
+    PUBLISH_ID_KEY,
+    PUSH_TIME_KEY,
+    DataFormatState,
+    data_format_state,
+    parse_current_slate,
+    push_is_stale,
+)
 from api.dependencies import DB_PATH, cache_file_changed, get_db
 from api.exceptions import NFLPredictionAPIException
 from api.schemas import (
+    HOSTED_UNAVAILABLE,
     DataFreshnessResponse,
     HealthResponse,
     ModelStatusResponse,
@@ -101,6 +126,36 @@ DATA_FRESHNESS_HOURS = 168  # 7 days
 # The run is DAILY (D33.2-01): one missed day is a stale automation. 36 hours rather than 24
 # leaves room for a late or slow run without letting a whole skipped day read as healthy.
 LOG_STALENESS_SECONDS = 36 * 3600
+
+# The four cache_meta keys the publish fields come from, read in ONE query.
+_PUBLISH_META_KEYS: tuple[str, ...] = (
+    PUBLISH_ID_KEY,
+    PUSH_TIME_KEY,
+    CURRENT_SLATE_KEY,
+    DATA_FORMAT_VERSION_KEY,
+)
+_PUBLISH_META_QUERY = "SELECT key, value FROM cache_meta WHERE key IN (?, ?, ?, ?)"
+_DIGEST_CHUNK_BYTES = 1024 * 1024
+
+# BOUND ONCE, AT IMPORT, on purpose. tests/api/test_health_endpoint.py replaces this module's
+# ``duckdb`` NAME with a MagicMock. An except clause that spelled the DuckDB error class inline would
+# then look it up on the mock, get something that is not an exception class, and turn every caught
+# error into a TypeError. This tuple keeps the real classes whatever the name points at later.
+_CACHE_READ_ERRORS: tuple[type[Exception], ...] = (
+    duckdb.Error,
+    ValueError,
+    OSError,
+    TypeError,
+)
+
+
+def running_on_vercel() -> bool:
+    """Whether this process is the hosted copy, from a fact Vercel itself sets (D-21).
+
+    The ONLY environment read in this module, and of this one variable. /health never echoes the
+    environment: on the host it also holds the deployment's protection-bypass secret.
+    """
+    return os.environ.get("VERCEL") == "1"
 
 
 def _latest_daily_record_time() -> datetime | None:
@@ -350,6 +405,71 @@ def _read_last_updated(request: Request) -> datetime | None:
     return None
 
 
+def _read_publish_meta(request: Request) -> dict[str, str]:
+    """The publish id, push time, current slate and data-format version from cache_meta.
+
+    ONE query for the four keys: under ``app.state.db_lock`` on the shared connection when the app
+    holds one, else on a short-lived read-only connection through the one opener, handed THIS
+    module's ``duckdb.connect`` (see ``_read_last_updated``). Only rows whose key and value are both
+    text are kept. Any read failure is an empty dict: /health reports, it never raises.
+    """
+    lock = getattr(request.app.state, "db_lock", None)
+    try:
+        if lock is not None and getattr(request.app.state, "db_conn", None) is not None:
+            with lock:
+                shared_conn = getattr(request.app.state, "db_conn", None)
+                if shared_conn is None:
+                    return {}
+                rows = shared_conn.execute(
+                    _PUBLISH_META_QUERY, list(_PUBLISH_META_KEYS)
+                ).fetchall()
+        else:
+            with open_cache_readonly(DB_PATH, connect=duckdb.connect) as conn:
+                rows = conn.execute(
+                    _PUBLISH_META_QUERY, list(_PUBLISH_META_KEYS)
+                ).fetchall()
+        return {
+            key: value
+            for key, value in rows
+            if isinstance(key, str) and isinstance(value, str)
+        }
+    except _CACHE_READ_ERRORS:
+        return {}
+
+
+def _served_cache_sha256() -> str | None:
+    """SHA-256 of the cache file at ``DB_PATH``, read now in 1 MiB chunks; None if unreadable.
+
+    Computed on every request, never once at startup: the push's read-back compares it with the
+    digest of the file it uploaded, so it must measure the file this deployment actually serves.
+    """
+    digest = hashlib.sha256()
+    try:
+        with DB_PATH.open("rb") as handle:
+            while chunk := handle.read(_DIGEST_CHUNK_BYTES):
+                digest.update(chunk)
+    except (OSError, TypeError, ValueError):
+        return None
+    return digest.hexdigest()
+
+
+def _data_format_of(request: Request, meta: dict[str, str]) -> DataFormatState:
+    """The verdict the server recorded at startup or reconnect (D-19), else the one meta implies."""
+    recorded = getattr(request.app.state, "data_format", None)
+    if isinstance(recorded, DataFormatState):
+        return recorded
+    return data_format_state(meta.get(DATA_FORMAT_VERSION_KEY))
+
+
+def _parse_push_time(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return ensure_utc_aware(datetime.fromisoformat(raw))
+    except ValueError:
+        return None
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check(request: Request) -> HealthResponse:
     """Return API health status including cache, pipeline, data, and model status.
@@ -376,12 +496,58 @@ async def health_check(request: Request) -> HealthResponse:
     # File-level cache check (unchanged for backward compatibility)
     cache_ready = DB_PATH.exists()
     last_updated: datetime | None = None
+    meta: dict[str, str] = {}
+    cache_sha256: str | None = None
 
     if cache_ready:
         # Routed through ``_read_last_updated`` so the shared-connection read
         # happens under ``app.state.db_lock`` (matches every other reader and
         # avoids racing the reconnect path in api.dependencies).
         last_updated = _read_last_updated(request)
+        meta = _read_publish_meta(request)
+        cache_sha256 = _served_cache_sha256()
+
+    # The publish fields, on both copies (SPEC R10). Staleness is the bar's one 36-hour rule on
+    # the bar's one clock, so a test pins both with one patch of ``presentation.NOW``.
+    raw_push_time = meta.get(PUSH_TIME_KEY)
+    slate = parse_current_slate(meta.get(CURRENT_SLATE_KEY))
+    format_state = _data_format_of(request, meta)
+    stale = push_is_stale(raw_push_time, presentation.NOW())
+
+    def _respond(status: str, **sections: object) -> HealthResponse:
+        return HealthResponse.model_validate(
+            {
+                "status": status,
+                "cache_ready": cache_ready,
+                "last_updated": last_updated,
+                **sections,
+                "publish_id": meta.get(PUBLISH_ID_KEY),
+                "push_time": _parse_push_time(raw_push_time),
+                "data_season": slate[0] if slate else None,
+                "data_week": slate[1] if slate else None,
+                "cache_data_format": format_state.raw,
+                "code_data_format": format_state.expected,
+                "data_format_matches": format_state.matches,
+                "stale": stale,
+                "cache_sha256": cache_sha256,
+            }
+        )
+
+    if running_on_vercel():
+        # The hosted verdict (SPEC R10). The laptop-only files are never read here, so their
+        # absence cannot make the host "unhealthy".
+        if not cache_ready or not meta or not format_state.matches:
+            hosted_status = "unhealthy"
+        elif stale:
+            hosted_status = "degraded"
+        else:
+            hosted_status = "ok"
+        return _respond(
+            hosted_status,
+            pipeline=HOSTED_UNAVAILABLE,
+            data_freshness=HOSTED_UNAVAILABLE,
+            model_status=HOSTED_UNAVAILABLE,
+        )
 
     # Pipeline status from execution log
     pipeline, log_corrupt, log_stale = _read_pipeline_log()
@@ -421,10 +587,14 @@ async def health_check(request: Request) -> HealthResponse:
     else:
         status = "ok"
 
-    return HealthResponse(
-        status=status,
-        cache_ready=cache_ready,
-        last_updated=last_updated,
+    # D-19 / SPEC R9 acceptance 2: a data-format clash the server RECORDED is unhealthy locally
+    # too. Only the recorded verdict counts here, so the existing verdict is otherwise unchanged.
+    recorded_format = getattr(request.app.state, "data_format", None)
+    if isinstance(recorded_format, DataFormatState) and not recorded_format.matches:
+        status = "unhealthy"
+
+    return _respond(
+        status,
         pipeline=pipeline,
         data_freshness=data_freshness,
         model_status=model_status,
