@@ -27,7 +27,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 import duckdb
 import httpx
@@ -36,8 +37,11 @@ from pydantic import SecretStr
 
 from api.cache import populate_cache
 from api.cache_reader import open_cache_readonly
-from api.cache_schema import PUBLISH_ID_KEY, PUSH_TIME_KEY
+from api.cache_schema import DATA_FORMAT_VERSION_KEY, PUBLISH_ID_KEY, PUSH_TIME_KEY
 from pipeline import cache_lock, site_push
+
+if TYPE_CHECKING:
+    from conf.settings import Settings
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DUMMY_TOKEN = "dummy-vercel-token-0000"
@@ -342,12 +346,156 @@ def test_the_suite_cannot_reach_vercel() -> None:
     assert not site_push.PUSH_ENABLED_MARKER.exists()
 
 
+# ---------------------------------------------------------------------------
+# Task 2: the switch, the simple refusals and the secrets
+# ---------------------------------------------------------------------------
+
+
+def _must_not_be_called(what: str):
+    def _refuse(*_args, **_kwargs):
+        pytest.fail(f"the push called {what}")
+
+    return _refuse
+
+
+@pytest.mark.parametrize("source", ["daily", "manual"])
+def test_a_push_that_is_not_switched_on_only_records_it(
+    source: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cache_path = build_cache(tmp_path)
+    before = cache_path.read_bytes()
+    monkeypatch.setattr(
+        site_push, "LOAD_PUSH_SECRETS", _must_not_be_called("the secrets")
+    )
+
+    outcome = site_push.push_site(
+        source=source,
+        cache_path=cache_path,
+        rebuild=_must_not_be_called("the rebuild"),
+        check_stylesheet=_must_not_be_called("the stylesheet check"),
+    )
+
+    assert (outcome.outcome, outcome.reason) == ("not_pushed", "push_not_enabled")
+    with cache_lock.cache_publish_lock(wait_seconds=0.0):
+        pass
+    assert cache_path.read_bytes() == before
+    records = site_push.read_site_pushes()
+    assert len(records) == 1
+    assert (records[0]["outcome"], records[0]["source"]) == ("not_pushed", source)
+    assert "SITE_PUSH= not_pushed push_not_enabled" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("reason", "arguments", "stylesheet_problem"),
+    [
+        (
+            "rebuild_incomplete",
+            {"rebuild_attempted": True, "rebuild_completed": False},
+            None,
+        ),
+        ("cache_missing", {"cache_path": Path("absent") / "web_cache.duckdb"}, None),
+        ("stylesheet_out_of_step", {}, "stylesheet_out_of_step"),
+        ("stylesheet_unverifiable", {}, "stylesheet_unverifiable"),
+    ],
+)
+@pytest.mark.usefixtures("switched_on")
+def test_each_simple_refusal_deploys_nothing(
+    reason: str,
+    arguments: dict[str, Any],
+    stylesheet_problem: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    harness = push_harness(monkeypatch, tmp_path)
+    before = harness.cache_path.read_bytes()
+    push = {"cache_path": harness.cache_path, **arguments}
+    if reason == "cache_missing":
+        push["cache_path"] = tmp_path / push["cache_path"]
+
+    outcome = site_push.push_site(
+        source="daily",
+        rebuild=rebuild_must_not_run,
+        check_stylesheet=lambda: stylesheet_problem,
+        **push,
+    )
+
+    assert (outcome.outcome, outcome.reason) == ("refused", reason)
+    assert harness.cli.calls == []
+    assert harness.host.requests == []
+    assert [record["reason"] for record in harness.records()] == [reason]
+    assert harness.cache_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("missing", "reason"),
+    [("token", "missing_token"), ("bypass", "missing_bypass_secret")],
+)
+@pytest.mark.usefixtures("switched_on")
+def test_a_missing_secret_fails_before_the_lock(
+    missing: str, reason: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = push_harness(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        site_push, "LOAD_PUSH_SECRETS", lambda: dummy_secrets(**{missing: None})
+    )
+
+    # The lock is held throughout: a push that reached the lock would refuse lock_held instead.
+    with cache_lock.cache_publish_lock(wait_seconds=0.0):
+        outcome = site_push.push_site(
+            source="manual",
+            cache_path=harness.cache_path,
+            lock_wait_seconds=0.0,
+            rebuild=rebuild_must_not_run,
+            check_stylesheet=no_stylesheet_problem,
+        )
+
+    assert (outcome.outcome, outcome.reason) == ("failed", reason)
+    with cache_lock.cache_publish_lock(wait_seconds=0.0):
+        pass
+    assert harness.cli.calls == []
+    assert len(harness.records()) == 1
+
+    # A blank value in .env counts as missing.
+    blank = site_push.load_push_secrets(
+        cast(
+            "Settings",
+            SimpleNamespace(vercel_token=SecretStr("  "), vercel_bypass_secret=None),
+        )
+    )
+    assert blank == site_push.PushSecrets(vercel_token=None, bypass_secret=None)
+
+
+def test_record_not_pushed_writes_one_record(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Held throughout: recording a run that did not push takes no lock.
+    with cache_lock.cache_publish_lock(wait_seconds=0.0):
+        outcome = site_push.record_not_pushed(
+            source="daily", reason="run_failed", run_id="r1"
+        )
+
+    assert (outcome.outcome, outcome.reason) == ("not_pushed", "run_failed")
+    records = site_push.read_site_pushes()
+    assert len(records) == 1
+    assert set(records[0]) == set(site_push.SITE_PUSH_FIELDS)
+    assert (records[0]["outcome"], records[0]["reason"], records[0]["run_id"]) == (
+        "not_pushed",
+        "run_failed",
+        "r1",
+    )
+    assert "SITE_PUSH= not_pushed run_failed" in capsys.readouterr().out
+
+
 def stamp_data_format(path: Path, value: str) -> None:
     """Rewrite the cache's stored data-format version (a planted mismatch or its repair)."""
     conn = duckdb.connect(str(path))
     try:
         conn.execute(
-            "UPDATE cache_meta SET value = ? WHERE key = 'data_format_version'", [value]
+            "UPDATE cache_meta SET value = ? WHERE key = ?",
+            [value, DATA_FORMAT_VERSION_KEY],
         )
     finally:
         conn.close()
