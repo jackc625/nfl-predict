@@ -328,6 +328,9 @@ uv run python scripts/populate_cache.py
   week. The log line to look for is the warning naming `scripts/generate_bet_list.py`.
 - **SAFE:** a downstream DATA refresh from gold + backtest outputs; NOT a re-fit. The file is
   gitignored, so the refresh mutates only a gitignored file.
+- **A rebuild holds the publish lock (Phase 36).** The website push and every cache rebuild share
+  one lock, so `scripts/populate_cache.py` refuses (`POPULATE_CACHE= refused`, exit 1) while a
+  push runs; wait for the push to finish and run it again.
 - **Verification basis:** verified live 2026-05-31 (exit 0 this session; refreshed the
   gitignored `data/web_cache.duckdb` -- 1139 predictions, 6263 game_context rows).
 
@@ -348,10 +351,14 @@ uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
   still returning 200 with `cache_ready: true` and `all_models_exist: true`.
 - **SAFE:** read-only DuckDB connection; per the UIAP-01 boundary the API does not import
   `models/`, `features/`, or `ratings/` and loads no model.
+- **The "Out of date" bar and the data-format notice appear locally too (Phase 36),** under the
+  same rules as on the hosted copy; see "The "Out of date" bar and the data-format notice" in the
+  Website section below.
 - **Recompile the stylesheet after ANY template edit that introduces a new utility class.**
-  There is no `make` target for this and no stage of its own; nothing in the build notices
-  when the compiled sheet is stale, so a template can use a class that was never compiled and
-  the page renders unstyled with no error anywhere:
+  There is no `make` target for this and no stage of its own. Since Phase 36 the website push
+  notices a stale sheet and refuses (`stylesheet_out_of_step`), but the laptop's own server does
+  not: a template can use a class that was never compiled and the local page renders unstyled
+  with no error:
 
   ```powershell
   ./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
@@ -1049,6 +1056,224 @@ uv run python -m scripts.acknowledge_upstream_change --dataset schedules --seaso
 - Sealed seasons only. Live-season (2026) changes have no acknowledgement: each is listed in the
   email once, the week it is recorded, marked `fixed by ledger correction` when a stored correction
   belongs to it.
+
+---
+
+## Website (hosted dashboard)
+
+Added 2026-10-18 (Phase 36). The dashboard is also published to Vercel, so you can read it on your
+phone while the laptop is off. The laptop still does all the work: the hosted copy only serves the
+web cache the laptop last pushed, and it never contacts the laptop. How the push fits into the daily
+run is explained in `AUTOMATION.md` ("Website push"); this section is what you do. Every command
+runs in PowerShell from the repository root. This guide names the two `.env` variables only: never
+paste a value into a chat, a commit, an issue or a log.
+
+### What it is
+
+- The Vercel project `nfl-predict` in the team `jack-cutraras-projects` (the Pro plan you already
+  have; no add-ons, no extra cost).
+- Its address is the production URL named by `PRODUCTION_URL` in `pipeline/site_push.py` (the
+  stable `*.vercel.app` alias; there is no custom domain).
+- Every page sits behind Vercel's own sign-in (Vercel Authentication, scope All Deployments). A
+  visitor who is not signed in to a Vercel account with access to the team sees Vercel's login page,
+  never the dashboard. That includes `/health` and the `/static` files.
+- It is the same app as the laptop's, serving the same pages, fragments, exports and `/health`. The
+  hosted copy is refreshed after every daily 17:00 ET run that did not fail, game day or not (a
+  daily heartbeat), and whenever you push by hand.
+
+### One-time setup
+
+1. **The dedicated token.** Go to https://vercel.com/account/settings/tokens -> Create. Scope it to
+   the `jack-cutraras-projects` team, set the expiry to about one year, and name it
+   `nfl-predict website push`. Put it in `.env` on one line `VERCEL_TOKEN=` followed by the value,
+   and nowhere else. The push hands it to the Vercel CLI only through the CLI's environment, never
+   on a command line. Your own `vercel login` session is never used. Accepted (D-01): Vercel cannot
+   limit a token to one project, so this token can also reach the team's other projects.
+2. **The protection bypass.** In Vercel: project `nfl-predict` -> Settings -> Deployment Protection
+   -> Protection Bypass for Automation -> add a secret. Put it in `.env` on one line
+   `VERCEL_BYPASS_SECRET=` followed by the value. It is how the laptop reads the protected `/health`
+   back after a push (D-15): it is sent only in the `x-vercel-protection-bypass` request header,
+   never in a URL.
+3. **Write down the token's expiry date here** (YYYY-MM-DD):
+
+   Token expires: (recorded at setup)
+
+4. **Which CLI the push runs.** The push runs the Vercel CLI installed globally under nvm Node
+   24.18.0, by absolute path: `NODE_EXE` and `VERCEL_CLI_JS` in `pipeline/site_push.py` (D-16).
+   The scheduled task has no user PATH, so a bare `vercel` would not be found. If that Node version
+   is ever uninstalled, install the CLI under the Node you keep and update those two constants;
+   until then every push fails with `cli_missing`.
+5. **The switch.** Until `config/site_push_enabled.json` is committed, every push -- daily or by
+   hand -- only records `not_pushed` / `push_not_enabled` in the push log and sends nothing to
+   Vercel. Committing that file is the LAST setup step, after the protection has been proven and
+   after your go-ahead.
+
+### Never change Deployment Protection
+
+Vercel Authentication with scope All Deployments was proven once, at setup, by recorded live
+refusals: the production URL, a per-deployment URL, `/health` and a `/static` file all refused a
+request with no credential, and a wrong bypass value was refused too. Nothing re-checks it after
+that. No push reads the setting back. So the Deployment Protection setting must never be changed:
+never switch it to "production stays public" or any narrower scope, never create a share link, and
+never make `/health` public to ease a check (D-02). If it is ever changed by mistake, put it back,
+then run the refusal check in "Checking the live site from the laptop" below.
+
+### Opening it on the phone
+
+Open the production URL in the phone's browser. The first time, Vercel shows its login page: sign
+in with the Vercel account that owns the team. Vercel then keeps the phone signed in, so later
+visits open the dashboard directly. If the login page comes back, sign in again. It works the same
+over cellular as on home Wi-Fi, and it does not need the laptop to be on.
+
+### Push now by hand
+
+```powershell
+uv run python -m scripts.push_site
+```
+
+- **When:** after a `FAILED: website push` phone push, once you have fixed what it named (for
+  example a renewed token, or a recompiled stylesheet); or whenever you want the phone copy
+  refreshed without re-running the day.
+- It goes through the daily push's own routine: the same switch, the same refusals, the same fresh
+  publish id, the same read-back proof and the same push-log record, with source `manual`.
+- It prints the routine's `SITE_PUSH=` line, then `PUSH_SITE= <outcome> <publish id | reason>`.
+  Exit 0 means the push succeeded and was read back from the live site; exit 1 means anything else.
+- It refuses at once (`lock_held`) while another push or a cache rebuild is running. Never run it
+  between 16:30 and 18:15 ET: the 17:00 run's cache rebuild and its push hold the lock then, and a
+  long manual push can make that rebuild time out (the run is then degraded and its own push
+  refuses).
+
+### Reading logs/site_pushes.jsonl
+
+`logs/site_pushes.jsonl` is append-only and holds one JSON line per push attempt, daily or manual,
+including attempts that did not push:
+
+| Field | Meaning |
+|-------|---------|
+| `time_utc` | When the attempt finished (UTC). |
+| `publish_id` | The fresh id this attempt minted and stamped into the cache (null if it stopped before that). |
+| `run_id` | The daily run's id; null for a manual push. |
+| `source` | `daily` or `manual`. |
+| `outcome` | `succeeded`, `failed`, `refused` or `not_pushed`. |
+| `reason` | Why it did not succeed (table below); null on success. |
+| `deployment_id`, `deployment_url` | The Vercel deployment the CLI reported, and its own per-deployment URL. |
+| `local_sha256` | The SHA-256 of the cache file as it was uploaded. |
+| `readback` | What the last read of the live `/health` saw: `matched`, `old_id`, `digest_mismatch`, `no_id`, `http_<status>` or `transport_<ExceptionClass>`. |
+| `data_format_found`, `data_format_expected` | The cache's data-format version and the one the code expects, once read. |
+
+A push is `succeeded` only when the live `/health` returned this attempt's publish id AND the
+SHA-256 of the file it serves equals `local_sha256`. The CLI's exit code is never the evidence. The
+log never holds a token, a bypass value or a URL secret. Read the latest lines with
+`Get-Content logs/site_pushes.jsonl -Tail 20`.
+
+| Reason | What it means | What to do |
+|--------|---------------|------------|
+| `push_not_enabled` (`not_pushed`) | The switch file is absent (setup not finished, or paused). | Nothing, unless you meant to push: see "Pausing every push". |
+| `failed`, `run_failed` (`not_pushed`) | The daily run itself failed, so it did not push. | Fix the run (its own `FAILED:` push says how); the next good run pushes. |
+| `lock_held` (`refused`) | Another push or a cache rebuild held the lock. | Wait for it to finish, then push by hand. |
+| `rebuild_incomplete`, `cache_missing` (`refused`) | This run's cache rebuild did not finish, or `data/web_cache.duckdb` is missing. | Rebuild the cache (operation 7), then push by hand. |
+| `stylesheet_out_of_step` (`refused`) | A fresh compile of the stylesheet differs from the committed `web/static/css/tailwind-compiled.css`. | Run the recompile in operation 8, commit the sheet, then push by hand. |
+| `stylesheet_unverifiable` (`refused`) | The stylesheet could not be compiled to check it, usually because `tools/tailwindcss.exe` is missing. | Restore `tools/tailwindcss.exe`, then push by hand. |
+| `format_mismatch_rebuild_failed`, `format_mismatch_after_rebuild` (`refused`) | The cache's data-format version did not match the code; the push rebuilt the cache once and the rebuild failed or still did not match. | Rebuild the cache (operation 7) and read its errors, then push by hand. |
+| `missing_token`, `missing_bypass_secret` (`failed`) | That `.env` value is not set. | Add it (One-time setup), then push by hand. |
+| `deploy_exit_<n>` (`failed`) | The Vercel CLI refused the deploy. Most often the token has expired or been revoked. | Check the token; renew it if it expired (below), then push by hand. |
+| `cli_missing`, `deploy_timeout`, `deploy_output_unparseable` (`failed`) | The CLI was not where `NODE_EXE` says, ran longer than 15 minutes, or printed something the push could not read. | `cli_missing`: see One-time setup step 4. Otherwise push by hand again. |
+| `readback_failed` (`failed`) | The deploy ran, but the live `/health` never showed this attempt's publish id and digest within about two minutes. | Push by hand again, then check `/health` (below). |
+| any other name, such as `OSError` | An unexpected error inside the push, named by its exception class only. | Push by hand again. If the same class repeats, it names what broke. |
+
+### What "FAILED: website push" means
+
+A failed or refused push sends one normal-priority `FAILED: website push` phone push naming the
+outcome and the reason (both data-format versions on a format refusal), and changes nothing else:
+the run's exit code, its ledger rows and its outputs are the same as if the push had worked. After
+a failed push:
+
+- the phone copy still shows the last good push, and grows the "Out of date" bar once that push is
+  more than 36 hours old;
+- the laptop's own copy already carries the failed attempt's publish stamp (the stamp is written
+  before the upload), so the laptop shows NO bar even though the phone copy is stale (D-14). Do not
+  read the laptop's pages as proof the phone is current.
+
+Fix what the reason names (table above), then push by hand.
+
+### Pausing every push
+
+To stop every push, daily and manual:
+
+```powershell
+git rm config/site_push_enabled.json
+git commit -m "pause the website push"
+```
+
+Every run then records `not_pushed` / `push_not_enabled` and sends nothing. To resume, re-create
+the file (its contents are not read), `git add config/site_push_enabled.json`, commit, and push by
+hand once to confirm it reads back.
+
+### Renewing the token (yearly)
+
+Before the date on the `Token expires:` line above:
+
+1. Create a new token exactly as in One-time setup step 1.
+2. Replace the `VERCEL_TOKEN=` line in `.env` with the new value.
+3. Push by hand (`uv run python -m scripts.push_site`) and confirm `PUSH_SITE= succeeded`.
+4. Update the `Token expires:` line in this file and commit it.
+5. Delete the old token at https://vercel.com/account/settings/tokens.
+
+A token that expires first shows up as a `FAILED: website push` with a `deploy_exit_<n>` reason.
+
+### Old copies of the site
+
+Vercel keeps production deployments for 30 days, plus always the latest 20 and the one serving the
+production URL (D-10). Older ones can no longer be opened. The push log still keeps every
+attempt's publish id, deployment id, per-deployment URL and digest for the whole season, so each
+push stays on record after its deployment is gone.
+
+### Checking the live site from the laptop
+
+```powershell
+uv run python -m scripts.fetch_hosted_routes
+```
+
+It fetches every route of a fixed list -- the five nav pages, a game page, an unknown game, the
+four retired redirects, the four fragments, both exports, `/health`, the stylesheet and a font --
+from the production URL, sending the bypass value only in its header. A route passes only when it
+answers exactly as the laptop does (same status, same redirect target) and carries its marker: a
+page's title, a redirect's target, the right content type, and for `/health` the publish id and
+digest of the newest succeeded push in the push log. So a Vercel login page that answers 200 fails.
+It prints one `ROUTE= <path> status=<code> marker=<yes|no>` line per route and ends with
+`FETCH_HOSTED= pass <n>` (exit 0) or `FETCH_HOSTED= fail <k> of <n>` (exit 1). Options:
+`--game-id` picks the game page (default: the first in the local cache), `--publish-id` names the
+push `/health` must show, and `--record FILE` also writes the lines to a file. Do not run it within
+two minutes of 18:00 ET: a game locking mid-run changes a page between two requests.
+
+To check that strangers are still refused (after a protection scare, for example):
+
+```powershell
+uv run python -m scripts.fetch_hosted_routes --refusals --deployment-url <a per-deployment URL from the push log>
+```
+
+It sends no credential to the production URL, that deployment URL, `/health` and the stylesheet,
+and prints one `REFUSAL= <url> status=<code> content=<none|LEAKED>` line each, with the status line
+and a few safe headers (never a cookie). Every line must read `content=none` with status 401, 403
+or a redirect to vercel.com, ending `FETCH_HOSTED= pass 4`. Add `--wrong-bypass` to send a random
+wrong bypass value instead of none; it must be refused the same way.
+
+### The "Out of date" bar and the data-format notice
+
+- **The orange "Out of date" bar** sits above the menu on every page, on the phone copy and on the
+  laptop, when the newest push is more than 36 hours old: "Out of date: last update <weekday, date,
+  time ET>. The laptop has not reported since." With no push on record it reads "Out of date: no
+  push recorded." The pages stay readable. It means the laptop has not pushed for a day and a half:
+  check that it was on or asleep (not shut down) at 17:00 ET, read `logs/site_pushes.jsonl`, and
+  push by hand. **Expected right now:** from the day the bar shipped until the first real push, the
+  laptop's own pages read "Out of date: no push recorded." -- the laptop's cache has never been
+  pushed, and the bar follows the same rule on both copies. It goes away after the first push.
+- **The data-format notice** is a plain page answered with HTTP 503 on every page, fragment and
+  export: "This copy of the site can't show its data yet. The pages expect data format <n>; the data
+  file is format <m>." It means the code and the cache were built for different versions. Locally,
+  rebuild the cache (operation 7); the server picks it up on the next request with no restart. On
+  the phone copy, the next push fixes it (it rebuilds a mismatched cache before deploying); push by
+  hand to fix it sooner. `/health` names both versions.
 
 ---
 
