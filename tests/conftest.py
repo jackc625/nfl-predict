@@ -569,6 +569,10 @@ def _notifications_inert_unless_a_test_turns_them_on(
     through ``notify.digest_sections.PROBE_LOG_PATH`` / ``MANIFEST_DIR``; here both point at paths
     that never exist, so no test reads ``config/upstream_probe_log.jsonl`` or
     ``config/upstream_live``. A section test points them at its own ``tmp_path`` files.
+
+    The daily run's end-of-run website push (Phase 36, Plan 36-07) is a no-op here too, so no
+    unrelated run writes a push-log record; a wiring test restores
+    ``monkeypatch.setattr(daily, "SITE_PUSH", daily._push_site)`` itself.
     """
     import pandas as pd
 
@@ -577,6 +581,7 @@ def _notifications_inert_unless_a_test_turns_them_on(
     from utils.current_slate import SCHEDULE_COLUMNS
 
     monkeypatch.setattr(daily_lock_pipeline, "NOTIFY_END_OF_RUN", lambda _report: None)
+    monkeypatch.setattr(daily_lock_pipeline, "SITE_PUSH", lambda _report: None)
     monkeypatch.setattr(daily_lock_pipeline, "SEASON_WINDOW", lambda _d: "unknown")
     monkeypatch.setattr(
         capture_closing_lines, "NOTIFY_CLOSING_FAILURE", lambda *_a, **_k: None

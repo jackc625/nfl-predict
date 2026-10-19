@@ -30,6 +30,7 @@ if (
     from forward_ledger.closing_schedule import TriggerRegistration
     from forward_ledger.runner import SettleOutcome
     from forward_ledger.sync import SyncOutcome
+    from pipeline.site_push import PushOutcome
 
 __all__ = [
     "STATUS_DEGRADED",
@@ -87,6 +88,15 @@ class RunReport:
         appended_rows: The forward-ledger rows this run newly appended (Plan 35-04's
             ``RecordOutcome.appended_rows``), exactly as written.
         season_window: ``in``, ``out`` or ``unknown`` for the watcher's season window (Plan 35-13).
+        cache_rebuild_attempted: True when this run tried to rebuild the web cache (the populate
+            step on a prediction day, or the settle-day rebuild on a no-games day), so the website
+            push can refuse a rebuild that did not finish (Phase 36, RESEARCH Pitfall 10).
+        cache_rebuild_completed: True when that rebuild finished.
+        site_push_ran: True when the end-of-run website push was attempted (Phase 36, D-13).
+        site_push: The push's ``PushOutcome`` -- exactly what its push-log record says -- when the
+            routine returned one.
+        site_push_error: The class name of an exception that escaped the push routine, if any.
+            No push-log record could be written for that attempt, so this is its only trace.
     """
 
     run_date_et: date
@@ -112,6 +122,11 @@ class RunReport:
     sync_error: str | None = None
     appended_rows: list[dict[str, Any]] = field(default_factory=list)
     season_window: str = "unknown"
+    cache_rebuild_attempted: bool = False
+    cache_rebuild_completed: bool = False
+    site_push_ran: bool = False
+    site_push: PushOutcome | None = None
+    site_push_error: str | None = None
 
     def record_exception(self, exc: BaseException) -> None:
         """Note the exception that stopped the run: its class, its first line, a Ctrl+C."""

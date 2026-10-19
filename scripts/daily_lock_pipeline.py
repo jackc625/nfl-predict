@@ -16,6 +16,10 @@ WHAT ONE RUN DOES
 2. Selects tomorrow's games -- the games whose lock is today's 18:00 ET. None: a no-op record.
 3. Runs ``pipeline.daily_steps``: collection, the FULL-HISTORY gold build, then prediction and
    emission, all before the lock (owner ruling "Finish before 6 PM").
+4. Pushes the website (Phase 36, D-13) at the end of every run that did not fail, after the ledger
+   sync and before the phone pushes, through ``pipeline.site_push``; a run ending ``failed`` or
+   ``run_failed`` records "not pushed" instead. Until ``config/site_push_enabled.json`` exists,
+   every push only records "not pushed".
 
 WHY THE FULL HISTORY IS REBUILT, AND WHY THAT CANNOT DENY PREDICTIONS TO TONIGHT'S GAMES
 -----------------------------------------------------------------------------------------
@@ -58,6 +62,7 @@ from data.write_sink import (
 from forward_ledger.cutover import forward_rows_go_to_ledger
 from forward_ledger.run_log import bound_run_id, new_run_id
 from notify.report import (
+    STATUS_FAILED,
     STATUS_LOCK_PASSED,
     STATUS_NO_GAMES,
     STATUS_OFFSEASON,
@@ -645,16 +650,20 @@ def _settle_ledger(start: datetime, *, report: RunReport) -> SettleOutcome | Non
     return outcome
 
 
-def _rebuild_cache_after_settle() -> None:
+def _rebuild_cache_after_settle(report: RunReport) -> None:
     """Rebuild the web cache after a settle that changed the ledger on a no-games day.
 
     Without it the Super Bowl's grade -- settled on a day with no game tomorrow -- would never
-    reach ``/bets``. A failure is printed and recorded, never propagated.
+    reach ``/bets``. A failure is printed and recorded, never propagated. Whether the rebuild was
+    attempted and whether it completed is noted on *report*, so the website push refuses a
+    rebuild that did not finish (Phase 36, RESEARCH Pitfall 10).
     """
     from pipeline import steps
 
+    report.cache_rebuild_attempted = True
     try:
         steps.step_populate_web_cache()
+        report.cache_rebuild_completed = True
         print("WEB_CACHE_AFTER_SETTLE= rebuilt")
     except Exception as exc:  # noqa: BLE001 - the cache is a convenience, never a run failure
         print(f"WEB_CACHE_AFTER_SETTLE= failed {_failure_text(exc)}")
@@ -723,6 +732,63 @@ def _notify_quietly(report: RunReport) -> None:
     except Exception as exc:  # noqa: BLE001 - sending never alters the run's result
         print(f"NOTIFY= failed {_failure_text(exc)}")
         logger.error("End-of-run notification failed", error=_failure_text(exc))
+
+
+# ---------------------------------------------------------------------------
+# The end-of-run website push (Phase 36, D-13). It runs after every write and the ledger sync and
+# BEFORE the notifier, so the phone pushes are decided only once the site carries this run's data
+# (SPEC R7). It can never change the run's result: it is called only through _push_site_quietly.
+# ---------------------------------------------------------------------------
+
+
+def _push_site(report: RunReport) -> object:
+    """Push the website once for this run, or record that a failed run did not push (D-13).
+
+    A run ending ``failed`` or ``run_failed`` makes no deployment: it writes one ``not_pushed``
+    record naming that status, so a failed day can never refresh the site (SPEC R5). Every other
+    outcome pushes, telling the push whether this run attempted a cache rebuild and whether it
+    completed (SPEC R6(a)). The import is LAZY, like the notifier's.
+    """
+    from pipeline import site_push
+
+    if report.status in (STATUS_FAILED, STATUS_RUN_FAILED):
+        return site_push.record_not_pushed(
+            source=site_push.SOURCE_DAILY, reason=report.status, run_id=report.run_id
+        )
+    return site_push.push_site(
+        source=site_push.SOURCE_DAILY,
+        run_id=report.run_id,
+        rebuild_attempted=report.cache_rebuild_attempted,
+        rebuild_completed=report.cache_rebuild_completed,
+        lock_wait_seconds=site_push.DAILY_LOCK_WAIT_SECONDS,
+    )
+
+
+#: Seam: the test suite keeps it inert (tests/conftest.py); a wiring test restores this default.
+SITE_PUSH: Callable[[RunReport], object] = _push_site
+
+
+def _push_site_quietly(report: RunReport) -> None:
+    """Call the website push; its outcome lands on *report*, and a raise NEVER propagates.
+
+    The push routine turns any raise after its switch check into its own failed record and returns
+    it (Plan 36-05). What reaches the ``except`` here is a raise from the switch check,
+    ``record_not_pushed`` or the record write itself, where no record could be written, so the
+    class name noted on *report* is that attempt's only trace. Only ``Exception`` is caught: a
+    Ctrl+C, and the test guard's ``pytest.fail``, still stop the process.
+    """
+    report.site_push_ran = True
+    try:
+        from pipeline.site_push import PushOutcome
+
+        outcome = SITE_PUSH(report)
+    except Exception as exc:  # noqa: BLE001 - the push never alters the run's result
+        report.site_push_error = _failure_text(exc)
+        print(f"SITE_PUSH= failed {_failure_text(exc)}")
+        logger.error("Website push failed", error=_failure_text(exc))
+        return
+    if isinstance(outcome, PushOutcome):
+        report.site_push = outcome
 
 
 def _season_window(run_date_et: date) -> str:
@@ -812,8 +878,10 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                 raise
             finally:
                 # Its own send point: this branch precedes the try/finally below. Still no data
-                # request is made -- the notification providers are not data sources (D-13).
+                # request is made -- the notification providers and the website push are not data
+                # sources (D-13). The push goes first, as on the main path below.
                 if not dry_run and not report.interrupted:
+                    _push_site_quietly(report)
                     _notify_quietly(report)
             return 0
 
@@ -853,8 +921,15 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                 # Rows appended before a later failure are still reported (failed, then bets).
                 if "slate" in progress:
                     report.appended_rows = list(progress["slate"].appended_rows)
-                # After every write and the sync; never on a dry run or a Ctrl+C (D-13).
+                # After every write and the sync; never on a dry run or a Ctrl+C (D-13). The
+                # website push runs BEFORE the check-in the notifier ends with, so it delays that
+                # check-in by at most its own worst case: a 600 s lock wait + a 900 s deploy bound
+                # + 13 read-back attempts (about 130 s) + a self-heal rebuild (about 45 s), roughly
+                # 28 minutes. The 2026-10-17 prediction day ran 17:00-17:14 ET, so the worst case
+                # checks in about 17:45 ET, well before the watcher's 18:30 ET down time. A push
+                # that is switched off returns in milliseconds.
                 if not dry_run and not report.interrupted:
+                    _push_site_quietly(report)
                     _notify_quietly(report)
 
 
@@ -900,7 +975,7 @@ def _run_the_day(
     if slate.schedule.empty:
         logger.info("No games tomorrow; no-op", run_date_et=run_date_et.isoformat())
         if settle is not None and settle.changed:
-            _rebuild_cache_after_settle()
+            _rebuild_cache_after_settle(report)
         report.status = STATUS_NO_GAMES
         report.tomorrow_game_ids = ()
         _record_no_prediction(run_date_et, "no_games", [])
@@ -938,6 +1013,19 @@ def _run_the_day(
         for step in getattr(log, "steps", ())
         if step.status == StepStatus.FAILED.value
     )
+    # Whether this run attempted the cache rebuild and whether it completed: the website push
+    # refuses a rebuild that did not finish (SPEC R6(a), RESEARCH Pitfall 10).
+    populate = next(
+        (
+            step
+            for step in getattr(log, "steps", ())
+            if step.name == "populate_web_cache"
+        ),
+        None,
+    )
+    if populate is not None and populate.status != StepStatus.SKIPPED.value:
+        report.cache_rebuild_attempted = True
+        report.cache_rebuild_completed = populate.status == StepStatus.SUCCESS.value
     if log.status != STATUS_SUCCESS:
         report.unpredicted_game_ids = _unpredicted_or_unknown(slate)
     _print_contract(
