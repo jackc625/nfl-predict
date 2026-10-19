@@ -1103,10 +1103,10 @@ paste a value into a chat, a commit, an issue or a log.
    The scheduled task has no user PATH, so a bare `vercel` would not be found. If that Node version
    is ever uninstalled, install the CLI under the Node you keep and update those two constants;
    until then every push fails with `cli_missing`.
-5. **The switch.** Until `config/site_push_enabled.json` is committed, every push -- daily or by
-   hand -- only records `not_pushed` / `push_not_enabled` in the push log and sends nothing to
-   Vercel. Committing that file is the LAST setup step, after the protection has been proven and
-   after your go-ahead.
+5. **The switch.** Unless `config/site_push_enabled.json` exists and reads `"enabled": true`, every
+   push -- daily or by hand -- only records `not_pushed` / `push_not_enabled` in the push log and
+   sends nothing to Vercel. Committing that file is the LAST setup step, after the protection has
+   been proven and after your go-ahead.
 
 ### Never change Deployment Protection
 
@@ -1171,7 +1171,7 @@ log never holds a token, a bypass value or a URL secret. Read the latest lines w
 
 | Reason | What it means | What to do |
 |--------|---------------|------------|
-| `push_not_enabled` (`not_pushed`) | The switch file is absent (setup not finished, or paused). | Nothing, unless you meant to push: see "Pausing every push". |
+| `push_not_enabled` (`not_pushed`) | The switch file is absent or does not read `"enabled": true` (setup not finished, or paused). | Nothing, unless you meant to push: see "Pausing every push". |
 | `failed`, `run_failed` (`not_pushed`) | The daily run itself failed, so it did not push. | Fix the run (its own `FAILED:` push says how); the next good run pushes. |
 | `lock_held` (`refused`) | Another push or a cache rebuild held the lock. | Wait for it to finish, then push by hand. |
 | `rebuild_incomplete`, `cache_missing` (`refused`) | This run's cache rebuild did not finish, or `data/web_cache.duckdb` is missing. | Rebuild the cache (operation 7), then push by hand. |
@@ -1202,16 +1202,19 @@ Fix what the reason names (table above), then push by hand.
 
 ### Pausing every push
 
-To stop every push, daily and manual:
+To stop every push, daily and manual, change `"enabled": true` to `"enabled": false` in
+`config/site_push_enabled.json` and commit it:
 
 ```powershell
-git rm config/site_push_enabled.json
+git add config/site_push_enabled.json
 git commit -m "pause the website push"
 ```
 
-Every run then records `not_pushed` / `push_not_enabled` and sends nothing. To resume, re-create
-the file (its contents are not read), `git add config/site_push_enabled.json`, commit, and push by
-hand once to confirm it reads back.
+Every run then records `not_pushed` / `push_not_enabled` and sends nothing. Only exactly `true`
+pushes: `false`, a missing file, a string such as `"true"` or a file that is not valid JSON all
+pause it. The push reads the file on disk, so the pause takes effect at the next run even before
+the commit. To resume, set it back to `"enabled": true`, commit, and push by hand once to confirm
+it reads back.
 
 ### Renewing the token (yearly)
 

@@ -11,7 +11,8 @@ record, with source ``manual``. Use it after a failed daily push, or after renew
 
 It refuses at once, without waiting, while a cache rebuild or another push holds the publish lock,
 so do not run it between 16:30 and 18:15 ET, when the 5 PM run's rebuild and push hold that lock.
-Until ``config/site_push_enabled.json`` exists it does nothing but record "not pushed".
+Unless ``config/site_push_enabled.json`` reads ``"enabled": true`` it does nothing but record
+"not pushed".
 
 OUTPUT CONTRACT
 ---------------
@@ -46,8 +47,8 @@ re-running the day.
 Exits 0 only when the push succeeded and read back; 1 otherwise, including a
 refusal (lock_held) because a cache rebuild or another push holds the lock.
 Do not run it between 16:30 and 18:15 ET, while the 5 PM run's rebuild and
-push hold that lock. Until config/site_push_enabled.json exists it only
-records "not pushed".
+push hold that lock. Unless config/site_push_enabled.json reads
+"enabled": true it only records "not pushed".
 """
 
 

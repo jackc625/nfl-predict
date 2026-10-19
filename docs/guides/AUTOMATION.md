@@ -1151,11 +1151,12 @@ what each reason means are in `RUNBOOK.md`, "Website (hosted dashboard)".
 
 ### The switch comes first
 
-Until `config/site_push_enabled.json` is committed, every run records one `not_pushed` /
-`push_not_enabled` line in `logs/site_pushes.jsonl` and sends nothing: no secret is read, no lock
-is taken, nothing is rebuilt or stamped, the Vercel CLI is not run, and no phone push is sent.
-The owner commits that file as the last setup step. `git rm config/site_push_enabled.json` and a
-commit pause every push, daily and manual, the same way.
+Unless `config/site_push_enabled.json` exists and reads `"enabled": true`, every run records one
+`not_pushed` / `push_not_enabled` line in `logs/site_pushes.jsonl` and sends nothing: no secret is
+read, no lock is taken, nothing is rebuilt or stamped, the Vercel CLI is not run, and no phone push
+is sent. The owner commits that file as the last setup step. Setting it to `"enabled": false` (or
+deleting it) pauses every push, daily and manual, the same way; anything but exactly `true`,
+including a file that is not valid JSON, counts as off.
 
 ### Where it runs, and which runs push
 

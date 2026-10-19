@@ -18,8 +18,8 @@ WHAT ONE RUN DOES
    emission, all before the lock (owner ruling "Finish before 6 PM").
 4. Pushes the website (Phase 36, D-13) at the end of every run that did not fail, after the ledger
    sync and before the phone pushes, through ``pipeline.site_push``; a run ending ``failed`` or
-   ``run_failed`` records "not pushed" instead. Until ``config/site_push_enabled.json`` exists,
-   every push only records "not pushed".
+   ``run_failed`` records "not pushed" instead. Unless ``config/site_push_enabled.json`` reads
+   ``"enabled": true``, every push only records "not pushed".
 
 WHY THE FULL HISTORY IS REBUILT, AND WHY THAT CANNOT DENY PREDICTIONS TO TONIGHT'S GAMES
 -----------------------------------------------------------------------------------------

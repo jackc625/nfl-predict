@@ -262,7 +262,7 @@ def switched_on() -> Path:
     """The (quarantined) D-23 switch file, written so the push is switched on."""
     marker = site_push.PUSH_ENABLED_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text('{"switched_on": "test"}\n', encoding="utf-8")
+    marker.write_text('{"enabled": true, "why": "test"}\n', encoding="utf-8")
     return marker
 
 
@@ -461,6 +461,31 @@ def test_a_push_that_is_not_switched_on_only_records_it(
     assert len(records) == 1
     assert (records[0]["outcome"], records[0]["source"]) == ("not_pushed", source)
     assert "SITE_PUSH= not_pushed push_not_enabled" in capsys.readouterr().out
+
+
+def test_a_switch_file_that_does_not_say_enabled_true_pauses_the_push(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """review WR-02: the obvious pause, "enabled": false, really pauses (as does a broken file)."""
+    cache_path = build_cache(tmp_path)
+    monkeypatch.setattr(
+        site_push, "LOAD_PUSH_SECRETS", _must_not_be_called("the secrets")
+    )
+    marker = site_push.PUSH_ENABLED_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    switch_texts = ('{"enabled": false}', '{"enabled": "true"}', "[true]", "{not json")
+
+    for text in switch_texts:
+        marker.write_text(text, encoding="utf-8")
+        outcome = site_push.push_site(
+            source="daily",
+            cache_path=cache_path,
+            rebuild=_must_not_be_called("the rebuild"),
+            check_stylesheet=_must_not_be_called("the stylesheet check"),
+        )
+        assert (outcome.outcome, outcome.reason) == ("not_pushed", "push_not_enabled")
+
+    assert len(site_push.read_site_pushes()) == len(switch_texts)
 
 
 @pytest.mark.parametrize(

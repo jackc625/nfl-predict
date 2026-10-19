@@ -455,8 +455,8 @@ graphify-out/
 !config/upstream_live/*.json
 
 # Phase 36 (D-23): the website-push SWITCH. config/site_push_enabled.json is created and
-# committed only by Plan 36-10, after the owner's go-ahead, and `git rm`-ed to pause every
-# push. The same `*.json` rule that swallowed the two records above would swallow it too, and
+# committed only by Plan 36-10, after the owner's go-ahead; set "enabled" to false to pause
+# every push. The same `*.json` rule that swallowed the two records above would swallow it too, and
 # a plain `git add` would then silently skip it -- a switch that is never tracked can never
 # be seen in history. It is never uploaded: .vercelignore does not admit config/.
 #

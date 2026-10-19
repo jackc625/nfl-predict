@@ -2,9 +2,9 @@
 
 THE ORDER, and every step is load-bearing
 -----------------------------------------
-1. The setup switch (D-23). Until Plan 36-10 commits :data:`PUSH_ENABLED_MARKER` after the owner's
-   decision, every attempt writes one ``not_pushed`` / ``push_not_enabled`` record and stops --
-   before a secret is read, the lock is taken, anything is rebuilt or stamped, or the CLI runs.
+1. The setup switch (D-23). Unless :data:`PUSH_ENABLED_MARKER` says ``"enabled": true``, every
+   attempt writes one ``not_pushed`` / ``push_not_enabled`` record and stops -- before a secret is
+   read, the lock is taken, anything is rebuilt or stamped, or the CLI runs.
 2. The secrets (D-01, D-15). A missing token or bypass value is a failed push, before the lock.
 3. The publish lock (D-18, ``pipeline.cache_lock``), held for the rest of the attempt, so a push
    never overlaps a cache rebuild.
@@ -76,8 +76,9 @@ if TYPE_CHECKING:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CACHE_PATH = REPO_ROOT / "data" / "web_cache.duckdb"
 
-# The D-23 switch. Created and committed only after the owner's one-way-door decision (Plan 36-10);
-# `git rm` it to pause every push. Its contents are not read: it exists or it does not.
+# The D-23 switch. Created and committed only after the owner's one-way-door decision (Plan 36-10).
+# The push runs only while it is a JSON object whose "enabled" is exactly true; set it to false (or
+# `git rm` the file) to pause every push. A missing or unreadable file is switched off.
 PUSH_ENABLED_MARKER = REPO_ROOT / "config" / "site_push_enabled.json"
 
 #: The append-only push log: one record per attempt, daily or manual.
@@ -241,6 +242,15 @@ def _present(value: SecretStr | None) -> SecretStr | None:
     if value is None or not value.get_secret_value().strip():
         return None
     return value
+
+
+def _push_enabled() -> bool:
+    """Whether the switch file is a JSON object whose ``enabled`` is exactly ``true``."""
+    try:
+        switch = json.loads(PUSH_ENABLED_MARKER.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(switch, dict) and switch.get("enabled") is True
 
 
 def _default_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
@@ -690,7 +700,7 @@ def push_site(
     Returns:
         The attempt's outcome, exactly as recorded in the push log.
     """
-    if not PUSH_ENABLED_MARKER.exists():
+    if not _push_enabled():
         return record_not_pushed(
             source=source, reason=REASON_PUSH_NOT_ENABLED, run_id=run_id
         )
