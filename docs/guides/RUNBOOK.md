@@ -1096,7 +1096,7 @@ paste a value into a chat, a commit, an issue or a log.
    never in a URL.
 3. **Write down the token's expiry date here** (YYYY-MM-DD):
 
-   Token expires: (recorded at setup)
+   Token expires: 2027-10-19
 
 4. **Which CLI the push runs.** The push runs the Vercel CLI installed globally under nvm Node
    24.18.0, by absolute path: `NODE_EXE` and `VERCEL_CLI_JS` in `pipeline/site_push.py` (D-16).
