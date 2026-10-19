@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -37,8 +38,15 @@ from pydantic import SecretStr
 
 from api.cache import populate_cache
 from api.cache_reader import open_cache_readonly
-from api.cache_schema import DATA_FORMAT_VERSION_KEY, PUBLISH_ID_KEY, PUSH_TIME_KEY
-from pipeline import cache_lock, site_push
+from api.cache_schema import (
+    DATA_FORMAT_VERSION,
+    DATA_FORMAT_VERSION_KEY,
+    PUBLISH_ID_KEY,
+    PUSH_TIME_KEY,
+)
+from pipeline import cache_lock, site_push, steps
+from scripts import populate_cache as populate_cache_script
+from utils.file_lock import FileLockHeldError
 
 if TYPE_CHECKING:
     from conf.settings import Settings
@@ -499,3 +507,272 @@ def stamp_data_format(path: Path, value: str) -> None:
         )
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 3: the lock at every rebuild, the self-heal, the read-back and deploy failures, a raise
+# ---------------------------------------------------------------------------
+
+
+def _lock_probe(seen: list[str]) -> None:
+    """Try the publish lock without waiting; record whether something already held it."""
+    try:
+        with cache_lock.cache_publish_lock(wait_seconds=0.0):
+            seen.append("free")
+    except FileLockHeldError:
+        seen.append("held")
+
+
+def test_every_rebuild_entry_point_holds_the_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(steps, "populate_web_cache_unlocked", lambda: _lock_probe(seen))
+
+    steps.step_populate_web_cache()
+
+    assert seen == ["held"]
+
+    rebuilt: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        populate_cache_script, "populate_cache", lambda **kw: rebuilt.append(kw)
+    )
+    monkeypatch.setattr(populate_cache_script, "REBUILD_LOCK_WAIT_SECONDS", 0.0)
+    elsewhere = tmp_path / "elsewhere"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "populate_cache.py",
+            *("--db-path", str(elsewhere / "web_cache.duckdb")),
+            *("--artifacts-dir", str(elsewhere)),
+            *("--outputs-dir", str(elsewhere)),
+            *("--gold-dir", str(elsewhere)),
+            *("--silver-dir", str(elsewhere)),
+            *("--predictions-dir", str(elsewhere)),
+            *("--bet-list-dir", str(elsewhere)),
+        ],
+    )
+    with (
+        cache_lock.cache_publish_lock(wait_seconds=0.0),
+        pytest.raises(SystemExit) as refused,
+    ):
+        populate_cache_script.main()
+
+    assert refused.value.code == 1
+    assert rebuilt == []
+    assert "POPULATE_CACHE= refused" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("rebuild_does", ["heals", "raises", "leaves_the_mismatch"])
+@pytest.mark.usefixtures("switched_on")
+def test_a_format_mismatch_self_heals_or_refuses(
+    rebuild_does: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = push_harness(monkeypatch, tmp_path)
+    stamp_data_format(harness.cache_path, str(DATA_FORMAT_VERSION + 1))
+    lock_seen: list[str] = []
+
+    def _rebuild() -> None:
+        _lock_probe(lock_seen)
+        if rebuild_does == "raises":
+            raise RuntimeError("rebuild-detail")
+        if rebuild_does == "heals":
+            stamp_data_format(harness.cache_path, str(DATA_FORMAT_VERSION))
+
+    # The DEFAULT rebuild is used, so the push really reaches the unlocked populate step.
+    monkeypatch.setattr(steps, "populate_web_cache_unlocked", _rebuild)
+
+    outcome = site_push.push_site(
+        source="daily",
+        cache_path=harness.cache_path,
+        check_stylesheet=no_stylesheet_problem,
+    )
+
+    assert lock_seen == ["held"], "the self-heal did not run under the push's lock"
+    printed = capsys.readouterr().out
+    if rebuild_does == "heals":
+        assert outcome.outcome == "succeeded"
+        assert len(harness.cli.calls) == 1
+        return
+    expected_reason = {
+        "raises": "format_mismatch_rebuild_failed",
+        "leaves_the_mismatch": "format_mismatch_after_rebuild",
+    }[rebuild_does]
+    assert (outcome.outcome, outcome.reason) == ("refused", expected_reason)
+    assert outcome.data_format_found == str(DATA_FORMAT_VERSION + 1)
+    assert outcome.data_format_expected == DATA_FORMAT_VERSION
+    assert harness.cli.calls == []
+    record = harness.records()[0]
+    assert (record["data_format_found"], record["data_format_expected"]) == (
+        str(DATA_FORMAT_VERSION + 1),
+        DATA_FORMAT_VERSION,
+    )
+    if rebuild_does == "raises":
+        assert f"SITE_PUSH= refused {expected_reason} RuntimeError" in printed
+        assert "rebuild-detail" not in printed
+
+
+@pytest.mark.usefixtures("switched_on")
+def test_a_held_lock_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = push_harness(monkeypatch, tmp_path)
+
+    with cache_lock.cache_publish_lock(wait_seconds=0.0):
+        outcome = site_push.push_site(
+            source="manual",
+            cache_path=harness.cache_path,
+            lock_wait_seconds=0.0,
+            rebuild=rebuild_must_not_run,
+            check_stylesheet=no_stylesheet_problem,
+        )
+
+    assert (outcome.outcome, outcome.reason) == ("refused", "lock_held")
+    assert harness.cli.calls == []
+    assert len(harness.records()) == 1
+
+
+def _served_publish_id(cache_path: Path) -> str | None:
+    return cache_meta(cache_path).get(PUBLISH_ID_KEY)
+
+
+@pytest.mark.parametrize(
+    ("readback", "answer"),
+    [
+        (
+            "old_id",
+            lambda _cache: httpx.Response(
+                200, json={"publish_id": "an-older-publish", "cache_sha256": "0" * 64}
+            ),
+        ),
+        (
+            "digest_mismatch",
+            lambda cache: httpx.Response(
+                200,
+                json={
+                    "publish_id": _served_publish_id(cache),
+                    "cache_sha256": "0" * 64,
+                },
+            ),
+        ),
+        ("no_id", lambda _cache: httpx.Response(200, json={"status": "ok"})),
+        (
+            "http_302",
+            lambda _cache: httpx.Response(
+                302, headers={"location": "https://vercel.com/login"}
+            ),
+        ),
+        ("http_401", lambda _cache: httpx.Response(401)),
+    ],
+)
+@pytest.mark.usefixtures("switched_on")
+def test_a_read_back_that_never_matches_fails_after_a_fixed_number_of_attempts(
+    readback: str,
+    answer: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = push_harness(monkeypatch, tmp_path)
+    harness.host.answer = lambda _request: answer(harness.cache_path)
+
+    outcome = site_push.push_site(
+        source="daily",
+        cache_path=harness.cache_path,
+        rebuild=rebuild_must_not_run,
+        check_stylesheet=no_stylesheet_problem,
+    )
+
+    assert (outcome.outcome, outcome.reason, outcome.readback) == (
+        "failed",
+        "readback_failed",
+        readback,
+    )
+    assert len(harness.host.requests) == site_push.READBACK_ATTEMPTS
+    assert harness.sleeps == [site_push.READBACK_INTERVAL_SECONDS] * (
+        site_push.READBACK_ATTEMPTS - 1
+    )
+    production_host = httpx.URL(site_push.PRODUCTION_URL).host
+    assert {request.url.host for request in harness.host.requests} == {production_host}
+    assert len(harness.cli.calls) == 1, "a failed read-back must not deploy again"
+    records = harness.records()
+    assert len(records) == 1
+    captured = capsys.readouterr()
+    assert_no_secret_in(
+        site_push.SITE_PUSH_LOG.read_text(encoding="utf-8"),
+        captured.out,
+        captured.err,
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "cli_does"),
+    [
+        ("deploy_exit_1", {"returncode": 1}),
+        ("deploy_output_unparseable", {"stdout": "Deploying nfl-predict... done"}),
+        (
+            "deploy_timeout",
+            {"raises": subprocess.TimeoutExpired(cmd="vc.js", timeout=900)},
+        ),
+        ("cli_missing", {"raises": FileNotFoundError("node.exe")}),
+    ],
+)
+@pytest.mark.usefixtures("switched_on")
+def test_deploy_failures_are_named(
+    reason: str,
+    cli_does: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    harness = push_harness(monkeypatch, tmp_path)
+    for name, value in cli_does.items():
+        setattr(harness.cli, name, value)
+
+    outcome = site_push.push_site(
+        source="daily",
+        cache_path=harness.cache_path,
+        rebuild=rebuild_must_not_run,
+        check_stylesheet=no_stylesheet_problem,
+    )
+
+    assert (outcome.outcome, outcome.reason) == ("failed", reason)
+    assert len(harness.cli.calls) == 1
+    assert harness.host.requests == []
+    assert [record["reason"] for record in harness.records()] == [reason]
+
+
+@pytest.mark.usefixtures("switched_on")
+def test_an_unexpected_raise_still_writes_one_record(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = push_harness(monkeypatch, tmp_path)
+
+    def _stylesheet_check_raises() -> str | None:
+        raise RuntimeError("boom-detail")
+
+    outcome = site_push.push_site(
+        source="daily",
+        cache_path=harness.cache_path,
+        rebuild=rebuild_must_not_run,
+        check_stylesheet=_stylesheet_check_raises,
+    )
+
+    assert (outcome.outcome, outcome.reason) == ("failed", "RuntimeError")
+    records = harness.records()
+    assert len(records) == 1
+    assert set(records[0]) == set(site_push.SITE_PUSH_FIELDS)
+    assert harness.cli.calls == []
+    with cache_lock.cache_publish_lock(wait_seconds=0.0):
+        pass
+    captured = capsys.readouterr()
+    assert "SITE_PUSH= failed RuntimeError" in captured.out
+    assert "boom-detail" not in site_push.SITE_PUSH_LOG.read_text(encoding="utf-8")
+    assert "boom-detail" not in captured.out + captured.err

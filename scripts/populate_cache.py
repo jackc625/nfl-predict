@@ -10,6 +10,9 @@ populate_web_cache step reads (the durable outputs/bet_list/ artifacts plus the 
 per-game freeze), through the one shared reader, so a hand-run rebuild and a scheduled one can
 never produce different tables.
 
+It holds the publish lock (``pipeline.cache_lock``, Phase 36 D-18) while it rebuilds, like the
+scheduled step, and refuses with exit code 1 while a website push or another rebuild holds it.
+
 Usage:
     python scripts/populate_cache.py
     python scripts/populate_cache.py --db-path data/custom_cache.duckdb
@@ -23,6 +26,8 @@ from pathlib import Path
 from api.cache import populate_cache
 from backtest.weekly_bet_list import DEFAULT_BET_LIST_DIR
 from forward_ledger.cache_sources import read_bet_cache_sources
+from pipeline.cache_lock import REBUILD_LOCK_WAIT_SECONDS, cache_publish_lock
+from utils.file_lock import FileLockHeldError
 
 
 def main() -> None:
@@ -80,6 +85,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    try:
+        with cache_publish_lock(wait_seconds=REBUILD_LOCK_WAIT_SECONDS):
+            _rebuild(args)
+    except FileLockHeldError:
+        print(
+            "POPULATE_CACHE= refused: a website push or another cache rebuild holds the lock; "
+            "try again shortly"
+        )
+        raise SystemExit(1)
+
+
+def _rebuild(args: argparse.Namespace) -> None:
+    """Read the bet-list cache sources and rebuild the cache (the caller holds the lock)."""
     # Read the bet-list cache sources HERE and pass frames: api/cache.py may import no backtest
     # module (UIAP-01), so it cannot know these filenames or derive a per-game freeze instant.
     # The ONE reader shared with the scheduled step; it follows the forward-rows cutover switch.

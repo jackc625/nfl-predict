@@ -1244,10 +1244,34 @@ def step_populate_web_cache() -> None:
     per-game line freeze, which a reader cannot miss. This step's contribution to that guard is
     that a FAILED run leaves the marker unadvanced, so the block fires deterministically.
 
+    THE PUBLISH LOCK (Phase 36, D-18). The rebuild runs holding ``pipeline.cache_lock``'s one
+    exclusive lock, which the website push also holds, so a push never stamps, digests or uploads
+    a cache this rebuild is replacing. It waits up to ``REBUILD_LOCK_WAIT_SECONDS`` for a push to
+    finish; a lock still held after that raises ``FileLockHeldError``, which the non-critical
+    handling turns into a degraded run like any other cache failure. Every rebuild entry point
+    comes through here (both registries and the settle-day rebuild) or through
+    ``scripts/populate_cache.py``; only the push's own self-heal, which already holds the lock,
+    calls :func:`populate_web_cache_unlocked` directly.
+
     Raises:
         Whatever ``api.cache.populate_cache`` raises. Nothing is swallowed here -- the
         orchestrator's non-critical handling is what turns the raise into a degraded run, and
         swallowing it here would hide the failure from the run log as well as from the alert.
+    """
+    from pipeline import cache_lock
+
+    with cache_lock.cache_publish_lock(
+        wait_seconds=cache_lock.REBUILD_LOCK_WAIT_SECONDS
+    ):
+        populate_web_cache_unlocked()
+
+
+def populate_web_cache_unlocked() -> None:
+    """The same rebuild as :func:`step_populate_web_cache`, WITHOUT taking the publish lock.
+
+    For a caller that already holds the lock -- the website push's D-03 self-heal
+    (``pipeline.site_push``). Taking the lock again here would deadlock against that caller: the
+    OS lock blocks a second handle even in the same process (research Pitfall 1).
     """
     from api.cache import populate_cache
     from forward_ledger.cache_sources import read_bet_cache_sources

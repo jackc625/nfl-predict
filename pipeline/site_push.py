@@ -598,17 +598,30 @@ def push_site(
             else DAILY_LOCK_WAIT_SECONDS
         )
     attempt = _Attempt()
-    outcome = _run_attempt(
-        attempt,
-        cache_path=DEFAULT_CACHE_PATH if cache_path is None else cache_path,
-        lock_wait_seconds=lock_wait_seconds,
-        rebuild_attempted=rebuild_attempted,
-        rebuild_completed=rebuild_completed,
-        rebuild=_default_rebuild if rebuild is None else rebuild,
-        check_stylesheet=(
-            _default_stylesheet_check if check_stylesheet is None else check_stylesheet
-        ),
-        now=now,
-    )
+    # ONE CATCH-ALL, ONE WRITE POINT (SPEC R5: exactly one record per attempt). Anything after the
+    # switch check that raises -- the secrets load, the lock's own OSError, the stylesheet check,
+    # the format read, the stamp, the digest, the deploy-output handling, the read-back -- becomes
+    # one failed outcome named by its exception CLASS, never its message. The try sits outside the
+    # lock's with block (inside _run_attempt), so the lock is already released here. Only
+    # Exception is caught: Ctrl+C and the test guard's pytest.fail still propagate. The record
+    # write stays OUTSIDE the try, so a write that raises escapes once and can never be retried
+    # into a second record; the caller notes that case (Plan 36-07).
+    try:
+        outcome = _run_attempt(
+            attempt,
+            cache_path=DEFAULT_CACHE_PATH if cache_path is None else cache_path,
+            lock_wait_seconds=lock_wait_seconds,
+            rebuild_attempted=rebuild_attempted,
+            rebuild_completed=rebuild_completed,
+            rebuild=_default_rebuild if rebuild is None else rebuild,
+            check_stylesheet=(
+                _default_stylesheet_check
+                if check_stylesheet is None
+                else check_stylesheet
+            ),
+            now=now,
+        )
+    except Exception as error:  # noqa: BLE001 - one failed record, never a missing one
+        outcome = attempt.outcome(OUTCOME_FAILED, type(error).__name__)
     _finish(outcome, source=source, run_id=run_id, detail=attempt.rebuild_error)
     return outcome
