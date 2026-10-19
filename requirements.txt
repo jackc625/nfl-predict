@@ -1,0 +1,35 @@
+# The hosted dependency list: what Vercel installs for the read-only dashboard (Phase 36 D-12).
+#
+# Exact pins equal to uv.lock, so the hosted site and the laptop run the same library versions.
+# Generated from the uv.lock closure of the request path's top-level imports (fastapi, duckdb,
+# jinja2, jinja2-fragments, pydantic, pydantic-settings, pyyaml, structlog, cachetools,
+# python-dateutil, tzdata) under Linux / CPython 3.13 markers -- never hand-typed. Regenerate it
+# whenever uv.lock changes; tests/api/test_import_guard_serving.py fails when a pin drifts.
+#
+# Vercel reads this file because pyproject.toml and uv.lock are kept out of the upload by the
+# .vercelignore allowlist. tzdata is listed because utils/date_utils.py builds
+# ZoneInfo("America/New_York") at import, and the runtime image may carry no system zone data.
+# None of pandas, numpy, pyarrow, scipy, scikit-learn or plotly may appear here: the request path
+# loads none of them.
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.12.1
+cachetools==7.0.5
+duckdb==1.5.0
+fastapi==0.135.1
+idna==3.11
+jinja2==3.1.6
+jinja2-fragments==1.11.0
+markupsafe==3.0.3
+pydantic==2.12.5
+pydantic-core==2.41.5
+pydantic-settings==2.13.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+pyyaml==6.0.3
+six==1.17.0
+starlette==0.52.1
+structlog==24.4.0
+typing-extensions==4.15.0
+typing-inspection==0.4.2
+tzdata==2025.3
