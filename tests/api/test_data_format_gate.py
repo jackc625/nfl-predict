@@ -276,6 +276,23 @@ def test_static_and_health_keep_serving_and_a_match_renders(
         assert retired.headers["location"] == "/track-record#seasons"
 
 
+def test_the_first_request_after_a_startup_with_no_cache_is_judged(
+    test_db: Path, served_cache: Path, tmp_path: Path
+) -> None:
+    """review WR-04: a server that started with no cache refuses the FIRST page of a clashing one."""
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert app.state.db_conn is None, "the server opened a cache that is not there"
+        _write_cache(test_db, tmp_path / "ahead.duckdb", _AHEAD).rename(served_cache)
+
+        first = client.get("/")
+
+    assert first.status_code == 503, (
+        f"the first request after the cache appeared answered {first.status_code}: the gate "
+        "let it through because the server had recorded no verdict at startup"
+    )
+    assert _EXPECTED_WORDING in first.text
+
+
 def test_a_matching_rebuild_clears_the_notice_without_a_restart(
     test_db: Path, served_cache: Path, tmp_path: Path
 ) -> None:

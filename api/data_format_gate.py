@@ -19,6 +19,14 @@ says the file was replaced, the gate reconnects through ``get_db`` before it jud
 guarded delegation ``api.routes.health._read_last_updated`` uses: any failure there is left to the
 route, which reaches ``get_db`` itself.
 
+WHY THE GATE ALSO CONNECTS WHEN THE SERVER HAS NO CONNECTION (review WR-04). A server that started
+while the cache was missing or unopenable recorded no verdict. Judging that absence would let the
+first request after a cache appears through: the route's own ``get_db`` would connect and render
+from a cache built for different code, and only the NEXT request would be refused. So when the
+server has started (its lifespan created ``db_lock``) but holds no connection, the gate connects
+first too. A test client that installed its own ``get_db`` override serves the route from that
+connection, so the gate does not open the real cache for it.
+
 WHY AN ABSENT VERDICT MAKES NO CLAIM (research Pitfall 2). Without a lifespan -- every test client
 built without ``with`` -- there is no recorded verdict, and a cache with no file is no evidence of a
 format either. Only a recorded verdict that does not match refuses.
@@ -54,11 +62,23 @@ _RAW_SHOWN_CHARS = 40
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
+def _connect_before_judging(request: Request) -> bool:
+    """Whether the gate must (re)connect before it judges: the cache was swapped, or none is open."""
+    if cache_file_changed(request):
+        return True
+    state = request.app.state
+    return (
+        getattr(state, "db_lock", None) is not None
+        and getattr(state, "db_conn", None) is None
+        and get_db not in request.app.dependency_overrides
+    )
+
+
 def data_format_gate(kind: str) -> Callable[[Request], None]:
     """The router-level dependency that refuses every route of *kind* under a format clash."""
 
     def gate(request: Request) -> None:
-        if cache_file_changed(request):
+        if _connect_before_judging(request):
             with suppress(NFLPredictionAPIException, duckdb.Error, OSError):
                 get_db(request)
         state = getattr(request.app.state, "data_format", None)
