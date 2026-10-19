@@ -16,6 +16,9 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+
 # ---------------------------------------------------------------------------
 # The bet-list column classes (Phase 31, plan 31-01; Phase 34)
 # ---------------------------------------------------------------------------
@@ -430,3 +433,61 @@ def parse_current_slate(value: str | None) -> tuple[int, int] | None:
     if not (season.isdecimal() and week.isdecimal()):
         return None
     return int(season), int(week)
+
+
+# ---------------------------------------------------------------------------
+# The cache's data-format contract (Phase 36, D-20, D-04, D-14)
+# ---------------------------------------------------------------------------
+
+# The data-format version the pages expect, stamped into cache_meta by ``populate_cache`` and read
+# back by ``api.cache_reader.read_data_format``. RAISE IT whenever the pages need something an
+# older cache lacks. ``tests/unit/test_cache_data_format.py`` pins every table and column name the
+# writer builds beside this number, so a layout change without a bump fails there. KNOWN LIMIT:
+# that test sees table and column names only. A change inside a stored blob -- the pre-rendered
+# chart HTML, a JSON payload -- is not detected and must be judged by hand.
+DATA_FORMAT_VERSION: int = 1
+DATA_FORMAT_VERSION_KEY = "data_format_version"
+
+# The publish stamp the push writes into cache_meta on a copy of the cache (D-14,
+# ``api.cache.stamp_publish``): this attempt's id and the UTC push time as ISO text.
+PUBLISH_ID_KEY = "publish_id"
+PUSH_TIME_KEY = "push_time"
+
+# A stamped version is a plain integer and nothing else: no decimal point, no whitespace.
+_INTEGER_TEXT = re.compile(r"-?[0-9]+")
+
+
+@dataclass(frozen=True)
+class DataFormatState:
+    """What the cache says its data format is, against what the code expects.
+
+    Attributes:
+        raw: The stored ``data_format_version`` text, or None when the cache has none.
+        expected: The version this code expects.
+        matches: True only when ``raw`` is an integer equal to ``expected``.
+    """
+
+    raw: str | None
+    expected: int
+    matches: bool
+
+    @property
+    def found_label(self) -> str:
+        """The stored version as shown to a reader: its integer text, "missing" or "non_integer"."""
+        if not self.raw:
+            return "missing"
+        if _INTEGER_TEXT.fullmatch(self.raw) is None:
+            return "non_integer"
+        return self.raw
+
+
+def data_format_state(
+    raw: str | None, expected: int = DATA_FORMAT_VERSION
+) -> DataFormatState:
+    """Judge a stored data-format value strictly: only the exact expected integer matches."""
+    matches = (
+        raw is not None
+        and _INTEGER_TEXT.fullmatch(raw) is not None
+        and int(raw) == expected
+    )
+    return DataFormatState(raw=raw, expected=expected, matches=matches)

@@ -50,6 +50,8 @@ from api.cache_schema import (
     BETTING_SIM_PROVENANCE_KEY,
     BETTING_SIM_VALIDATION_TYPE_KEY,
     CURRENT_SLATE_KEY,
+    DATA_FORMAT_VERSION,
+    DATA_FORMAT_VERSION_KEY,
     FORWARD_VERDICT_DECLARED_KEY,
     FORWARD_VERDICT_SEASON_KEY,
     FORWARD_VERDICT_START_WEEK_KEY,
@@ -3147,6 +3149,9 @@ def populate_cache(
             ("last_updated", now.isoformat(), now),
             ("prediction_count", str(pred_count), now),
             ("season_range", season_range, now),
+            # The data format this cache was built in (D-20); the server and the push compare it
+            # with the version their code expects.
+            (DATA_FORMAT_VERSION_KEY, str(DATA_FORMAT_VERSION), now),
         ]
         conn.executemany(
             "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
