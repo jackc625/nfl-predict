@@ -18,6 +18,8 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -146,6 +148,44 @@ def test_a_game_lock_is_judged_at_its_true_instant_in_every_session_zone(
     assert _lock_has_passed(recovered, lock) is True, (
         f"a game AT its lock did not read as locked under session TimeZone {session_tz}"
     )
+
+
+_READ_WITHOUT_PYTZ = """
+import sys
+sys.modules["pytz"] = None  # the hosted copy has no pytz; make any import of it fail here too
+import duckdb
+from api.services import DataService
+conn = duckdb.connect(sys.argv[1], read_only=True)
+service = DataService(conn)
+print(service.get_bet_week_freeze({season}, {week}).isoformat())
+print(service.get_bet_game_locks({season}, {week})[0]["lock_ts"].isoformat())
+"""
+
+
+def test_both_instants_read_back_on_a_copy_without_pytz(tmp_path: Path) -> None:
+    """The hosted copy has no pytz, so a raw TIMESTAMPTZ fetch raised there (Plan 36-10, live).
+
+    Found on the first real push: ``/``, ``/bets`` and ``/fragments/games`` answered 500 because
+    DuckDB imports ``pytz`` to hand a TIMESTAMPTZ to Python. The getters read ``epoch_us``
+    instead; this reads both in a fresh interpreter where importing pytz fails, as on the host.
+    """
+    lock = datetime(2025, 9, 12, 22, 0, tzinfo=UTC)
+    db_path = tmp_path / "no_pytz.duckdb"
+    freeze = pd.Timestamp(lock)
+    assert isinstance(freeze, pd.Timestamp)
+    _write_freeze(db_path, "America/New_York", freeze)
+
+    script = _READ_WITHOUT_PYTZ.format(season=_SEASON, week=_WEEK)
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(db_path)],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr[-2000:]
+    assert completed.stdout.split() == [lock.isoformat(), lock.isoformat()]
 
 
 def test_a_naive_instant_is_refused_rather_than_read_as_utc() -> None:

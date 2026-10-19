@@ -36,6 +36,7 @@ import copy
 import json
 import threading
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import duckdb
@@ -165,6 +166,23 @@ _BET_WEEK_RESULTS_COLUMNS_SQL = ", ".join(BET_WEEK_RESULTS_COLUMNS)
 _BET_GRADED_OUTCOMES_ORDER_SQL = (
     "provenance, validation_type, season, week, game_id, target, arm"
 )
+
+
+_EPOCH_UTC = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _utc_from_epoch_us(value: int | None) -> datetime | None:
+    """An aware UTC datetime from DuckDB's ``epoch_us`` of a TIMESTAMPTZ; None stays None.
+
+    WHY THE TWO TIMESTAMPTZ READS GO THROUGH ``epoch_us`` (Plan 36-10, found live): handing a
+    ``TIMESTAMP WITH TIME ZONE`` value to Python makes DuckDB import ``pytz``, which the laptop has
+    only because pandas brings it and the hosted copy does not have at all -- there the fetch
+    raised and ``/``, ``/bets`` and ``/fragments/games`` answered 500. The epoch is the same
+    instant with no zone conversion, so this reads identically on both copies.
+    """
+    if value is None:
+        return None
+    return _EPOCH_UTC + timedelta(microseconds=int(value))
 
 
 def _parse_json_or_default(value: Any, default: Any) -> Any:
@@ -892,8 +910,9 @@ class DataService:
         if season is None or week is None:
             return None
         try:
+            # epoch_us, never the raw TIMESTAMPTZ: see _utc_from_epoch_us.
             result = self._conn.execute(
-                "SELECT latest_game_freeze_ts FROM bet_week_freeze "
+                "SELECT epoch_us(latest_game_freeze_ts) FROM bet_week_freeze "
                 "WHERE season = ? AND week = ?",
                 [season, week],
             )
@@ -901,7 +920,7 @@ class DataService:
             logger.warning("bet_week_freeze table not available in cache")
             return None
         row = result.fetchone()
-        return row[0] if row else None
+        return _utc_from_epoch_us(row[0]) if row else None
 
     def get_current_slate(self) -> tuple[int, int] | None:
         """The in-season ``(season, week)`` population stamped, or None (33.2 review C2 WR-01)."""
@@ -948,8 +967,9 @@ class DataService:
         if cached is not None:
             return cached
         try:
+            # epoch_us, never the raw TIMESTAMPTZ: see _utc_from_epoch_us.
             result = self._conn.execute(
-                "SELECT game_id, lock_ts FROM bet_game_lock "
+                "SELECT game_id, epoch_us(lock_ts) FROM bet_game_lock "
                 "WHERE season = ? AND week = ? ORDER BY lock_ts, game_id",
                 [season, week],
             )
@@ -957,8 +977,8 @@ class DataService:
             logger.warning("bet_game_lock table not available in cache")
             return []
         rows = [
-            {"game_id": game_id, "lock_ts": lock_ts}
-            for game_id, lock_ts in result.fetchall()
+            {"game_id": game_id, "lock_ts": _utc_from_epoch_us(lock_us)}
+            for game_id, lock_us in result.fetchall()
         ]
         _cache_set(key, rows)
         return copy.deepcopy(rows)
