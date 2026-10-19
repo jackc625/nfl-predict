@@ -80,6 +80,12 @@ _VERIFY_COMMAND = "uv run python -m scripts.verify_ledger"
 _CLOSING_CHECK_COMMAND = (
     "uv run python deployment/setup_scheduling.py --verify-installed"
 )
+_PUSH_SITE_COMMAND = "uv run python -m scripts.push_site"
+
+# The website push outcomes that alarm (Phase 36, SPEC R7). ``succeeded`` and every ``not_pushed``
+# send nothing: a failed run already sends its own top-priority push. Plain strings, because
+# ``notify`` never imports ``pipeline`` at load time (``pipeline.site_push.OUTCOME_*``).
+_WEBSITE_PUSH_ALARMS = frozenset({"failed", "refused"})
 
 # The closing-trigger skips that leave the coming kickoff windows unregistered. A skip because the
 # closing task is running right now is clean: the previous registration still covers the week.
@@ -366,14 +372,63 @@ def _sync_messages(
     return messages
 
 
+def _site_push_messages(
+    report: RunReport, secret_values: Iterable[str]
+) -> list[PushMessage]:
+    """The one normal-priority message for a website push that failed or refused (SPEC R7).
+
+    Read from the stored ``PushOutcome`` (its outcome, reason and data-format versions), never
+    re-derived. A raise that escaped the push routine left no record, only its class on the
+    report, and is named by that class.
+    """
+    outcome = report.site_push
+    lines: list[str] = []
+    if report.site_push_error is not None:
+        lines.append("What failed: the website push (failed: raised)")
+        lines.append(
+            f"Error: {one_line_error(report.site_push_error, None, secret_values)}"
+        )
+    elif outcome is not None and outcome.outcome in _WEBSITE_PUSH_ALARMS:
+        lines.append(
+            _safe_line(
+                f"What failed: the website push ({outcome.outcome}: "
+                f"{outcome.reason or 'unknown'})",
+                secret_values,
+            )
+        )
+        if str(outcome.reason).startswith("format_mismatch"):
+            lines.append(
+                _safe_line(
+                    f"Data format: the data file is {outcome.data_format_found}, the pages "
+                    f"expect {outcome.data_format_expected}",
+                    secret_values,
+                )
+            )
+    else:
+        return []
+    lines.append(
+        f"Next: run {_PUSH_SITE_COMMAND}, or wait for the next 5 PM run",
+    )
+    return [
+        PushMessage(
+            event_class="failed",
+            title="FAILED: website push",
+            header_lines=tuple(lines),
+            item_lines=(),
+            priority=PRIORITY_NORMAL,
+        )
+    ]
+
+
 def failed_messages(
     report: RunReport, *, now: datetime, secret_values: Iterable[str] = ()
 ) -> list[PushMessage]:
     """Every failed push this run owes, top priority first (SPEC R2, D-23).
 
     At most one top-priority message for the daily-run outcome, then one normal-priority message
-    per ledger or closing failure in this fixed order: settle raised, closing finalization
-    deferred, closing schedule, anchor push, backup push, sync refused. A clean run gives none.
+    per ledger, closing or website failure in this fixed order: settle raised, closing finalization
+    deferred, closing schedule, anchor push, backup push, sync refused, website push. A clean run
+    gives none.
     """
     secrets = tuple(secret_values)
     messages: list[PushMessage] = []
@@ -384,6 +439,7 @@ def failed_messages(
     if closing is not None:
         messages.append(closing)
     messages.extend(_sync_messages(report, secrets))
+    messages.extend(_site_push_messages(report, secrets))
     return messages
 
 

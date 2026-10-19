@@ -22,16 +22,29 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import scripts.daily_lock_pipeline as daily
+from notify.messages import failed_messages
 from notify.report import RunReport
 from pipeline import site_push
 from pipeline.daily_steps import slate_lock
+from tests.integration.test_daily_run_rehearsal import (
+    CUT_OVER_CLOCK,
+    CUT_OVER_DAY,
+    Rehearsal,
+    _week_three_schedule,
+    arrange_cut_over_day,
+    make_rehearsal,  # noqa: F401 - the rehearsal sandbox fixture, reused not rebuilt
+)
 from tests.unit.test_daily_lock_run import (
     RUN_DATE,
     SLATE_IDS,
@@ -46,6 +59,7 @@ from tests.unit.test_daily_lock_run import (
 )
 
 SUCCEEDED = site_push.PushOutcome(outcome="succeeded", publish_id="p" * 32)
+WEBSITE_TITLE = "FAILED: website push"
 
 
 class PushRecorder:
@@ -315,3 +329,139 @@ def test_the_push_hears_whether_the_rebuild_completed(
 
     (push,) = recorder.pushes
     assert (push["rebuild_attempted"], push["rebuild_completed"]) == expected
+
+
+# ---------------------------------------------------------------------------
+# Task 2: a failed push reaches the phone and changes nothing else (SPEC R7); before setup, nothing
+# ---------------------------------------------------------------------------
+
+FIXED_RUN_ID = "run-36-07-equality"
+
+
+def saved_files(root: Path) -> dict[str, bytes]:
+    """Every file the run saved under ``ledger/`` (its git directory aside) and ``outputs/``.
+
+    THE THREE NAMED DIFFERENCES, and nothing else: the cut-over arrangement's synthetic stores live
+    inside each fresh sandbox, so the decision snapshot records a different absolute
+    ``chain_fit_path``, and the two digests taken over that snapshot differ with it -- the
+    snapshot's own digest (also its directory name and the row's ``decision_snapshot_digest``) and
+    the ledger row's ``chain_hash``. Each is replaced by a named placeholder, in file names and in
+    bytes; every other byte is compared exactly as written.
+    """
+    (snapshot,) = (root / "ledger" / "snapshots").iterdir()
+    ledger_text = (root / "ledger" / "forward_2026.jsonl").read_text(encoding="utf-8")
+    (row,) = ledger_text.splitlines()
+    named = {
+        root.as_posix(): "<sandbox>",
+        snapshot.name: "<snapshot_digest>",
+        json.loads(row)["chain_hash"]: "<chain_hash>",
+    }
+
+    def _name(content: bytes) -> bytes:
+        for value, placeholder in named.items():
+            content = content.replace(
+                value.encode("utf-8"), placeholder.encode("utf-8")
+            )
+        return content
+
+    saved: dict[str, bytes] = {}
+    for top in ("ledger", "outputs"):
+        for path in sorted((root / top).rglob("*")):
+            relative = path.relative_to(root)
+            if path.is_file() and ".git" not in relative.parts:
+                saved[_name(relative.as_posix().encode("utf-8")).decode("utf-8")] = (
+                    _name(path.read_bytes())
+                )
+    return saved
+
+
+@pytest.mark.integration
+def test_a_failing_push_leaves_exit_code_ledger_and_outputs_identical(
+    make_rehearsal: Callable[..., Rehearsal],  # noqa: F811 - the imported fixture
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cut-over Wednesday, run in three fresh sandboxes with one run id and one clock.
+
+    Only the push differs: it succeeds, fails, or raises out of the routine. The ledger bytes and
+    every saved output are compared with ``==``, the three sandbox-path facts named on
+    :func:`saved_files` aside.
+    """
+    monkeypatch.setattr(daily, "new_run_id", lambda: FIXED_RUN_ID)
+    pushes = {
+        "succeeded": SUCCEEDED,
+        "failed": site_push.PushOutcome(outcome="failed", reason="readback_failed"),
+        "raised": RuntimeError("the push-log write failed"),
+    }
+    results: dict[str, tuple[int, dict[str, bytes], list[str]]] = {}
+    for name, push_does in pushes.items():
+        # Each run's arrangement is undone before the next: it wraps the real ledger runner, so a
+        # second arrangement over the first would wrap its own wrapper.
+        with pytest.MonkeyPatch.context() as run_patch:
+            rehearsal = replace(
+                make_rehearsal(f"push_{name}", _week_three_schedule()),
+                monkeypatch=run_patch,
+            )
+            arrange_cut_over_day(rehearsal)
+            wire_the_push(run_patch, [], push_does)
+            titles: list[str] = []
+            run_patch.setattr(
+                daily,
+                "NOTIFY_END_OF_RUN",
+                lambda report, seen=titles: seen.extend(
+                    message.title
+                    for message in failed_messages(report, now=CUT_OVER_CLOCK)
+                ),
+            )
+
+            code, _contract = rehearsal.run(CUT_OVER_DAY, clock=CUT_OVER_CLOCK)
+
+            results[name] = (code, saved_files(rehearsal.root), titles)
+
+    codes = {name: code for name, (code, _files, _titles) in results.items()}
+    assert codes == {"succeeded": 0, "failed": 0, "raised": 0}
+    baseline = results["succeeded"][1]
+    assert "ledger/forward_2026.jsonl" in baseline
+    assert b"<chain_hash>" in baseline["ledger/forward_2026.jsonl"]
+    assert b"<sandbox>" in baseline["ledger/snapshots/<snapshot_digest>/meta.json"]
+    assert any(key.startswith("outputs/predictions/") for key in baseline)
+    for name in ("failed", "raised"):
+        files = results[name][1]
+        assert sorted(files) == sorted(baseline), name
+        for key, content in baseline.items():
+            assert files[key] == content, f"{name}: {key} differs"
+    # The arrangement's backup remote is never created, so every run owes the same ledger message;
+    # the website message is the one addition, and only on the failing runs.
+    succeeded_titles = results["succeeded"][2]
+    assert WEBSITE_TITLE not in succeeded_titles
+    for name in ("failed", "raised"):
+        assert results[name][2] == [*succeeded_titles, WEBSITE_TITLE], name
+
+
+def test_a_daily_run_before_setup_records_not_pushed_and_alarms_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The REAL push routine with the switch absent (the conftest default, D-23)."""
+    order = _no_games_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(daily, "SITE_PUSH", daily._push_site)
+
+    def _no_secret_read() -> None:
+        pytest.fail("the push read a secret before setup")
+
+    monkeypatch.setattr(site_push, "LOAD_PUSH_SECRETS", _no_secret_read)
+    seen = record_the_notifier(monkeypatch, order)
+
+    # The conftest's site_push.RUN_CLI fails the test if the CLI is reached.
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert not site_push.PUSH_ENABLED_MARKER.exists()
+    (report,) = seen
+    assert report.run_id is not None
+    (record,) = site_push.read_site_pushes()
+    assert (
+        record["outcome"],
+        record["reason"],
+        record["source"],
+        record["run_id"],
+    ) == ("not_pushed", "push_not_enabled", "daily", report.run_id)
+    titles = [message.title for message in failed_messages(report, now=report.start)]
+    assert WEBSITE_TITLE not in titles

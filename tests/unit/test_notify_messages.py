@@ -49,6 +49,7 @@ from notify.report import (
     RunReport,
 )
 from pipeline.daily_steps import slate_lock
+from pipeline.site_push import PushOutcome
 from tests.unit.test_forward_ledger_store import make_row
 from tests.unit.test_notify_transport import (
     DUMMY_PING_URL,
@@ -270,3 +271,97 @@ def test_a_fifty_bet_body_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
     kept = [line for line in lines if line.startswith(away)]
     assert 0 < len(kept) < 50
     assert lines[-1] == f"... and {50 - len(kept)} more"
+
+
+# ---------------------------------------------------------------------------
+# The website push (Phase 36, SPEC R7): one normal-priority failed message, no new kind
+# ---------------------------------------------------------------------------
+
+WEBSITE_TITLE = "FAILED: website push"
+PUSH_SITE_NEXT = (
+    "Next: run uv run python -m scripts.push_site, or wait for the next 5 PM run"
+)
+
+
+def _website_messages(report: RunReport) -> list[Any]:
+    return [
+        message
+        for message in failed_messages(report, now=report.start)
+        if message.title == WEBSITE_TITLE
+    ]
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected_lines"),
+    [
+        pytest.param(
+            {"site_push": PushOutcome(outcome="failed", reason="readback_failed")},
+            ["What failed: the website push (failed: readback_failed)"],
+            id="readback_failed",
+        ),
+        pytest.param(
+            {
+                "site_push": PushOutcome(
+                    outcome="refused",
+                    reason="format_mismatch_rebuild_failed",
+                    data_format_found="2",
+                    data_format_expected=1,
+                )
+            },
+            [
+                "What failed: the website push (refused: format_mismatch_rebuild_failed)",
+                "Data format: the data file is 2, the pages expect 1",
+            ],
+            id="format_mismatch_rebuild_failed",
+        ),
+        pytest.param(
+            {"site_push_error": "RuntimeError"},
+            ["Error: RuntimeError"],
+            id="the_routine_raised",
+        ),
+    ],
+)
+def test_a_failed_or_refused_push_builds_one_website_message(
+    fields: dict[str, Any], expected_lines: list[str]
+) -> None:
+    report = _report(status=STATUS_SUCCESS, **fields)
+
+    messages = failed_messages(report, now=report.start)
+
+    (message,) = messages
+    assert message.title == WEBSITE_TITLE
+    assert message.event_class == "failed"
+    assert message.priority == PRIORITY_NORMAL
+    for line in expected_lines:
+        assert line in message.header_lines
+    assert message.header_lines[-1] == PUSH_SITE_NEXT
+    assert all(line.isascii() for line in message.header_lines)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        PushOutcome(outcome="succeeded", publish_id="p" * 32),
+        PushOutcome(outcome="not_pushed", reason="push_not_enabled"),
+        PushOutcome(outcome="not_pushed", reason="run_failed"),
+        PushOutcome(outcome="not_pushed", reason="failed"),
+    ],
+    ids=["succeeded", "push_not_enabled", "run_failed", "failed"],
+)
+def test_succeeded_and_not_pushed_send_nothing(outcome: PushOutcome) -> None:
+    report = _report(status=STATUS_SUCCESS, site_push=outcome)
+
+    assert _website_messages(report) == []
+
+
+def test_a_failed_push_with_new_live_bets_sends_both() -> None:
+    report = _report(
+        status=STATUS_SUCCESS,
+        slate_season=2026,
+        slate_week=6,
+        appended_rows=[live_bet("2026_06_KC@DEN", per_bet_ev=0.031)],
+        site_push=PushOutcome(outcome="failed", reason="deploy_exit_1"),
+    )
+
+    assert len(_website_messages(report)) == 1
+    assert bets_message(report) is not None

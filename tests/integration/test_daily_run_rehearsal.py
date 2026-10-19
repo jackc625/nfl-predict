@@ -494,39 +494,32 @@ def test_the_friday_run_predicts_saturday_and_the_saturday_run_predicts_sunday(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
-def test_the_cut_over_run_appends_the_slate_to_a_real_ledger_under_one_run_id(
-    make_rehearsal: Callable[..., Rehearsal], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Production's path since the cutover, end to end through the real entry point.
+#: The cut-over case's run date and frozen clock (Wednesday 17:00 ET, before its 18:00 ET lock).
+CUT_OVER_DAY = date(2026, 9, 23)
+CUT_OVER_CLOCK = _et(CUT_OVER_DAY, 17, 0)
 
-    The conftest pin turns the switch OFF for every test, so the cases above rehearse the
-    pre-cutover path. Here it is ON, and the ledger half runs for real: the pre-selection settle,
-    the bound ``LEDGER_RUN_ID``, the recommend step's ``record_forward_slate`` append into the
-    sandbox's own ``ledger/`` with ``repo_dir=Path()`` read as a real git repository, and the
-    end-of-run sync's real ``publish_ledger_state``. The run log is the production default,
-    ``logs/ledger_runs.jsonl``, relative to the sandbox.
 
-    What stands in, beyond the stand-ins above: the decision bundle (no models are scored here)
+def arrange_cut_over_day(rehearsal: Rehearsal) -> None:
+    """Turn the ledger switch ON in *rehearsal*'s sandbox and stand in for what it cannot run.
+
+    What stands in, beyond the module's stand-ins: the decision bundle (no models are scored here)
     and the synthetic stores it reads, injected into the real ``record_forward_slate``; the
     publish-deadline clock (``record_forward_slate``'s ``clock``, shared by its pre-write check and
-    the store's), which reads the rehearsal clock; the snapshot's ``uv.lock``
-    path, read from the repository because the sandbox has none; and the push destinations,
-    local bare repositories in place of the GitHub remotes.
+    the store's), which reads the rehearsal clock; the snapshot's ``uv.lock`` path, read from the
+    repository because the sandbox has none; and the push destinations, local bare repositories
+    (``anchor_remote.git`` and ``backup_remote.git`` in the sandbox) in place of the GitHub
+    remotes. The run is then driven with ``rehearsal.run(CUT_OVER_DAY, clock=CUT_OVER_CLOCK)``.
+    Plan 36-07's run-result equality test reuses this arrangement.
     """
     from backtest.weekly_bet_list import DecisionBundle
     from data.upstream_live import AS_OF_ENV
     from forward_ledger import cutover, run_log, runner, snapshots
-    from forward_ledger.anchor import read_local_anchor
-    from forward_ledger.store import read_entries, verify_chain
     from tests.unit.test_forward_ledger_runner import _decided_row, _Env
     from tests.unit.test_ledger_anchor import fake_spec, git_out, make_bare
 
-    rehearsal = make_rehearsal("ledger_on", _week_three_schedule())
-    root = rehearsal.root
-    wednesday = date(2026, 9, 23)
-    clock = _et(wednesday, 17, 0)
-    lock = _et(wednesday, 18, 0)
+    monkeypatch, root = rehearsal.monkeypatch, rehearsal.root
+    clock = CUT_OVER_CLOCK
+    lock = _et(CUT_OVER_DAY, 18, 0)
 
     monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", True)
     monkeypatch.setattr(run_log, "LEDGER_RUN_LOG", Path("logs/ledger_runs.jsonl"))
@@ -602,7 +595,32 @@ def test_the_cut_over_run_appends_the_slate_to_a_real_ledger_under_one_run_id(
         ),
     )
 
-    code, contract = rehearsal.run(wednesday, clock=clock)
+
+@pytest.mark.integration
+def test_the_cut_over_run_appends_the_slate_to_a_real_ledger_under_one_run_id(
+    make_rehearsal: Callable[..., Rehearsal],
+) -> None:
+    """Production's path since the cutover, end to end through the real entry point.
+
+    The conftest pin turns the switch OFF for every test, so the cases above rehearse the
+    pre-cutover path. Here it is ON, and the ledger half runs for real: the pre-selection settle,
+    the bound ``LEDGER_RUN_ID``, the recommend step's ``record_forward_slate`` append into the
+    sandbox's own ``ledger/`` with ``repo_dir=Path()`` read as a real git repository, and the
+    end-of-run sync's real ``publish_ledger_state``. The run log is the production default,
+    ``logs/ledger_runs.jsonl``, relative to the sandbox. What stands in is named on
+    :func:`arrange_cut_over_day`.
+    """
+    from forward_ledger.anchor import read_local_anchor
+    from forward_ledger.store import read_entries, verify_chain
+    from tests.unit.test_ledger_anchor import git_out
+
+    rehearsal = make_rehearsal("ledger_on", _week_three_schedule())
+    root = rehearsal.root
+    clock = CUT_OVER_CLOCK
+    arrange_cut_over_day(rehearsal)
+    anchor_remote = root / "anchor_remote.git"
+
+    code, contract = rehearsal.run(CUT_OVER_DAY, clock=clock)
 
     assert code == 0
     assert contract["RUN_STATUS"] == RunStatus.SUCCESS.value
