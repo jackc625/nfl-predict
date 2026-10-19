@@ -32,6 +32,7 @@ from jinja2_fragments.fastapi import Jinja2Blocks
 from api.exceptions import ModelUnavailableError
 from utils import get_logger
 
+from .cache_reader import open_cache_readonly, read_data_format
 from .presentation import (
     NOT_ADVICE_KEY,
     NOT_ADVICE_LINE,
@@ -228,6 +229,8 @@ def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:
             # Clear the identity alongside the connection, so a later successful
             # reconnect is not compared against a dead file's identity.
             request.app.state.db_identity = None
+            # D-19: no cache file, so no claim about its format.
+            request.app.state.data_format = None
             raise ModelUnavailableError("DuckDB cache not available (file missing)")
 
         if current is not None:
@@ -278,10 +281,14 @@ def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:
             request.app.state.db_conn = None
 
         try:
-            new_conn = duckdb.connect(str(DB_PATH), read_only=True)
+            # The one read-only opener (D-22). This module's own duckdb.connect is passed so a
+            # test that replaces duckdb's connect (the connect-window swap case) still runs here.
+            new_conn = open_cache_readonly(DB_PATH, connect=duckdb.connect)
         except (duckdb.Error, OSError) as exc:
             request.app.state.db_conn = None
             request.app.state.db_identity = None
+            # D-19: an unopenable cache makes no claim about its format.
+            request.app.state.data_format = None
             logger.error(
                 "Failed to reconnect to DuckDB cache",
                 path=str(DB_PATH),
@@ -313,6 +320,9 @@ def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:
             if on_disk_identity is not None
             else cache_identity(DB_PATH)
         )
+        # D-19: re-read the data-format verdict from the file this connection opened, so a
+        # rebuild that fixes (or breaks) the format takes effect on the next request, no restart.
+        request.app.state.data_format = read_data_format(new_conn)
         # The same invalidation ``api.main.lifespan`` performs at startup, for the
         # same reason: a value memoized from the PREVIOUS file must not survive
         # the swap boundary. One invalidation point, not two.

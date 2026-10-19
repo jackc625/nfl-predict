@@ -21,6 +21,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.cache import CACHE_SCHEMA
+from api.cache_schema import (
+    DATA_FORMAT_VERSION,
+    DATA_FORMAT_VERSION_KEY,
+    PUBLISH_ID_KEY,
+    PUSH_TIME_KEY,
+)
 from api.services import clear_cache
 
 # ---------------------------------------------------------------------------
@@ -1393,7 +1399,8 @@ def test_db(tmp_path: Path) -> Path:
         game_context_rows,
     )
 
-    # Insert cache metadata
+    # Insert cache metadata. The data-format version, a publish id and a fresh push time are
+    # stamped too (Phase 36): pages under test must not 503 or grow the out-of-date bar by accident.
     now = datetime.now(tz=UTC)
     conn.executemany(
         "INSERT INTO cache_meta VALUES (?, ?, ?)",
@@ -1401,6 +1408,9 @@ def test_db(tmp_path: Path) -> Path:
             ("last_updated", now.isoformat(), now),
             ("prediction_count", "3", now),
             ("season_range", "2023-2024", now),
+            (DATA_FORMAT_VERSION_KEY, str(DATA_FORMAT_VERSION), now),
+            (PUBLISH_ID_KEY, "test-publish-id", now),
+            (PUSH_TIME_KEY, now.isoformat(), now),
         ],
     )
 

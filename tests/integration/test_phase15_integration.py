@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 import api.dependencies as deps
 import api.routes.health as health_module
 from api.cache import CACHE_SCHEMA
+from api.cache_schema import DATA_FORMAT_VERSION, DATA_FORMAT_VERSION_KEY
 from api.exceptions import ModelUnavailableError
 from api.services import _cache, clear_cache
 from data.storage import DuckDBConnection
@@ -89,7 +90,8 @@ def _seed_duckdb(db_path: Path) -> None:
             ],
         )
 
-        # Cache_meta keeps the homepage banner happy.
+        # Cache_meta keeps the homepage banner happy. The current data-format version is
+        # stamped too (Phase 36): this test covers the startup path, not the format gate.
         now = datetime.now(tz=UTC)
         conn.executemany(
             "INSERT INTO cache_meta VALUES (?, ?, ?)",
@@ -97,6 +99,7 @@ def _seed_duckdb(db_path: Path) -> None:
                 ("last_updated", now.isoformat(), now),
                 ("prediction_count", "1", now),
                 ("season_range", "2024-2024", now),
+                (DATA_FORMAT_VERSION_KEY, str(DATA_FORMAT_VERSION), now),
             ],
         )
     finally:

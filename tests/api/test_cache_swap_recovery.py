@@ -48,6 +48,7 @@ from api.cache import (
     materialize_bet_list,
     materialize_bet_week_freeze,
 )
+from api.cache_schema import DATA_FORMAT_VERSION, DATA_FORMAT_VERSION_KEY
 from api.main import app
 from api.services import clear_cache
 
@@ -173,6 +174,9 @@ def _build_cache(
         conn.executemany(
             "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
             [
+                # The current data-format version (Phase 36): this module tests the swap and
+                # startup paths, not the format gate.
+                [DATA_FORMAT_VERSION_KEY, str(DATA_FORMAT_VERSION), stamped_at],
                 [bet_list_populated_at_key(_SEASON, _WEEK), populated_at, stamped_at],
                 [
                     "last_updated",

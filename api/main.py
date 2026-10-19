@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from utils import get_logger
 
 from . import dependencies as deps
+from .cache_reader import open_cache_readonly, read_data_format
 from .routes.api_export import router as export_router
 from .routes.fragments import router as fragments_router
 from .routes.health import router as health_router
@@ -94,8 +95,12 @@ async def lifespan(app: FastAPI):
             # would then compare equal forever. Reading first records a STALE identity
             # instead, which the first request corrects with one spurious reconnect.
             pre_connect_identity = deps.cache_identity(deps.DB_PATH)
-            conn = duckdb.connect(str(deps.DB_PATH), read_only=True)
+            # The one read-only opener (D-22). This module's own duckdb.connect is passed so a
+            # test that replaces this module's duckdb name, or duckdb's connect, still runs here.
+            conn = open_cache_readonly(deps.DB_PATH, connect=duckdb.connect)
             app.state.db_conn = conn
+            # D-19: record the cache's data-format verdict; the format gate reads it per request.
+            app.state.data_format = read_data_format(conn)
             # The fresh stat is the fallback for ONE case, the same one
             # ``api.dependencies._reconnect_under_lock`` falls back for: the
             # pre-connect read was ``None`` because it landed in the writer's
@@ -112,6 +117,8 @@ async def lifespan(app: FastAPI):
         except (duckdb.Error, OSError) as exc:
             app.state.db_conn = None
             app.state.db_identity = None
+            # D-19: an unopenable cache makes no claim about its format.
+            app.state.data_format = None
             logger.error(
                 "Failed to open DuckDB cache at startup",
                 path=str(deps.DB_PATH),
@@ -120,6 +127,8 @@ async def lifespan(app: FastAPI):
     else:
         app.state.db_conn = None
         app.state.db_identity = None
+        # D-19: an absent cache makes no claim about its format.
+        app.state.data_format = None
         logger.warning(
             "DuckDB web cache not found -- run 'make build-cache' to populate",
             path=str(deps.DB_PATH),
@@ -138,6 +147,13 @@ async def lifespan(app: FastAPI):
             logger.info("DuckDB connection closed")
         except (duckdb.Error, OSError) as exc:
             logger.warning("Error closing DuckDB connection", error=str(exc))
+    # D-19: the app is a module-level singleton, so the closed connection, the identity it was
+    # opened against and the format claim read from it are all cleared here. Left in place, a
+    # later run without a lifespan (a test) would inherit them: the swap detector would compare a
+    # dead file's identity against DB_PATH and the format gate would judge a cache it never opened.
+    app.state.db_conn = None
+    app.state.db_identity = None
+    app.state.data_format = None
 
 
 # ---------------------------------------------------------------------------

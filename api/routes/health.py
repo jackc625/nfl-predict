@@ -30,6 +30,7 @@ from pathlib import Path
 import duckdb
 from fastapi import APIRouter, Request
 
+from api.cache_reader import open_cache_readonly
 from api.dependencies import DB_PATH, cache_file_changed, get_db
 from api.exceptions import NFLPredictionAPIException
 from api.schemas import (
@@ -329,7 +330,11 @@ def _read_last_updated(request: Request) -> datetime | None:
                     "SELECT value FROM cache_meta WHERE key = 'last_updated'"
                 ).fetchone()
         else:
-            with duckdb.connect(str(DB_PATH), read_only=True) as conn:
+            # The one read-only opener (D-22), handed THIS module's duckdb.connect on purpose:
+            # tests/api/test_health_endpoint.py replaces this module's duckdb with a MagicMock,
+            # and the except tuple below then holds the mock's Error. Letting the opener reach the
+            # real DuckDB would raise a real duckdb.Error that such a tuple turns into a TypeError.
+            with open_cache_readonly(DB_PATH, connect=duckdb.connect) as conn:
                 row = conn.execute(
                     "SELECT value FROM cache_meta WHERE key = 'last_updated'"
                 ).fetchone()
