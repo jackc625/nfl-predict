@@ -209,6 +209,90 @@ def test_cumulative_uses_count_based_denominator_push_does_not_advance() -> None
     assert wp_values[-1] == pytest.approx(75.0, abs=1e-6)
 
 
+def test_cumulative_series_is_bit_identical_to_the_numpy_reference() -> None:
+    """The scalar running hit-rate equals the old numpy computation exactly (Phase 36 D-11).
+
+    ``compute_cumulative_series`` dropped numpy so the request path never loads it. The reference
+    below is the removed code, ``numpy.cumsum(hits) / numpy.arange(1, n + 1) * 100.0``; every
+    value must be equal with ``==`` (no tolerance). The fixture is deterministic, with at least
+    200 decided games per target and pushes/ties that must not advance the denominator. A fresh
+    ``import api.season_metrics`` must load no numpy.
+    """
+    import json
+    import random
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import numpy as np
+
+    from api.season_metrics import (
+        _OUTCOME_FNS,
+        _completed_sorted,
+        compute_cumulative_series,
+    )
+
+    rng = random.Random(36)
+    rows: list[dict] = []
+    for i in range(600):
+        home = rng.randint(3, 42)
+        away = home if i % 17 == 0 else rng.randint(3, 42)  # every 17th row is a WP tie
+        margin, total = home - away, home + away
+        spread = rng.choice([-7.5, -6.5, -3.5, -2.5, 1.5, 3.5, 6.5])
+        line_total = rng.choice([40.5, 43.5, 46.5, 49.5])
+        if i % 13 == 0:  # an ATS push: home_cover lands exactly on the slipped line
+            spread = margin - 0.5
+            ats_prediction = spread + 1.0
+        else:
+            ats_prediction = spread + rng.choice([-2.0, 2.0])
+        if i % 11 == 0:  # an OU push: over lands exactly on the slipped line
+            line_total = total - 0.5
+            ou_prediction = line_total + 1.0
+        else:
+            ou_prediction = line_total + rng.choice([-3.0, 3.0])
+        rows.append(
+            _game(
+                week=1 + i % 18,
+                home_score=home,
+                away_score=away,
+                wp_prob=rng.random(),
+                ats_prediction=ats_prediction,
+                ou_prediction=ou_prediction,
+                market_spread=spread,
+                market_total=line_total,
+            )
+        )
+        rows[-1]["game_id"] = f"g{i:04d}"
+
+    series = compute_cumulative_series(rows)
+    completed = _completed_sorted(rows)
+    for target, fn in _OUTCOME_FNS.items():
+        outcomes = [fn(r) for r in completed]
+        hits = [1.0 if o else 0.0 for o in outcomes if o is not None]
+        assert len(hits) >= 200, f"{target}: only {len(hits)} decided games"
+        assert len(hits) < len(outcomes), f"{target}: the fixture has no push or tie"
+        reference = (
+            np.cumsum(np.array(hits, dtype=float)) / np.arange(1, len(hits) + 1) * 100.0
+        )
+        assert series[target]["values"] == [float(v) for v in reference], target
+
+    completed_run = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, sys\nimport api.season_metrics\n"
+            "print(json.dumps('numpy' in sys.modules))\n",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(completed_run.stdout.strip().splitlines()[-1]) is False, (
+        "a fresh import of api.season_metrics loaded numpy"
+    )
+
+
 def test_cumulative_empty_rows_returns_empty_series() -> None:
     """Empty input yields empty per-target series without raising."""
     from api.season_metrics import compute_cumulative_series

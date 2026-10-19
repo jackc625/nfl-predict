@@ -40,7 +40,8 @@ The O/U rule and the push/grading shape mirror ``backtest/simulation.py``
 
 UIAP-01 COMPLIANCE
 ------------------
-This module imports only stdlib and ``numpy``. No imports from ``models``,
+This module imports only the standard library (no numpy: the request path must not load it,
+Phase 36 D-11). No imports from ``models``,
 ``features``, ``ratings``, ``backtest``, or ``api.*`` — keeping api-side formula
 reuse free of circular-import risk and satisfying the UIAP-01 import guard. The
 locked constants below are copied *values* (with a source-citing comment),
@@ -59,8 +60,6 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from typing import Any
-
-import numpy as np
 
 # ---------------------------------------------------------------------------
 # Locked constants (copied VALUES with source-citing comments — UIAP-01)
@@ -410,12 +409,13 @@ def compute_cumulative_series(rows: Sequence[dict]) -> dict[str, dict[str, list]
             decided_hits.append(1.0 if outcome else 0.0)
             decided_weeks.append(int(_num(r.get("week"))))
 
-        if decided_hits:
-            hits_arr = np.array(decided_hits, dtype=float)
-            running = np.cumsum(hits_arr) / np.arange(1, len(hits_arr) + 1) * 100.0
-            values = [float(v) for v in running]
-        else:
-            values = []
+        # A scalar running mean, not numpy: the request path must not load numpy. Same operation
+        # order as the old cumsum / arange * 100.0 (divide, then multiply); a test pins bit-identity.
+        values: list[float] = []
+        running_hits = 0.0
+        for count, hit in enumerate(decided_hits, start=1):
+            running_hits += hit
+            values.append(running_hits / count * 100.0)
         series[target] = {"weeks": decided_weeks, "values": values}
     return series
 
