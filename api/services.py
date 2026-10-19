@@ -41,7 +41,7 @@ from typing import Any
 import duckdb
 from cachetools import TTLCache
 
-from api.cache import (
+from api.cache_schema import (
     ARM_LIVE,
     BET_GRADED_OUTCOMES_COLUMNS,
     BET_LIST_COLUMNS,

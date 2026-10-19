@@ -25,7 +25,7 @@ from typing import Any, NamedTuple
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse, Response
 
-from api.cache import (
+from api.cache_schema import (
     ARM_LIVE,
     BACKTEST_SEASON_RANGE_KEY,
     BETTING_SEASON_RANGE_KEY,
