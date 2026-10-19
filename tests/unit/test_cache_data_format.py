@@ -16,6 +16,11 @@ What this file pins, and why:
   builds them, beside ``PINNED_VERSION``. A layout change without a version bump fails here. It was
   generated once from a real build, never hand-typed. Its known limit: it sees table and column
   names only, never the inside of a stored blob.
+* THE ONE 36-HOUR RULE (SPEC R8). ``push_is_stale`` is false at exactly 36 hours and true one
+  second later, and true when there is no push time or it cannot be read.
+* THE PUBLISH STAMP (D-14). ``stamp_publish`` writes the publish id and push time on a COPY of the
+  cache and swaps the copy in through the writer's own replace helper, so the file at the path is a
+  new file (the running server's swap detector sees it) and every other table is untouched.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -26,6 +31,7 @@ import ast
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -33,13 +39,17 @@ import pytest
 
 import api.cache
 from api import cache_schema
-from api.cache import CACHE_META_SCHEMA, populate_cache
+from api.cache import CACHE_META_SCHEMA, populate_cache, stamp_publish
 from api.cache_reader import open_cache_readonly, read_data_format
 from api.cache_schema import (
     DATA_FORMAT_VERSION,
     DATA_FORMAT_VERSION_KEY,
+    PUBLISH_ID_KEY,
+    PUSH_TIME_KEY,
     data_format_state,
+    push_is_stale,
 )
+from api.dependencies import cache_identity
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -492,3 +502,75 @@ def test_a_cache_with_no_meta_table_reads_as_a_mismatch(tmp_path: Path) -> None:
         assert read_data_format(conn).found_label == "missing"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# The one 36-hour rule (SPEC R8) and the copy-and-swap publish stamp (D-14)
+# ---------------------------------------------------------------------------
+
+_NOW = datetime(2026, 10, 31, 21, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("push_time_raw", "stale"),
+    [
+        ((_NOW - timedelta(hours=36)).isoformat(), False),
+        ((_NOW - timedelta(hours=36, seconds=1)).isoformat(), True),
+        (None, True),
+        ("not-a-time", True),
+        # A naive value is read as UTC: exactly 36 h before _NOW on the UTC clock is not stale.
+        ((_NOW - timedelta(hours=36)).replace(tzinfo=None).isoformat(), False),
+    ],
+)
+def test_the_36_hour_boundary(push_time_raw: str | None, stale: bool) -> None:
+    """Stale only strictly past 36 hours; an absent or unreadable push time is stale."""
+    assert push_is_stale(push_time_raw, _NOW) is stale
+
+
+def _row_counts(db_path: Path) -> dict[str, int]:
+    """Row count of every table except cache_meta."""
+    conn = open_cache_readonly(db_path)
+    try:
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_name <> 'cache_meta'"
+            ).fetchall()
+        ]
+        counts: dict[str, int] = {}
+        for table in tables:
+            row = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
+            assert row is not None
+            counts[table] = row[0]
+        return counts
+    finally:
+        conn.close()
+
+
+def test_the_stamp_is_written_on_a_copy_and_swapped_in(built_cache: Path) -> None:
+    """A new file lands at the path, carrying both stamp values, with every other table intact."""
+    identity_before = cache_identity(built_cache)
+    counts_before = _row_counts(built_cache)
+
+    stamp_publish(built_cache, publish_id="publish-test-0001", push_time=_NOW)
+
+    assert cache_identity(built_cache) != identity_before, (
+        "the stamped cache is the same file: the running server's swap detector would not see it"
+    )
+    assert list(built_cache.parent.glob("*.tmp.duckdb")) == []
+    conn = open_cache_readonly(built_cache)
+    try:
+        meta = dict(
+            conn.execute(
+                "SELECT key, value FROM cache_meta WHERE key IN (?, ?)",
+                [PUBLISH_ID_KEY, PUSH_TIME_KEY],
+            ).fetchall()
+        )
+    finally:
+        conn.close()
+    assert meta == {
+        PUBLISH_ID_KEY: "publish-test-0001",
+        PUSH_TIME_KEY: _NOW.isoformat(),
+    }
+    assert _row_counts(built_cache) == counts_before

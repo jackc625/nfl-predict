@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,8 @@ from api.cache_schema import (
     PREDICTIONS_TABLE_COLUMNS,
     PROVENANCE_BACKTEST_REPLAY,
     PROVENANCE_FORWARD,
+    PUBLISH_ID_KEY,
+    PUSH_TIME_KEY,
     REPLAY_VALIDATION_TYPE_SEASONS,
     VALIDATION_TYPE_CLEAN_HOLDOUT,
     VALIDATION_TYPE_CONTAMINATED,
@@ -3181,8 +3184,59 @@ def populate_cache(
         conn.close()
 
     # Atomic rename
+    _replace_cache_file(tmp_path, db_path)
+
+    logger.info("Web cache populated successfully", db_path=str(db_path))
+
+
+def _replace_cache_file(tmp_path: Path, db_path: Path) -> None:
+    """Put the finished temp file at *db_path*: unlink the old file, then rename the new one in.
+
+    The ONE replace path, shared by :func:`populate_cache` and :func:`stamp_publish`. Because the
+    file at the path is a NEW file afterwards, a running server's swap detector
+    (``api.dependencies.cache_file_changed``) notices and reconnects. The unlink-then-rename window
+    -- a crash between the two leaves no cache rather than a mixed one -- is a known, accepted gap
+    (D30-DEFER-22) and is deliberately not changed here.
+    """
     if db_path.exists():
         db_path.unlink()
     tmp_path.rename(db_path)
 
-    logger.info("Web cache populated successfully", db_path=str(db_path))
+
+def stamp_publish(db_path: Path, *, publish_id: str, push_time: datetime) -> None:
+    """Stamp this push attempt's publish id and push time into the cache's ``cache_meta`` (D-14).
+
+    WHY A COPY. The live cache is open read-only in a running local server, so it is not edited
+    in place: the stamp is written on a copy beside it, and the copy is swapped in through
+    :func:`_replace_cache_file`, the same path :func:`populate_cache` uses. The server's unchanged
+    swap detector sees a new file and reconnects. Only after this does the push take the file's
+    digest and upload it, so the stamp the hosted ``/health`` reports is inside the bytes it serves.
+
+    ACCEPTED CONSEQUENCE (D-14, review finding 36-06 MEDIUM). A push whose upload then fails leaves
+    the LOCAL cache stamped with that attempt, so the laptop's copy shows no "Out of date" bar while
+    the phone's copy is stale. The failed-run phone push covers that case.
+
+    Args:
+        db_path: The cache file.
+        publish_id: This attempt's id (a fresh uuid4 per attempt).
+        push_time: This attempt's time, timezone-aware UTC; stored as ISO text.
+    """
+    tmp_path = db_path.with_suffix(".tmp.duckdb")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    shutil.copyfile(db_path, tmp_path)
+
+    conn = duckdb.connect(str(tmp_path))
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+            [
+                (PUBLISH_ID_KEY, publish_id, push_time),
+                (PUSH_TIME_KEY, push_time.isoformat(), push_time),
+            ],
+        )
+    finally:
+        conn.close()
+
+    _replace_cache_file(tmp_path, db_path)
+    logger.info("Publish stamp written", db_path=str(db_path), publish_id=publish_id)

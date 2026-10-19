@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 # ---------------------------------------------------------------------------
 # The bet-list column classes (Phase 31, plan 31-01; Phase 34)
@@ -491,3 +492,31 @@ def data_format_state(
         and int(raw) == expected
     )
     return DataFormatState(raw=raw, expected=expected, matches=matches)
+
+
+# How long the site may go without a push before it says it is out of date (SPEC R8). The daily
+# run pushes once a day, so 36 hours is a missed run plus slack.
+STALE_AFTER = timedelta(hours=36)
+
+
+def push_is_stale(push_time_raw: str | None, now: datetime) -> bool:
+    """Whether the last push is too old to trust -- THE ONE RULE the bar and /health share.
+
+    Args:
+        push_time_raw: The stamped ``push_time`` text, or None when the cache carries none.
+        now: The current instant, timezone-aware.
+
+    Returns:
+        True when more than 36 hours separate the push from *now* (exactly 36 hours is still
+        fresh), and True when there is no push time or it cannot be read -- absent is never
+        fresh. A naive stamp is read as UTC.
+    """
+    if not push_time_raw:
+        return True
+    try:
+        push_time = datetime.fromisoformat(push_time_raw)
+    except ValueError:
+        return True
+    if push_time.tzinfo is None:
+        push_time = push_time.replace(tzinfo=UTC)
+    return now - push_time > STALE_AFTER

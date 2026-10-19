@@ -22,7 +22,8 @@ all three targets simultaneously, so there is no target-ordering window at all.
 THE ONE HONEST LIMITATION, RECORDED RATHER THAN PAPERED OVER
 -------------------------------------------------------------
 The final sequence unlinks the destination immediately before renaming the temporary file over it
-(``api/cache.py``: ``if db_path.exists(): db_path.unlink()`` then ``tmp_path.rename(db_path)``). A
+(``api/cache.py``'s ``_replace_cache_file``: ``if db_path.exists(): db_path.unlink()`` then
+``tmp_path.rename(db_path)``). A
 crash inside that window leaves NO cache rather than a mixed one. Pages would then fail to open the
 cache instead of serving a blend of old and new predictions. That is still not the failure SPEC R6
 names -- there is no half-populated state and no mixed read -- but it IS a real availability gap and
@@ -144,7 +145,9 @@ def test_populate_cache_source_builds_into_a_temp_file_and_renames() -> None:
         f"{sorted(derived_from_dest)}"
     )
 
-    # 3: the destination is produced by renaming that same handle.
+    # 3: the destination is produced by renaming that same handle -- in this function, or through
+    # the writer's one replace helper (Phase 36, D-14), which must itself rename its first
+    # parameter onto its second.
     renames = [
         node
         for node in ast.walk(func)
@@ -155,6 +158,31 @@ def test_populate_cache_source_builds_into_a_temp_file_and_renames() -> None:
         and node.func.value.id in temp_handles
         and dest_param in {name for arg in node.args for name in _names_in(arg)}
     ]
+    helper_calls = [
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_replace_cache_file"
+        and len(node.args) == 2
+        and _names_in(node.args[0]) & temp_handles
+        and dest_param in _names_in(node.args[1])
+    ]
+    if helper_calls:
+        helper = ast.parse(inspect.getsource(cache_module._replace_cache_file)).body[0]
+        assert isinstance(helper, ast.FunctionDef)
+        source_param, dest_param_of_helper = (arg.arg for arg in helper.args.args[:2])
+        renames = [
+            node
+            for node in ast.walk(helper)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "rename"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == source_param
+            and dest_param_of_helper
+            in {name for arg in node.args for name in _names_in(arg)}
+        ]
     assert renames, (
         "populate_cache never renames its temporary build file onto db_path -- the destination is "
         "not produced by an atomic rename (SPEC R6 all-or-nothing violated)"
