@@ -120,8 +120,10 @@ class TestTheRuleModuleIsALeaf:
 # Subject 2: the floor-literal scan
 # ---------------------------------------------------------------------------
 
-#: The top-level roots holding git-tracked Python, measured 2026-09-22 (``""`` is the repository
-#: root itself). Declared so a new root cannot be scanned -- or skipped -- silently.
+#: The top-level roots holding git-tracked Python, measured 2026-09-22 and re-measured 2026-10-20
+#: (``forward_ledger`` and ``notify`` added; ``""`` is the repository root itself). Plan 37-01 adds
+#: ``refit`` in the commit that first tracks it. Declared so a new root cannot be scanned -- or
+#: skipped -- silently.
 SCANNED_ROOTS: tuple[str, ...] = (
     "",
     "api",
@@ -132,7 +134,9 @@ SCANNED_ROOTS: tuple[str, ...] = (
     "data",
     "deployment",
     "features",
+    "forward_ledger",
     "models",
+    "notify",
     "pipeline",
     "ratings",
     "scripts",
@@ -219,7 +223,7 @@ class TestNoFloorLiteralOutsideTheRule:
         """NON-VACUITY, part 1: the files scanned span exactly the declared roots."""
         files = tracked_python_files()
         assert len(files) > 100, len(files)
-        assert len(SCANNED_ROOTS) == 15
+        assert len(SCANNED_ROOTS) == 17
         assert {_root_of(path) for path in files} == set(SCANNED_ROOTS)
         assert season_partition.PARTITION_RULE_PATH in files
 
