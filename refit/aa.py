@@ -60,9 +60,11 @@ from utils.game_lock import game_lock
 __all__ = [
     "AA_EXCLUDED_FIELDS",
     "AAWeekResult",
+    "WeekPairs",
     "evaluate_week",
     "record_week",
     "week_first_decision_run",
+    "week_pairs",
 ]
 
 _LIVE = "live"
@@ -72,6 +74,13 @@ _TWIN_FIELD = "twin"
 # The immutable columns an A/A comparison reads: every v1 column outside the exclusion list.
 _COMPARED_IMMUTABLE: tuple[str, ...] = tuple(
     name for name in IMMUTABLE_COLUMNS_V1 if name not in AA_EXCLUDED_FIELDS
+)
+
+# The three fields both arms of one decision run must share (R8).
+_COMPARABILITY_FIELDS: tuple[str, ...] = (
+    "odds_snapshot_digest",
+    "gold_generation_key",
+    "decided_at_utc",
 )
 
 # A key absent from one half compares unequal to any stored value, including JSON null.
@@ -104,6 +113,28 @@ class AAWeekResult:
     first_mismatch: dict[str, str] | None
     week_first_decision_run_utc: datetime
     preregistration_committed_at: datetime
+
+
+@dataclass(frozen=True)
+class WeekPairs:
+    """One week's live rows paired with their shadow twins (R8).
+
+    Attributes:
+        season: The season read.
+        week: The NFL week read.
+        pairs: ``(live, shadow)`` canonical immutable values of every twinned live row, in the
+            live rows' file order.
+        holes: The twin keys ``(game_id, season, week, target)`` of live rows with no twin.
+        invariant_failures: ``(twin key, field)`` for each comparability field a pair differs on.
+        shadow_rows: The week's shadow rows; 0 means the week is excluded from the comparison.
+    """
+
+    season: int
+    week: int
+    pairs: tuple[tuple[dict[str, Any], dict[str, Any]], ...]
+    holes: tuple[tuple[Any, ...], ...]
+    invariant_failures: tuple[tuple[tuple[Any, ...], str], ...]
+    shadow_rows: int
 
 
 def _exact(value: Any) -> str:
@@ -256,6 +287,41 @@ def evaluate_week(
         if _twin_key(entry) not in live_keys:
             return result("orphan_shadow", _mismatch(entry, _TWIN_FIELD))
     return result("clean")
+
+
+def week_pairs(entries: Sequence[LedgerEntry], season: int, week: int) -> WeekPairs:
+    """Pair each live row of (*season*, *week*) with its shadow twin and check R8 per pair.
+
+    Both rows of one decision run must carry the same ``odds_snapshot_digest``,
+    ``gold_generation_key`` and ``decided_at_utc``; the artifact, blend and recipe ids may
+    legitimately differ once a re-fit has moved the live arm. A live row with no twin is a hole.
+    """
+    live = _week_rows(entries, season, week, _LIVE)
+    shadow = _week_rows(entries, season, week, _SHADOW)
+    shadow_by_key = {_twin_key(entry): entry for entry in shadow}
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    holes: list[tuple[Any, ...]] = []
+    failures: list[tuple[tuple[Any, ...], str]] = []
+    for entry in live:
+        key = _twin_key(entry)
+        twin = shadow_by_key.get(key)
+        if twin is None:
+            holes.append(key)
+            continue
+        pairs.append((dict(entry.immutable), dict(twin.immutable)))
+        failures.extend(
+            (key, name)
+            for name in _COMPARABILITY_FIELDS
+            if _exact(entry.immutable[name]) != _exact(twin.immutable[name])
+        )
+    return WeekPairs(
+        season=season,
+        week=week,
+        pairs=tuple(pairs),
+        holes=tuple(holes),
+        invariant_failures=tuple(failures),
+        shadow_rows=len(shadow),
+    )
 
 
 def record_week(
