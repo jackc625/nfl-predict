@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from refit.aa import evaluate_week, record_week, week_first_decision_run
 
 from forward_ledger.store import append_rows, apply_updates, read_entries
+from refit.aa import evaluate_week, record_week, week_first_decision_run
 from refit.records import read_aa_records
 from tests.unit.test_forward_ledger_store import graded, key_of, make_row
 
