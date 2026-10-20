@@ -174,6 +174,12 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "tests/unit/test_preregistration_ancestry.py; editing it in place would destroy that "
         "evidence. The 2025 results it governed are labelled in PROFITABILITY-READOUT.md."
     ),
+    "ROLLING-REFIT-PREREGISTRATION.md": (
+        "A sealed pre-registration of the 2026 rolling re-fit, written before any 2026 re-fit "
+        "result existed and checked by tests/unit/test_phase37_preregistration_ancestry.py; "
+        "editing it in place would destroy that evidence. It reports no model accuracy or "
+        "betting result."
+    ),
     "README.md": (
         "The visitor-facing front page, rewritten from scratch on 2026-10-04. Its text reports "
         "no model accuracy or betting figure from before the fix: it says in words that those "
@@ -255,7 +261,12 @@ class TestTheReadoutSetIsAPartition:
         assert tracked_report_markdown(), "git ls-files returned no report markdown"
 
     @pytest.mark.parametrize(
-        "sealed", ["COLD-START-PREREGISTRATION.md", "PROFITABILITY-PREREGISTRATION.md"]
+        "sealed",
+        [
+            "COLD-START-PREREGISTRATION.md",
+            "PROFITABILITY-PREREGISTRATION.md",
+            "ROLLING-REFIT-PREREGISTRATION.md",
+        ],
     )
     def test_sealed_preregistrations_are_not_labelled(self, sealed: str) -> None:
         """Sealed pre-registrations are never edited in place (SPEC R14), so never labelled."""
