@@ -30,15 +30,6 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 import pandas as pd
 import pytest
-from refit.training import (
-    EXCLUSION_NO_FINAL_SCORE,
-    EXCLUSION_NO_GOLD_ROW,
-    RefitTrainingError,
-    calibration_season,
-    eligible_rows,
-    fit_target_at_cutoff,
-    train_generation,
-)
 
 from backtest.diagnose import score_deployed_artifacts
 from backtest.refit_preregistration_2026 import (
@@ -57,6 +48,15 @@ from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WPTrainer
 from refit import witness
+from refit.training import (
+    EXCLUSION_NO_FINAL_SCORE,
+    EXCLUSION_NO_GOLD_ROW,
+    RefitTrainingError,
+    calibration_season,
+    eligible_rows,
+    fit_target_at_cutoff,
+    train_generation,
+)
 from tests.fixtures.refit_gold import RefitFixture, build_refit_fixture
 
 _TRAINERS = {"wp": WPTrainer, "ats": ATSTrainer, "ou": OUTrainer}
