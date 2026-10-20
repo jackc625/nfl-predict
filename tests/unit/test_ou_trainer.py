@@ -97,7 +97,7 @@ def test_ou_total_converter_fitted(
     trainer: OUTrainer, synthetic_features_df: pd.DataFrame
 ) -> None:
     """After training, self.total_converter.is_fitted is True."""
-    trainer.train_and_evaluate(synthetic_features_df)
+    trainer.train_and_evaluate(synthetic_features_df, tune=False)
 
     assert trainer.total_converter is not None
     assert trainer.total_converter.is_fitted is True
@@ -107,7 +107,7 @@ def test_ou_over_probability_range(
     trainer: OUTrainer, synthetic_features_df: pd.DataFrame
 ) -> None:
     """Over probabilities from converter are in [0, 1] range."""
-    trainer.train_and_evaluate(synthetic_features_df)
+    trainer.train_and_evaluate(synthetic_features_df, tune=False)
 
     # Use converter to compute over probabilities
     predicted_totals = np.array([48.0, 38.0, 44.0, 55.0, 30.0])
@@ -125,7 +125,7 @@ def test_ou_under_probability_complement(
     trainer: OUTrainer, synthetic_features_df: pd.DataFrame
 ) -> None:
     """under_probability = 1 - over_probability for each prediction."""
-    trainer.train_and_evaluate(synthetic_features_df)
+    trainer.train_and_evaluate(synthetic_features_df, tune=False)
 
     predicted_totals = np.array([48.0, 38.0, 44.0, 55.0, 30.0])
     market_totals = np.array([44.5, 44.5, 44.5, 44.5, 44.5])
@@ -161,6 +161,6 @@ def test_ou_feature_count_soft_target(
     for i in range(16, 36):
         df[f"feature_{i}"] = np.random.normal(0, 1, len(df))
 
-    results = trainer.train_and_evaluate(df)
+    results = trainer.train_and_evaluate(df, tune=False)
     n_features = len(results["feature_names"])
     assert n_features <= 25, f"Expected <= 25 features, got {n_features}"
