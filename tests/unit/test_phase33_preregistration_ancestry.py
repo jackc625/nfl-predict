@@ -197,6 +197,9 @@ def uninvalidating_commits_touching_the_rule(
     Parameterised by *repo_root* so the fail-closed control can drive it against a synthetic
     repository rather than mutating this one.
 
+    A failed ``git log`` RAISES ``subprocess.CalledProcessError``: an empty offender list must
+    mean git answered and found none, never that git could not answer.
+
     Returns:
         ``[(sha, subject)]`` for every offending commit, newest first. Empty is the good case.
     """
@@ -205,7 +208,7 @@ def uninvalidating_commits_touching_the_rule(
         cwd=repo_root,
         capture_output=True,
         text=True,
-        check=False,
+        check=True,
     )
     offenders: list[tuple[str, str]] = []
     for record in listing.stdout.split("\x1e"):
