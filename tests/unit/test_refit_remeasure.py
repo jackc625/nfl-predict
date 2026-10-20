@@ -16,6 +16,9 @@ WHAT THIS PINS
   the error spread), the D-28 prior-only SD correction, the D-29 WP gate, the D-30 2026 slope, the
   D-36 edge bands, the 100-row floor and the fixed EV floors.
 * The content-addressed bet-rule record in ``load_frozen_chain_fit``'s shape.
+* D-21: the generation's blend, tuned through ``backtest.tune.run_blend_tuning`` on the new
+  models' ids and the extended corpus, names the new ids in its own provenance, so the swap's
+  bundle cross-check passes with ``config/blend_sources.py`` byte-unchanged.
 
 Every store is the synthetic fixture under a temporary directory (``tests/fixtures/refit_gold.py``)
 or a hand-built frame, and every fit is the one-thread ``refit.training`` fit; nothing here reads
@@ -27,6 +30,9 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import hashlib
+import inspect
+import json
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -48,7 +54,9 @@ from backtest.refit_preregistration_2026 import (
     REFIT_SEASON,
     WP_EDGE_ANCHOR,
 )
+from backtest.tune import run_blend_tuning
 from forward_ledger.settle import realized_values_from_scores
+from models.artifacts import ARTIFACT_VALIDATORS, _cross_check_bundle
 from models.blending_data import (
     EXCLUDED_COLUMNS,
     EXCLUSION_NO_PRELOCK_LINE,
@@ -69,8 +77,10 @@ from refit.remeasure import (
     extended_slopes,
     fold_specs,
     measure_bet_rule,
+    tune_generation_blend,
     walk_forward_predictions,
 )
+from refit.training import train_generation
 from scripts.derive_cold_start_constants import derive_threshold_pairs
 from tests.fixtures.refit_gold import RefitFixture, build_refit_fixture
 
@@ -699,3 +709,129 @@ def test_payload_loads_like_a_chain_fit(
     assert record["tune_fit"]["ats"]["calibration_gate_passed"] is None
     assert record["tune_fit"]["wp"]["frozen_sd"] is None
     assert record["edge_tier_thresholds"]["wp"] == list(WP_EDGE_ANCHOR)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: the blend re-tuned on the new models, with no committed edit
+# ---------------------------------------------------------------------------
+
+_BLEND_SOURCES = Path(__file__).resolve().parents[2] / "config" / "blend_sources.py"
+
+
+def test_run_blend_tuning_defaults_are_unchanged() -> None:
+    """The two new keywords are keyword-only and default to None: today's call is unchanged."""
+    parameters = inspect.signature(run_blend_tuning).parameters
+    for name in ("corpus", "walk_forward_slopes"):
+        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters[name].default is None
+
+
+def _write_converter(artifacts_dir: Path) -> dict[str, Any]:
+    payload = {
+        "version": "1.0",
+        **_CONVERTER,
+        "training_seasons": list(HISTORICAL_TUNE_SEASONS),
+        "n_games": 80,
+        "input_digest": "0" * 64,
+        "fitted_at": "2026-09-23T19:54:43+00:00",
+    }
+    directory = artifacts_dir / MARKET_CONVERTER_ID
+    directory.mkdir(parents=True)
+    (directory / "metadata.json").write_text(json.dumps(payload), encoding="utf-8")
+    return payload
+
+
+def _fixture_corpus_and_predictions(
+    store: RefitFixture,
+) -> tuple[PrelockTuningCorpus, dict[str, pd.DataFrame]]:
+    """An extended corpus over the fixture's 2020-2024 and finished 2026 games, with predictions."""
+    games = pd.read_parquet(store.silver_dir / "games.parquet")
+    kickoff = pd.to_datetime(games["kickoff_et"], utc=True)
+    finished = games["home_score"].notna() & games["away_score"].notna()
+    gold_ids = set(pd.read_parquet(store.gold_dir / "features_wp.parquet")["game_id"])
+    chosen = games.loc[
+        games["season"].isin([*HISTORICAL_TUNE_SEASONS, REFIT_SEASON])
+        & finished
+        & (kickoff < pd.Timestamp(store.cutoff_utc))
+        & games["game_id"].isin(gold_ids)
+    ].reset_index(drop=True)
+    rng = np.random.default_rng(21)
+    locks = kickoff.loc[chosen.index] - pd.Timedelta(hours=20)
+    frame = pd.DataFrame(
+        {
+            "game_id": chosen["game_id"].astype(str),
+            "season": chosen["season"].astype(int),
+            "week": chosen["week"].astype(int),
+            "game_type": "REG",
+            "snapshot_ts": locks.to_numpy() - np.timedelta64(3, "h"),
+            "lock": locks.to_numpy(),
+            "created_at": locks.to_numpy() - np.timedelta64(3, "h"),
+            "market_spread": rng.normal(0.0, 6.0, len(chosen)),
+            "market_total": 44.0 + rng.normal(0.0, 4.0, len(chosen)),
+        }
+    )
+    labels = realized_values_from_scores(games)
+    predictions = {
+        target: pd.DataFrame(
+            {
+                "game_id": frame["game_id"],
+                "season": frame["season"],
+                "week": frame["week"],
+                "prediction": rng.uniform(0.2, 0.8, len(frame))
+                if target == "wp"
+                else np.asarray([labels[target][g] for g in frame["game_id"]])
+                + rng.normal(0.0, 6.0, len(frame)),
+                "actual": [labels[target][g] for g in frame["game_id"]],
+            }
+        )
+        for target in _TARGETS
+    }
+    corpus = PrelockTuningCorpus(
+        frame=frame.loc[:, list(TUNING_FRAME_COLUMNS)],
+        excluded=pd.DataFrame(columns=pd.Index(list(EXCLUDED_COLUMNS))),
+        unjoined_timeline_ids=(),
+    )
+    return corpus, predictions
+
+
+def test_generation_blend_names_the_new_ids(tmp_path: Path) -> None:
+    """D-21: the blend's own provenance names the new ids; the bundle check passes; no edit."""
+    sources_before = hashlib.sha256(_BLEND_SOURCES.read_bytes()).hexdigest()
+    store = build_refit_fixture(tmp_path)
+    training = train_generation(
+        store.cutoff_utc,
+        gold_dir=store.gold_dir,
+        silver_dir=store.silver_dir,
+        artifacts_dir=store.artifacts_dir,
+        snapshots=store.snapshots,
+    )
+    converter = _write_converter(store.artifacts_dir)
+    corpus, predictions = _fixture_corpus_and_predictions(store)
+    assert REFIT_SEASON in set(corpus.frame["season"])
+
+    run = tune_generation_blend(
+        store.artifacts_dir,
+        store.silver_dir,
+        store.gold_dir,
+        artifact_ids=training.artifact_ids,
+        predictions=predictions,
+        corpus=corpus,
+        slopes=extended_slopes(converter),
+        gold_generation=training.gold_generation_digest,
+    )
+
+    payload = json.loads((run.artifact_dir / "blend_weights.json").read_text("utf-8"))
+    assert payload["source_artifact_ids"] == training.artifact_ids
+    assert payload["gold_generation_digest"] == training.gold_generation_digest
+    assert payload["market_probability_artifact_id"] == MARKET_CONVERTER_ID
+    assert REFIT_SEASON in payload["tuning_seasons"]["ats"]
+    assert REFIT_SEASON in payload["tuning_seasons"]["wp"]
+
+    mapping = {**training.artifact_ids, "blend": run.artifact_dir.name}
+    facts = {
+        key: ARTIFACT_VALIDATORS[key](version, store.artifacts_dir)
+        for key, version in mapping.items()
+    }
+    assert _cross_check_bundle(mapping, facts, store.artifacts_dir) == {}
+    assert not (store.artifacts_dir / "latest.json").exists()
+    assert hashlib.sha256(_BLEND_SOURCES.read_bytes()).hexdigest() == sources_before
