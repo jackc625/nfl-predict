@@ -489,12 +489,21 @@ def test_slate_weather_delegates_unchanged(monkeypatch):
     )
     seen: list[tuple] = []
 
-    def through(season, slate_game_ids, weather_failures):
-        seen.append((season, slate_game_ids, weather_failures))
-        return {"2026_08_EEE_FFF": "WeatherDataError: timeout"}
+    def through(season, slate_game_ids, weather_failures, *, weather_unknown):
+        seen.append((season, slate_game_ids, weather_failures, weather_unknown))
+        weather_unknown["2026_08_EEE_FFF"] = weather_failures["2026_08_EEE_FFF"]
+        return weather_unknown
 
     monkeypatch.setattr(daily_steps, "build_weather_features_through", through)
     daily_steps.build_slate_weather_features(slate)
 
-    assert seen == [(2026, frozenset({"2026_08_EEE_FFF"}), slate.weather_failures)]
+    assert len(seen) == 1
+    season, ids, failures, unknown = seen[0]
+    assert (season, ids, failures) == (
+        2026,
+        frozenset({"2026_08_EEE_FFF"}),
+        slate.weather_failures,
+    )
+    # The slate's own map is filled in place, so its entries exist even if the build raises.
+    assert unknown is slate.weather_unknown
     assert slate.weather_unknown == {"2026_08_EEE_FFF": "WeatherDataError: timeout"}
