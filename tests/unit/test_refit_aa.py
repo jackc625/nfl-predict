@@ -16,7 +16,7 @@ from typing import Any
 import pandas as pd
 
 from forward_ledger.store import append_rows, apply_updates, read_entries
-from refit.aa import evaluate_week, record_week, week_first_decision_run
+from refit.aa import evaluate_week, record_week, week_first_decision_run, week_pairs
 from refit.records import read_aa_records
 from tests.unit.test_forward_ledger_store import graded, key_of, make_row
 
@@ -308,3 +308,60 @@ def test_a_week_with_a_game_after_its_evaluation_instant_is_not_complete(
     assert complete.clean is True
     assert complete.reason == "clean"
     assert complete.live_rows == 12
+
+
+# ---------------------------------------------------------------------------
+# Task 2: the per-week comparability invariant (R8)
+# ---------------------------------------------------------------------------
+
+
+def generation_rows(
+    arm: str, model_artifact_id: str, blend_id: str
+) -> list[dict[str, Any]]:
+    """Week-8 rows of *arm* carrying the given artifact ids (a re-fit changes the live ids)."""
+    return [
+        {**row, "model_artifact_id": model_artifact_id, "blend_id": blend_id}
+        for row in week8_rows(arm)
+    ]
+
+
+def test_week_pairs_after_a_refit(tmp_path: Path) -> None:
+    live = generation_rows("live", "ats_20261103_220500", "blend_20261103_221000")
+    shadow = generation_rows("shadow", "ats_20261004_050228", "blend_20261004_050521")
+    append_rows(tmp_path, [*live, *shadow])
+
+    pairs = week_pairs(read_entries(tmp_path), SEASON, WEEK)
+
+    assert len(pairs.pairs) == 9
+    assert pairs.holes == ()
+    assert pairs.invariant_failures == ()
+    assert pairs.shadow_rows == 9
+    first_live, first_shadow = pairs.pairs[0]
+    assert first_live["model_artifact_id"] != first_shadow["model_artifact_id"]
+
+
+def test_a_different_decided_at_is_an_invariant_failure(tmp_path: Path) -> None:
+    live = week8_rows("live")
+    shadow = week8_rows("shadow")
+    shadow[3] = {**shadow[3], "decided_at_utc": "2026-10-28T21:20:00+00:00"}
+    append_rows(tmp_path, [*live, *shadow])
+
+    pairs = week_pairs(read_entries(tmp_path), SEASON, WEEK)
+
+    twin_key = (shadow[3]["game_id"], SEASON, WEEK, shadow[3]["target"])
+    assert pairs.invariant_failures == ((twin_key, "decided_at_utc"),)
+    assert len(pairs.pairs) == 9
+
+
+def test_a_week_with_no_shadow_rows(tmp_path: Path) -> None:
+    live = week8_rows("live")
+    append_rows(tmp_path, live)
+
+    pairs = week_pairs(read_entries(tmp_path), SEASON, WEEK)
+
+    assert pairs.shadow_rows == 0
+    assert pairs.pairs == ()
+    assert pairs.holes == tuple(
+        (row["game_id"], SEASON, WEEK, row["target"]) for row in live
+    )
+    assert pairs.invariant_failures == ()
