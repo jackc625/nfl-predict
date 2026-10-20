@@ -10,13 +10,18 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from pathlib import Path
+
 import pytest
 
+from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
 from forward_ledger.schema import ARM_LIVE, ARM_SHADOW
 from forward_ledger.shadow import SHADOW_PIN
 from models.artifacts import ResolvedArtifacts
 from refit.generations import (
     GENERATION_ZERO,
+    Generation,
     UnknownGenerationError,
     generation_of_row,
     generation_zero_ids,
@@ -32,10 +37,21 @@ _GENERATION_ONE = ResolvedArtifacts(
     blend="blend_20261101_050000",
     converter="market_probability_20260923_195443",
 )
-_INSTALLS: tuple[tuple[int, ResolvedArtifacts], ...] = ((1, _GENERATION_ONE),)
+_INSTALLS: tuple[Generation, ...] = (
+    Generation(
+        number=1,
+        ids=_GENERATION_ONE,
+        recipe=REFIT_RECIPE_ID,
+        bet_rule_path=Path("ledger/refit/bet_rules") / f"{'a' * 64}.json",
+        date_index=1,
+        list_week=8,
+    ),
+)
 
 
-def _generation(row: dict[str, object], installs=()) -> int | None:
+def _generation(
+    row: dict[str, object], installs: Sequence[Generation] = ()
+) -> int | None:
     model_id = row["model_artifact_id"]
     assert model_id is None or isinstance(model_id, str)
     return generation_of_row(model_id, str(row["arm"]), installs)
@@ -62,7 +78,7 @@ def test_shadow_rows_are_generation_zero(model_id: str) -> None:
     ids=["unknown-id", "null-id", "installed-generation-id"],
 )
 def test_a_shadow_row_with_any_other_id_is_refused(
-    model_id: str | None, installs: tuple[tuple[int, ResolvedArtifacts], ...]
+    model_id: str | None, installs: tuple[Generation, ...]
 ) -> None:
     row = make_row(arm=ARM_SHADOW, model_artifact_id=model_id)
     with pytest.raises(UnknownGenerationError) as raised:

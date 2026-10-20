@@ -8,9 +8,16 @@ daily run's critical recommend step. In order:
 
   1. resolve the production artifact ids ONCE (``models.artifacts.resolve_production_artifacts``)
      and build the week's decision bundle with them, so a ``latest.json`` swap mid-run cannot
-     mis-stamp a row (Plan 34-05);
+     mis-stamp a row (Plan 34-05). The ids name the generation in force
+     (``refit.generations.in_force_generation``, D-19): the pin's ids are generation 0 and the
+     builder is called exactly as before Phase 37 (D-04); a re-fit generation's ids decide with
+     that generation's own bet-rule record (its fits, no row-19 overlay, and its edge thresholds,
+     ``backtest.weekly_bet_list.load_bet_rule_record``), and ids no install records are refused
+     by name before anything is decided or written (research Pitfall 1);
   2. compute the reproduction key and the decision-snapshot digest IN MEMORY (Plan 34-08);
-  3. stamp the rows at the one stamping site (``forward_ledger.stamps``);
+  3. stamp the rows at the one stamping site (``forward_ledger.stamps``) with the generation's
+     recipe -- ``recipe-2026-row19-v1`` for generation 0, ``recipe-2026-refit-v1`` with every
+     installed generation's ids for a re-fit generation (D-20);
   4. first pick stands (D-13, SPEC LDGR-01): an identical repeat is skipped; a row that reached a
      DIFFERENT pick for a stored key is refused, logged by name (``first_pick_refusal``) and
      printed (``LEDGER_REFUSED=``) -- the run does not fail, and new keys still append;
@@ -64,7 +71,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
-from backtest.weekly_bet_list import DecisionBundle, build_weekly_decision_bundle
+from backtest.weekly_bet_list import (
+    DecisionBundle,
+    build_weekly_decision_bundle,
+    load_bet_rule_record,
+)
 from data.upstream_live import load_live_manifest
 from forward_ledger.anchor import read_local_anchor
 from forward_ledger.artifacts_copy import (
@@ -100,7 +111,7 @@ from forward_ledger.snapshots import (
     compute_snapshot_digest,
     write_decision_snapshot,
 )
-from forward_ledger.stamps import stamp_ledger_rows
+from forward_ledger.stamps import IN_FORCE_RECIPE_ID, stamp_ledger_rows
 from forward_ledger.store import (
     LEDGER_DIR,
     LEDGER_SEASON,
@@ -115,10 +126,17 @@ from forward_ledger.store import (
     read_entries,
 )
 from forward_ledger.sync import SyncOutcome, publish_ledger_state
+from refit.generations import (
+    GENERATION_ZERO,
+    Generation,
+    in_force_generation,
+    installed_generations,
+)
 from refit.records import record_shadow_holes
 from utils.logging_config import get_logger
 
 if TYPE_CHECKING:
+    from models.artifacts import ResolvedArtifacts
     from pipeline.daily_steps import DailySlate
 
 __all__ = [
@@ -217,6 +235,47 @@ def _resolve_once(artifacts_dir: Path) -> Any:
     from models.artifacts import resolve_production_artifacts
 
     return resolve_production_artifacts(artifacts_dir)
+
+
+def _is_refit(generation: Generation | None) -> bool:
+    """True for a re-fit generation; False for generation 0 and for no resolved ids."""
+    return generation is not None and generation.number != GENERATION_ZERO
+
+
+def _generation_bet_rule(generation: Generation | None) -> dict[str, Any]:
+    """The builder keywords of a re-fit generation's own bet rule; none for generation 0 (D-04).
+
+    The record is loaded (and its bytes checked against its name) BEFORE anything is decided, so
+    a bet-rule file edited after install leaves nothing written.
+    """
+    if generation is None or not _is_refit(generation):
+        return {}
+    fits, thresholds = load_bet_rule_record(generation.bet_rule_path)
+    return {
+        "chain_fit_path": generation.bet_rule_path,
+        "fits": fits,
+        "edge_thresholds": thresholds,
+    }
+
+
+def _live_recipe(generation: Generation | None) -> str:
+    """The recipe a live row is stamped with: the generation's for a re-fit, else today's."""
+    if generation is None or not _is_refit(generation):
+        return IN_FORCE_RECIPE_ID
+    return generation.recipe
+
+
+def _registered_ids(
+    generation: Generation | None, ledger: Path
+) -> tuple[ResolvedArtifacts, ...]:
+    """Every installed re-fit generation's ids (the stamping check of a re-fit row); none else."""
+    if not _is_refit(generation):
+        return ()
+    return tuple(
+        installed.ids
+        for installed in installed_generations(ledger)
+        if installed.number != GENERATION_ZERO
+    )
 
 
 def _verdict_scope_or_none() -> VerdictScope | None:
@@ -414,10 +473,17 @@ def record_forward_slate(
     Raises:
         backtest.weekly_bet_list.PublishDeadlinePassedError: the write was ready after
             *publish_by*; nothing was written to ``ledger/`` -- no row, snapshot or copy.
+        refit.generations.UnknownGenerationError: ``latest.json`` names ids that are neither the
+            pin's nor an installed generation's; nothing was decided or written.
+        refit.records.RefitRecordFormatError: the generation records, or the generation's
+            bet-rule file, cannot be read as written; nothing was decided or written.
         Everything the decision, stamping and ``commit_changes`` refuse, by name.
     """
     emit = log or record_event
     ledger = Path(ledger_dir)
+    resolved = _resolve_once(Path(artifacts_dir))
+    # No ids (no latest.json) keeps today's path, which refuses the stamp by name below.
+    generation = None if resolved is None else in_force_generation(resolved, ledger)
     bundle = bundle_builder(
         slate.season,
         slate.week,
@@ -426,7 +492,8 @@ def record_forward_slate(
         silver_dir=silver_dir,
         now=decided_at,
         excluded_game_ids=frozenset(excluded_game_ids),
-        resolved=_resolve_once(Path(artifacts_dir)),
+        resolved=resolved,
+        **_generation_bet_rule(generation),
     )
     frame: pd.DataFrame = bundle.frame
     if frame.empty:
@@ -458,6 +525,8 @@ def record_forward_slate(
         snapshot_digest=stamped_digest,
         scope=scope,
         ledger_has_verdict_rows=ledger_has_verdict_rows,
+        recipe_id=_live_recipe(generation),
+        registered_ids=_registered_ids(generation, ledger),
     )
     decided = cast("pd.DataFrame", stamped[list(IMMUTABLE_COLUMNS_V1)])
     rows = decided.to_dict(orient="records")
