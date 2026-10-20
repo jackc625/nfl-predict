@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -47,6 +47,7 @@ from models.train import (
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WPTrainer
+from pipeline.daily_steps import DailySlate, slate_lock
 from refit import witness
 from refit.training import (
     EXCLUSION_NO_FINAL_SCORE,
@@ -387,3 +388,113 @@ def test_cutoff_must_be_tz_aware(store):
     with pytest.raises(RefitTrainingError):
         eligible_rows(_gold(store, "wp"), _games(store), naive, "wp")
     assert store.cutoff_utc.tzinfo is UTC
+
+
+# ---------------------------------------------------------------------------
+# D-37: the data preparation is the nightly build a prediction day runs
+# ---------------------------------------------------------------------------
+
+
+def _record_the_build(monkeypatch) -> list[tuple]:
+    from refit import data_prep
+
+    calls: list[tuple] = []
+
+    def weather(season, ids, failures):
+        calls.append(("weather", season, ids, dict(failures)))
+        return {}
+
+    monkeypatch.setattr(
+        data_prep, "persist_current_season_elo", lambda ids: calls.append(("elo", ids))
+    )
+    monkeypatch.setattr(
+        data_prep, "step_build_team_form", lambda: calls.append(("team_form",))
+    )
+    monkeypatch.setattr(data_prep, "build_weather_features_through", weather)
+    monkeypatch.setattr(
+        data_prep,
+        "build_and_save_gold",
+        lambda ids, *, unplayed_through_lock: calls.append(
+            ("gold", ids, unplayed_through_lock)
+        ),
+    )
+    monkeypatch.setattr(
+        data_prep, "step_validate_features", lambda: calls.append(("leakage",))
+    )
+    return calls
+
+
+def test_prepare_gold_runs_the_nightly_build_in_order(monkeypatch):
+    from refit.data_prep import prepare_gold
+
+    calls = _record_the_build(monkeypatch)
+    prepare_gold(date(2026, 11, 3), slate=None)
+
+    assert [call[0] for call in calls] == [
+        "elo",
+        "team_form",
+        "weather",
+        "gold",
+        "leakage",
+    ]
+    assert calls[0] == ("elo", frozenset())
+    assert calls[2] == ("weather", 2026, frozenset(), {})
+    _, serve_ids, lock = calls[3]
+    assert serve_ids == frozenset()
+    # 18:00 EST on Tue 2026-11-03 (DST ended Sun 2026-11-01).
+    assert lock == slate_lock(date(2026, 11, 3))
+    assert lock == datetime(2026, 11, 3, 23, 0, tzinfo=UTC)
+
+
+def test_prepare_gold_keeps_a_same_day_slate(monkeypatch):
+    from refit.data_prep import prepare_gold
+
+    run_date = date(2026, 11, 24)
+    ids = ("2026_12_AAA_BBB", "2026_12_CCC_DDD")
+    failures = {ids[1]: "WeatherDataError"}
+    slate = DailySlate(
+        run_date_et=run_date,
+        lock=slate_lock(run_date),
+        schedule=pd.DataFrame(
+            {"game_id": list(ids), "season": [2026, 2026], "week": [12, 12]}
+        ),
+        weather_failures=dict(failures),
+    )
+    calls = _record_the_build(monkeypatch)
+    prepare_gold(run_date, slate=slate)
+
+    assert [call[0] for call in calls] == [
+        "elo",
+        "team_form",
+        "weather",
+        "gold",
+        "leakage",
+    ]
+    assert calls[0] == ("elo", frozenset(ids))
+    assert calls[2] == ("weather", 2026, frozenset(ids), failures)
+    assert calls[3] == ("gold", frozenset(ids), slate.lock)
+
+
+def test_slate_weather_delegates_unchanged(monkeypatch):
+    from pipeline import daily_steps
+
+    run_date = date(2026, 10, 28)
+    slate = DailySlate(
+        run_date_et=run_date,
+        lock=slate_lock(run_date),
+        schedule=pd.DataFrame(
+            {"game_id": ["2026_08_EEE_FFF"], "season": [2026], "week": [8]}
+        ),
+        weather_failures={"2026_08_EEE_FFF": "WeatherDataError: timeout"},
+    )
+    seen: list[tuple] = []
+
+    def through(season, slate_game_ids, weather_failures):
+        seen.append((season, slate_game_ids, weather_failures))
+        return {"2026_08_EEE_FFF": "WeatherDataError: timeout"}
+
+    monkeypatch.setattr(daily_steps, "build_weather_features_through", through)
+    daily_steps.build_slate_weather_features(slate)
+
+    assert seen == [(2026, frozenset({"2026_08_EEE_FFF"}), slate.weather_failures)]
+    assert slate.weather_unknown == {"2026_08_EEE_FFF": "WeatherDataError: timeout"}
