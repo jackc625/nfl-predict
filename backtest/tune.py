@@ -487,7 +487,7 @@ def run_blend_tuning(
 
 
 def _build_cli_parser() -> argparse.ArgumentParser:
-    """The CLI: ONE behaviour, one option. Separated from main() so its surface is testable."""
+    """The CLI: ONE behaviour, two options. Separated from main() so its surface is testable."""
     parser = argparse.ArgumentParser(
         prog="python -m backtest.tune",
         description=(

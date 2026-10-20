@@ -388,7 +388,7 @@ class TestBlendArtifacts:
 
 
 class TestTheCli:
-    def test_the_parser_has_one_option(self) -> None:
+    def test_the_parser_has_exactly_its_two_options(self) -> None:
         from backtest.tune import _build_cli_parser
 
         options = {
@@ -396,4 +396,4 @@ class TestTheCli:
             for option in vars(_build_cli_parser())["_option_string_actions"]
             if option not in ("-h", "--help")
         }
-        assert options == {"--artifacts-dir"}
+        assert options == {"--artifacts-dir", "--gold-generation"}
