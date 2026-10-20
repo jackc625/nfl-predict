@@ -49,7 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,6 +57,7 @@ from typing import Any
 import pandas as pd
 from threadpoolctl import threadpool_limits
 
+from backtest.refit_preregistration_2026 import REFIT_SEASON
 from backtest.signal_lift import select_group_columns
 from conf.season_partition import completed_seasons_from, derive_season_partition
 from config.blend_sources import (
@@ -75,7 +76,10 @@ from models.blending_data import (
     build_tuning_frames,
     load_tuning_period_data,
 )
-from models.market_probability import load_market_probability_artifact
+from models.market_probability import (
+    OWNED_LINE_SEASONS,
+    load_market_probability_artifact,
+)
 from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
@@ -359,10 +363,22 @@ def run_blend_tuning(
     predictions_fn: Callable[[str, SourceRecipe, list[int]], pd.DataFrame]
     | None = None,
     gold_generation_fn: Callable[[], str] | None = None,
+    corpus: PrelockTuningCorpus | None = None,
+    walk_forward_slopes: Mapping[int | str, float] | None = None,
 ) -> BlendTuningRun:
     """Fit one fixed blend weight per target and write ONE new blend artifact.
 
     ``artifacts/latest.json`` is not touched (``save_blend_artifacts``'s default).
+
+    THE ROLLING RE-FIT'S TWO INPUTS (Phase 37, D-21 / D-30). The 2026 rolling re-fit re-tunes
+    each generation's blend on its OWN predictions, so it hands in the owned pre-lock corpus
+    extended to the finished 2026 games (``refit.remeasure.extended_corpus``) and the
+    converter's prior-only slopes extended by ``slope_beta`` for 2026 (fitted on 2020-2024,
+    strictly before 2026). Left at None, both are exactly today's: the 2020-2024
+    ``load_tuning_period_data(silver_dir)`` corpus and the converter's own
+    ``walk_forward_slopes``. When an extended corpus is handed in, the tuner also accepts the
+    re-fit season (``REFIT_SEASON``), whose pre-lock lines are the live captures in silver
+    ``odds_snapshot``; any other season outside the owned purchase is still refused.
 
     Args:
         artifacts_dir: The artifacts root: source models and the converter are READ from it,
@@ -379,6 +395,8 @@ def run_blend_tuning(
             the operator-measured ``--gold-generation``. There is no default, because the
             one producer of the key lives in the ``tests`` package and a production fit
             must not import it (A33.2-review WR-06).
+        corpus: The pre-lock corpus to tune on; None loads today's 2020-2024 corpus.
+        walk_forward_slopes: The prior-only WP market slopes; None reads the converter's own.
 
     Returns:
         The :class:`BlendTuningRun`.
@@ -410,7 +428,19 @@ def run_blend_tuning(
         raise BlendSourceError(msg)
 
     converter = load_market_probability_artifact(converter_artifact_id, artifacts_path)
-    corpus = load_tuning_period_data(silver_dir)
+    owned_seasons = (
+        OWNED_LINE_SEASONS if corpus is None else (*OWNED_LINE_SEASONS, REFIT_SEASON)
+    )
+    if corpus is None:
+        corpus = load_tuning_period_data(silver_dir)
+    slopes: dict[int, float] = {
+        int(season): float(slope)
+        for season, slope in (
+            converter["walk_forward_slopes"]
+            if walk_forward_slopes is None
+            else walk_forward_slopes
+        ).items()
+    }
     seasons = sorted({int(season) for season in corpus.frame["season"]})
 
     predict = predictions_fn or _gold_predictions_fn(Path(gold_dir))
@@ -423,15 +453,13 @@ def run_blend_tuning(
             for target in BLEND_TARGETS
         }
 
-    frames = build_tuning_frames(
-        corpus.frame, predictions, converter["walk_forward_slopes"]
-    )
+    frames = build_tuning_frames(corpus.frame, predictions, slopes)
 
     blender = MarketBlender(
         market_probability_artifact_id=converter_artifact_id,
         market_probability_slope_beta=float(converter["slope_beta"]),
     )
-    result = blender.tune_weights(frames.frames)
+    result = blender.tune_weights(frames.frames, owned_seasons=owned_seasons)
 
     provenance = BlendProvenance(
         gold_generation_digest=gold_digest,

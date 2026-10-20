@@ -62,12 +62,14 @@ from backtest.refit_preregistration_2026 import (
     EV_FLOORS,
     HISTORICAL_FOLD_SEASONS,
     HISTORICAL_TUNE_SEASONS,
+    MARKET_CONVERTER_ID,
     MIN_USABLE_REMEASURE_ROWS,
     OU_TOTAL_FLOOR,
     REFIT_RECIPE_ID,
     REFIT_SEASON,
     THREAD_LIMIT,
 )
+from backtest.tune import BlendTuningRun, SourceRecipe, run_blend_tuning
 from forward_ledger.settle import realized_values_from_scores
 from models.blending import home_fav_margin_from_prelock_spread
 from models.blending_data import (
@@ -103,6 +105,7 @@ __all__ = [
     "fit_frame",
     "fold_specs",
     "measure_bet_rule",
+    "tune_generation_blend",
     "walk_forward_predictions",
 ]
 
@@ -899,3 +902,68 @@ def bet_rule_payload(
         "rows_by_target": numbers.rows_by_target,
         "preregistration_sha256": dict(PREREGISTRATION_SHA256),
     }
+
+
+# ---------------------------------------------------------------------------
+# The blend (record section 9, "Blend weights"; D-21)
+# ---------------------------------------------------------------------------
+
+
+def tune_generation_blend(
+    artifacts_dir: Path | str,
+    silver_dir: Path | str,
+    gold_dir: Path | str,
+    *,
+    artifact_ids: Mapping[str, str],
+    predictions: Mapping[str, pd.DataFrame],
+    corpus: PrelockTuningCorpus,
+    slopes: Mapping[int, float],
+    gold_generation: str,
+) -> BlendTuningRun:
+    """Re-tune the generation's blend on its own predictions; bound to the new ids, no edit (D-21).
+
+    Calls ``backtest.tune.run_blend_tuning`` with the generation's three model ids as
+    ``source_artifact_ids``, the converter the record names (``MARKET_CONVERTER_ID``), the
+    gold the new models were fitted on, the walk-forward fold predictions, the extended corpus
+    and the 2026-extended slopes. The written blend's own provenance (``blend_weights.json``)
+    therefore names the new ids, which is what ``models.artifacts.replace_manifest``'s bundle
+    cross-check compares; ``config/blend_sources.py`` is neither read nor edited, and
+    ``artifacts/latest.json`` is not touched.
+
+    Args:
+        artifacts_dir: The artifacts root: the three new models and the converter are read
+            from it and the new ``blend_*`` directory is written into it.
+        silver_dir: Passed through (unread: the corpus is supplied).
+        gold_dir: Passed through (unread: the predictions are supplied).
+        artifact_ids: ``{wp, ats, ou}`` -> the generation's new model ids (more keys allowed).
+        predictions: :func:`walk_forward_predictions` output.
+        corpus: :func:`extended_corpus`.
+        slopes: :func:`extended_slopes` of the bound converter.
+        gold_generation: The gold generation the three new models recorded.
+
+    Returns:
+        The ``BlendTuningRun`` (its ``artifact_dir`` is the new blend).
+    """
+
+    def fold_predictions(
+        target: str, _recipe: SourceRecipe, seasons: list[int]
+    ) -> pd.DataFrame:
+        frame = predictions[target]
+        return frame.loc[frame["season"].astype(int).isin(seasons)].reset_index(
+            drop=True
+        )
+
+    return run_blend_tuning(
+        artifacts_dir,
+        silver_dir,
+        gold_dir,
+        source_artifact_ids={target: str(artifact_ids[target]) for target in _TARGETS},
+        converter_artifact_id=MARKET_CONVERTER_ID,
+        recorded_gold_generation=gold_generation,
+        predictions_fn=fold_predictions,
+        gold_generation_fn=lambda: gold_generation,
+        corpus=corpus,
+        walk_forward_slopes={
+            int(season): float(slope) for season, slope in slopes.items()
+        },
+    )

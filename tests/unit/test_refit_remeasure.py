@@ -749,23 +749,24 @@ def _fixture_corpus_and_predictions(
     kickoff = pd.to_datetime(games["kickoff_et"], utc=True)
     finished = games["home_score"].notna() & games["away_score"].notna()
     gold_ids = set(pd.read_parquet(store.gold_dir / "features_wp.parquet")["game_id"])
-    chosen = games.loc[
+    in_corpus = (
         games["season"].isin([*HISTORICAL_TUNE_SEASONS, REFIT_SEASON])
         & finished
         & (kickoff < pd.Timestamp(store.cutoff_utc))
         & games["game_id"].isin(gold_ids)
-    ].reset_index(drop=True)
+    )
+    chosen = games.loc[in_corpus].reset_index(drop=True)
     rng = np.random.default_rng(21)
-    locks = kickoff.loc[chosen.index] - pd.Timedelta(hours=20)
+    locks = (kickoff.loc[in_corpus] - pd.Timedelta(hours=20)).reset_index(drop=True)
     frame = pd.DataFrame(
         {
             "game_id": chosen["game_id"].astype(str),
             "season": chosen["season"].astype(int),
             "week": chosen["week"].astype(int),
             "game_type": "REG",
-            "snapshot_ts": locks.to_numpy() - np.timedelta64(3, "h"),
-            "lock": locks.to_numpy(),
-            "created_at": locks.to_numpy() - np.timedelta64(3, "h"),
+            "snapshot_ts": locks - pd.Timedelta(hours=3),
+            "lock": locks,
+            "created_at": locks - pd.Timedelta(hours=3),
             "market_spread": rng.normal(0.0, 6.0, len(chosen)),
             "market_total": 44.0 + rng.normal(0.0, 4.0, len(chosen)),
         }
