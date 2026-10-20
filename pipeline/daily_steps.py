@@ -122,8 +122,12 @@ class DailySlate:
             line on record; set by ``close_collection``. Such a game is still predicted -- the
             models use no market input -- with its market side blank and no bet.
         appended_rows: The rows this run newly appended to the forward ledger (their canonical
-            stored values), accumulated across the live-skip re-runs of the recommend step;
-            extended by ``recommend_slate`` and read by the end-of-run notifier (Phase 35, D-14).
+            stored values, both arms' rows as written -- the notifier keeps the live arm only),
+            accumulated across the live-skip re-runs of the recommend step; extended by
+            ``recommend_slate`` and read by the end-of-run notifier (Phase 35, D-14).
+        shadow_holes: ``((game_id, season, week, target), reason)`` for every new live row the
+            frozen arm could not twin, as the recommend step recorded them (Phase 37, SPEC R8);
+            extended by ``recommend_slate`` beside ``appended_rows``.
     """
 
     run_date_et: date
@@ -135,6 +139,7 @@ class DailySlate:
     odds_failure: str | None = None
     odds_missing: dict[str, str] = field(default_factory=dict)
     appended_rows: list[dict[str, Any]] = field(default_factory=list)
+    shadow_holes: list[tuple[tuple[Any, ...], str]] = field(default_factory=list)
 
     @property
     def game_ids(self) -> frozenset[str]:
@@ -629,6 +634,7 @@ def recommend_slate(slate: DailySlate) -> None:
                 repo_dir=Path(),
             )
             slate.appended_rows.extend(outcome.appended_rows)
+            slate.shadow_holes.extend(outcome.shadow_holes)
         else:
             generate_weekly_bet_list(
                 season=slate.season,

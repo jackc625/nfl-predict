@@ -86,7 +86,11 @@ class RunReport:
         sync: The sync's ``SyncOutcome``; None when it returned none or raised.
         sync_error: The class name of the exception the sync raised, if any.
         appended_rows: The forward-ledger rows this run newly appended (Plan 35-04's
-            ``RecordOutcome.appended_rows``), exactly as written.
+            ``RecordOutcome.appended_rows``), exactly as written: both arms' rows (the notifier
+            keeps the live arm only).
+        shadow_holes: ``((game_id, season, week, target), reason)`` for every new live row the
+            frozen arm could not twin (Phase 37, SPEC R8), copied from what the recommend step
+            recorded and never recomputed; the reason is an exception class name only.
         season_window: ``in``, ``out`` or ``unknown`` for the watcher's season window (Plan 35-13).
         cache_rebuild_attempted: True when this run tried to rebuild the web cache (the populate
             step on a prediction day, or the settle-day rebuild on a no-games day), so the website
@@ -121,6 +125,7 @@ class RunReport:
     sync: SyncOutcome | None = None
     sync_error: str | None = None
     appended_rows: list[dict[str, Any]] = field(default_factory=list)
+    shadow_holes: tuple[tuple[tuple[Any, ...], str], ...] = ()
     season_window: str = "unknown"
     cache_rebuild_attempted: bool = False
     cache_rebuild_completed: bool = False

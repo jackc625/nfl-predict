@@ -918,9 +918,11 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
             finally:
                 if cut_over and not dry_run:
                     _sync_ledger(report=report)
-                # Rows appended before a later failure are still reported (failed, then bets).
+                # Rows appended before a later failure are still reported (failed, then bets), and
+                # so are the frozen-arm holes the recommend step recorded (Phase 37, SPEC R8).
                 if "slate" in progress:
                     report.appended_rows = list(progress["slate"].appended_rows)
+                    report.shadow_holes = tuple(progress["slate"].shadow_holes)
                 # After every write and the sync; never on a dry run or a Ctrl+C (D-13). The
                 # website push runs BEFORE the check-in the notifier ends with, so it delays that
                 # check-in by at most its own worst case: a 600 s lock wait + a 900 s deploy bound

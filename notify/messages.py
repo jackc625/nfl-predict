@@ -14,7 +14,8 @@ top-priority message; each ledger or closing failure gives one normal-priority m
 The classification keys on ``report.status`` alone, so a critical step failure -- which the
 orchestrator raises, so the daily run records it as ``run_failed`` -- is one event, never two
 (RESEARCH Pitfall 5). Push failures are read from the sync's error fields, never from its
-``*_pushed`` booleans: nothing is pushed on a normal no-new-row day (Pitfall 6).
+``*_pushed`` booleans: nothing is pushed on a normal no-new-row day (Pitfall 6). A frozen-arm hole
+(Phase 37) adds no push when the run already owes one: it is merged into the first.
 
 THE LOCK TIME IS NEVER WRITTEN HERE
 -----------------------------------
@@ -67,6 +68,7 @@ __all__ = [
     "failed_messages",
     "game_labels",
     "lock_clock_text",
+    "merge_into_first_failed",
     "next_action_line",
     "one_line_error",
 ]
@@ -420,6 +422,65 @@ def _site_push_messages(
     ]
 
 
+def merge_into_first_failed(
+    messages: list[PushMessage], *, standalone: PushMessage, title_suffix: str
+) -> list[PushMessage]:
+    """Fold a new failure into the run's FIRST failed message, or send it on its own (SPEC R14).
+
+    When *messages* is empty, the result is *messages* followed by *standalone*. Otherwise the new
+    failure adds no push of its own: the first message is replaced by one titled
+    ``<its title> + <title_suffix>`` whose header lines are its own followed by *standalone*'s, so
+    the merged push names both failures; it keeps its own priority and event class. Every later
+    message is returned untouched -- this does not collapse the run's other failed messages into
+    one. Plan 37-14 reuses it for re-fit trouble.
+    """
+    if not messages:
+        return [*messages, standalone]
+    first, *rest = messages
+    merged = PushMessage(
+        event_class=first.event_class,
+        title=f"{first.title} + {title_suffix}",
+        header_lines=(*first.header_lines, *standalone.header_lines),
+        item_lines=first.item_lines,
+        priority=first.priority,
+    )
+    return [merged, *rest]
+
+
+def _shadow_hole_count(report: RunReport) -> str:
+    """``<n> row(s)``: how many new live rows the frozen arm could not twin."""
+    return _plural(len(report.shadow_holes), "row")
+
+
+def _shadow_hole_message(
+    report: RunReport, secret_values: Iterable[str]
+) -> PushMessage | None:
+    """The normal-priority push for the frozen arm's holes; None when it twinned every row (R8).
+
+    Read from ``report.shadow_holes`` as the recommend step recorded them (D-04: never
+    recomputed). The error line names exception CLASSES only, never a message (D-10).
+    """
+    holes = report.shadow_holes
+    if not holes:
+        return None
+    week = report.slate_week if report.slate_week is not None else holes[0][0][2]
+    reasons = dict.fromkeys(str(reason) for _key, reason in holes)
+    error = ", ".join(one_line_error(reason, None, secret_values) for reason in reasons)
+    return PushMessage(
+        event_class="failed",
+        title=f"FAILED: frozen arm missed {_shadow_hole_count(report)} (week {week})",
+        header_lines=(
+            f"What failed: the frozen comparison arm could not score {len(holes)} of "
+            "tonight's rows; the live rows were written",
+            f"Error: {error}",
+            "Next: nothing to run; the comparison uses paired games only and the hole is "
+            "recorded in ledger/refit/shadow_holes.jsonl",
+        ),
+        item_lines=(),
+        priority=PRIORITY_NORMAL,
+    )
+
+
 def failed_messages(
     report: RunReport, *, now: datetime, secret_values: Iterable[str] = ()
 ) -> list[PushMessage]:
@@ -429,6 +490,10 @@ def failed_messages(
     per ledger, closing or website failure in this fixed order: settle raised, closing finalization
     deferred, closing schedule, anchor push, backup push, sync refused, website push. A clean run
     gives none.
+
+    Last, the frozen arm's holes (Phase 37, SPEC R8/R14): merged into the FIRST message above
+    when the run already owes one (:func:`merge_into_first_failed`), else sent on their own at
+    normal priority.
     """
     secrets = tuple(secret_values)
     messages: list[PushMessage] = []
@@ -440,6 +505,13 @@ def failed_messages(
         messages.append(closing)
     messages.extend(_sync_messages(report, secrets))
     messages.extend(_site_push_messages(report, secrets))
+    holes = _shadow_hole_message(report, secrets)
+    if holes is not None:
+        messages = merge_into_first_failed(
+            messages,
+            standalone=holes,
+            title_suffix=f"frozen arm missed {_shadow_hole_count(report)}",
+        )
     return messages
 
 
