@@ -307,6 +307,7 @@ _PRODUCTION_ROOTS: tuple[str, ...] = (
     "forward_ledger",
     "models",
     "pipeline",
+    "refit",
     "scripts",
     "utils",
 )
