@@ -28,7 +28,9 @@ daily run's critical recommend step. In order:
      delays or changes a live row;
   8. ONE ``commit_changes`` carrying the live rows first and then the shadow rows, with the same
      deadline, which re-reads the clock immediately before the replace -- so an interrupted write
-     leaves both arms' rows of the run or neither.
+     leaves both arms' rows of the run or neither. Once it wrote, every hole is appended to
+     ``ledger/refit/shadow_holes.jsonl`` (``refit.records``); a hole record that cannot be written
+     is logged by class and never fails the call.
 
 :func:`settle_ledger` -- every day the schedule refresh returns a season: grade pending rows from
 the refreshed silver scores, append the corrections owed by the live manifest's
@@ -113,6 +115,7 @@ from forward_ledger.store import (
     read_entries,
 )
 from forward_ledger.sync import SyncOutcome, publish_ledger_state
+from refit.records import record_shadow_holes
 from utils.logging_config import get_logger
 
 if TYPE_CHECKING:
@@ -342,6 +345,16 @@ def _shadow_rows(
     return list(classification.new), holes
 
 
+def _record_holes(
+    ledger: Path, holes: tuple[ShadowHole, ...], decided_at: datetime
+) -> None:
+    """Append the holes to the ledger's refit records. NEVER raises: the live rows are committed."""
+    try:
+        record_shadow_holes(ledger, holes, decided_at=decided_at)
+    except Exception as error:  # noqa: BLE001 - a hole record never fails the forward write
+        logger.error("Shadow hole record refused", error=type(error).__name__)
+
+
 def _anchored_head(repo_dir: Path | str | None) -> tuple[str, int] | None:
     """The local ``ledger-anchor`` head, or None when no repository is named or no anchor exists.
 
@@ -524,6 +537,8 @@ def record_forward_slate(
             head_hash=result.head_hash,
             entry_count=result.entry_count,
         )
+        if holes:
+            _record_holes(ledger, holes, decided_at)
     return RecordOutcome(
         decided=len(rows),
         appended=len(classification.new) if result.wrote else 0,

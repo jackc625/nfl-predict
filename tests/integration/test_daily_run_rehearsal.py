@@ -577,6 +577,7 @@ def arrange_cut_over_day(rehearsal: Rehearsal) -> None:
             manifest_dir=stores.manifests,
             bundle_builder=_bundle,
             clock=lambda: clock,
+            shadow_builder=None,
         )
 
     monkeypatch.setattr(runner, "record_forward_slate", _record)

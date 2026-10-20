@@ -264,6 +264,7 @@ class _Env:
             "silver_dir": self.silver,
             "manifest_dir": self.manifests,
             "bundle_builder": self.builder,
+            "shadow_builder": None,
         }
         options.update(kwargs)
         return runner.record_forward_slate(_slate(), **options)

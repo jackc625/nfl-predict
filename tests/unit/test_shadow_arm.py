@@ -11,6 +11,12 @@ its live row in every immutable column but ``arm`` (the A/A identity); and the l
 byte-identical to a run with the shadow arm off (D-04: nothing here changes what the live arm
 decides).
 
+A shadow failure is a HOLE, never a lost live row (R8): a crash, rows the store would refuse, or a
+shadow build too slow to fit before the publish deadline each write the live rows exactly as with
+no shadow arm, and record every new live key in ``ledger/refit/shadow_holes.jsonl`` with the
+exception class only. A repeat run and an empty day write no shadow row and no hole, the shadow
+builder needs no ``latest.json``, and ``appended`` counts live rows only.
+
 Every store lives under pytest's temporary directories: production ``artifacts/``, ``data/``,
 ``outputs/``, ``logs/`` and ``ledger/`` are never read or written (COLD-05). The shadow pin used
 here names the fixture chain-fit record; the committed pin is never touched.
@@ -22,8 +28,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
-from datetime import date
+import shutil
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -31,6 +38,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from backtest.diagnose import score_deployed_artifacts
 from backtest.shadow_pin_2026 import SHADOW_RECIPE
 from backtest.weekly_bet_list import build_weekly_decision_bundle
 from data.upstream_live import AS_OF_ENV, LIVE_MANIFEST_SCHEMA_VERSION
@@ -38,8 +46,15 @@ from forward_ledger import run_log, runner
 from forward_ledger.canonical import ENTRY_KIND_ROW, IMMUTABLE_COLUMNS_V1
 from forward_ledger.schema import ARM_LIVE, ARM_SHADOW
 from forward_ledger.shadow import ShadowPin, build_shadow_bundle
+from forward_ledger.snapshots import SNAPSHOTS_DIRNAME
 from forward_ledger.store import ledger_path, read_entries, verify_chain
 from pipeline.daily_steps import DailySlate
+from refit.records import (
+    SHADOW_HOLES_FILENAME,
+    RefitRecordFormatError,
+    read_records,
+    refit_dir,
+)
 from tests.fixtures.decision_frame import chain_fit_record
 from tests.unit.test_forward_ledger_runner import _count_replaces
 from tests.unit.test_replay_ledger import (
@@ -257,3 +272,221 @@ def test_live_rows_byte_identical_with_shadow_on_and_off(
     assert off.shadow_appended == 0
     assert len(lines_on) == 2 * len(lines_off)
     assert lines_on[: len(lines_off)] == lines_off
+
+
+# ---------------------------------------------------------------------------
+# Task 2: a shadow failure is a durable hole and never costs a live row
+# ---------------------------------------------------------------------------
+
+
+def _shadow_off_bytes(stores: Stores, root: Path) -> bytes:
+    """The ledger bytes of the same decision written with no shadow arm at all."""
+    ledger = root / "shadow_off"
+    _record(stores, ledger, shadow_builder=None)
+    return ledger_path(ledger).read_bytes()
+
+
+def _hole_records(ledger: Path) -> list[tuple[Any, ...]]:
+    return [
+        (
+            record["game_id"],
+            record["season"],
+            record["week"],
+            record["target"],
+            record["reason"],
+            record["decided_at_utc"],
+        )
+        for record in read_records(ledger, SHADOW_HOLES_FILENAME)
+    ]
+
+
+def test_shadow_crash_records_hole_and_writes_live_rows(
+    stores: Stores, tmp_path: Path, run_log_path: Path
+) -> None:
+    def _crashing(_live: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("the shadow arm broke with a secret-bearing message")
+
+    ledger = tmp_path / "ledger"
+    outcome = _record(stores, ledger, shadow_builder=_crashing)
+
+    assert ledger_path(ledger).read_bytes() == _shadow_off_bytes(stores, tmp_path)
+    rows = _rows(ledger)
+    assert _arm(rows, ARM_SHADOW) == []
+    keys = [_twin_key(row) for row in rows]
+    assert keys, "the fixture week decided nothing, so nothing was tested"
+    assert outcome.shadow_holes == tuple((key, "RuntimeError") for key in keys)
+    assert (outcome.appended, outcome.shadow_appended) == (len(keys), 0)
+    decided = DECIDED_AT[WEEK].isoformat()
+    assert _hole_records(ledger) == [(*key, "RuntimeError", decided) for key in keys]
+    # The exception CLASS only (D-10): its message never reaches the record.
+    holes_file = refit_dir(ledger) / SHADOW_HOLES_FILENAME
+    assert "secret" not in holes_file.read_text(encoding="utf-8")
+
+
+def test_shadow_validation_failure_never_blocks_live(
+    stores: Stores,
+    tmp_path: Path,
+    run_log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unstorable(live: Any, **kwargs: Any) -> Any:
+        """A real shadow decision whose rows the store refuses: no decision instant."""
+        shadow = build_shadow_bundle(live, pin=stores.pin(), **kwargs)
+        return replace(shadow, frame=shadow.frame.assign(decided_at_utc=None))
+
+    commits: list[int] = []
+    real_commit = runner.commit_changes
+
+    def _counting_commit(*args: Any, **kwargs: Any) -> Any:
+        commits.append(len(kwargs["new_rows"]))
+        return real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "commit_changes", _counting_commit)
+    ledger = tmp_path / "ledger"
+
+    outcome = _record(stores, ledger, shadow_builder=_unstorable)
+
+    rows = _rows(ledger)
+    assert rows and _arm(rows, ARM_SHADOW) == []
+    assert commits == [len(rows)], "the live rows were not written in one commit"
+    reasons = {reason for _key, reason in outcome.shadow_holes}
+    assert len(outcome.shadow_holes) == len(rows)
+    assert len(reasons) == 1 and reasons != {runner.NO_SHADOW_ROW}, reasons
+    assert len(_hole_records(ledger)) == len(rows)
+
+
+def test_identical_repeat_writes_no_shadow_row(
+    stores: Stores, tmp_path: Path, run_log_path: Path
+) -> None:
+    ledger = tmp_path / "ledger"
+    _record(stores, ledger)
+    before = ledger_path(ledger).read_bytes()
+
+    outcome = _record(
+        stores, ledger, decided_at=DECIDED_AT[WEEK] + timedelta(minutes=12)
+    )
+
+    assert (outcome.appended, outcome.shadow_appended) == (0, 0)
+    assert outcome.wrote is False
+    assert outcome.shadow_holes == ()
+    assert ledger_path(ledger).read_bytes() == before
+    assert read_records(ledger, SHADOW_HOLES_FILENAME) == []
+
+
+def test_empty_day_writes_no_shadow(
+    stores: Stores, tmp_path: Path, run_log_path: Path
+) -> None:
+    calls: list[Any] = []
+
+    def _spy(live: Any, **kwargs: Any) -> Any:
+        calls.append(live)
+        return build_shadow_bundle(live, pin=stores.pin(), **kwargs)
+
+    ledger = tmp_path / "ledger"
+    outcome = _record(
+        stores, ledger, excluded_game_ids=frozenset(GAMES[WEEK]), shadow_builder=_spy
+    )
+
+    assert outcome.decided == 0
+    assert calls == [], "the shadow arm ran on a day with no candidates"
+    assert not ledger.exists()
+    assert outcome.shadow_holes == ()
+
+
+def test_shadow_builder_reads_no_latest_json(stores: Stores, tmp_path: Path) -> None:
+    no_manifest = tmp_path / "artifacts"
+    shutil.copytree(stores.artifacts, no_manifest)
+    (no_manifest / "latest.json").unlink()
+    live = build_weekly_decision_bundle(
+        SEASON,
+        WEEK,
+        artifacts_dir=stores.artifacts,
+        gold_dir=stores.gold,
+        silver_dir=stores.silver,
+        chain_fit_path=stores.chain_fit,
+        now=DECIDED_AT[WEEK],
+    )
+    versions: list[tuple[str, Any]] = []
+
+    def _recording_scorer(target: str, **kwargs: Any) -> pd.DataFrame:
+        versions.append((target, kwargs["version"]))
+        return score_deployed_artifacts(target, **kwargs)
+
+    shadow = build_shadow_bundle(
+        live, artifacts_dir=no_manifest, pin=stores.pin(), scorer=_recording_scorer
+    )
+
+    assert not (no_manifest / "latest.json").exists()
+    assert sorted(versions) == sorted(MODEL_IDS.items())
+    assert shadow.resolved == stores.pin().resolved()
+    pd.testing.assert_frame_equal(shadow.frame, live.frame)
+
+
+def test_read_records_refuses_a_malformed_line(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    assert read_records(ledger, SHADOW_HOLES_FILENAME) == []
+
+    path = refit_dir(ledger) / SHADOW_HOLES_FILENAME
+    path.parent.mkdir(parents=True)
+    path.write_text('{"reason": "RuntimeError"}\n{not json\n', encoding="utf-8")
+
+    with pytest.raises(RefitRecordFormatError, match=r"shadow_holes\.jsonl line 2"):
+        read_records(ledger, SHADOW_HOLES_FILENAME)
+
+
+def test_a_slow_shadow_build_never_costs_the_live_write(
+    stores: Stores,
+    tmp_path: Path,
+    run_log_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publish_by = LOCK[WEEK]
+    built: list[bool] = []
+
+    def _slow(live: Any, **kwargs: Any) -> Any:
+        built.append(True)
+        return build_shadow_bundle(live, pin=stores.pin(), **kwargs)
+
+    def _advancing_clock() -> datetime:
+        """30 minutes left until the shadow build ran; 30 seconds left afterwards."""
+        left = timedelta(seconds=30) if built else timedelta(minutes=30)
+        return publish_by - left
+
+    ledger = tmp_path / "ledger"
+    replaced = _count_replaces(monkeypatch)
+
+    outcome = _record(
+        stores,
+        ledger,
+        publish_by=publish_by,
+        clock=_advancing_clock,
+        shadow_builder=_slow,
+    )
+
+    assert built == [True]
+    assert replaced == [ledger_path(ledger)]
+    assert ledger_path(ledger).read_bytes() == _shadow_off_bytes(stores, tmp_path)
+    rows = _rows(ledger)
+    assert _arm(rows, ARM_SHADOW) == []
+    assert outcome.shadow_holes == tuple(
+        (_twin_key(row), "ShadowDeadlineHeadroomError") for row in rows
+    )
+    (digest,) = {row["decision_snapshot_digest"] for row in rows}
+    assert sorted(p.name for p in (ledger / SNAPSHOTS_DIRNAME).iterdir()) == [digest]
+
+
+def test_appended_counts_live_rows_only(
+    stores: Stores, tmp_path: Path, run_log_path: Path
+) -> None:
+    ledger = tmp_path / "ledger"
+
+    outcome = _record(stores, ledger)
+
+    rows = _rows(ledger)
+    live, shadow = _arm(rows, ARM_LIVE), _arm(rows, ARM_SHADOW)
+    assert live and shadow
+    assert (outcome.appended, outcome.shadow_appended) == (len(live), len(shadow))
+    assert list(outcome.appended_rows) == rows
+    (append,) = run_log.read_events(run_log_path, "append")
+    assert append["appended_rows"] == len(live)
+    assert append["shadow_appended_rows"] == len(shadow)
