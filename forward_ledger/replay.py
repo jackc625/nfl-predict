@@ -23,8 +23,10 @@ WHAT ONE SNAPSHOT'S REPLAY DOES
   6. compare every decision field of every stored row: categoricals exactly, numerics within
      ``REPLAY_TOLERANCE``.
 
-Selection reads only the stored decision inputs. The closing columns live in a row's mutable half,
-which replay never reads, so a closing value cannot move a replayed decision (CLV report-only).
+Steps 3 and 4 are ``forward_ledger.rescore``, the one re-score routine the frozen shadow arm also
+calls. Selection reads only the stored decision inputs. The closing columns live in a row's
+mutable half, which replay never reads, so a closing value cannot move a replayed decision (CLV
+report-only).
 
 THE ROW KEY
 -----------
@@ -43,23 +45,17 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import hashlib
-import math
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
-
-import pandas as pd
+from typing import Any
 
 from api.cache import RUN_MODE_FORWARD
 from backtest.diagnose import score_deployed_artifacts
 from backtest.weekly_bet_list import (
     CANONICAL_TARGETS,
-    SPREAD_MARKET_PROB_COLUMN,
     FrozenChainFitError,
-    _attach_spread_market_probability,
-    _bound_spread_slope,
     build_strategies,
     load_frozen_chain_fit,
     records_to_bet_list_frame,
@@ -73,6 +69,14 @@ from forward_ledger.canonical import (
     ENTRY_KIND_ROW,
     IMMUTABLE_COLUMN_TYPES_V1,
     coerce_canonical_value,
+)
+from forward_ledger.rescore import (
+    REPLAY_TOLERANCE,
+    Notes,
+    Scorer,
+    numbers_agree,
+    reattach_spread_probability,
+    rescore_candidates,
 )
 from forward_ledger.schema import LEDGER_ROW_KEY, VERDICT_SCOPE_VERDICT
 from forward_ledger.snapshots import (
@@ -101,8 +105,6 @@ __all__ = [
     "replay_ledger",
     "replay_snapshot_rows",
 ]
-
-REPLAY_TOLERANCE: float = 1e-9
 
 # The decision fields a replay compares. Categoricals must be equal; numerics within tolerance.
 CATEGORICAL_FIELDS: tuple[str, ...] = (
@@ -135,18 +137,6 @@ REPLAY_STATUSES: tuple[str, ...] = (REPLAY_PASS, REPLAY_FAIL, REPLAY_NOT_REPLAYA
 # does not carry (the arm belongs to the stored row). Used only to look a stored row's decision up.
 _DECISION_KEY: tuple[str, ...] = tuple(name for name in LEDGER_ROW_KEY if name != "arm")
 
-# The prediction columns each target's scorer writes onto a candidate (``backtest.diagnose``).
-_SCORED_COLUMNS: dict[str, tuple[str, ...]] = {
-    "wp": ("model_prob",),
-    "ats": ("model_prob", "model_spread"),
-    "ou": ("model_prob", "model_total"),
-}
-
-Scorer = Callable[..., pd.DataFrame]
-
-# Per (game_id, target): the stored candidate inputs a replay did not reproduce.
-Notes = dict[tuple[str, str], list[str]]
-
 
 class ReplayInputError(Exception):
     """A stored input replay needs is absent from the ledger or does not match its record.
@@ -175,16 +165,6 @@ class ReplayResult:
 
 def _row_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
     return tuple(row[name] for name in LEDGER_ROW_KEY)
-
-
-def _is_null(value: Any) -> bool:
-    return value is None or (isinstance(value, float) and math.isnan(value))
-
-
-def _numbers_agree(stored: Any, replayed: Any) -> bool:
-    if _is_null(stored) or _is_null(replayed):
-        return _is_null(stored) and _is_null(replayed)
-    return abs(float(stored) - float(replayed)) <= REPLAY_TOLERANCE
 
 
 def _single_id(values: set[Any], fallback: Any, what: str) -> str:
@@ -255,73 +235,6 @@ def _chain_fit_copy(ledger: Path, meta: Mapping[str, Any]) -> Path:
     return path
 
 
-def _column(frame: pd.DataFrame, column: str) -> pd.Series:
-    """*frame*'s *column*, or an all-NaN series on its index when the column is absent."""
-    if column in frame.columns:
-        return cast("pd.Series", frame[column])
-    return pd.Series(float("nan"), index=frame.index)
-
-
-def _note_differences(
-    notes: Notes,
-    rows: pd.DataFrame,
-    target: str,
-    column: str,
-    replayed: pd.Series,
-) -> None:
-    """Record, per game, a stored candidate input the replay did not reproduce."""
-    stored = _column(rows, column)
-    for game_id, before, after in zip(rows["game_id"], stored, replayed, strict=True):
-        if not _numbers_agree(before, after):
-            notes.setdefault((str(game_id), target), []).append(
-                f"candidate {column} stored={before!r} replayed={after!r}"
-            )
-
-
-def _rescore(
-    candidates: pd.DataFrame,
-    snapshot: DecisionSnapshot,
-    copies: Path,
-    ids: Mapping[str, str],
-    scorer: Scorer,
-    notes: Notes,
-) -> None:
-    """Re-score every target from its stored gold rows; note differences; substitute in place."""
-    for target in CANONICAL_TARGETS:
-        mask = candidates["target"] == target
-        gold = snapshot.frames[f"gold_{target}"]
-        if not bool(mask.any()) or gold.empty:
-            continue
-        scored = scorer(target, gold_df=gold, artifacts_dir=copies, version=ids[target])
-        by_game = scored.set_index("game_id")
-        rows = candidates.loc[mask]
-        for column in _SCORED_COLUMNS[target]:
-            replayed = rows["game_id"].map(by_game[column])
-            _note_differences(notes, rows, target, column, replayed)
-            candidates.loc[mask, column] = replayed
-
-
-def _reattach_spread_probability(
-    candidates: pd.DataFrame, copies: Path, blend_id: str, notes: Notes
-) -> pd.DataFrame:
-    """Recompute WP's spread-derived market probability from the ledger's blend copy."""
-    slope = _bound_spread_slope(copies, version=blend_id)
-    mask = candidates["target"] == "wp"
-    if not bool(mask.any()) or (
-        slope is None and SPREAD_MARKET_PROB_COLUMN not in candidates.columns
-    ):
-        return candidates
-    rows = candidates.loc[mask]
-    unattached = rows.drop(columns=[SPREAD_MARKET_PROB_COLUMN], errors="ignore")
-    replayed = _column(
-        _attach_spread_market_probability(unattached, slope), SPREAD_MARKET_PROB_COLUMN
-    )
-    _note_differences(notes, rows, "wp", SPREAD_MARKET_PROB_COLUMN, replayed)
-    out = candidates.copy()
-    out.loc[mask, SPREAD_MARKET_PROB_COLUMN] = replayed
-    return out
-
-
 def _rederive(
     ledger: Path,
     snapshot: DecisionSnapshot,
@@ -342,8 +255,15 @@ def _rederive(
     notes: Notes = {}
     candidates = snapshot.frames["candidates"].copy()
     if not candidates.empty:
-        _rescore(candidates, snapshot, copies, ids, scorer, notes)
-        candidates = _reattach_spread_probability(
+        rescore_candidates(
+            candidates,
+            {target: snapshot.frames[f"gold_{target}"] for target in CANONICAL_TARGETS},
+            copies,
+            ids,
+            scorer,
+            notes,
+        )
+        candidates = reattach_spread_probability(
             candidates, copies, ids["blend"], notes
         )
 
@@ -396,7 +316,7 @@ def _compare_row(
             name, IMMUTABLE_COLUMN_TYPES_V1[name], replayed[name]
         )
         agree = (
-            _numbers_agree(stored, again) if name in NUMERIC_FIELDS else stored == again
+            numbers_agree(stored, again) if name in NUMERIC_FIELDS else stored == again
         )
         if not agree:
             mismatches.append(name)

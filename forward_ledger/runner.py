@@ -18,9 +18,17 @@ daily run's critical recommend step. In order:
   6. otherwise check the slate's ``publish_by`` deadline (a late write leaves NOTHING in
      ``ledger/``, not even a snapshot or copy), then store the snapshot and the artifact and
      chain-fit copies (written BEFORE the row that references them, and idempotent) -- refusing
-     when the snapshot written is not the one the rows were stamped with -- then ONE
-     ``commit_changes`` with the same deadline, which re-reads the clock immediately before the
-     replace.
+     when the snapshot written is not the one the rows were stamped with;
+  7. the frozen shadow arm (Phase 37, D-04): the live bundle re-decided with the pinned row-19
+     models and bet rule (``forward_ledger.shadow``), stamped ``arm = shadow`` with the SAME
+     reproduction key, decision instant and verdict scope, kept only for keys whose live row is
+     new, pre-validated, then given its own snapshot and copies. ANY shadow failure -- including
+     too little time left before the deadline (``SHADOW_COMMIT_HEADROOM``) -- drops every shadow
+     row and records each new live key as a hole named by the exception class; it never blocks,
+     delays or changes a live row;
+  8. ONE ``commit_changes`` carrying the live rows first and then the shadow rows, with the same
+     deadline, which re-reads the clock immediately before the replace -- so an interrupted write
+     leaves both arms' rows of the run or neither.
 
 :func:`settle_ledger` -- every day the schedule refresh returns a season: grade pending rows from
 the refreshed silver scores, append the corrections owed by the live manifest's
@@ -48,13 +56,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
-from backtest.weekly_bet_list import build_weekly_decision_bundle
+from backtest.weekly_bet_list import DecisionBundle, build_weekly_decision_bundle
 from data.upstream_live import load_live_manifest
 from forward_ledger.anchor import read_local_anchor
 from forward_ledger.artifacts_copy import (
@@ -71,13 +79,19 @@ from forward_ledger.declarations import (
 )
 from forward_ledger.repro_key import build_repro_key
 from forward_ledger.run_log import read_events, record_event
-from forward_ledger.schema import VERDICT_SCOPE_VERDICT
+from forward_ledger.schema import ARM_SHADOW, VERDICT_SCOPE_VERDICT
 from forward_ledger.settle import (
     DEFAULT_SILVER_DIR,
     grading_updates,
     live_strategies,
     load_silver_games,
     realized_values_from_scores,
+)
+from forward_ledger.shadow import (
+    SHADOW_COMMIT_HEADROOM,
+    SHADOW_PIN,
+    ShadowDeadlineHeadroomError,
+    build_shadow_bundle,
 )
 from forward_ledger.snapshots import (
     SnapshotDigestMismatchError,
@@ -88,8 +102,10 @@ from forward_ledger.stamps import stamp_ledger_rows
 from forward_ledger.store import (
     LEDGER_DIR,
     LEDGER_SEASON,
+    FirstPickStandsError,
     LedgerEntry,
     MissingStampError,
+    _validate_new_row,
     assert_before_publish_deadline,
     assert_extends_anchor,
     classify_incoming,
@@ -103,6 +119,7 @@ if TYPE_CHECKING:
     from pipeline.daily_steps import DailySlate
 
 __all__ = [
+    "NO_SHADOW_ROW",
     "SILVER_ODDS_FILENAME",
     "RecordOutcome",
     "SettleOutcome",
@@ -117,6 +134,13 @@ SILVER_ODDS_FILENAME: str = "odds_snapshot.parquet"
 
 LogCallable = Callable[..., Any]
 
+# The hole reason for a new live row whose shadow decision produced no twin.
+NO_SHADOW_ROW: str = "no_shadow_row"
+
+# ``(game_id, season, week, target)`` -- a live row's key without its arm -- and why it has no
+# shadow twin.
+ShadowHole = tuple[tuple[str, int, int, str], str]
+
 
 @dataclass(frozen=True)
 class RecordOutcome:
@@ -124,15 +148,20 @@ class RecordOutcome:
 
     Attributes:
         decided: Rows the decision produced (live and suppressed).
-        appended: New keys written to the ledger.
+        appended: New LIVE rows written to the ledger (never the shadow rows).
         identical: Repeats of stored rows, skipped.
         refused: ``(key, differing identity columns)`` for every conflicting row (first pick
             stands); the stored rows are unchanged.
         wrote: Whether the ledger file was replaced.
         head_hash: The ledger head after the call (None when nothing was decided).
         entry_count: The ledger entry count after the call (None when nothing was decided).
-        appended_rows: The canonical row values written by this call; empty when nothing was
-            written. The notifier reads these, never a recomputation (Phase 35, D-14).
+        appended_rows: The canonical row values written by this call, live rows first and then
+            the shadow rows; empty when nothing was written. The notifier reads these, never a
+            recomputation (Phase 35, D-14), and keeps the live arm only.
+        shadow_appended: New shadow rows written to the ledger.
+        shadow_holes: ``((game_id, season, week, target), reason)`` for every new live row
+            written without a shadow twin; the reason is an exception class name or
+            :data:`NO_SHADOW_ROW`.
     """
 
     decided: int
@@ -143,6 +172,8 @@ class RecordOutcome:
     head_hash: str | None
     entry_count: int | None
     appended_rows: tuple[dict[str, Any], ...] = ()
+    shadow_appended: int = 0
+    shadow_holes: tuple[ShadowHole, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -205,6 +236,112 @@ def _key_text(key: Sequence[Any]) -> str:
     return " ".join(str(value) for value in key)
 
 
+def _twin_key(row: Mapping[str, Any]) -> tuple[str, int, int, str]:
+    """A row's ``(game_id, season, week, target)``: its ledger key without the arm."""
+    return (
+        str(row["game_id"]),
+        int(row["season"]),
+        int(row["week"]),
+        str(row["target"]),
+    )
+
+
+def _require_shadow_headroom(
+    publish_by: datetime | None, clock: Callable[[], datetime] | None
+) -> None:
+    """Refuse the shadow rows when less than ``SHADOW_COMMIT_HEADROOM`` is left before *publish_by*.
+
+    The ledger store re-checks the deadline immediately before it writes, so shadow work that ran
+    late would otherwise turn into a refused LIVE write.
+    """
+    if publish_by is None:
+        return
+    now = clock() if clock is not None else datetime.now(tz=UTC)
+    if now + SHADOW_COMMIT_HEADROOM > publish_by:
+        msg = (
+            f"only {(publish_by - now).total_seconds():.0f} s are left before the publish "
+            f"deadline {publish_by.isoformat()}; the shadow rows need "
+            f"{SHADOW_COMMIT_HEADROOM.total_seconds():.0f} s and are dropped"
+        )
+        raise ShadowDeadlineHeadroomError(msg)
+
+
+def _shadow_rows(
+    shadow_builder: Callable[..., DecisionBundle],
+    bundle: DecisionBundle,
+    *,
+    live_new: Sequence[Mapping[str, Any]],
+    entries: Sequence[LedgerEntry],
+    repro: Any,
+    scope: VerdictScope | None,
+    ledger_has_verdict_rows: bool,
+    ledger: Path,
+    artifacts_dir: Path,
+    publish_by: datetime | None,
+    clock: Callable[[], datetime] | None,
+) -> tuple[list[dict[str, Any]], tuple[ShadowHole, ...]]:
+    """The shadow twins of the new live rows, ready to commit, and the holes. NEVER raises.
+
+    Every step that can fail runs before anything of the shadow arm is written: build, digest,
+    stamp (the SAME reproduction key, scope and decision instant as the live rows), keep the twins
+    of NEW live keys only, validate them as the store will, check the deadline headroom, and only
+    then store the shadow snapshot and copies. Any exception drops every shadow row and makes
+    every new live key a hole named by the exception CLASS only (D-10), so a shadow failure never
+    costs a live row.
+    """
+    live_keys = [_twin_key(row) for row in live_new]
+    try:
+        shadow = shadow_builder(bundle, artifacts_dir=artifacts_dir)
+        if shadow.resolved is None:
+            msg = (
+                "the shadow decision carries no resolved ids; a stamp is never invented"
+            )
+            raise MissingStampError(msg)
+        shadow_digest = compute_snapshot_digest(shadow)
+        stamped = stamp_ledger_rows(
+            shadow.frame,
+            resolved=shadow.resolved,
+            repro=repro,
+            snapshot_digest=shadow_digest,
+            scope=scope,
+            ledger_has_verdict_rows=ledger_has_verdict_rows,
+            recipe_id=SHADOW_PIN.recipe,
+            arm=ARM_SHADOW,
+        )
+        wanted = set(live_keys)
+        twins = [
+            _validate_new_row(row)
+            for row in cast(
+                "pd.DataFrame", stamped[list(IMMUTABLE_COLUMNS_V1)]
+            ).to_dict(orient="records")
+            if _twin_key(row) in wanted
+        ]
+        classification = classify_incoming(entries, twins)
+        if classification.conflicting:
+            key, fields = classification.conflicting[0]
+            raise FirstPickStandsError(key, fields, classification.conflicting)
+        _require_shadow_headroom(publish_by, clock)
+        written = write_decision_snapshot(ledger, shadow)
+        if written != shadow_digest:
+            raise SnapshotDigestMismatchError(
+                "meta",
+                f"the shadow rows were stamped with snapshot {shadow_digest} but the snapshot "
+                f"written is {written}",
+            )
+        ensure_artifact_copies(ledger, shadow.resolved, artifacts_dir)
+        ensure_recipe_record_copy(ledger, shadow.chain_fit_path)
+    except Exception as error:  # noqa: BLE001 - a shadow failure never costs a live row (R8)
+        reason = type(error).__name__
+        logger.error("Shadow arm failed; the live rows are written alone", error=reason)
+        return [], tuple((key, reason) for key in live_keys)
+
+    covered = {
+        _twin_key(row) for row in (*classification.new, *classification.identical)
+    }
+    holes = tuple((key, NO_SHADOW_ROW) for key in live_keys if key not in covered)
+    return list(classification.new), holes
+
+
 def _anchored_head(repo_dir: Path | str | None) -> tuple[str, int] | None:
     """The local ``ledger-anchor`` head, or None when no repository is named or no anchor exists.
 
@@ -232,6 +369,7 @@ def record_forward_slate(
     log: LogCallable | None = None,
     repo_dir: Path | str | None = None,
     clock: Callable[[], datetime] | None = None,
+    shadow_builder: Callable[..., DecisionBundle] | None = build_shadow_bundle,
 ) -> RecordOutcome:
     """Decide the slate's week and write its new forward rows to the ledger, first pick standing.
 
@@ -249,8 +387,13 @@ def record_forward_slate(
         repo_dir: The repository carrying ``ledger-anchor``; when given, the write is refused
             unless the store extends the anchored head. None checks no anchor (a ``tmp_path``
             ledger in a test).
-        clock: The instant source for *publish_by*, shared by the check before the side files
-            and the one inside ``commit_changes``; ``datetime.now(UTC)`` when None.
+        clock: The instant source for *publish_by*, shared by the check before the side files,
+            the shadow headroom check and the one inside ``commit_changes``;
+            ``datetime.now(UTC)`` when None.
+        shadow_builder: The frozen shadow arm (``forward_ledger.shadow.build_shadow_bundle``),
+            called as ``shadow_builder(bundle, artifacts_dir=...)``. None runs no shadow arm; it
+            exists only for tests whose synthetic bundles hold no scorable artifacts, and
+            production callers never pass it.
 
     Returns:
         What was decided, appended, skipped and refused.
@@ -290,14 +433,18 @@ def record_forward_slate(
         decided_at=decided_at,
     )
     entries = read_entries(ledger)
+    # Computed ONCE and handed to both arms, so a live row and its shadow twin cannot differ in
+    # their reproduction key or verdict scope (37-RESEARCH Pitfall 5).
+    scope = _verdict_scope_or_none()
+    ledger_has_verdict_rows = _has_verdict_rows(entries)
     stamped_digest = compute_snapshot_digest(bundle)
     stamped = stamp_ledger_rows(
         frame,
         resolved=bundle.resolved,
         repro=repro,
         snapshot_digest=stamped_digest,
-        scope=_verdict_scope_or_none(),
-        ledger_has_verdict_rows=_has_verdict_rows(entries),
+        scope=scope,
+        ledger_has_verdict_rows=ledger_has_verdict_rows,
     )
     decided = cast("pd.DataFrame", stamped[list(IMMUTABLE_COLUMNS_V1)])
     rows = decided.to_dict(orient="records")
@@ -338,9 +485,28 @@ def record_forward_slate(
         )
     ensure_artifact_copies(ledger, bundle.resolved, Path(artifacts_dir))
     ensure_recipe_record_copy(ledger, bundle.chain_fit_path)
+
+    shadow_rows: list[dict[str, Any]] = []
+    holes: tuple[ShadowHole, ...] = ()
+    if shadow_builder is not None:
+        shadow_rows, holes = _shadow_rows(
+            shadow_builder,
+            bundle,
+            live_new=classification.new,
+            entries=entries,
+            repro=repro,
+            scope=scope,
+            ledger_has_verdict_rows=ledger_has_verdict_rows,
+            ledger=ledger,
+            artifacts_dir=Path(artifacts_dir),
+            publish_by=publish_by,
+            clock=clock,
+        )
+    # ONE write, live rows first and then their shadow twins (the documented fixed order).
+    written_rows = [*classification.new, *shadow_rows]
     result = commit_changes(
         ledger,
-        new_rows=list(classification.new),
+        new_rows=written_rows,
         publish_by=publish_by,
         clock=clock,
         anchored_head=_anchored_head(repo_dir),
@@ -350,7 +516,8 @@ def record_forward_slate(
             "append",
             season=slate.season,
             week=slate.week,
-            appended_rows=result.appended_rows,
+            appended_rows=len(classification.new),
+            shadow_appended_rows=len(shadow_rows),
             identical_rows=len(classification.identical),
             refused_rows=len(classification.conflicting),
             snapshot_digest=snapshot_digest,
@@ -359,13 +526,15 @@ def record_forward_slate(
         )
     return RecordOutcome(
         decided=len(rows),
-        appended=result.appended_rows if result.wrote else 0,
+        appended=len(classification.new) if result.wrote else 0,
         identical=len(classification.identical),
         refused=classification.conflicting,
         wrote=result.wrote,
         head_hash=result.head_hash,
         entry_count=result.entry_count,
-        appended_rows=tuple(classification.new) if result.wrote else (),
+        appended_rows=tuple(written_rows) if result.wrote else (),
+        shadow_appended=len(shadow_rows) if result.wrote else 0,
+        shadow_holes=holes,
     )
 
 
