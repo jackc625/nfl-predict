@@ -27,11 +27,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
-from refit.remeasure import FoldSpec, fold_specs, walk_forward_predictions
 
 from backtest.refit_preregistration_2026 import HISTORICAL_FOLD_SEASONS, REFIT_SEASON
 from forward_ledger.settle import realized_values_from_scores
 from refit import remeasure
+from refit.remeasure import FoldSpec, fold_specs, walk_forward_predictions
 from tests.fixtures.refit_gold import RefitFixture, build_refit_fixture
 
 _TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
@@ -81,10 +81,9 @@ def walk(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_WalkForward]:
 
 
 def _kickoffs(games: pd.DataFrame) -> pd.Series:
-    return pd.Series(
-        pd.to_datetime(games["kickoff_et"], utc=True).to_numpy(),
-        index=games["game_id"].astype(str),
-    )
+    kickoff = pd.to_datetime(games["kickoff_et"], utc=True)
+    kickoff.index = pd.Index(games["game_id"].astype(str))
+    return kickoff
 
 
 def _finished(games: pd.DataFrame) -> pd.Series:
@@ -143,10 +142,8 @@ def test_no_prediction_from_a_model_that_saw_its_game(walk: _WalkForward) -> Non
         for fold_label, rows in frame.groupby("fold"):
             fold_cutoff = pd.Timestamp(rows["fold_cutoff_utc"].iloc[0])
             ids = rows["game_id"].astype(str)
-            assert (kickoff[ids].to_numpy() >= fold_cutoff.to_datetime64()).all(), (
-                fold_label
-            )
-            assert (kickoff[ids].to_numpy() < cutoff.to_datetime64()).all(), fold_label
+            assert (kickoff[ids] >= fold_cutoff).all(), fold_label
+            assert (kickoff[ids] < cutoff).all(), fold_label
             trained = walk.trained_ids[(target, fold_cutoff.to_pydatetime())]
             assert trained, fold_label
             assert trained.isdisjoint(set(ids)), fold_label
