@@ -39,6 +39,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from conf.season_partition import CORPUS_FIRST_SEASON
+
 __all__ = [
     "FIXTURE_CUTOFF_UTC",
     "FIXTURE_FIRST_SEASON",
@@ -48,7 +50,7 @@ __all__ = [
     "build_refit_fixture",
 ]
 
-FIXTURE_FIRST_SEASON: int = 2002
+FIXTURE_FIRST_SEASON: int = CORPUS_FIRST_SEASON
 FIXTURE_LAST_SEASON: int = 2026
 FIXTURE_GAMES_PER_SEASON: int = 16
 
