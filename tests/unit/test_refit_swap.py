@@ -31,12 +31,6 @@ from typing import Any
 
 import joblib
 import pytest
-from refit.integrity import IntegrityRefusal
-from refit.swap import (
-    InstallIntentNotRecordedError,
-    install_generation,
-    pending_install,
-)
 
 from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
 from backtest.weekly_bet_list import load_bet_rule_record
@@ -48,10 +42,16 @@ from models.blending import BLEND_PAYLOAD_FILENAME, BlendProvenance
 from refit import swap
 from refit.cadence import CadenceDate, cadence_dates
 from refit.generations import installed_generations
+from refit.integrity import IntegrityRefusal
 from refit.records import (
     append_date_event,
     bet_rule_relpath,
     read_date_events,
+)
+from refit.swap import (
+    InstallIntentNotRecordedError,
+    install_generation,
+    pending_install,
 )
 from tests.unit.test_refit_decision_path import (
     GENERATION_ONE_IDS,
