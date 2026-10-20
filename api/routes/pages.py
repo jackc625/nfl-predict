@@ -621,8 +621,9 @@ def _build_bets_context(
 
     return {
         "request": request,
-        # The ranked list is the LIVE ARM only (shadow-arm rows are Phase 37's to show), and the
-        # weekly email makes this exact call, so the two cannot rank different rows (NOTIF-05).
+        # Both halves below are the LIVE ARM only: a shadow-arm row is a comparison row, never a
+        # bet, and only the comparison panel shows it (Plan 37-19, SPEC R13). The weekly email
+        # makes this exact ranked-list call, so the two cannot rank different rows (NOTIF-05).
         # An unreadable list (None) renders as no rows here: the page tells a missing table apart
         # through ``bet_list_available`` below, never through this list.
         "bets": service.get_bet_list(season, week, arm=ARM_LIVE) or [],
@@ -630,7 +631,7 @@ def _build_bets_context(
         # from the live list, because the live list is the complement -- deriving one from the
         # other would put the R6 "never silently dropped" guarantee in the request path instead of
         # in the partition the two getters share (plan 31-15).
-        "suppressed_bets": service.get_suppressed_bets(season, week),
+        "suppressed_bets": service.get_suppressed_bets(season, week, arm=ARM_LIVE),
         "available_bet_weeks": service.get_available_bet_weeks(season=season),
         "bet_seasons": service.get_bet_seasons(),
         "current_season": season,

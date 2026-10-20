@@ -56,10 +56,15 @@ def _bets_rows(
     complement of each other over one ``status`` constant, so their union is every row the cache
     holds for the week -- a declined candidate cannot be dropped from the export any more than it
     can be dropped from the page.
+
+    BOTH ARMS, ON PURPOSE. ``/bets`` reads the live arm only; the export is the one place both
+    arms appear, each row carrying its ``arm`` column, so a shadow-arm comparison row (Phase 37)
+    is downloadable as what it is and is never read as a bet (SPEC R13). Hence ``arm=None`` on
+    both calls, spelled out rather than left to the default.
     """
     return [
-        *(service.get_bet_list(season, week) or []),
-        *service.get_suppressed_bets(season, week),
+        *(service.get_bet_list(season, week, arm=None) or []),
+        *service.get_suppressed_bets(season, week, arm=None),
     ]
 
 

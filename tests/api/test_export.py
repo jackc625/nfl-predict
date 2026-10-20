@@ -13,10 +13,13 @@ Selectors (``-k``): bets, cross_link, export_buttons, order, honesty.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +30,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.cache import (
+    ARM_LIVE,
     BET_LIST_COLUMNS,
     CACHE_SCHEMA,
     GRADING_STATUS_PENDING,
@@ -34,7 +38,7 @@ from api.cache import (
     materialize_available_bet_weeks,
     materialize_bet_list,
 )
-from api.services import clear_cache
+from api.services import DataService, clear_cache
 
 
 def test_csv_export(test_client: TestClient):
@@ -169,6 +173,7 @@ def _bets_row(
     rejection_reason: str | None = None,
     per_bet_ev: float | None = None,
     validation_type: str = "contaminated",
+    arm: str | None = None,
 ) -> dict[str, Any]:
     """One ``bet_list`` row carrying every column the export is asserted to surface."""
     row = dict.fromkeys(BET_LIST_COLUMNS)
@@ -193,6 +198,7 @@ def _bets_row(
             "validation_type": validation_type,
             "grading_status": GRADING_STATUS_PENDING,
             "outcome": None,
+            "arm": arm,
         }
     )
     return row
@@ -224,22 +230,16 @@ _BETS_FIXTURE_ROWS: list[dict[str, Any]] = [
 ]
 
 
-@pytest.fixture()
-def bets_export_client(tmp_path: Path) -> Iterator[TestClient]:
-    """A TestClient serving BOTH ``/bets`` and ``/api/export`` from one bet-list cache.
-
-    One client for both surfaces on purpose: the assertion being made is that the two agree, and
-    two clients over two databases could only ever compare two fixtures against each other.
-    """
+def _write_bets_cache(db_path: Path, rows: list[dict[str, Any]]) -> None:
+    """Build a one-week bet-list cache out of *rows*, stamped as populated."""
     clear_cache()
-    db_path = tmp_path / "bets_export_cache.duckdb"
     conn = duckdb.connect(str(db_path))
     try:
         for statement in CACHE_SCHEMA.strip().split(";"):
             stmt = statement.strip()
             if stmt:
                 conn.execute(stmt)
-        materialize_bet_list(conn, pd.DataFrame(_BETS_FIXTURE_ROWS))
+        materialize_bet_list(conn, pd.DataFrame(rows))
         materialize_available_bet_weeks(
             conn,
             pd.DataFrame(
@@ -249,7 +249,7 @@ def bets_export_client(tmp_path: Path) -> Iterator[TestClient]:
                         "season": _BETS_SEASON,
                         "week": _BETS_WEEK,
                     }
-                    for row in _BETS_FIXTURE_ROWS
+                    for row in rows
                 ]
             ),
         )
@@ -268,6 +268,9 @@ def bets_export_client(tmp_path: Path) -> Iterator[TestClient]:
     finally:
         conn.close()
 
+
+def _serve(db_path: Path) -> Iterator[TestClient]:
+    """A TestClient serving every route from the read-only cache at *db_path*."""
     from api.dependencies import get_db
     from api.main import app
 
@@ -280,6 +283,18 @@ def bets_export_client(tmp_path: Path) -> Iterator[TestClient]:
     finally:
         app.dependency_overrides.clear()
         served.close()
+
+
+@pytest.fixture()
+def bets_export_client(tmp_path: Path) -> Iterator[TestClient]:
+    """A TestClient serving BOTH ``/bets`` and ``/api/export`` from one bet-list cache.
+
+    One client for both surfaces on purpose: the assertion being made is that the two agree, and
+    two clients over two databases could only ever compare two fixtures against each other.
+    """
+    db_path = tmp_path / "bets_export_cache.duckdb"
+    _write_bets_cache(db_path, _BETS_FIXTURE_ROWS)
+    yield from _serve(db_path)
 
 
 def _bets_query() -> str:
@@ -498,3 +513,84 @@ def test_an_unknown_week_exports_nothing_rather_than_the_whole_cache(
         )
         assert response.status_code == 404
         assert "error" in response.json()
+
+
+# ---------------------------------------------------------------------------
+# The export is the one place both arms appear (Plan 37-02, SPEC R13)
+# ---------------------------------------------------------------------------
+#
+# /bets shows the live arm only; the export keeps every row, each carrying its stored arm, so a
+# shadow row is downloadable as the comparison row it is and never read as a hidden bet.
+
+_ARM_ROWS: list[dict[str, Any]] = [
+    _bets_row("2023_W01_DET@KC", "ou", status="live", per_bet_ev=0.0625, arm="live"),
+    _bets_row(
+        "2023_W01_DET@KC",
+        "wp",
+        status="suppressed",
+        rejection_reason="missing_snapshot",
+        arm="live",
+    ),
+    _bets_row("2023_W01_DET@KC", "ou", status="live", per_bet_ev=0.09, arm="shadow"),
+    _bets_row(
+        "2023_W01_DET@KC",
+        "wp",
+        status="suppressed",
+        rejection_reason="zero_kelly_stake",
+        arm="shadow",
+    ),
+    _bets_row(
+        "2023_W01_SEA@SFO",
+        "ats",
+        status="suppressed",
+        rejection_reason="stale_line",
+        arm="shadow",
+    ),
+    # A replay row: no recorded arm, which reads as the live arm.
+    _bets_row(
+        "2023_W01_CIN@CLE",
+        "ou",
+        status="suppressed",
+        rejection_reason="ev_below_floor",
+    ),
+]
+
+
+def _stored_arm_keys() -> list[tuple[str, str, str | None]]:
+    """``(game_id, target, arm)`` of every planted row, as stored."""
+    return sorted(
+        ((row["game_id"], row["target"], row["arm"]) for row in _ARM_ROWS),
+        key=str,
+    )
+
+
+def test_export_keeps_both_arms_with_the_arm_column(tmp_path: Path) -> None:
+    """All six rows in both exports, each with its arm; arm joins the getter's cache key."""
+    db_path = tmp_path / "arm_export_cache.duckdb"
+    _write_bets_cache(db_path, _ARM_ROWS)
+    with contextmanager(_serve)(db_path) as client:
+        exported = json.loads(client.get(f"/api/export/json?{_bets_query()}").text)
+        csv_text = client.get(f"/api/export/csv?{_bets_query()}").text
+
+    json_keys = [(row["game_id"], row["target"], row["arm"]) for row in exported]
+    assert sorted(json_keys, key=str) == _stored_arm_keys()
+    # The CSV writes the replay row's NULL arm as an empty field.
+    csv_keys = [
+        (row["game_id"], row["target"], row["arm"] or None)
+        for row in csv.DictReader(io.StringIO(csv_text))
+    ]
+    assert sorted(csv_keys, key=str) == _stored_arm_keys()
+
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        clear_cache()
+        service = DataService(probe)
+        # The filtered read first: were the two calls one cache entry, the unfiltered one would
+        # be answered with the filtered rows.
+        live_only = service.get_suppressed_bets(_BETS_SEASON, _BETS_WEEK, arm=ARM_LIVE)
+        every_arm = service.get_suppressed_bets(_BETS_SEASON, _BETS_WEEK, arm=None)
+    finally:
+        probe.close()
+
+    assert len(live_only) == 2
+    assert len(every_arm) == 4

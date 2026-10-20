@@ -4597,6 +4597,84 @@ def test_the_slip_carries_pick_and_ev_hooks(tmp_path: Path) -> None:
     assert re.findall(r"<span [^>]*data-slip-ev>([^<]*)</span>", body) == ["+6.25%"]
 
 
+# ---------------------------------------------------------------------------
+# No shadow row reaches /bets: ranked, suppressed or coverage (Plan 37-02, D-04, SPEC R13)
+# ---------------------------------------------------------------------------
+#
+# A shadow row is a comparison row, never a bet. Six planted rows: game A carries a live slip, a
+# live suppressed row and a shadow twin of each; game B carries ONLY a shadow row; game C carries a
+# suppressed row with NO recorded arm -- a replay row, which reads as the live arm.
+
+_LEAK_GAME_A = "2023_W01_DET@KC"
+_LEAK_GAME_B = "2023_W01_SEA@SFO"
+_LEAK_GAME_C = "2023_W01_CIN@CLE"
+
+
+def _shadow_leak_rows() -> list[dict[str, Any]]:
+    """The six planted rows, each carrying its stored ``arm`` (None for the replay row)."""
+    live_slip = _live_row(_LEAK_GAME_A, "ou")
+    live_slip["arm"] = "live"
+    live_suppressed = _suppressed_row(_LEAK_GAME_A, "wp", "missing_snapshot")
+    live_suppressed["arm"] = "live"
+    shadow_slip = _live_row(_LEAK_GAME_A, "ou")
+    shadow_slip.update({"arm": "shadow", "per_bet_ev": 0.09})
+    shadow_suppressed = _suppressed_row(_LEAK_GAME_A, "wp", "zero_kelly_stake")
+    shadow_suppressed["arm"] = "shadow"
+    shadow_only = _suppressed_row(_LEAK_GAME_B, "ats", "stale_line")
+    shadow_only["arm"] = "shadow"
+    replay = _suppressed_row(_LEAK_GAME_C, "ou", "ev_below_floor")
+    return [
+        live_slip,
+        live_suppressed,
+        shadow_slip,
+        shadow_suppressed,
+        shadow_only,
+        replay,
+    ]
+
+
+def test_shadow_rows_never_render_on_bets(tmp_path: Path) -> None:
+    """One live slip, the two live-reading suppressed rows, and nothing of the shadow arm."""
+    with _client_for(tmp_path, _shadow_leak_rows(), "shadow_leak") as client:
+        response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+
+    assert response.status_code == 200
+    body = response.text
+    # The ranked list: game A's live slip alone; the shadow twin's +9.00% never renders.
+    assert _rendered_ev_values(body) == ["+6.25"]
+    ranked = body.split('aria-label="Live bets', 1)[1].split("</ol>", 1)[0]
+    assert _rendered_matchups(ranked) == ["DET @ KC"]
+    # The suppressed section: game A's live row and game C's replay row, nothing else.
+    assert "Suppressed candidates (2)" in body
+    start = body.index('<details id="suppressed-candidates"')
+    suppressed = body[start : body.index("</details>", start)]
+    assert sorted(re.findall(r'href="/games/([^"]+)"', suppressed)) == sorted(
+        [_LEAK_GAME_A, _LEAK_GAME_C]
+    )
+    assert "No market line for this bet type" in suppressed
+    assert "Expected value below the floor" in suppressed
+    # The shadow rows' reasons and the shadow-only game appear nowhere on the page.
+    assert "Sizing returned no stake" not in body
+    assert "Line captured after the lock, or not timed" not in body
+    assert _LEAK_GAME_B not in body
+    assert "SEA @ SFO" not in body
+
+
+def test_coverage_ignores_shadow_only_games(tmp_path: Path) -> None:
+    """A game carrying only shadow rows is not covered; the NULL-arm replay game is."""
+    db_path = tmp_path / "shadow_coverage.duckdb"
+    _build_cache(db_path, _shadow_leak_rows(), week_rows=[])
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        clear_cache()
+        game_ids = DataService(probe).get_bet_game_ids(_SEASON, _WEEK)
+    finally:
+        probe.close()
+
+    # The getter orders by game id.
+    assert game_ids == sorted([_LEAK_GAME_A, _LEAK_GAME_C])
+
+
 def test_templates_ascii_only() -> None:
     """Both page templates and the badge component encode as ASCII (no emoji, no smart quotes)."""
     templates_dir = Path(__file__).resolve().parents[2] / "web" / "templates"

@@ -752,7 +752,7 @@ class DataService:
         return [dict(zip(columns, row)) for row in result.fetchall()]
 
     def get_suppressed_bets(
-        self, season: int | None, week: int | None
+        self, season: int | None, week: int | None, *, arm: str | None = None
     ) -> list[dict[str, Any]]:
         """Return the SUPPRESSED bet-list rows for *season* / *week* (SPEC R6, plan 31-15).
 
@@ -767,17 +767,23 @@ class DataService:
         render is byte-identical across requests. As with the live list, ZERO computation happens
         here: a suppressed candidate was never priced, so there is nothing to recompute -- the page
         renders the reason the selector recorded (UIAP-01).
+
+        ``arm`` filters exactly as it does on :meth:`get_bet_list`, and the complement holds per
+        arm. ``arm=None`` keeps every arm: the export, the one place both arms appear (SPEC R13).
+        ``/bets`` passes ``api.cache.ARM_LIVE``, so a shadow-arm row (Phase 37) -- a comparison
+        row, never a declined bet -- does not reach the suppressed section. A row with NO recorded
+        arm is a backtest replay row and reads as the live arm.
         """
-        key = ("suppressed_bets", season, week)
+        key = ("suppressed_bets", season, week, arm)
         cached = _cache_get(key)
         if cached is not None:
             return cached
-        result = self._get_suppressed_bets_uncached(season, week)
+        result = self._get_suppressed_bets_uncached(season, week, arm)
         _cache_set(key, result)
         return copy.deepcopy(result)
 
     def _get_suppressed_bets_uncached(
-        self, season: int | None, week: int | None
+        self, season: int | None, week: int | None, arm: str | None = None
     ) -> list[dict[str, Any]]:
         query = (
             f"SELECT {_BET_LIST_COLUMNS_SQL} FROM bet_list "
@@ -790,6 +796,10 @@ class DataService:
         if week is not None:
             query += " AND week = ?"
             params.append(week)
+        if arm is not None:
+            # Bound parameters, never interpolated. A NULL arm (a replay row) reads as the live arm.
+            query += " AND COALESCE(arm, ?) = ?"
+            params.extend([ARM_LIVE, arm])
         query += " ORDER BY rejection_reason NULLS LAST, season, week, game_id, target"
 
         try:
@@ -984,10 +994,14 @@ class DataService:
         return copy.deepcopy(rows)
 
     def get_bet_game_ids(self, season: int | None, week: int | None) -> list[str]:
-        """Return the distinct game ids the week's bet list carries a row for, live or suppressed.
+        """Return the distinct game ids the week's bet list carries a LIVE-ARM row for.
 
         Every evaluated game yields one record per bet type, live or suppressed, so a game with
         no row at all was not evaluated. A zero-row probe of coverage, not a metric (UIAP-01).
+
+        Live arm only. A shadow row (Phase 37) is a comparison row, never an evaluated bet, so a
+        game carrying only shadow rows must not count as covered on ``/bets`` or in the weekly
+        email (SPEC R13). A row with NO recorded arm is a backtest replay row and reads as live.
         """
         if season is None or week is None:
             return []
@@ -996,10 +1010,11 @@ class DataService:
         if cached is not None:
             return cached
         try:
+            # Bound parameters, never interpolated, as in get_bet_list.
             result = self._conn.execute(
                 "SELECT DISTINCT game_id FROM bet_list "
-                "WHERE season = ? AND week = ? ORDER BY game_id",
-                [season, week],
+                "WHERE season = ? AND week = ? AND COALESCE(arm, ?) = ? ORDER BY game_id",
+                [season, week, ARM_LIVE, ARM_LIVE],
             )
         except duckdb.Error:
             logger.warning("bet_list table not available in cache")
