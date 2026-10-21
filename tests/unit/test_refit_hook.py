@@ -34,13 +34,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
-from refit.hook import (
-    REFIT_STATUSES,
-    RefitSteps,
-    Remeasured,
-    attempt_date,
-    run_refit_side_step,
-)
 
 import refit.integrity
 import refit.records
@@ -53,6 +46,13 @@ from models.artifacts import ResolvedArtifacts
 from refit import swap
 from refit.cadence import cadence_dates, date_statuses
 from refit.generations import generation_for_ids, installed_generations
+from refit.hook import (
+    REFIT_STATUSES,
+    RefitSteps,
+    Remeasured,
+    attempt_date,
+    run_refit_side_step,
+)
 from refit.integrity import IntegrityRefusal
 from refit.records import (
     REFIT_DIRNAME,
