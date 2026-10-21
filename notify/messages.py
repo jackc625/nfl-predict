@@ -591,8 +591,17 @@ def _late_part(
 def _attempt_part(
     outcome: RefitOutcome, report: RunReport, secrets: Sequence[str]
 ) -> tuple[str, str, list[str]] | None:
-    """The push part of the attempt's own status; None for every status that is not trouble."""
+    """The push part of the attempt's own status; None for every status that is not trouble.
+
+    None also when the status describes the recovered close itself (a run that only recovered a
+    pending install), which its own part already reports (WR-C01).
+    """
     if outcome.date is None:
+        return None
+    if (
+        outcome.recovered_close is not None
+        and outcome.recovered_close[0] == outcome.date
+    ):
         return None
     if outcome.status == _REFIT_STATUS_LATE:
         return _late_part(
