@@ -1159,7 +1159,8 @@ def test_settle_runs_on_no_game_day_when_cut_over(monkeypatch, tmp_path, capsys)
 
     assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
 
-    assert order[:2] == ["settle", "no_games"]
+    # The settle pass, then its ledger sync before the re-fit side step (WR-C04).
+    assert order[:3] == ["settle", "sync", "no_games"]
     assert "LEDGER_SETTLE= unchanged" in capsys.readouterr().out
 
     _cut_over(monkeypatch, on=False)
@@ -1257,18 +1258,20 @@ def test_triggers_regenerated_before_no_games_return(
     assert failed["trigger_count"] == 0
 
 
-def test_sync_at_end_when_cut_over(monkeypatch, tmp_path):
+def test_sync_once_when_cut_over(monkeypatch, tmp_path):
     import pipeline.steps as steps_mod
     from pipeline import orchestrator
 
     _cut_over(monkeypatch)
     order = _no_games_env(monkeypatch, tmp_path)
 
+    # A no-games day syncs once, after the settle pass and before the re-fit side step and the
+    # no-prediction record (owner ruling, WR-C04).
     assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
     assert order.count("sync") == 1
-    assert order[-1] == "sync"
+    assert order == ["settle", "sync", "no_games"]
 
-    # A run that raises still syncs, and the raise is unchanged.
+    # A run that raises still syncs, at the end, and the raise is unchanged.
     order.clear()
     monkeypatch.setattr(
         "data.storage.load_dataframe", lambda *_a, **_k: _schedule().copy()

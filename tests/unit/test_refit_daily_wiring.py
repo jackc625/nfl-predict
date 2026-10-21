@@ -143,13 +143,15 @@ def test_no_games_day_calls_the_hook_then_rebuilds(
     monkeypatch.setattr(daily, "NOTIFY_END_OF_RUN", seen.append)
     calls: list[dict[str, Any]] = []
 
-    # The hook wrote records: one rebuild, after the hook, before the no-prediction record.
+    # The hook wrote records: one rebuild, after the hook, before the no-prediction record; the
+    # one sync comes before the hook (WR-C04).
     monkeypatch.setattr(daily, "REFIT_HOOK", recording_hook(order, calls, wrote()))
     assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
     out = capsys.readouterr().out
-    assert order.count("refit") == order.count("cache") == 1
+    assert order.count("refit") == order.count("cache") == order.count("sync") == 1
     assert (
         order.index("settle")
+        < order.index("sync")
         < order.index("refit")
         < order.index("cache")
         < order.index("no_games")
@@ -190,6 +192,7 @@ def test_no_games_day_calls_the_hook_then_rebuilds(
 def test_prediction_day_calls_the_hook_after_the_pipeline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
+    _cut_over(monkeypatch)
     order: list[str] = []
     _prediction_day(monkeypatch, tmp_path, order, _orchestrator_log("success"))
     _cache_records(monkeypatch, order)
@@ -200,13 +203,9 @@ def test_prediction_day_calls_the_hook_after_the_pipeline(
 
     assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
 
-    assert (
-        order.index("pipeline")
-        < order.index("refit")
-        < order.index("cache")
-        < order.index("push")
-        < order.index("notify")
-    )
+    # D-15 as amended by the owner on 2026-10-21 (WR-C04): the ledger write (inside the
+    # pipeline), its ONE sync, then the re-fit, the cache rebuild, the push and the notifier.
+    assert order == ["settle", "pipeline", "sync", "refit", "cache", "push", "notify"]
     (call,) = calls
     assert call["slate"] is not None
     assert call["slate"].game_ids == frozenset(SLATE_IDS)
@@ -219,8 +218,10 @@ def test_prediction_day_calls_the_hook_after_the_pipeline(
 def test_lock_passed_calls_the_hook_with_a_refresh(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
+    _cut_over(monkeypatch)
     order: list[str] = []
     start = _arrange_lock_passed(monkeypatch, tmp_path)
+    _ledger_passes_inert(monkeypatch, order)
     seen: list[RunReport] = []
     _seams_record(monkeypatch, order, seen)
     refreshed: list[tuple[date, bool]] = []
@@ -235,7 +236,9 @@ def test_lock_passed_calls_the_hook_with_a_refresh(
 
     assert daily.run_daily(RUN_DATE, start=start, dry_run=False) == 0
 
-    assert order.index("refit") < order.index("push") < order.index("notify")
+    # Unchanged by WR-C04: no settle pass and no sync on this branch, so whatever the re-fit
+    # recorded is backed up by the next run's sync.
+    assert order == ["refit", "push", "notify"]
     (call,) = calls
     assert (call["slate"], call["schedule_refreshed"]) == (None, False)
     assert refreshed == [], "the lock-passed run refreshed before anything was due"

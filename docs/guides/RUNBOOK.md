@@ -761,8 +761,10 @@ disagree, and that has to be understood before anything is written again.
 
 ### If pushes start failing
 
-Every daily run that changes the ledger ends with a sync. It commits a new anchor when the head
-moved and pushes it to `ledger-anchor`, then commits and pushes the backup. A failed push never
+Every daily run that changes the ledger syncs once: right after the day's ledger write and before
+the re-fit side step on a day that reaches it (owner ruling 2026-10-21), otherwise at its end. It
+commits a new anchor when the head moved and pushes it to `ledger-anchor`, then commits and
+pushes the backup. A failed push never
 fails the run: it is printed on the `LEDGER_SYNC=` line, recorded as an `anchor_push` or
 `backup_push` event with `ok` false in `logs/ledger_runs.jsonl`, and retried by the next sync,
 which carries the current head. A missing or locked backup repository is recorded the same way and

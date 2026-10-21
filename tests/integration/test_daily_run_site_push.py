@@ -142,7 +142,9 @@ def test_a_quiet_day_pushes_after_the_sync_and_before_the_notifier(
 
     assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
 
-    assert order[-3:] == ["sync", "push", "notify"]
+    # The sync runs before the re-fit side step (owner ruling, WR-C04), so the no-games
+    # record falls between it and the push.
+    assert order[-4:] == ["sync", "no_games", "push", "notify"]
     (report,) = seen
     (push,) = recorder.pushes
     assert push["source"] == "daily"

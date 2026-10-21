@@ -340,7 +340,7 @@ uv run python scripts/daily_lock_pipeline.py
    attempts a due re-fit (step 8), refreshing the schedule once first when an A/A week or a
    re-fit date is due (so a binding A/A week is judged on today's schedule), and
    makes no request on any other day (D-17). Then it goes straight to the website push and the
-   notifications; it has no settle pass and no end-of-run sync, so whatever the re-fit recorded
+   notifications; it has no settle pass and no ledger sync, so whatever the re-fit recorded
    is backed up by the next run's sync.
 2. **Run id.** One id is bound for the whole run and printed as `LEDGER_RUN_ID=`; every ledger
    event below carries it.
@@ -351,10 +351,12 @@ uv run python scripts/daily_lock_pipeline.py
 5. **Settle pass** -- one ledger write that grades settled rows from the refreshed scores,
    appends any correction entry a corrected score is owed, and finalizes closing-line columns
    (`LEDGER_SETTLE=`). A failed settle is recorded and never stops tonight's decisions.
-6. **Select tomorrow's games.** None: the re-fit side step (step 8) runs first, then the web
+6. **Select tomorrow's games.** None: the ledger sync (step 9) backs up the settle pass's
+   write, the re-fit side step (step 8) runs next, then the web
    cache is rebuilt once if anything changed -- `WEB_CACHE_AFTER_REFIT=` when the re-fit step
    wrote records, otherwise `WEB_CACHE_AFTER_SETTLE=` when the settle pass changed the ledger, so
-   the new grades reach `/bets` -- then a `no_games` record and on to step 9.
+   the new grades reach `/bets` -- then a `no_games` record, the website push and the
+   notifications.
 7. **The run proper** -- collection, the full-history gold build, prediction -- through the
    daily step registry. Its recommend step is the **ledger write**: tomorrow's forward bets are
    stamped and appended to `ledger/forward_2026.jsonl` (first pick stands: a re-run that decides
@@ -374,8 +376,8 @@ uv run python scripts/daily_lock_pipeline.py
    prediction day whose run ended `success`, `finished_with_skips` or `degraded` (after the
    ledger write), a `no_games` day (step 6) and a `lock_passed` day (step 1). It never runs on
    `--dry-run`, on a refused run date (`RUN_REFUSED=`), on a run that failed, or after Ctrl+C.
-   It always runs before the website push and the notifications, so that day's push and email
-   report it.
+   It always runs right after the ledger sync (step 9) and before the cache rebuild, the website
+   push and the notifications, so that day's push and email report it.
    - **Calendar only.** Whether anything is due comes from the pre-registered date lists
      (`backtest/refit_preregistration_2026.py`, `ROLLING-REFIT-PREREGISTRATION.md`), the clock
      and its own records, never from a metric. A day with nothing due takes no lock and writes
@@ -396,10 +398,23 @@ uv run python scripts/daily_lock_pipeline.py
      date stays open and the next daily run retries it with the same cutoff. Every problem sends
      one `FAILED:` push. New models serve from the next daily run.
    - Its records are listed in `RUNBOOK.md`, "Forward ledger".
-9. **End-of-run sync**, whether the day returned or raised: a new anchor commit on
-   `ledger-anchor` when the head moved, pushed to GitHub, then the private backup committed and
-   pushed (`LEDGER_SYNC=`). A failed push is recorded in `logs/ledger_runs.jsonl` and retried by
-   the next sync; it never changes the run's exit code.
+9. **Ledger sync**, once per run: a new anchor commit on `ledger-anchor` when the head moved,
+   pushed to GitHub, then the private backup committed and pushed (`LEDGER_SYNC=`). On a day that
+   reaches the re-fit side step it runs right after the day's ledger write and BEFORE the re-fit
+   (D-15 as amended by the owner on 2026-10-21), so a long attempt -- or a laptop unplugged during
+   one -- never holds back the anchor and backup of the day's rows; whatever the re-fit records is
+   backed up by the next run's sync. A run that never reaches the re-fit (the offseason, a
+   pipeline that failed, a run that raised) syncs at the end instead; a `lock_passed` run and a
+   dry run have no sync. A failed push is
+   recorded in `logs/ledger_runs.jsonl` and retried by the next sync; it never changes the run's
+   exit code.
+
+   The resulting order on a prediction day that got past the picks: the ledger write (step 7),
+   the ledger sync, the re-fit side step, the web cache rebuild when the re-fit wrote records, the
+   website push, the notifications (failed pushes, the bets push, the Saturday email) and the
+   watcher check-in last. A `no_games` day: the settle pass, the ledger sync, the re-fit side step,
+   the one cache rebuild when anything changed, the `no_games` record, the website push, the notifications and the
+   check-in.
 
 Forward rows now come ONLY from this run. `scripts/generate_bet_list.py` (sub-step 6a) refuses
 to write forward rows after the cutover (`ForwardRowsMovedToLedgerError`), and the Friday

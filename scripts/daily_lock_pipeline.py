@@ -17,7 +17,8 @@ WHAT ONE RUN DOES
 3. Runs ``pipeline.daily_steps``: collection, the FULL-HISTORY gold build, then prediction and
    emission, all before the lock (owner ruling "Finish before 6 PM").
 4. Attempts a due model re-fit (Phase 37, D-15, D-17) through ``refit.hook``: after the day's
-   ledger write and before the cache rebuild, the website push and the notifications, on every run
+   ledger write and its ledger sync (moved ahead of the re-fit by owner ruling on 2026-10-21) and
+   before the cache rebuild, the website push and the notifications, on every run
    that got past the picks (``success``, ``finished_with_skips``, ``degraded``, ``no_games``,
    ``lock_passed``) and never on a dry run. It is a non-fatal side step: it prints ``REFIT=``,
    records its own outcome and never changes the exit code. New models serve from the next run.
@@ -717,6 +718,19 @@ def _sync_ledger(*, report: RunReport) -> None:
         logger.error("Ledger sync failed", error=_failure_text(exc))
 
 
+def _sync_before_refit(report: RunReport) -> None:
+    """Back up the day's ledger write BEFORE the re-fit side step (owner ruling, WR-C04).
+
+    D-15 as amended by the owner on 2026-10-21: the sync moves to right after the day's ledger
+    write, so a re-fit of about 17 minutes -- or a laptop unplugged during one -- never holds back
+    the anchor and backup of the day's rows. Everything else stays in D-15's order: the re-fit,
+    the cache rebuild, the website push, the notifications, the check-in. ``run_daily``'s
+    ``finally`` then skips its own sync; what the re-fit records is backed up by the next run's.
+    """
+    if forward_rows_go_to_ledger():
+        _sync_ledger(report=report)
+
+
 # ---------------------------------------------------------------------------
 # The end-of-run notifier (Phase 35, D-13). It runs AFTER every decision is written and after the
 # ledger sync, and it can never change the run's result: it is called only through
@@ -809,9 +823,10 @@ def _push_site_quietly(report: RunReport) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The re-fit side step (Phase 37, D-15, D-17). It runs AFTER the day's ledger write and BEFORE the
-# cache rebuild, the website push and the notifier, so that day's push and email report it. It can
-# never change the run's result: it is called only through _refit_quietly.
+# The re-fit side step (Phase 37, D-15, D-17). It runs AFTER the day's ledger write and its ledger
+# sync (WR-C04) and BEFORE the cache rebuild, the website push and the notifier, so that day's push
+# and email report it. It can never change the run's result: it is called only through
+# _refit_quietly.
 # ---------------------------------------------------------------------------
 
 
@@ -929,8 +944,9 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
 
     With the cutover switch on, ONE run id is bound around the whole day (printed as
     ``LEDGER_RUN_ID=``), so every ledger event it writes -- the append, the settle pass and the
-    end-of-run sync's pushes -- names this run (review finding 8); and a non-dry run ends with
-    the ledger sync, whether the day returned or raised. After the sync, a non-dry run that was
+    end-of-run sync's pushes -- names this run (review finding 8); and a non-dry run syncs the
+    ledger once: just before the re-fit side step on a day that reaches it (WR-C04), otherwise at
+    the end, whether the day returned or raised. After the sync, a non-dry run that was
     not interrupted sends its notifications (D-13), filled from one :class:`RunReport`; the
     watcher's season window on that report is read once, at the run's start (Plan 35-13).
 
@@ -1033,7 +1049,8 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                     report.tomorrow_game_ids = report.unpredicted_game_ids
                 raise
             finally:
-                if cut_over and not dry_run:
+                # A day that reached the re-fit side step already synced before it (WR-C04).
+                if cut_over and not dry_run and not report.sync_ran:
                     _sync_ledger(report=report)
                 # Rows appended before a later failure are still reported (failed, then bets), and
                 # so are the frozen-arm holes the recommend step recorded (Phase 37, SPEC R8).
@@ -1044,9 +1061,11 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                 # website push runs BEFORE the check-in the notifier ends with, so it delays that
                 # check-in by at most its own worst case: a 600 s lock wait + a 900 s deploy bound
                 # + 13 read-back attempts (about 130 s) + a self-heal rebuild (about 45 s), roughly
-                # 28 minutes. The 2026-10-17 prediction day ran 17:00-17:14 ET, so the worst case
-                # checks in about 17:45 ET, well before the watcher's 18:30 ET down time. A push
-                # that is switched off returns in milliseconds.
+                # 28 minutes. A day the re-fit side step trains adds the attempt (1012.5 s in the
+                # 2026-10-20 rehearsal) in front of the push, the notifications and the check-in:
+                # the projection is a 17:58:53 ET bets push and check-in on a catch-up prediction
+                # day (AUTOMATION.md, daily run item 4). A push that is switched off returns in
+                # milliseconds.
                 if not dry_run and not report.interrupted:
                     _push_site_quietly(report)
                     _notify_quietly(report)
@@ -1093,9 +1112,11 @@ def _run_the_day(
     )
     if slate.schedule.empty:
         logger.info("No games tomorrow; no-op", run_date_et=run_date_et.isoformat())
-        # The re-fit side step first (D-17: a cadence Tuesday usually has no games tomorrow),
-        # then ONE cache rebuild when it or the settle pass changed anything, and only then the
-        # no-prediction record.
+        # The settle pass's ledger write is backed up first (WR-C04), then the re-fit side step
+        # (D-17: a cadence Tuesday usually has no games tomorrow), then ONE cache rebuild when it
+        # or the settle pass changed anything, and only then the no-prediction record.
+        if not dry_run:
+            _sync_before_refit(report)
         refit_wrote = not dry_run and _refit_quietly(
             report,
             run_date_et=run_date_et,
@@ -1173,8 +1194,9 @@ def _run_the_day(
         RunStatus.FINISHED_WITH_SKIPS.value,
         "degraded",
     ):
-        # The re-fit side step, after the picks and the ledger write (D-15); its records reach
-        # the site through one more cache rebuild.
+        # The ledger sync, right after the picks' ledger write (WR-C04), then the re-fit side
+        # step (D-15); its records reach the site through one more cache rebuild.
+        _sync_before_refit(report)
         if _refit_quietly(
             report,
             run_date_et=run_date_et,

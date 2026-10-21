@@ -305,7 +305,9 @@ class TestPipelineMdPhase34DailyLedgerSteps:
             "**Closing-trigger regeneration**",
             "**Settle pass**",
             "**ledger write**",
-            "**End-of-run sync**",
+            # Since the owner's 2026-10-21 ruling (WR-C04) the sync runs right after the ledger
+            # write and before the re-fit, so it is no longer always at the end of the run.
+            "**Ledger sync**",
         )
         missing = [step for step in steps if step not in content]
         assert not missing, f"PIPELINE.md daily run missing ledger steps: {missing}"
