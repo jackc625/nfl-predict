@@ -3,10 +3,11 @@
 WHAT IS PROVEN
 --------------
 * ``refit.comparison.panel_frames`` turns the ledger, the silver scores and the re-fit records into
-  two frames: one ``refit_panel`` row per target per period (the stretch before the first re-fit,
-  one row per installed generation, and a season-to-date row over every paired game since the
-  first re-fit), and one ``refit_aa_status`` row per evaluated A/A week. Every expected number is
-  computed BY HAND from the fixture scores.
+  two frames: one ``refit_panel`` row per target per period (one row per installed generation, and
+  a season-to-date row over every paired game since the first re-fit), and one ``refit_aa_status``
+  row per evaluated A/A week. The generation-0 pairs (the week-7 dress rehearsal and the A/A weeks)
+  are never counted on the panel (record section 2, D-38). Every expected number is computed BY
+  HAND from the fixture scores.
 * An installed generation is a period row from the moment it is installed, even with no completed
   pair yet: paired_games 0 and every error, gap and ``ahead`` NULL ("not measured yet", never 0.0).
 * ``forward_ledger.cache_sources.read_bet_cache_sources`` carries both frames, empty with the switch
@@ -121,7 +122,7 @@ def write_fixture_ledger(ledger: Path) -> None:
     ATS, by hand (loss = |value - margin|):
       week 7 (margin +3): both arms 2.0 -> 1.0 / 1.0
       week 8 (margin -3): both arms 1.0 -> 4.0 / 4.0
-      -> before the first re-fit: live 2.5, frozen 2.5, gap 0.0, even, 2 games
+      -> generation 0: never counted on the panel (D-38), so no row
       week 9 KC_BUF (margin +2): live 3.0 -> 1.0, frozen 1.0 -> 1.0
       week 9 DAL_PHI (margin -7): live -3.5 -> 3.5, frozen 2.5 -> 9.5
       -> period 1: live 2.25, frozen 5.25, gap -3.0, live ahead, 2 games
@@ -200,15 +201,12 @@ def test_panel_frames_rows(tmp_path: Path) -> None:
     assert list(panel.columns) == list(cache_schema.REFIT_PANEL_COLUMNS)
     assert set(panel["season"]) == {SEASON}
 
-    before = panel_row(panel, "ats", "period", 0)
-    assert before["period_label"] == "Before the first re-fit"
-    assert (before["live_error"], before["frozen_error"]) == (2.5, 2.5)
-    assert before["gap"] == 0.0
-    assert before["ahead"] == "even"
-    assert before["paired_games"] == 2
-    assert before["unit"] == "points"
+    # WR-D04: the generation-0 pairs of weeks 7-8 (the week-7 dress rehearsal and an A/A week) are
+    # never counted: no target has a generation-0 row.
+    assert panel.loc[panel["period_index"] == 0].empty
 
     period = panel_row(panel, "ats", "period", 1)
+    assert period["unit"] == "points"
     assert period["period_label"] == "Period 1, from Tue Nov 3"
     assert period["period_start"] == "2026-11-03"
     assert (period["live_error"], period["frozen_error"]) == (2.25, 5.25)
@@ -237,9 +235,9 @@ def test_panel_frames_rows(tmp_path: Path) -> None:
     assert (ou["live_error"], ou["frozen_error"], ou["gap"]) == (6.0, 1.0, 5.0)
     assert ou["ahead"] == "frozen"
 
-    # Weeks 5-6 (no shadow row) contribute nothing: the only ATS period-0 games are weeks 7-8,
-    # and no target other than ATS has a period-0 row.
-    assert len(panel.loc[panel["period_index"] == 0]) == 1
+    # Weeks 5-6 (no shadow row) and weeks 7-8 (generation 0) contribute nothing: one period row and
+    # one season-to-date row per target.
+    assert len(panel) == 6
 
 
 def test_aa_status_rows(tmp_path: Path) -> None:

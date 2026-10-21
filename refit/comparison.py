@@ -71,6 +71,10 @@ generation is the mean in-force ``payout_flat`` over that arm's live-status pair
 or push, with no test. Generation 0 is reported (its count and its gap, exactly zero in A/A weeks)
 and never tested.
 
+GENERATION-0 SHADOW ROWS ARE NEVER BETS (record section 2, D-38). The week-7 dress-rehearsal shadow
+rows, and every other generation-0 shadow row, are "never tested, never counted, and never shown as
+bets": the frozen arm has no generation-0 ROI line, and the panel has no generation-0 row.
+
 CLV APPEARS NOWHERE (must-NOT P5). No frame column, result field or printed line carries a CLV
 value; the deciding figure is accuracy only.
 
@@ -78,11 +82,11 @@ THE SEASON PAGE'S PANEL (D-12, D-13, D-14, SPEC R13)
 ----------------------------------------------------
 :func:`panel_frames` hands the cache build the panel's RAW numbers -- never a p-value, a confidence
 range or a test result: the test runs once, at season close. :func:`period_summary` gives, per
-target, a ``Before the first re-fit`` row over the generation-0 pairs (when there are any), one
-``Period N, from Tue Nov 3`` row per installed generation N >= 1 -- from the moment it is
-installed, so a generation with no completed pair yet is a row with 0 paired games and NULL
+target, one ``Period N, from Tue Nov 3`` row per installed generation N >= 1 -- from the moment it
+is installed, so a generation with no completed pair yet is a row with 0 paired games and NULL
 figures, never "no re-fit yet" -- and a season-to-date row over every paired game since the first
-re-fit. A period starts on its cadence date (the date its install intent names). The panel is
+re-fit. The generation-0 pairs are never counted on the panel (D-38); before the first re-fit the
+page shows "No re-fit yet." and the A/A status. A period starts on its cadence date (the date its install intent names). The panel is
 accuracy only: no betting return per arm, so frozen-arm bets never look like bets.
 
 Batch code: the comparison CLI (``scripts/compare_refit_arms.py``) and the cache build
@@ -145,7 +149,6 @@ __all__ = [
     "AHEAD_FROZEN",
     "AHEAD_LIVE",
     "ARM_LABELS",
-    "BEFORE_FIRST_REFIT_LABEL",
     "EXCLUDED_REASONS",
     "FRAME_COLUMNS",
     "RESULT_BETTER",
@@ -192,6 +195,7 @@ _HELPED, _HURT, _MIXED, _NO_DETECTABLE_DIFFERENCE = ROLLUP_WORDS
 
 # The two arms of the report-only ROI figure: the frame's column prefix is the label.
 ARM_LABELS: tuple[str, ...] = ("live", "frozen")
+_FROZEN_ARM_LABEL: str = ARM_LABELS[1]
 
 # The grading statuses a flat ROI counts: every settled bet.
 _GRADED: tuple[str, ...] = (
@@ -648,8 +652,12 @@ def decide(paired: PairedFrame, generations: Sequence[Generation]) -> Comparison
         )
         for target in TARGETS
     )
+    # A generation-0 shadow row is never a bet (D-38), so the frozen arm has no generation-0 ROI.
     roi = tuple(
-        _flat_roi(rows, generation, arm) for generation in numbers for arm in ARM_LABELS
+        _flat_roi(rows, generation, arm)
+        for generation in numbers
+        for arm in ARM_LABELS
+        if not (generation == GENERATION_ZERO and arm == _FROZEN_ARM_LABEL)
     )
     return ComparisonResult(
         cells=tuple(cells),
@@ -669,8 +677,6 @@ def decide(paired: PairedFrame, generations: Sequence[Generation]) -> Comparison
 AHEAD_LIVE: str = "live"
 AHEAD_FROZEN: str = "frozen"
 AHEAD_EVEN: str = "even"
-
-BEFORE_FIRST_REFIT_LABEL: str = "Before the first re-fit"
 
 # The unit each target's per-game error is measured in (D-07).
 _UNITS: dict[str, str] = {"wp": "log loss", "ats": "points", "ou": "points"}
@@ -774,11 +780,11 @@ def period_summary(
 ) -> pd.DataFrame:
     """The panel's rows (``REFIT_PANEL_COLUMNS``): raw numbers per target and period, no test.
 
-    Per target, in this order: the ``Before the first re-fit`` row over the generation-0 pairs
-    (only when there are any); one ``Period N, from <date>`` row per installed generation N >= 1,
+    Per target, in this order: one ``Period N, from <date>`` row per installed generation N >= 1,
     present from its install even with no completed pair (0 paired games, NULL figures); and,
     whenever a generation >= 1 is installed, a season-to-date row over every pair of generation
-    >= 1, whose label names the first re-fit's date.
+    >= 1, whose label names the first re-fit's date. The generation-0 pairs -- the week-7 dress
+    rehearsal and every A/A week -- are never counted here (record section 2, D-38).
 
     Args:
         paired: :func:`paired_frame`'s result.
@@ -797,20 +803,6 @@ def period_summary(
     records: list[dict[str, Any]] = []
     for target in TARGETS:
         target_rows = [row for row in rows if row["target"] == target]
-        before = [
-            row for row in target_rows if int(row["generation"]) == GENERATION_ZERO
-        ]
-        if before:
-            records.append(
-                _panel_row(
-                    target,
-                    GENERATION_ZERO,
-                    REFIT_PANEL_PERIOD,
-                    BEFORE_FIRST_REFIT_LABEL,
-                    None,
-                    before,
-                )
-            )
         for generation in installs:
             start = starts[generation.number]
             records.append(

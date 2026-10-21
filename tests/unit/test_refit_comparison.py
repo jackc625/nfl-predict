@@ -727,6 +727,26 @@ def test_no_refit_prints_the_end_rule_not_a_verdict_word() -> None:
     assert not any(word in line for line in lines for word in ROLLUP_WORDS)
 
 
+def test_generation_zero_shadow_rows_are_never_bets() -> None:
+    """WR-D04 (D-38): a generation-0 shadow row is never counted as a bet in the ROI secondary."""
+    paired = synthetic_paired({("ats", 0): [0.0] * 6, ("ats", 1): [0.0] * 6})
+    frame = paired.frame
+    # Every frozen twin a live, graded bet, so a generation-0 frozen ROI would count six.
+    frame["frozen_status"] = "live"
+    frame["frozen_grading_status"] = "win"
+    frame["frozen_payout_flat"] = 0.9090909090909091
+
+    result = decide(paired, installed(1))
+
+    assert [(roi.generation, roi.arm, roi.bets) for roi in result.roi] == [
+        (0, "live", 6),
+        (1, "live", 6),
+        (1, "frozen", 6),
+    ]
+    lines = compare_refit_arms.report_lines(paired, result)
+    assert not any(line.startswith("ROI_SECONDARY= gen=0 arm=frozen") for line in lines)
+
+
 def test_pooled_is_after_and_labelled() -> None:
     # Each period alone misses alpha (t about 1.88 on 30 games); pooled over 60 it does not.
     paired = synthetic_paired(
