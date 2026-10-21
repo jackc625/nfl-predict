@@ -22,7 +22,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
 from models.artifacts import _atomic_write_json
+from refit.generations import Generation
 from refit.records import append_date_event
 from refit.training import train_generation
 from tests.fixtures.refit_gold import FIXTURE_CUTOFF_UTC, build_refit_fixture
@@ -43,6 +45,18 @@ from tests.unit.test_refit_decision_path import (
 
 ROW19 = dict(ROW19_SWAP_ARTIFACT_IDS)
 GENERATION_ONE = {key: getattr(GENERATION_ONE_IDS, key) for key in MANIFEST_KEYS}
+
+
+def _generation(number: int, date_index: int) -> Generation:
+    """Generation *number*, installed on date *date_index* of list 8 (its ids are not read)."""
+    return Generation(
+        number=number,
+        ids=GENERATION_ONE_IDS,
+        recipe=REFIT_RECIPE_ID,
+        bet_rule_path=Path("ledger/refit/bet_rules") / f"{'a' * 64}.json",
+        date_index=date_index,
+        list_week=8,
+    )
 
 
 def _record_intent(ledger: Path) -> None:
@@ -143,18 +157,28 @@ def test_refit_metadata_problems_reads_the_real_producer(tmp_path: Path) -> None
                 encoding="utf-8"
             )
         )
-        assert refit_metadata_problems(metadata) == [], target
+        generation_one = _generation(1, date_index=1)
+        assert refit_metadata_problems(metadata, generation_one) == [], target
 
         wrong_season = {
             **metadata,
             "calibration": {**metadata["calibration"], "season": 2024},
         }
-        problems = refit_metadata_problems(wrong_season)
+        problems = refit_metadata_problems(wrong_season, generation_one)
         assert len(problems) == 1 and "calibration season" in problems[0], problems
 
-        problems = refit_metadata_problems(_without(metadata, "cutoff_utc"))
+        problems = refit_metadata_problems(
+            _without(metadata, "cutoff_utc"), generation_one
+        )
         assert len(problems) == 1 and "cutoff_utc" in problems[0], problems
 
         wrong_recipe = {**metadata, "refit_recipe": "recipe-2026-row19-v1"}
-        problems = refit_metadata_problems(wrong_recipe)
+        problems = refit_metadata_problems(wrong_recipe, generation_one)
         assert len(problems) == 1 and "refit_recipe" in problems[0], problems
+
+        # WR-D07: generation 2 (list 8, date 2: Tue 2026-12-01) serving generation 1's models is a
+        # stale re-install; their 2026-11-03 cutoff is inside the season but not generation 2's.
+        problems = refit_metadata_problems(metadata, _generation(2, date_index=2))
+        assert len(problems) == 1 and "2026-12-01T17:00:00-05:00" in problems[0], (
+            problems
+        )

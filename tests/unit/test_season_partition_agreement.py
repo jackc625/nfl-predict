@@ -62,8 +62,13 @@ from conf.season_partition import (
     backtest_seasons,
     default_season_partition,
 )
+from refit.generations import installed_generations
 from tests import phase33_state
-from tests.live_manifest_record import recorded_live_manifest, refit_metadata_problems
+from tests.live_manifest_record import (
+    LIVE_LEDGER_DIR,
+    recorded_live_manifest,
+    refit_metadata_problems,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -493,13 +498,24 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
                 "record was edited (D33.1-04 prohibits exactly that)."
             )
 
-    def _served_refit_problems(self, manifest: dict[str, str]) -> dict[str, list[str]]:
-        """Each served model's breaks of the pre-registered re-fit contract (generation >= 1)."""
+    def _served_refit_problems(
+        self, manifest: dict[str, str], generation_number: int
+    ) -> dict[str, list[str]]:
+        """Each served model's breaks of the pre-registered re-fit contract (generation >= 1).
+
+        The cutoff is checked against the served generation's own pre-registered cutoff, so a
+        re-install of an earlier generation's models fails (WR-D07).
+        """
+        generation = next(
+            g
+            for g in installed_generations(LIVE_LEDGER_DIR)
+            if g.number == generation_number
+        )
         problems: dict[str, list[str]] = {}
         for target in ("wp", "ats", "ou"):
             metadata_path = REPO_ROOT / "artifacts" / manifest[target] / "metadata.json"
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            problems[target] = refit_metadata_problems(metadata)
+            problems[target] = refit_metadata_problems(metadata, generation)
         return problems
 
     def test_every_served_model_records_the_live_partition(self) -> None:
@@ -518,7 +534,7 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
         generation, expected = recorded_live_manifest()
         assert manifest == expected
         if generation >= 1:
-            problems = self._served_refit_problems(manifest)
+            problems = self._served_refit_problems(manifest, generation)
             assert problems == {"wp": [], "ats": [], "ou": []}, (generation, problems)
             return
         live = tuple(_partition().holdout)
@@ -546,7 +562,7 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
             manifest = json.loads(
                 (REPO_ROOT / "artifacts" / "latest.json").read_text(encoding="utf-8")
             )
-            problems = self._served_refit_problems(manifest)
+            problems = self._served_refit_problems(manifest, generation)
             assert problems == {"wp": [], "ats": [], "ou": []}, (generation, problems)
             return
         artifacts_dir = REPO_ROOT / "artifacts"

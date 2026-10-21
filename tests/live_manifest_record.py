@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import datetime, time
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -54,6 +54,7 @@ __all__ = [
     "LIVE_LEDGER_DIR",
     "MANIFEST_KEYS",
     "REPO_ROOT",
+    "expected_cutoff",
     "expected_manifest_text",
     "recorded_live_manifest",
     "refit_metadata_problems",
@@ -122,20 +123,25 @@ def expected_manifest_text(ids: Mapping[str, str]) -> str:
     return json.dumps({key: ids[key] for key in MANIFEST_KEYS}, indent=2)
 
 
-def _cadence_window() -> tuple[datetime, datetime]:
-    """The first and last pre-registered re-fit dates, each at the cutoff time in the record's zone."""
-    zone = ZoneInfo(CUTOFF_TIMEZONE)
-    cutoff_time = time.fromisoformat(CUTOFF_LOCAL_TIME)
-    dates = sorted({date for dates in REFIT_DATE_LISTS.values() for date, _ in dates})
-    first, last = (
-        datetime.combine(datetime.fromisoformat(day).date(), cutoff_time, tzinfo=zone)
-        for day in (dates[0], dates[-1])
+def expected_cutoff(generation: Generation) -> datetime:
+    """The cutoff *generation*'s models must record: its cadence date at the record's cutoff time.
+
+    Read from the pre-registered date list the generation's install names (list week, date
+    index), at ``CUTOFF_LOCAL_TIME`` in ``CUTOFF_TIMEZONE`` -- never derived from a model.
+    """
+    if generation.list_week is None or generation.date_index is None:
+        msg = f"generation {generation.number} names no cadence date; it has no re-fit cutoff"
+        raise ValueError(msg)
+    day, _nfl_week = REFIT_DATE_LISTS[generation.list_week][generation.date_index - 1]
+    return datetime.combine(
+        date.fromisoformat(day),
+        time.fromisoformat(CUTOFF_LOCAL_TIME),
+        tzinfo=ZoneInfo(CUTOFF_TIMEZONE),
     )
-    return first, last
 
 
-def _cutoff_problem(value: object) -> str | None:
-    """Why *value* is not an aware cutoff inside the 2026 cadence dates, or None."""
+def _cutoff_problem(value: object, expected: datetime) -> str | None:
+    """Why *value* is not exactly the *expected* cutoff instant, or None."""
     if not isinstance(value, str):
         return f"cutoff_utc is missing or not text: {value!r}"
     try:
@@ -144,19 +150,21 @@ def _cutoff_problem(value: object) -> str | None:
         return f"cutoff_utc {value!r} does not parse as an ISO instant"
     if cutoff.tzinfo is None:
         return f"cutoff_utc {value!r} is naive; a cutoff is an instant"
-    first, last = _cadence_window()
-    if not first <= cutoff <= last:
+    if cutoff != expected:
         return (
-            f"cutoff_utc {value!r} is outside the pre-registered re-fit dates "
-            f"[{first.isoformat()}, {last.isoformat()}]"
+            f"cutoff_utc {value!r} is not the served generation's pre-registered cutoff "
+            f"{expected.isoformat()}"
         )
     return None
 
 
-def refit_metadata_problems(metadata: Mapping[str, Any]) -> list[str]:
+def refit_metadata_problems(
+    metadata: Mapping[str, Any], generation: Generation
+) -> list[str]:
     """Every way a served model's metadata.json breaks the pre-registered re-fit contract.
 
-    Checks, in order: the recipe id; the cutoff (aware, inside the 2026 cadence dates); the
+    Checks, in order: the recipe id; the cutoff (exactly *generation*'s pre-registered cutoff,
+    :func:`expected_cutoff`, so a re-install of an earlier generation's models is caught); the
     calibration season (REFIT_SEASON - 1, D-26); the helper window (TRAINING_START_SEASON to the
     calibration season, exclusive); the record digest (refit.witness). An empty list is a pass.
     """
@@ -164,7 +172,7 @@ def refit_metadata_problems(metadata: Mapping[str, Any]) -> list[str]:
     recipe = metadata.get("refit_recipe")
     if recipe != REFIT_RECIPE_ID:
         problems.append(f"refit_recipe {recipe!r} is not {REFIT_RECIPE_ID!r}")
-    cutoff = _cutoff_problem(metadata.get("cutoff_utc"))
+    cutoff = _cutoff_problem(metadata.get("cutoff_utc"), expected_cutoff(generation))
     if cutoff is not None:
         problems.append(cutoff)
     calibration = metadata.get("calibration")
