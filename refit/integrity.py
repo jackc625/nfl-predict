@@ -25,6 +25,17 @@ metadata, the dict saved into the artifact's ``metadata.json``) against the froz
 caller's ``games`` frame -- the same frame the training read, with any held no-score game already
 masked (R10) -- so a recorded fact that disagrees with the rule refuses the install by name.
 
+THE INTEGRITY FRAME AND THE DRY STAMP (D-34, D-25, research Pitfall 1)
+---------------------------------------------------------------------
+:func:`integrity_frame` is the stored 2026 gold rows of the NFL week that just finished plus every
+gold row of a slate built the same day; nothing is built for a future slate. Each new model must
+load, read only gold columns and return one finite value per row (:func:`check_scores_frame`).
+:func:`check_dry_stamp_and_validate` then decides that frame as the next decision run will -- the
+generation's own bet-rule record, the served ids resolved as ``latest.json`` will resolve them,
+the week's first decision run as the instant -- and passes every row through the ledger's stamping
+step and new-row validation with NO snapshot, copy or ledger write, proving the next decision run
+accepts the new ids.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -35,8 +46,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
 import pandas as pd
 
+from backtest.diagnose import score_deployed_artifacts
 from backtest.refit_preregistration_2026 import (
     AA_FIRST_WEEK,
     EV_FLOORS,
@@ -53,27 +66,47 @@ from backtest.refit_preregistration_2026 import (
     TRAINING_START_SEASON,
 )
 from backtest.signal_lift import excluded_columns
+from backtest.weekly_bet_list import build_weekly_decision_bundle, load_bet_rule_record
+from data.upstream_live import load_live_manifest
+from forward_ledger.canonical import IMMUTABLE_COLUMNS_V1
+from forward_ledger.repro_key import build_repro_key
+from forward_ledger.runner import (
+    _has_verdict_rows,
+    _silver_odds,
+    _verdict_scope_or_none,
+)
+from forward_ledger.settle import load_silver_games
+from forward_ledger.snapshots import compute_snapshot_digest
+from forward_ledger.stamps import stamp_ledger_rows
+from forward_ledger.store import _validate_new_row, read_entries
+from models.artifacts import ResolvedArtifacts, load_model_artifact
 from models.train import GROUP_VERDICT_DIGEST_METADATA_KEY, THREAD_LIMIT_METADATA_KEY
+from refit.aa import week_first_decision_run
 from refit.training import RefitTrainingError, calibration_season
 from refit.witness import fingerprint_mismatches
 
 if TYPE_CHECKING:
+    from refit.generations import Generation
     from refit.remeasure import BetRuleNumbers
     from refit.training import GenerationTraining
 
 __all__ = [
     "IntegrityRefusal",
     "check_aa_proof",
+    "check_dry_stamp_and_validate",
     "check_fixed_settings",
     "check_input_pool_and_caps",
     "check_out_of_sample_calibration",
     "check_recipe_fingerprint",
     "check_remeasure_complete",
+    "check_scores_frame",
     "check_training_scope",
+    "integrity_frame",
     "run_integrity_checks",
 ]
 
 _TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
+_ROW_ORDER: list[str] = ["season", "week", "game_id"]
 
 _RECIPE_FINGERPRINT = "recipe_fingerprint"
 _AA_PROOF = "aa_proof"
@@ -82,6 +115,12 @@ _INPUT_POOL_AND_CAPS = "input_pool_and_caps"
 _FIXED_SETTINGS = "fixed_settings"
 _OUT_OF_SAMPLE_CALIBRATION = "out_of_sample_calibration"
 _REMEASURE_COMPLETE = "remeasure_complete"
+_SCORES_FRAME = "scores_frame"
+_DRY_STAMP_AND_VALIDATE = "dry_stamp_and_validate"
+
+# The scored column every target's output carries (backtest.diagnose.score_deployed_artifacts):
+# WP's calibrated probability, ATS's margin, O/U's total.
+_SCORED_COLUMN = "model_prob"
 
 # The training's recorded exclusion of a finished game with no gold row (refit.training).
 _NO_GOLD_ROW = "no_gold_row"
@@ -401,6 +440,240 @@ def check_remeasure_complete(numbers: BetRuleNumbers) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The integrity frame (D-34, D-25), 8. scores_frame, 9. dry_stamp_and_validate
+# ---------------------------------------------------------------------------
+
+
+def integrity_frame(
+    gold_dir: Path | str,
+    games: pd.DataFrame,
+    *,
+    finished_week: int,
+    slate_game_ids: frozenset[str],
+) -> dict[str, pd.DataFrame]:
+    """Per target, the stored 2026 gold rows of *finished_week* plus every row of today's slate.
+
+    The finished week's games are read from the recorded schedule (*games*); the slate is the one
+    built the same day (a catch-up on a prediction day), empty otherwise. Nothing is built: only
+    rows already stored in gold are returned, in (season, week, game_id) order.
+    """
+    in_week = (games["season"].astype(int) == REFIT_SEASON) & (
+        games["week"].astype(int) == finished_week
+    )
+    wanted = sorted(
+        set(games.loc[in_week, "game_id"].astype(str))
+        | {str(game_id) for game_id in slate_game_ids}
+    )
+    frames: dict[str, pd.DataFrame] = {}
+    for target in _TARGETS:
+        gold = pd.read_parquet(Path(gold_dir) / f"features_{target}.parquet")
+        rows = gold.loc[gold["game_id"].astype(str).isin(wanted)]
+        frames[target] = rows.sort_values(_ROW_ORDER, kind="mergesort").reset_index(
+            drop=True
+        )
+    return frames
+
+
+def check_scores_frame(
+    artifact_ids: Mapping[str, str],
+    frame: Mapping[str, pd.DataFrame],
+    artifacts_dir: Path | str,
+) -> None:
+    """Each new model loads, reads only gold columns, and scores every frame row finitely.
+
+    WP's output must also lie within [0, 1]. An empty frame proves nothing and is refused.
+    """
+    root = Path(artifacts_dir)
+    for target in _TARGETS:
+        version = artifact_ids[target]
+        rows = frame.get(target)
+        if rows is None or rows.empty:
+            raise IntegrityRefusal(
+                _SCORES_FRAME, f"the integrity frame holds no {target} row to score"
+            )
+        try:
+            loaded = load_model_artifact(target, version=version, artifacts_dir=root)
+        except Exception as exc:  # named in the refusal, never swallowed
+            raise IntegrityRefusal(
+                _SCORES_FRAME,
+                f"{version!r} does not load: {type(exc).__name__}: {exc}",
+            ) from exc
+        missing = [name for name in loaded["feature_list"] if name not in rows.columns]
+        if missing:
+            raise IntegrityRefusal(
+                _SCORES_FRAME,
+                f"{version!r} reads {missing[:10]}, which are not gold columns",
+            )
+        try:
+            scored = score_deployed_artifacts(
+                target, gold_df=rows, artifacts_dir=root, version=version
+            )
+        except Exception as exc:  # named in the refusal, never swallowed
+            raise IntegrityRefusal(
+                _SCORES_FRAME,
+                f"{version!r} could not score the frame: {type(exc).__name__}: {exc}",
+            ) from exc
+        values = scored[_SCORED_COLUMN].to_numpy(dtype=float)
+        if len(values) != len(rows):
+            raise IntegrityRefusal(
+                _SCORES_FRAME,
+                f"{version!r} returned {len(values)} values for {len(rows)} rows",
+            )
+        not_finite = ~np.isfinite(values)
+        if not_finite.any():
+            ids = sorted(rows.loc[not_finite, "game_id"].astype(str))
+            raise IntegrityRefusal(
+                _SCORES_FRAME, f"{version!r} returned a non-finite value for {ids[:10]}"
+            )
+        if target == "wp" and ((values < 0.0) | (values > 1.0)).any():
+            raise IntegrityRefusal(
+                _SCORES_FRAME,
+                f"{version!r} returned a win probability outside [0, 1]",
+            )
+
+
+def _served_ids(generation: Generation, artifacts_dir: Path) -> ResolvedArtifacts:
+    """The ids the next decision run will resolve once ``latest.json`` names this generation.
+
+    The four pointers are the generation's; the converter is read from the new blend's own
+    binding, exactly as ``models.artifacts.resolve_production_artifacts`` reads it.
+    """
+    # Imported lazily, as models.artifacts does: the blender pulls in pandas and scipy.
+    from models.blending import MarketBlender
+
+    blender = MarketBlender.from_artifacts(artifacts_dir, version=generation.ids.blend)
+    return ResolvedArtifacts(
+        wp=generation.ids.wp,
+        ats=generation.ids.ats,
+        ou=generation.ids.ou,
+        blend=generation.ids.blend,
+        converter=blender.market_probability_artifact_id,
+    )
+
+
+def _decision_weeks(
+    games: pd.DataFrame,
+    season: int,
+    finished_week: int,
+    slate_game_ids: frozenset[str],
+) -> list[int]:
+    """The finished week, and the slate's week when a slate was built today."""
+    in_season = games.loc[games["season"].astype(int) == season]
+    week_of = dict(
+        zip(
+            in_season["game_id"].astype(str),
+            in_season["week"].astype(int),
+            strict=True,
+        )
+    )
+    unknown = sorted(
+        str(game_id) for game_id in slate_game_ids if str(game_id) not in week_of
+    )
+    if unknown:
+        msg = f"the slate games {unknown[:10]} are not in the {season} schedule"
+        raise ValueError(msg)
+    return sorted(
+        {finished_week} | {week_of[str(game_id)] for game_id in slate_game_ids}
+    )
+
+
+def check_dry_stamp_and_validate(
+    *,
+    season: int,
+    finished_week: int,
+    slate_game_ids: frozenset[str],
+    generation: Generation,
+    artifacts_dir: Path | str,
+    gold_dir: Path | str,
+    silver_dir: Path | str,
+    ledger_dir: Path | str,
+    manifest_dir: Path | str | None = None,
+) -> None:
+    """Decide the integrity frame as the next decision run will, stamp it and validate it. NO write.
+
+    For the finished week (and the slate's week, when one exists) the decision is built through
+    the generation-aware bet rule -- the generation's ids as served, its bet-rule record, the
+    fits and edge thresholds ``load_bet_rule_record`` reads from it, the week's first decision
+    run as the instant -- then the reproduction key and the snapshot digest are computed in
+    memory, every row is stamped ``recipe-2026-refit-v1`` with the generation's ids as the only
+    registered ids, and every row goes through ``forward_ledger.store._validate_new_row``. No
+    snapshot, artifact copy or ledger write is ever made.
+
+    Args:
+        season: The re-fit season.
+        finished_week: The NFL week that just finished.
+        slate_game_ids: The games of a slate built today (empty on a no-games day).
+        generation: The candidate generation (its ``bet_rule_path`` is
+            ``refit.records.bet_rule_record_path(ledger_dir, sha)``).
+        artifacts_dir, gold_dir, silver_dir: The stores the decision reads.
+        ledger_dir: The ledger, read only (its verdict rows decide the scope rule).
+        manifest_dir: The live-manifest directory (``config/upstream_live`` when None).
+
+    Raises:
+        IntegrityRefusal: ``dry_stamp_and_validate``, naming what the decision, the stamping or
+            the validation refused.
+    """
+    try:
+        games = load_silver_games(silver_dir)
+        weeks = _decision_weeks(games, season, finished_week, slate_game_ids)
+        resolved = _served_ids(generation, Path(artifacts_dir))
+        fits, thresholds = load_bet_rule_record(generation.bet_rule_path)
+        entries = read_entries(Path(ledger_dir))
+        scope = _verdict_scope_or_none()
+        ledger_has_verdict_rows = _has_verdict_rows(entries)
+        odds = _silver_odds(silver_dir)
+        manifest = load_live_manifest(season, manifest_dir=manifest_dir)
+        for week in weeks:
+            decided_at = week_first_decision_run(games, season, week)
+            bundle = build_weekly_decision_bundle(
+                season,
+                week,
+                artifacts_dir=Path(artifacts_dir),
+                gold_dir=Path(gold_dir),
+                silver_dir=Path(silver_dir),
+                now=decided_at,
+                excluded_game_ids=frozenset(),
+                resolved=resolved,
+                chain_fit_path=generation.bet_rule_path,
+                fits=fits,
+                edge_thresholds=thresholds,
+            )
+            if bundle.frame.empty:
+                raise IntegrityRefusal(
+                    _DRY_STAMP_AND_VALIDATE,
+                    f"the dry decision of {season} week {week} decided nothing, so it proves "
+                    "nothing about the next decision run",
+                )
+            repro = build_repro_key(
+                manifest=manifest,
+                gold_dir=gold_dir,
+                odds=odds,
+                game_ids=sorted(bundle.frame["game_id"].astype(str).unique()),
+                decided_at=decided_at,
+            )
+            stamped = stamp_ledger_rows(
+                bundle.frame,
+                resolved=bundle.resolved,
+                repro=repro,
+                snapshot_digest=compute_snapshot_digest(bundle),
+                scope=scope,
+                ledger_has_verdict_rows=ledger_has_verdict_rows,
+                recipe_id=REFIT_RECIPE_ID,
+                registered_ids=(generation.ids,),
+            )
+            columns = cast("pd.DataFrame", stamped[list(IMMUTABLE_COLUMNS_V1)])
+            for row in columns.to_dict(orient="records"):
+                _validate_new_row(row)
+    except IntegrityRefusal:
+        raise
+    except Exception as exc:  # named in the refusal, never swallowed
+        raise IntegrityRefusal(
+            _DRY_STAMP_AND_VALIDATE,
+            f"the next decision run would refuse the new ids: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
 # The pre-swap checks, in the record's order
 # ---------------------------------------------------------------------------
 
@@ -415,8 +688,19 @@ def run_integrity_checks(
     games: pd.DataFrame,
     cutoff_utc: datetime,
     numbers: BetRuleNumbers,
+    generation: Generation,
+    season: int,
+    finished_week: int,
+    slate_game_ids: frozenset[str],
+    artifacts_dir: Path | str,
+    gold_dir: Path | str,
+    silver_dir: Path | str,
+    ledger_dir: Path | str,
+    manifest_dir: Path | str | None = None,
 ) -> None:
     """Run every pre-swap check in ``INTEGRITY_CHECKS`` order; the first failure refuses.
+
+    ``clean_code_commit`` and ``bundle_validation`` follow in ``refit.swap.install_generation``.
 
     Raises:
         IntegrityRefusal: naming the first check that failed.
@@ -428,3 +712,19 @@ def run_integrity_checks(
     check_fixed_settings(training)
     check_out_of_sample_calibration(training, games)
     check_remeasure_complete(numbers)
+    model_ids = {target: generation.ids.model_id_for(target) for target in _TARGETS}
+    frame = integrity_frame(
+        gold_dir, games, finished_week=finished_week, slate_game_ids=slate_game_ids
+    )
+    check_scores_frame(model_ids, frame, artifacts_dir)
+    check_dry_stamp_and_validate(
+        season=season,
+        finished_week=finished_week,
+        slate_game_ids=slate_game_ids,
+        generation=generation,
+        artifacts_dir=artifacts_dir,
+        gold_dir=gold_dir,
+        silver_dir=silver_dir,
+        ledger_dir=ledger_dir,
+        manifest_dir=manifest_dir,
+    )
