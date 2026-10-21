@@ -191,14 +191,20 @@ def _counting_intent(events: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] |
     return None if refused_after else events[last]
 
 
-def installed_generations(ledger_dir: Path | str) -> tuple[Generation, ...]:
+def installed_generations(
+    ledger_dir: Path | str, *, skip_torn_tail: bool = False
+) -> tuple[Generation, ...]:
     """Generation 0 and every counted install, in number order (section 3's rule).
+
+    Args:
+        skip_torn_tail: Read ``dates.jsonl`` leaving out a torn last line
+            (``refit.records.read_date_events``); the live decision path's read only.
 
     Raises:
         RefitRecordFormatError: a ``dates.jsonl`` line is malformed, or an intent lacks an id.
     """
     by_date: dict[tuple[int, int], list[Mapping[str, Any]]] = {}
-    for event in read_date_events(ledger_dir):
+    for event in read_date_events(ledger_dir, skip_torn_tail=skip_torn_tail):
         key = (int(event["list_week"]), int(event["date_index"]))
         by_date.setdefault(key, []).append(event)
 
@@ -252,7 +258,9 @@ def in_force_generation(
 ) -> Generation:
     """The generation the ids *resolved* (read once from ``latest.json``) decide under.
 
-    The pin's ids are generation 0 without reading any record (D-04).
+    The pin's ids are generation 0 without reading any record (D-04). A torn last line of
+    ``dates.jsonl`` is left out and logged (WR-A02): a crash mid-append on the re-fit side never
+    stands between a game and its lock (D-15); damage on any other line still raises.
 
     Raises:
         UnknownGenerationError: the ids are neither pinned nor an installed generation's.
@@ -261,7 +269,9 @@ def in_force_generation(
     zero = _generation_zero()
     if resolved == zero.ids:
         return zero
-    return generation_for_ids(resolved, installed_generations(ledger_dir))
+    return generation_for_ids(
+        resolved, installed_generations(ledger_dir, skip_torn_tail=True)
+    )
 
 
 def in_force_edge_thresholds(

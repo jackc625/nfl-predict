@@ -66,9 +66,12 @@ from refit.generations import (
     installed_generations,
 )
 from refit.records import (
+    DATES_FILENAME,
     RefitRecordFormatError,
     append_date_event,
     bet_rule_relpath,
+    read_date_events,
+    refit_dir,
     write_bet_rule_record,
 )
 from refit.remeasure import BET_RULE_RECORD_KIND, BetRuleNumbers, bet_rule_payload
@@ -486,6 +489,29 @@ def test_pending_install_after_a_crash_is_accepted(
 
     live = _arm(ledger_rows(installed.ledger), ARM_LIVE)
     assert live
+    for row in live:
+        assert row["recipe_id"] == REFIT_RECIPE_ID
+        assert row["model_artifact_id"] == GENERATION_ONE_IDS.model_id_for(
+            row["target"]
+        )
+
+
+def test_a_torn_dates_tail_never_blocks_a_generation_1_decision(
+    tmp_path: Path, run_log_path: Path
+) -> None:
+    """WR-A02: a crash mid-append of a re-fit record never stands between a game and its lock."""
+    installed = install_generation_one(tmp_path)
+    dates = refit_dir(installed.ledger) / DATES_FILENAME
+    dates.write_bytes(dates.read_bytes() + b'{"event": "attempt", "list_wee')
+    # The re-fit hook's strict read still refuses the torn line.
+    with pytest.raises(RefitRecordFormatError):
+        read_date_events(installed.ledger)
+
+    outcome = record(installed.stores, installed.ledger)
+
+    live = _arm(ledger_rows(installed.ledger), ARM_LIVE)
+    assert live
+    assert outcome.appended == len(live)
     for row in live:
         assert row["recipe_id"] == REFIT_RECIPE_ID
         assert row["model_artifact_id"] == GENERATION_ONE_IDS.model_id_for(

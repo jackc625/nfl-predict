@@ -268,12 +268,15 @@ def _live_recipe(generation: Generation | None) -> str:
 def _registered_ids(
     generation: Generation | None, ledger: Path
 ) -> tuple[ResolvedArtifacts, ...]:
-    """Every installed re-fit generation's ids (the stamping check of a re-fit row); none else."""
+    """Every installed re-fit generation's ids (the stamping check of a re-fit row); none else.
+
+    Read as ``in_force_generation`` reads it: a torn last line of ``dates.jsonl`` is left out.
+    """
     if not _is_refit(generation):
         return ()
     return tuple(
         installed.ids
-        for installed in installed_generations(ledger)
+        for installed in installed_generations(ledger, skip_torn_tail=True)
         if installed.number != GENERATION_ZERO
     )
 

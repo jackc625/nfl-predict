@@ -61,6 +61,7 @@ from typing import Any
 
 from data.write_sink import append_jsonl, current_sink
 from utils.file_lock import exclusive_file_lock
+from utils.logging_config import get_logger
 
 __all__ = [
     "AA_WEEKS_FILENAME",
@@ -89,6 +90,8 @@ __all__ = [
     "refit_dir",
     "write_bet_rule_record",
 ]
+
+logger = get_logger(__name__)
 
 REFIT_DIRNAME: str = "refit"
 SHADOW_HOLES_FILENAME: str = "shadow_holes.jsonl"
@@ -239,9 +242,16 @@ def read_records(ledger_dir: Path | str, filename: str) -> list[dict[str, Any]]:
 
 
 def _read_validated(
-    path: Path, problem_of: Callable[[Mapping[str, Any]], str | None] | None
+    path: Path,
+    problem_of: Callable[[Mapping[str, Any]], str | None] | None,
+    *,
+    skip_torn_tail: bool = False,
 ) -> list[dict[str, Any]]:
-    """Every JSON-object line of *path*, each passed through *problem_of* when it is given."""
+    """Every JSON-object line of *path*, each passed through *problem_of* when it is given.
+
+    With *skip_torn_tail*, an unterminated final line that is not JSON (a crash mid-append, never
+    a whole record) is logged by name and left out; every other bad line still raises.
+    """
     if not path.exists():
         return []
     text = path.read_text(encoding="utf-8")
@@ -256,6 +266,13 @@ def _read_validated(
             record = json.loads(line)
         except json.JSONDecodeError as error:
             detail = f"is not JSON: {error}"
+            if torn and skip_torn_tail:
+                logger.error(
+                    "Re-fit record torn last line left out of the read",
+                    path=path.as_posix(),
+                    line=number,
+                )
+                break
             raise RefitRecordFormatError(
                 _line_error(path, number, torn, detail)
             ) from error
@@ -432,13 +449,25 @@ def append_date_event(ledger_dir: Path | str, event: Mapping[str, Any]) -> bool:
     )
 
 
-def read_date_events(ledger_dir: Path | str) -> list[dict[str, Any]]:
+def read_date_events(
+    ledger_dir: Path | str, *, skip_torn_tail: bool = False
+) -> list[dict[str, Any]]:
     """Every cadence-date event, in file order; ``[]`` when the file is absent.
+
+    Args:
+        skip_torn_tail: Leave out (and log) an unterminated, unparseable last line. Only the live
+            decision path passes True (WR-A02, D-15): a torn append there is never a served
+            install, because an ``install_intent`` is fsynced before ``latest.json`` is swapped.
+            The re-fit hook reads strictly, so the torn line still fails that day's re-fit step.
 
     Raises:
         RefitRecordFormatError: a line is not JSON, or names a problem the writer would refuse.
     """
-    return _read_validated(refit_dir(ledger_dir) / DATES_FILENAME, _date_event_problem)
+    return _read_validated(
+        refit_dir(ledger_dir) / DATES_FILENAME,
+        _date_event_problem,
+        skip_torn_tail=skip_torn_tail,
+    )
 
 
 # ---------------------------------------------------------------------------
