@@ -15,14 +15,22 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import json
 import math
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import pytest
 
-from backtest.refit_preregistration_2026 import LOG_LOSS_CLIP, REFIT_RECIPE_ID
+from backtest.profitability_2025 import benjamini_hochberg_adjusted
+from backtest.refit_preregistration_2026 import (
+    ALPHA,
+    LOG_LOSS_CLIP,
+    REFIT_RECIPE_ID,
+    ROLLUP_WORDS,
+)
 from forward_ledger.canonical import ENTRY_KIND_ROW
 from forward_ledger.shadow import SHADOW_PIN
 from forward_ledger.store import (
@@ -34,7 +42,19 @@ from forward_ledger.store import (
     ledger_path,
     read_entries,
 )
-from refit.comparison import line_loss, paired_frame, wp_loss
+from models.artifacts import ResolvedArtifacts
+from refit import comparison
+from refit.comparison import (
+    EXCLUDED_REASONS,
+    FRAME_COLUMNS,
+    ComparisonResult,
+    PairedFrame,
+    decide,
+    line_loss,
+    paired_frame,
+    rollup_word,
+    wp_loss,
+)
 from refit.generations import Generation
 from refit.records import append_date_event
 from scripts import compare_refit_arms
@@ -428,3 +448,294 @@ def test_cli_prints_one_cell(
     out = capsys.readouterr().out
     assert code == 2
     assert out.startswith("LEDGER_UNREADABLE= ")
+
+
+# ---------------------------------------------------------------------------
+# Task 2: the pre-registered decision
+# ---------------------------------------------------------------------------
+
+HELPED, HURT, MIXED, NO_DETECTABLE_DIFFERENCE = ROLLUP_WORDS
+
+
+def installed(count: int) -> tuple[Generation, ...]:
+    """Generations 1..*count* with distinct ids (decide reads only their numbers)."""
+    return tuple(
+        Generation(
+            number=number,
+            ids=ResolvedArtifacts(
+                wp=f"wp_gen{number}",
+                ats=f"ats_gen{number}",
+                ou=f"ou_gen{number}",
+                blend=f"blend_gen{number}",
+                converter="market_probability_20260923_195443",
+            ),
+            recipe=REFIT_RECIPE_ID,
+            bet_rule_path=Path("ledger/refit/bet_rules") / f"{number:064d}.json",
+            date_index=number,
+            list_week=8,
+        )
+        for number in range(1, count + 1)
+    )
+
+
+def spread_gaps(n: int, shift: float = 0.0) -> list[float]:
+    """*n* gaps with a non-zero spread around *shift*."""
+    return [0.2 * ((index % 5) - 2) + shift for index in range(n)]
+
+
+def alternating_gaps(n: int, mean: float) -> list[float]:
+    """*n* (even) gaps of exactly *mean* +/- 1: mean *mean*, sample sd sqrt(n / (n - 1))."""
+    return [mean + (1.0 if index % 2 else -1.0) for index in range(n)]
+
+
+def synthetic_paired(cells: dict[tuple[str, int], Sequence[float]]) -> PairedFrame:
+    """A paired frame holding one row per gap of each (target, generation) cell.
+
+    Every live row is a live bet graded a win at -110; every frozen twin is suppressed.
+    """
+    records = [
+        {
+            "game_id": f"2026_{9 + generation:02d}_G{index:03d}",
+            "season": SEASON,
+            "week": 9 + generation,
+            "target": target,
+            "generation": generation,
+            "live_value": 0.0,
+            "frozen_value": 0.0,
+            "home_score": 20,
+            "away_score": 17,
+            "live_loss": 1.0 + gap,
+            "frozen_loss": 1.0,
+            "gap": gap,
+            "live_status": "live",
+            "live_grading_status": "win",
+            "live_payout_flat": 0.9090909090909091,
+            "frozen_status": "suppressed",
+            "frozen_grading_status": "pending",
+            "frozen_payout_flat": None,
+        }
+        for (target, generation), gaps in cells.items()
+        for index, gap in enumerate(gaps)
+    ]
+    return PairedFrame(
+        frame=pd.DataFrame.from_records(records, columns=list(FRAME_COLUMNS)),
+        holes=(),
+        unpaired_weeks=(),
+        excluded=dict.fromkeys(EXCLUDED_REASONS, 0),
+    )
+
+
+@pytest.fixture
+def bh_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[float], int]]:
+    """Every (p-values, m) the decision hands the real BH implementation."""
+    calls: list[tuple[list[float], int]] = []
+
+    def spy(pvalues: Sequence[float], m: int) -> list[float]:
+        calls.append((list(pvalues), m))
+        return benjamini_hochberg_adjusted(pvalues, m)
+
+    monkeypatch.setattr(comparison, "benjamini_hochberg_adjusted", spy)
+    return calls
+
+
+def cell_of(result: ComparisonResult, target: str, generation: int) -> Any:
+    (cell,) = [
+        cell
+        for cell in result.cells
+        if (cell.target, cell.generation) == (target, generation)
+    ]
+    return cell
+
+
+def test_bh_family_is_the_tested_cells(
+    bh_calls: list[tuple[list[float], int]],
+) -> None:
+    paired = synthetic_paired(
+        {
+            ("ats", 1): spread_gaps(58, -0.05),
+            ("ats", 2): spread_gaps(61, 0.03),
+            ("ats", 3): spread_gaps(42, -0.02),
+            ("ats", 4): spread_gaps(3, -0.5),
+        }
+    )
+
+    result = decide(paired, installed(4))
+
+    assert result.family_size == 3
+    assert len(bh_calls) == 1
+    pvalues, m = bh_calls[0]
+    assert m == 3
+    assert len(pvalues) == 3
+    small = cell_of(result, "ats", 4)
+    assert (small.n, small.p, small.adjusted_p) == (3, None, None)
+    assert small.status == "too few to test"
+    for generation in (1, 2, 3):
+        assert cell_of(result, "ats", generation).adjusted_p is not None
+
+
+def test_an_all_zero_eligible_cell_counts_in_the_family(
+    bh_calls: list[tuple[list[float], int]],
+) -> None:
+    paired = synthetic_paired(
+        {("ats", 1): [0.0] * 40, ("ats", 2): spread_gaps(58, -0.04)}
+    )
+
+    result = decide(paired, installed(2))
+
+    zero = cell_of(result, "ats", 1)
+    assert zero.status == "no difference (all paired gaps zero)"
+    assert (zero.n, zero.p, zero.adjusted_p) == (40, None, None)
+    assert bh_calls == [([cell_of(result, "ats", 2).p], 2)]
+    tested = cell_of(result, "ats", 2)
+    assert tested.adjusted_p == min(1.0, 2 * tested.p)
+
+
+def test_rollup_words() -> None:
+    assert rollup_word(["better", "no difference"]) == HELPED
+    assert rollup_word(["worse", "too few to test"]) == HURT
+    assert rollup_word(["better", "worse"]) == MIXED
+    assert rollup_word(["no difference", "too few to test"]) == NO_DETECTABLE_DIFFERENCE
+    assert rollup_word([]) == NO_DETECTABLE_DIFFERENCE
+
+    # Wired through decide: a clearly lower live loss is "better" and the target HELPED.
+    result = decide(
+        synthetic_paired(
+            {("wp", 1): spread_gaps(40, -1.0), ("ats", 1): spread_gaps(40, 1.0)}
+        ),
+        installed(1),
+    )
+    assert cell_of(result, "wp", 1).result == "better"
+    assert cell_of(result, "ats", 1).result == "worse"
+    assert result.verdicts == {
+        "wp": HELPED,
+        "ats": HURT,
+        "ou": NO_DETECTABLE_DIFFERENCE,
+    }
+
+
+def test_generation_zero_is_reported_never_tested(
+    bh_calls: list[tuple[list[float], int]],
+) -> None:
+    paired = synthetic_paired({("wp", 0): [0.0] * 40})
+
+    result = decide(paired, ())
+
+    cell = cell_of(result, "wp", 0)
+    assert (cell.n, cell.mean_gap, cell.p, cell.adjusted_p) == (40, 0.0, None, None)
+    assert result.family_size == 0
+    assert bh_calls == []
+    (line,) = [
+        line
+        for line in compare_refit_arms.report_lines(paired, result)
+        if line.startswith("CELL= ")
+    ]
+    assert line.startswith("CELL= wp gen=0 n=40 ")
+    assert "mean_gap=0.000000" in line
+    assert "p=none" in line
+
+
+def test_pooled_is_after_and_labelled() -> None:
+    # Each period alone misses alpha (t about 1.88 on 30 games); pooled over 60 it does not.
+    paired = synthetic_paired(
+        {
+            ("ou", 0): [0.0] * 6,
+            ("ou", 2): alternating_gaps(30, -0.35),
+            ("ou", 1): alternating_gaps(30, -0.35),
+        }
+    )
+
+    result = decide(paired, installed(2))
+    lines = compare_refit_arms.report_lines(paired, result)
+
+    kinds = [line.split("= ", 1)[0] for line in lines]
+    order = ["CELL", "VERDICT", "POOLED_SECONDARY", "ROI_SECONDARY"]
+    positions = [order.index(kind) for kind in kinds if kind in order]
+    assert positions == sorted(positions)
+    assert set(order) <= set(kinds)
+    generations = [
+        int(line.split("gen=")[1].split()[0])
+        for line in lines
+        if line.startswith("CELL= ")
+    ]
+    assert generations == sorted(generations)
+    assert generations[0] == 0
+
+    pooled = {item.target: item for item in result.pooled}["ou"]
+    assert pooled.n == 60
+    assert pooled.p is not None and pooled.p < ALPHA
+    for generation in (1, 2):
+        cell = cell_of(result, "ou", generation)
+        assert cell.adjusted_p is not None and cell.adjusted_p > ALPHA
+        assert cell.result == "no difference"
+    assert result.verdicts["ou"] == NO_DETECTABLE_DIFFERENCE
+    verdict_line = next(line for line in lines if line.startswith("VERDICT= ou "))
+    assert verdict_line.endswith(NO_DETECTABLE_DIFFERENCE)
+
+    pooled_line = next(
+        line for line in lines if line.startswith("POOLED_SECONDARY= ou ")
+    )
+    assert "secondary" in pooled_line
+    assert "p=" in pooled_line and "p=none" not in pooled_line
+    roi_lines = [line for line in lines if line.startswith("ROI_SECONDARY= ")]
+    assert roi_lines and all("report-only" in line for line in roi_lines)
+    assert (
+        "ROI_SECONDARY= gen=1 arm=live bets=30 flat_roi=0.909091 (report-only, no test)"
+        in lines
+    )
+    assert (
+        "ROI_SECONDARY= gen=1 arm=frozen bets=0 flat_roi=none (report-only, no test)"
+        in lines
+    )
+
+
+def test_no_clv_in_the_deciding_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger = tmp_path / "ledger"
+    append_date_event(ledger, intent_event(GENERATION_ONE_IDS, "a" * 64))
+    append_date_event(ledger, closed_event("ran"))
+    pairs = ats_pairs()
+    write_pairs(ledger, pairs)
+    rows = [row for pair in pairs for row in pair if row is not None]
+    apply_updates(
+        ledger,
+        grading_updates={
+            key_of(row): {
+                **graded("win", 0.9090909090909091, 1.1363636363636365),
+                "clv": 0.031,
+            }
+            for row in rows
+        },
+        closing_updates={
+            key_of(row): {
+                "closing_line": -3.0,
+                "closing_odds": -110.0,
+                "closing_sportsbook": "draftkings",
+                "closing_captured_at": "2026-11-08T17:55:00+00:00",
+                "forward_clv": 0.042,
+            }
+            for row in rows
+        },
+    )
+    assert any(
+        (entry.closing or {}).get("forward_clv") == 0.042
+        for entry in read_entries(ledger)
+    )
+
+    code = compare_refit_arms.main(
+        [
+            "--ledger-dir",
+            str(ledger),
+            "--silver-dir",
+            str(write_silver(tmp_path / "silver")),
+        ]
+    )
+    lines = capsys.readouterr().out.splitlines()
+
+    assert code == 0
+    assert any(line.startswith("CELL= ats gen=1 ") for line in lines)
+    assert all("clv" not in line.lower() for line in lines)
+    paired = paired_frame(read_entries(ledger), games_frame(), GENERATIONS)
+    assert all("clv" not in column.lower() for column in paired.frame.columns)
+    serialized = json.dumps(decide(paired, GENERATIONS).as_dict())
+    assert "clv" not in serialized.lower()
