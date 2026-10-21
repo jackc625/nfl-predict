@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import json
 import shutil
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -2168,7 +2169,40 @@ def _set_display_wp_edge(frame: pd.DataFrame) -> None:
     frame["wp_edge"] = pd.to_numeric(frame["wp_prob"], errors="coerce") - market_wp
 
 
-def _band_edges(frame: pd.DataFrame, thresholds: EdgeThresholds | None) -> None:
+# The three stored band columns, in the order :func:`_band_rows` returns them.
+_BAND_COLUMNS: tuple[str, str, str] = (
+    "wp_confidence",
+    "ats_confidence",
+    "ou_confidence",
+)
+
+
+def _band_rows(
+    rows: pd.DataFrame, thresholds: EdgeThresholds | None
+) -> list[pd.Series]:
+    """The three edge bands of *rows*, all banded with ONE ruler, in :data:`_BAND_COLUMNS` order."""
+    return [
+        edge_tier_series(rows["wp_edge"], "wp", thresholds=thresholds),
+        edge_tier_series(rows["ats_edge"], "ats", thresholds=thresholds),
+        edge_tier_series(rows["ou_edge"], "ou", thresholds=thresholds),
+    ]
+
+
+def _ruler_key(thresholds: EdgeThresholds | None) -> tuple[Any, ...] | None:
+    """A hashable key for one ruler, so rows sharing a ruler are banded together."""
+    if thresholds is None:
+        return None
+    return tuple(
+        (target, None if pair is None else tuple(pair))
+        for target, pair in sorted(thresholds.items())
+    )
+
+
+def _band_edges(
+    frame: pd.DataFrame,
+    thresholds: EdgeThresholds | None,
+    decided_by_game: Mapping[str, EdgeThresholds | None] | None = None,
+) -> None:
     """Set the three edge bands in place from the three stored edges -- the ONE band site.
 
     The EDGE BAND comes from the ONE shared source (D31-23). The stored column names keep their
@@ -2185,21 +2219,34 @@ def _band_edges(frame: pd.DataFrame, thresholds: EdgeThresholds | None) -> None:
     page or in either export. Both prediction loaders band through this one function, so the
     current-week rows cannot keep a "low" an older CSV wrote for an absent edge.
 
-    THE BANDS FOLLOW THE IN-FORCE GENERATION (Phase 37, D-36). *thresholds* is the in-force re-fit
-    generation's ``{target -> (high, medium) | None}`` mapping, or None for generation 0 (the
-    row-19 constants, exactly as before). It is resolved by the CALLER at cache build
-    (``refit.generations.in_force_edge_thresholds``), because ``api/`` imports no ``refit`` or
-    ``backtest`` module (UIAP-01, HOST-01) and the request path does no computation.
+    A GAME'S BAND IS THE BAND ITS LIVE BET RULE USED (Phase 37, D-36, record section 12). A game in
+    *decided_by_game* -- one a live bet rule decided -- is banded with the thresholds of the
+    generation that decided it (None there is the row-19 constants), so an install never re-labels
+    it. Every other game -- the backtest seasons, and a game no live rule has decided yet -- is
+    banded with *thresholds*, the in-force generation's ``{target -> (high, medium) | None}``
+    mapping (None for generation 0). Both are resolved by the CALLER at cache build
+    (``refit.generations.decided_edge_thresholds`` and ``in_force_edge_thresholds``), because
+    ``api/`` imports no ``refit`` or ``backtest`` module (UIAP-01, HOST-01) and the request path
+    does no computation. While generation 0 is in force every ruler is None, so the frame is banded
+    in one pass exactly as before.
     """
-    frame["wp_confidence"] = edge_tier_series(
-        frame["wp_edge"], "wp", thresholds=thresholds
-    )
-    frame["ats_confidence"] = edge_tier_series(
-        frame["ats_edge"], "ats", thresholds=thresholds
-    )
-    frame["ou_confidence"] = edge_tier_series(
-        frame["ou_edge"], "ou", thresholds=thresholds
-    )
+    decided = decided_by_game or {}
+    groups: dict[tuple[Any, ...] | None, tuple[EdgeThresholds | None, list[int]]] = {}
+    for position, game_id in enumerate(frame["game_id"]):
+        ruler = decided.get(game_id, thresholds)
+        groups.setdefault(_ruler_key(ruler), (ruler, []))[1].append(position)
+    if len(groups) <= 1:
+        ruler = next(iter(groups.values()))[0] if groups else thresholds
+        for column, bands in zip(_BAND_COLUMNS, _band_rows(frame, ruler), strict=True):
+            frame[column] = bands
+        return
+    values = {column: np.empty(len(frame), dtype=object) for column in _BAND_COLUMNS}
+    for ruler, positions in groups.values():
+        bands = _band_rows(frame.iloc[positions], ruler)
+        for column, banded in zip(_BAND_COLUMNS, bands, strict=True):
+            values[column][positions] = banded.to_numpy()
+    for column in _BAND_COLUMNS:
+        frame[column] = values[column]
 
 
 def _load_predictions(
@@ -2209,6 +2256,7 @@ def _load_predictions(
     artifacts_root: Path = Path("artifacts"),
     *,
     edge_thresholds_by_target: EdgeThresholds | None = None,
+    decided_edge_thresholds_by_game: Mapping[str, EdgeThresholds | None] | None = None,
 ) -> int:
     """Load predictions from backtest outputs into the predictions table.
 
@@ -2225,6 +2273,9 @@ def _load_predictions(
             test) names its own root rather than inheriting the working directory's.
         edge_thresholds_by_target: The in-force generation's edge-band thresholds (D-36); None
             bands with the row-19 constants. See :func:`_band_edges`.
+        decided_edge_thresholds_by_game: ``game_id -> thresholds`` of the generation whose live
+            bet rule decided the game (D-36); a game absent from it takes
+            *edge_thresholds_by_target*. See :func:`_band_edges`.
 
     Returns:
         Number of rows inserted.
@@ -2377,7 +2428,7 @@ def _load_predictions(
         _apply_blend(merged, blend_data)
 
     _set_display_wp_edge(merged)
-    _band_edges(merged, edge_thresholds_by_target)
+    _band_edges(merged, edge_thresholds_by_target, decided_edge_thresholds_by_game)
 
     final_df = merged[PREDICTIONS_TABLE_COLUMNS].copy()
 
@@ -2393,6 +2444,7 @@ def _load_current_week_predictions(
     silver_dir: Path,
     *,
     edge_thresholds_by_target: EdgeThresholds | None = None,
+    decided_edge_thresholds_by_game: Mapping[str, EdgeThresholds | None] | None = None,
 ) -> int:
     """Add every game in the current-week prediction CSVs to the predictions table.
 
@@ -2415,6 +2467,9 @@ def _load_current_week_predictions(
         silver_dir: Directory containing games.parquet (scores and kickoff times).
         edge_thresholds_by_target: The in-force generation's edge-band thresholds (D-36); None
             bands with the row-19 constants. See :func:`_band_edges`.
+        decided_edge_thresholds_by_game: ``game_id -> thresholds`` of the generation whose live
+            bet rule decided the game (D-36); a game absent from it takes
+            *edge_thresholds_by_target*. See :func:`_band_edges`.
 
     Returns:
         Number of rows inserted.
@@ -2466,7 +2521,7 @@ def _load_current_week_predictions(
     # rows, never read back from the CSV: a CSV written before 33.2 review C2 CR-04 carries the
     # band "low" for a game with no edge, and a stored band that disagrees with its own edge is
     # the defect that fix removed.
-    _band_edges(merged, edge_thresholds_by_target)
+    _band_edges(merged, edge_thresholds_by_target, decided_edge_thresholds_by_game)
 
     conn.execute("INSERT INTO predictions SELECT * FROM merged")
     logger.info(
@@ -3061,6 +3116,7 @@ def populate_cache(
     forward_verdict_context: dict[str, Any] | None = None,
     bet_week_results_df: pd.DataFrame | None = None,
     edge_thresholds_by_target: EdgeThresholds | None = None,
+    decided_edge_thresholds_by_game: Mapping[str, EdgeThresholds | None] | None = None,
     refit_panel_df: pd.DataFrame | None = None,
     refit_aa_status_df: pd.DataFrame | None = None,
 ) -> None:
@@ -3141,6 +3197,12 @@ def populate_cache(
             generation). Resolved by the caller through
             ``refit.generations.in_force_edge_thresholds`` because ``api/`` imports no ``refit``
             module; ``None`` (generation 0) bands with the row-19 constants exactly as before.
+            It bands every game NOT in *decided_edge_thresholds_by_game*.
+        decided_edge_thresholds_by_game: ``game_id -> thresholds`` for every game a live bet
+            rule decided: the thresholds of the generation that decided it, None for generation 0
+            (record section 12: "a game's displayed band is the band its live bet rule used").
+            Resolved by the caller through ``refit.generations.decided_edge_thresholds``; ``None``
+            or empty bands every game with *edge_thresholds_by_target*.
         refit_panel_df: The re-fitting vs standing-still panel rows (``REFIT_PANEL_COLUMNS``,
             Phase 37 D-12..D-14), computed outside ``api/`` by ``refit.comparison.panel_frames``.
             ``None`` leaves the ``refit_panel`` table present and empty.
@@ -3215,6 +3277,7 @@ def populate_cache(
             silver_dir,
             artifacts_root=artifacts_dir,
             edge_thresholds_by_target=edge_thresholds_by_target,
+            decided_edge_thresholds_by_game=decided_edge_thresholds_by_game,
         )
         logger.info("Predictions loaded into cache", count=pred_table_count)
 
@@ -3224,6 +3287,7 @@ def populate_cache(
             predictions_dir,
             silver_dir,
             edge_thresholds_by_target=edge_thresholds_by_target,
+            decided_edge_thresholds_by_game=decided_edge_thresholds_by_game,
         )
         logger.info("Current-week predictions loaded into cache", count=cw_count)
 

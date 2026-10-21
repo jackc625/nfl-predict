@@ -47,6 +47,7 @@ from tests.unit.test_refit_decision_path import (
     GENERATION_ONE_IDS,
     closed_event,
     intent_event,
+    write_generation_bet_rule,
 )
 
 SEASON = 2026
@@ -104,8 +105,13 @@ def write_silver(directory: Path) -> Path:
 
 
 def install_generation_one(ledger: Path) -> None:
-    """Generation 1 installed on Tue 2026-11-03, recorded as the re-fit hook records it."""
-    append_date_event(ledger, intent_event(GENERATION_ONE_IDS, "a" * 64))
+    """Generation 1 installed on Tue 2026-11-03, recorded as the re-fit hook records it.
+
+    Its bet-rule record is written first, as the hook writes it before the install intent: the
+    cache build reads it to band the games generation 1 decided (D-36).
+    """
+    _path, sha = write_generation_bet_rule(ledger, GENERATION_ONE_IDS)
+    append_date_event(ledger, intent_event(GENERATION_ONE_IDS, sha))
     append_date_event(ledger, closed_event("ran"))
 
 

@@ -13,9 +13,10 @@ never produce different tables.
 It holds the publish lock (``pipeline.cache_lock``, Phase 36 D-18) while it rebuilds, like the
 scheduled step, and refuses with exit code 1 while a website push or another rebuild holds it.
 
-The edge bands follow the in-force re-fit generation (Phase 37, D-36), resolved from THIS
-command's ``--artifacts-dir`` -- the directory the cache is built from -- so a custom-directory
-rebuild never bands with production's generation.
+The edge bands follow the re-fit generations (Phase 37, D-36): a game a live bet rule decided
+keeps the band of the generation that decided it, and every other game follows the in-force
+generation, resolved from THIS command's ``--artifacts-dir`` -- the directory the cache is built
+from -- so a custom-directory rebuild never bands with production's generation.
 
 Usage:
     python scripts/populate_cache.py
@@ -127,6 +128,7 @@ def _rebuild(args: argparse.Namespace) -> None:
         forward_verdict_context=sources.verdict_context,
         bet_week_results_df=sources.week_results,
         edge_thresholds_by_target=edge_thresholds,
+        decided_edge_thresholds_by_game=sources.decided_edge_thresholds,
         refit_panel_df=sources.refit_panel,
         refit_aa_status_df=sources.refit_aa_status,
     )

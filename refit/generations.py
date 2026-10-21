@@ -46,12 +46,20 @@ generation-0 decision depends on nothing it did not depend on before Phase 37 (D
 
 THE WEBSITE'S EDGE BANDS (D-36)
 -------------------------------
-:func:`in_force_edge_thresholds` hands the cache build the in-force generation's re-measured
-edge-tier thresholds, so the site's display bands follow each generation (owner ruling D-36). It
-is called OUTSIDE ``api/`` (``pipeline/steps.py`` and ``scripts/populate_cache.py``) and its result
-is passed to ``api.cache.populate_cache`` as a plain mapping, because ``api/`` imports no ``refit``
-or ``backtest`` module. Generation 0 -- and an artifacts directory with no ``latest.json`` --
-answers None, which bands with the row-19 constants exactly as before.
+Record section 12: the display follows the generation in force, "so a game's displayed band is the
+band its live bet rule used". Two resolvers serve the cache build, both called OUTSIDE ``api/``
+(``api/`` imports no ``refit`` or ``backtest`` module) and handed to ``api.cache.populate_cache`` as
+plain mappings:
+
+* :func:`decided_edge_thresholds` -- every game with a live ledger row is banded with the
+  thresholds of the generation that DECIDED it, read from the row's stamped model id. Generation 0,
+  and a live row with no stamp (weeks 3-4), keep the row-19 constants (None), so an install never
+  re-labels a game a live bet rule already decided;
+* :func:`in_force_edge_thresholds` -- every other game (the 2021-2025 backtest games, and a game no
+  live rule has decided yet) is banded with the in-force generation's thresholds. Generation 0 --
+  and an artifacts directory with no ``latest.json`` -- answers None, the row-19 constants.
+
+While generation 0 is in force both answer None for every game, so the bands are exactly as before.
 
 Batch code: the daily run, the cache build and the CLIs import it; the request path never does.
 
@@ -63,10 +71,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
-from forward_ledger.schema import ARM_SHADOW
+from forward_ledger.canonical import ENTRY_KIND_ROW
+from forward_ledger.schema import ARM_LIVE, ARM_SHADOW
 from forward_ledger.shadow import SHADOW_PIN
 from models.artifacts import ResolvedArtifacts, resolve_production_artifacts
 from refit.records import (
@@ -75,10 +84,15 @@ from refit.records import (
     read_date_events,
 )
 
+if TYPE_CHECKING:
+    from forward_ledger.store import LedgerEntry
+
 __all__ = [
     "GENERATION_ZERO",
+    "EdgeThresholds",
     "Generation",
     "UnknownGenerationError",
+    "decided_edge_thresholds",
     "generation_for_ids",
     "generation_of_row",
     "generation_zero_ids",
@@ -89,6 +103,9 @@ __all__ = [
 
 # The frozen arm's generation: the pinned row-19 models, before any re-fit.
 GENERATION_ZERO: int = 0
+
+# One generation's edge-band thresholds, ``{target -> (high, medium) | None}`` (D-36).
+EdgeThresholds = dict[str, tuple[float, float] | None]
 
 # The model targets whose ids a row may be stamped with.
 _MODEL_TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
@@ -274,9 +291,21 @@ def in_force_generation(
     )
 
 
+def _generation_edge_thresholds(generation: Generation) -> EdgeThresholds | None:
+    """*generation*'s bet-rule thresholds; None for generation 0 (the row-19 constants)."""
+    if generation.number == GENERATION_ZERO:
+        return None
+    # Imported here, not at load time: backtest.weekly_bet_list imports api.cache and the
+    # selection stack, which the generation-0 answer above never needs.
+    from backtest.weekly_bet_list import load_bet_rule_record
+
+    _fits, thresholds = load_bet_rule_record(generation.bet_rule_path)
+    return thresholds
+
+
 def in_force_edge_thresholds(
     artifacts_dir: Path | str, ledger_dir: Path | str
-) -> dict[str, tuple[float, float] | None] | None:
+) -> EdgeThresholds | None:
     """The in-force generation's edge-tier thresholds for the website's bands (D-36).
 
     Args:
@@ -297,17 +326,62 @@ def in_force_edge_thresholds(
     artifacts = Path(artifacts_dir)
     if not (artifacts / "latest.json").exists():
         return None
-    generation = in_force_generation(
-        resolve_production_artifacts(artifacts), ledger_dir
+    return _generation_edge_thresholds(
+        in_force_generation(resolve_production_artifacts(artifacts), ledger_dir)
     )
-    if generation.number == GENERATION_ZERO:
-        return None
-    # Imported here, not at load time: backtest.weekly_bet_list imports api.cache and the
-    # selection stack, which the generation-0 answer above never needs.
-    from backtest.weekly_bet_list import load_bet_rule_record
 
-    _fits, thresholds = load_bet_rule_record(generation.bet_rule_path)
-    return thresholds
+
+def decided_edge_thresholds(
+    entries: Sequence[LedgerEntry], ledger_dir: Path | str
+) -> dict[str, EdgeThresholds | None]:
+    """Each live-decided game's edge-band thresholds: those of the generation that decided it.
+
+    Record section 12 (D-36): "a game's displayed band is the band its live bet rule used". The
+    generation is derived from each live row's stamped model id (:func:`generation_of_row`). The
+    three targets of a game are decided in one run; a game decided again under a later week's row
+    takes its LAST decision in file order. Shadow rows are never read: they decide no bet.
+
+    Args:
+        entries: The verified ledger, in file order (``forward_ledger.store.read_entries``).
+        ledger_dir: The ledger directory holding ``refit/``. Read only when a live row names a
+            re-fit generation's id, so a ledger of generation-0 rows reads no re-fit record.
+
+    Returns:
+        ``game_id -> thresholds``: None for a game decided by generation 0, or by the pre-row-19
+        models of weeks 3-4 (both band with the row-19 constants), else the deciding generation's
+        bet-rule thresholds. A game with no live row is absent.
+
+    Raises:
+        UnknownGenerationError: a live row's stamped id belongs to no generation.
+        RefitRecordFormatError: the generation records, or a bet-rule file, cannot be trusted.
+    """
+    live_rows = [
+        entry.immutable
+        for entry in entries
+        if entry.kind == ENTRY_KIND_ROW and entry.immutable["arm"] == ARM_LIVE
+    ]
+    pinned = _model_ids(generation_zero_ids())
+    names_a_refit = any(
+        row["model_artifact_id"] is not None and row["model_artifact_id"] not in pinned
+        for row in live_rows
+    )
+    generations = (
+        installed_generations(ledger_dir, skip_torn_tail=True) if names_a_refit else ()
+    )
+    by_number = {generation.number: generation for generation in generations}
+    thresholds_by_number: dict[int, EdgeThresholds | None] = {}
+    decided: dict[str, EdgeThresholds | None] = {}
+    for row in live_rows:
+        number = generation_of_row(row["model_artifact_id"], ARM_LIVE, generations)
+        if number is None or number == GENERATION_ZERO:
+            decided[str(row["game_id"])] = None
+            continue
+        if number not in thresholds_by_number:
+            thresholds_by_number[number] = _generation_edge_thresholds(
+                by_number[number]
+            )
+        decided[str(row["game_id"])] = thresholds_by_number[number]
+    return decided
 
 
 def _model_ids(resolved: ResolvedArtifacts) -> frozenset[str]:

@@ -1288,9 +1288,11 @@ def populate_web_cache_unlocked() -> None:
     # The ONE reader shared with scripts/populate_cache.py; it follows the forward-rows cutover
     # switch (Phase 34) and reads exactly today's sources while the switch is off.
     sources = read_bet_cache_sources(_bet_list_output_dir(), silver_dir=silver_dir)
-    # The website's edge bands follow the in-force re-fit generation (Phase 37, D-36), resolved
-    # HERE from the same artifacts directory handed to populate_cache, because api/ imports no
-    # refit module. Generation 0 answers None: the row-19 bands, exactly as before.
+    # The website's edge bands (Phase 37, D-36): a game a live bet rule decided keeps the band of
+    # the generation that decided it (sources.decided_edge_thresholds); every other game follows
+    # the in-force generation, resolved HERE from the same artifacts directory handed to
+    # populate_cache, because api/ imports no refit module. Generation 0 answers None: the row-19
+    # bands, exactly as before.
     edge_thresholds = in_force_edge_thresholds(artifacts_dir, LEDGER_DIR)
 
     populate_cache(
@@ -1310,6 +1312,7 @@ def populate_web_cache_unlocked() -> None:
         forward_verdict_context=sources.verdict_context,
         bet_week_results_df=sources.week_results,
         edge_thresholds_by_target=edge_thresholds,
+        decided_edge_thresholds_by_game=sources.decided_edge_thresholds,
         # The Season page's re-fit comparison panel (Phase 37), computed by the same reader.
         refit_panel_df=sources.refit_panel,
         refit_aa_status_df=sources.refit_aa_status,

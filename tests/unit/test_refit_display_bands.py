@@ -1,18 +1,23 @@
-"""The website's edge bands follow the in-force re-fit generation (Plan 37-12, D-36, RFIT-06).
+"""The website's edge bands follow the re-fit generations (Plan 37-12, D-36, RFIT-06).
 
 WHAT IS PROVEN
 --------------
 The ``*_confidence`` columns of the cache's ``predictions`` table are DISPLAY labels: each
-prediction's edge banded by ``utils.edge_tier``. Owner ruling D-36: after a re-fit swap they are
-banded with the in-force generation's re-measured edge-tier thresholds, not the row-19 constants.
+prediction's edge banded by ``utils.edge_tier``. Record section 12 (D-36): the display follows the
+generation in force, "so a game's displayed band is the band its live bet rule used". A game a live
+bet rule decided keeps the band of the generation that decided it; every other game (the backtest
+seasons, a game not decided yet) is banded with the in-force generation's thresholds.
 
 * :func:`refit.generations.in_force_edge_thresholds` resolves the thresholds OUTSIDE ``api/``:
   ``None`` for generation 0 (``latest.json`` names the pin) and for no ``latest.json`` at all, and
   the generation's bet-rule record thresholds once a generation is installed;
 * ``utils.edge_tier`` keeps ONE band implementation and only gains an optional ``thresholds``
   mapping (``None`` = the row-19 constants);
-* ``api.cache.populate_cache(edge_thresholds_by_target=...)`` stores the generation's band, and
-  with ``None`` stores exactly today's band, for both prediction loaders;
+* :func:`refit.generations.decided_edge_thresholds` maps each live-decided game to its deciding
+  generation's thresholds (None for generation 0), from the rows' stamped model ids;
+* ``api.cache.populate_cache`` bands a decided game with its deciding generation's thresholds and
+  every other game with ``edge_thresholds_by_target``; with ``None`` everywhere it stores exactly
+  today's band, for both prediction loaders;
 * ``scripts/populate_cache.py`` resolves the thresholds from its OWN ``--artifacts-dir``, never
   the production default (review round 1, T-37-71).
 
@@ -36,8 +41,16 @@ import pytest
 import scripts.populate_cache as populate_cache_script
 from api.cache import populate_cache
 from backtest.neutral_hfa_cold_start_constants import EDGE_TIER_THRESHOLDS_BY_TARGET
+from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
+from forward_ledger.shadow import SHADOW_PIN
+from forward_ledger.store import append_rows, read_entries
 from refit import generations
-from tests.unit.test_refit_decision_path import build_stores, install_generation_one
+from tests.unit.test_forward_ledger_store import make_row
+from tests.unit.test_refit_decision_path import (
+    GENERATION_ONE_IDS,
+    build_stores,
+    install_generation_one,
+)
 from utils.edge_tier import edge_tier, edge_tier_series
 
 # A generation-1 mapping whose ATS pair bands a 1.0-point edge "high"; the row-19 ATS pair
@@ -55,6 +68,8 @@ _GENERATION_ONE_BAND = "high"
 
 _BACKTEST_GAME = "2025_W01_DAL@PHI"
 _CURRENT_WEEK_GAME = "2026_W08_NYG@DAL"
+# A 2026 game decided after the install, by generation 1's live bet rule.
+_GENERATION_ONE_GAME = "2026_W09_DAL@NYG"
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +210,9 @@ def _write_prediction_inputs(root: Path) -> tuple[Path, Path, Path]:
 
 
 def _cached_ats_bands(
-    root: Path, thresholds: dict[str, tuple[float, float]] | None
+    root: Path,
+    thresholds: generations.EdgeThresholds | None,
+    decided: dict[str, Any] | None = None,
 ) -> dict[str, str | None]:
     outputs, silver, predictions = _write_prediction_inputs(root)
     db_path = root / "cache.duckdb"
@@ -208,6 +225,7 @@ def _cached_ats_bands(
         silver_dir=silver,
         predictions_dir=predictions,
         edge_thresholds_by_target=thresholds,
+        decided_edge_thresholds_by_game=decided,
     )
     conn = duckdb.connect(str(db_path), read_only=True)
     try:
@@ -221,14 +239,57 @@ def _cached_ats_bands(
     return {row[0]: row[2] for row in rows}
 
 
-def test_cached_band_follows_the_generation(tmp_path: Path) -> None:
-    """Both prediction loaders band with the generation's pair; None stores today's band."""
-    generation_one = _cached_ats_bands(tmp_path / "gen1", GENERATION_ONE_THRESHOLDS)
-    today = _cached_ats_bands(tmp_path / "gen0", None)
-
-    assert generation_one == dict.fromkeys(
-        (_BACKTEST_GAME, _CURRENT_WEEK_GAME), _GENERATION_ONE_BAND
+def _live_ats_row(game_id: str, week: int, ids: Any, recipe: str) -> dict[str, Any]:
+    """A live ATS row of *game_id* stamped with *ids*' ATS model, as the stamping site writes it."""
+    return make_row(
+        game_id=game_id,
+        week=week,
+        target="ats",
+        model_artifact_id=ids.model_id_for("ats"),
+        blend_id=ids.blend,
+        recipe_id=recipe,
     )
+
+
+def test_cached_band_follows_the_generation(tmp_path: Path) -> None:
+    """A decided game keeps its live bet rule's band; every other game follows the generation in force.
+
+    CR-D01 (record section 12): installing generation 1 used to re-band EVERY game with its
+    thresholds, including a 2026 game generation 0 had already decided.
+    """
+    installed = install_generation_one(
+        tmp_path / "install", edge_tier_thresholds=GENERATION_ONE_THRESHOLDS
+    )
+    append_rows(
+        installed.ledger,
+        [
+            _live_ats_row(
+                _CURRENT_WEEK_GAME, 8, SHADOW_PIN.resolved(), SHADOW_PIN.recipe
+            ),
+            _live_ats_row(_GENERATION_ONE_GAME, 9, GENERATION_ONE_IDS, REFIT_RECIPE_ID),
+        ],
+    )
+
+    decided = generations.decided_edge_thresholds(
+        read_entries(installed.ledger), installed.ledger
+    )
+    assert decided == {
+        _CURRENT_WEEK_GAME: None,
+        _GENERATION_ONE_GAME: GENERATION_ONE_THRESHOLDS,
+    }
+
+    in_force = generations.in_force_edge_thresholds(
+        installed.stores.artifacts, installed.ledger
+    )
+    after_install = _cached_ats_bands(tmp_path / "gen1", in_force, decided)
+    today = _cached_ats_bands(tmp_path / "gen0", None, {_CURRENT_WEEK_GAME: None})
+
+    # The backtest game has no live decision: it follows the generation in force. The 2026 game
+    # generation 0 decided keeps its row-19 band after generation 1 installs.
+    assert after_install == {
+        _BACKTEST_GAME: _GENERATION_ONE_BAND,
+        _CURRENT_WEEK_GAME: _ROW19_BAND,
+    }
     assert today == dict.fromkeys((_BACKTEST_GAME, _CURRENT_WEEK_GAME), _ROW19_BAND)
 
 
@@ -259,6 +320,7 @@ def test_the_manual_rebuild_resolves_from_its_own_artifacts_dir(
         week_results=None,
         refit_panel=None,
         refit_aa_status=None,
+        decided_edge_thresholds={},
     )
     monkeypatch.setattr(
         populate_cache_script, "read_bet_cache_sources", lambda *a, **kw: sources

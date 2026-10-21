@@ -41,6 +41,13 @@ period then counts 0 paired games -- the same degradation ``build_bet_week_sched
 a cache build never fails for want of scores. With the switch off there is no forward ledger to
 compare, and both frames are empty.
 
+THE EDGE BANDS OF DECIDED GAMES (Phase 37, D-36)
+------------------------------------------------
+With the switch on, ``refit.generations.decided_edge_thresholds`` maps every game a live bet rule
+decided to the edge-band thresholds of the generation that decided it, over the same verified
+entries, so the cache bands that game with the band its live bet rule used. With the switch off
+the mapping is empty and every game is banded with the in-force generation, as before.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -87,6 +94,7 @@ from forward_ledger.store import (
     verify_chain,
 )
 from refit.comparison import panel_frames
+from refit.generations import EdgeThresholds, decided_edge_thresholds
 
 __all__ = [
     "BetCacheSources",
@@ -151,6 +159,9 @@ class BetCacheSources:
             Defaults to an empty frame with those columns (the switch off).
         refit_aa_status: The A/A week status rows (``REFIT_AA_STATUS_COLUMNS``). Defaults to an
             empty frame with those columns.
+        decided_edge_thresholds: ``game_id -> thresholds`` of the generation whose live bet rule
+            decided each game (``refit.generations.decided_edge_thresholds``, D-36). Defaults to
+            empty (the switch off): every game is then banded with the in-force generation.
     """
 
     bet_list: pd.DataFrame
@@ -162,6 +173,9 @@ class BetCacheSources:
     week_results: pd.DataFrame = field(default_factory=_empty_week_results)
     refit_panel: pd.DataFrame = field(default_factory=_empty_refit_panel)
     refit_aa_status: pd.DataFrame = field(default_factory=_empty_refit_aa_status)
+    decided_edge_thresholds: dict[str, EdgeThresholds | None] = field(
+        default_factory=dict
+    )
 
 
 def _empty_corrections() -> pd.DataFrame:
@@ -312,4 +326,5 @@ def read_bet_cache_sources(
         week_results=aggregate_bet_weeks(union, corrections=corrections),
         refit_panel=refit_panel,
         refit_aa_status=refit_aa_status,
+        decided_edge_thresholds=decided_edge_thresholds(entries, Path(ledger_dir)),
     )
