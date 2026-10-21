@@ -451,8 +451,10 @@ def append_date_event(ledger_dir: Path | str, event: Mapping[str, Any]) -> bool:
       NFL week exactly that frozen list's entry (``REFIT_DATE_LISTS``);
     * ``attempt`` adds ``cutoff_utc``, ``attempted_at_utc``, ``run_date_et``, ``code_commit``,
       ``outcome`` (one of :data:`ATTEMPT_OUTCOMES`), ``check``, ``exception_class``,
-      ``before_ids``, ``after_ids``, and may carry ``no_final_score_ids`` (the sorted game ids the
-      attempt's training excluded as no_final_score, or None when it stopped before training);
+      ``before_ids``, ``after_ids``, and may carry ``no_final_score_ids`` (the date's eligibility
+      snapshot, read at its first attempt and held by every later one: the sorted game ids that
+      kicked off before the cutoff with no final score; None only when the attempt stopped
+      before eligibility could be read);
     * ``install_intent`` adds ``ids`` (wp, ats, ou, blend, converter), ``bet_rule_path`` (exactly
       ``bet_rule_relpath(bet_rule_sha256)``), ``bet_rule_sha256`` and ``code_commit`` (the value
       its attempt records: 40 lowercase hex, optionally ``+dirty``, or None);

@@ -11,9 +11,10 @@ the attempt lock it, in order:
 2. before any date list is in force, evaluates every A/A week whose evaluation instant has passed
    and has no record, in order, recording each, until the trigger stops asking (D-02);
 3. closes every older open date the trigger names ``not run``;
-4. attempts the one due date (:func:`attempt_date`): the code commit is captured once, the recipe
-   fingerprint is checked first (P4), then the A/A proof, the schedule refresh on a run that made
-   none, the D-37 build, training, the re-measure, the integrity checks and the swap.
+4. attempts the one due date (:func:`attempt_date`): the code commit is captured once, the
+   schedule refresh on a run that made none, the date's first-attempt eligibility snapshot (R10),
+   then the recipe fingerprint (P4), the A/A proof, the D-37 build, training, the re-measure, the
+   integrity checks and the swap.
 
 THE TRIGGER IS CALENDAR-ONLY
 ----------------------------
@@ -80,6 +81,7 @@ from refit.training import (
     GenerationTraining,
     RefitTrainingError,
     _hold_no_score,
+    no_final_score_game_ids,
     train_generation,
 )
 from utils.file_lock import FileLockHeldError
@@ -313,12 +315,16 @@ def _own_events(
 
 def _held_no_score_ids(
     events: Sequence[Mapping[str, Any]], cadence_date: CadenceDate
-) -> frozenset[str]:
-    """The no-final-score games of the date's EARLIEST attempt that recorded them (R10)."""
+) -> frozenset[str] | None:
+    """The no-final-score games of the date's EARLIEST attempt that recorded them (R10).
+
+    None when no attempt of the date recorded a snapshot yet, which is not the same as an empty
+    snapshot: only then does the attempt read eligibility itself.
+    """
     for event in _own_events(events, cadence_date):
         if event["event"] == "attempt" and event.get("no_final_score_ids") is not None:
             return frozenset(str(game_id) for game_id in event["no_final_score_ids"])
-    return frozenset()
+    return None
 
 
 def _next_date(cadence_date: CadenceDate) -> str | None:
@@ -370,12 +376,15 @@ def attempt_date(
     """Attempt the due cadence *date* once and record the attempt (and its close on success).
 
     The order is the record's: the code commit captured ONCE (written on the install intent and
-    on the attempt alike), the recipe fingerprint first (P4: nothing is built or trained from an
-    edited record), the A/A proof, the schedule refresh when this run made none (D-37 on a
-    ``lock_passed`` run), the nightly build, training holding the date's first-attempt
-    no-final-score games, the re-measure on the same masked games, the pre-swap checks and the
-    swap. ``IntegrityRefusal``, ``RefitTrainingError`` and ``RemeasureRefusal`` are refusals,
-    recorded with their check; any other ``Exception`` is a crash, recorded by class only.
+    on the attempt alike), the schedule refresh when this run made none (D-37 on a
+    ``lock_passed`` run), then the date's eligibility snapshot when no earlier attempt recorded
+    one (R10, record section 8: read at the date's FIRST attempt, before anything that can refuse
+    or crash, so the attempt records it however far it gets), the recipe fingerprint (P4:
+    nothing is built or trained from an edited record), the A/A proof, the nightly build,
+    training holding that snapshot's no-final-score games, the re-measure on the same masked
+    games, the pre-swap checks and the swap. ``IntegrityRefusal``, ``RefitTrainingError`` and
+    ``RemeasureRefusal`` are refusals, recorded with their check; any other ``Exception`` is a
+    crash, recorded by class only.
 
     Args:
         date: The due cadence date.
@@ -404,11 +413,16 @@ def attempt_date(
     exception_class: str | None = None
     try:
         before = _served_ids(artifacts)
+        if not schedule_refreshed and refresh_schedule is not None:
+            refresh_schedule()
+        if held is None:
+            held = frozenset(
+                no_final_score_game_ids(load_silver_games(silver_dir), date.cutoff_utc)
+            )
+        no_final_score_ids = sorted(held)
         integrity.check_recipe_fingerprint(witness.REPO_ROOT)
         aa_records = records.read_aa_records(ledger)
         integrity.check_aa_proof(date.list_week, aa_records, first_refit=first_refit)
-        if not schedule_refreshed and refresh_schedule is not None:
-            refresh_schedule()
         steps.prepare(run_date_et, slate=slate)
         training = steps.train(
             date.cutoff_utc,
@@ -418,7 +432,6 @@ def attempt_date(
             thread_limit=THREAD_LIMIT,
             held_no_score_ids=held,
         )
-        no_final_score_ids = sorted(training.no_final_score_ids)
         # The training's own in-memory mask (R10), so the re-measure and the checks read the
         # same games the training read.
         games = _hold_no_score(load_silver_games(silver_dir), held)

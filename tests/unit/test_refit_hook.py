@@ -285,7 +285,8 @@ def test_a_due_date_runs_and_installs(tmp_path: Path) -> None:
     assert intent["code_commit"] == attempt["code_commit"]
     assert attempt["before_ids"] == ids_of(OLD_IDS)
     assert attempt["after_ids"] == ids_of(NEW_IDS)
-    assert attempt["no_final_score_ids"] == []
+    # The date's eligibility snapshot, read from silver by the hook itself (R10).
+    assert attempt["no_final_score_ids"] == [UNSCORED_GAME]
     assert closed["after_ids"] == ids_of(NEW_IDS)
     assert served_pointers(world.artifacts) == pointers_of(NEW_IDS)
 
@@ -350,6 +351,8 @@ def test_fingerprint_refuses_before_training(
     assert (outcome.status, outcome.check) == ("refused", "recipe_fingerprint")
     assert fakes.calls == [], "the build or training ran on an edited record"
     assert kinds(world.ledger) == [("attempt", "refused")]
+    # A first attempt refused before anything was built still fixes the date's eligibility.
+    assert attempts(world.ledger)[0]["no_final_score_ids"] == [UNSCORED_GAME]
 
 
 def test_a_missed_date_runs_late_with_the_same_cutoff_and_rows(tmp_path: Path) -> None:
@@ -569,6 +572,24 @@ def test_pending_install_closes_without_retraining(tmp_path: Path) -> None:
     assert kinds(world.ledger) == [("install_intent", ""), ("closed", "ran late")]
 
 
+def land_the_postponed_score(silver: Path) -> None:
+    """The postponed game's result lands in silver (between two attempts of one date)."""
+    games_path = silver / "games.parquet"
+    games = pd.read_parquet(games_path)
+    landed = games["game_id"] == UNSCORED_GAME
+    games.loc[landed, ["home_score", "away_score"]] = [27.0, 20.0]
+    games.to_parquet(games_path, index=False)
+
+
+def assert_the_retry_held_the_game(fakes: Fakes, retry: int) -> None:
+    """Attempt *retry* trained and re-measured with the postponed game's score blanked."""
+    assert fakes.train_kwargs[retry]["held_no_score_ids"] == frozenset({UNSCORED_GAME})
+    retry_games = fakes.remeasure_games[retry]
+    held_row = retry_games.loc[retry_games["game_id"] == UNSCORED_GAME]
+    assert len(held_row) == 1
+    assert np.isnan(held_row[["home_score", "away_score"]].to_numpy(dtype=float)).all()
+
+
 def test_a_retry_holds_the_first_attempts_unscored_games(tmp_path: Path) -> None:
     world = build_world(tmp_path)
     record_clean_week(world.ledger)
@@ -579,22 +600,44 @@ def test_a_retry_holds_the_first_attempts_unscored_games(tmp_path: Path) -> None
     )
     assert side_step(world, fakes.steps(), NOV3).status == "refused"
 
-    # The postponed game's result lands in silver between the two attempts.
-    games_path = world.silver / "games.parquet"
-    games = pd.read_parquet(games_path)
-    landed = games["game_id"] == UNSCORED_GAME
-    games.loc[landed, ["home_score", "away_score"]] = [27.0, 20.0]
-    games.to_parquet(games_path, index=False)
+    land_the_postponed_score(world.silver)
     fakes.check_error = None
 
     assert side_step(world, fakes.steps(), NOV4).status == "ran late"
 
-    assert fakes.train_kwargs[0]["held_no_score_ids"] == frozenset()
-    assert fakes.train_kwargs[1]["held_no_score_ids"] == frozenset({UNSCORED_GAME})
-    retry_games = fakes.remeasure_games[1]
-    held_row = retry_games.loc[retry_games["game_id"] == UNSCORED_GAME]
-    assert len(held_row) == 1
-    assert np.isnan(held_row[["home_score", "away_score"]].to_numpy(dtype=float)).all()
+    assert fakes.train_kwargs[0]["held_no_score_ids"] == frozenset({UNSCORED_GAME})
+    assert_the_retry_held_the_game(fakes, retry=1)
+    assert [a["no_final_score_ids"] for a in attempts(world.ledger)] == [
+        [UNSCORED_GAME],
+        [UNSCORED_GAME],
+    ]
+
+
+def test_a_first_attempt_that_crashes_before_training_still_holds_its_unscored_games(
+    tmp_path: Path,
+) -> None:
+    # CR-C01 / WR-B04: eligibility is read at the date's FIRST attempt (record section 8),
+    # however early that attempt fails.
+    world = build_world(tmp_path)
+    record_clean_week(world.ledger)
+    fakes = Fakes(world)
+
+    def build_crashes(_run_date_et: date, *, slate: Any) -> None:
+        msg = "the nightly build failed"
+        raise OSError(msg)
+
+    outcome = side_step(world, fakes.steps(prepare=build_crashes), NOV3)
+
+    assert (outcome.status, outcome.exception_class) == ("crashed", "OSError")
+    assert fakes.train_kwargs == [], "the crashed attempt reached training"
+    (first,) = attempts(world.ledger)
+    assert first["no_final_score_ids"] == [UNSCORED_GAME]
+
+    land_the_postponed_score(world.silver)
+
+    assert side_step(world, fakes.steps(), NOV4).status == "ran late"
+
+    assert_the_retry_held_the_game(fakes, retry=0)
     assert [a["no_final_score_ids"] for a in attempts(world.ledger)] == [
         [UNSCORED_GAME],
         [UNSCORED_GAME],

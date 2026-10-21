@@ -109,6 +109,7 @@ __all__ = [
     "calibration_season",
     "eligible_rows",
     "fit_target_at_cutoff",
+    "no_final_score_game_ids",
     "predict_rows",
     "train_generation",
 ]
@@ -195,8 +196,9 @@ class GenerationTraining:
         artifact_ids: ``{target: artifact directory name}``; empty when nothing was saved.
         metadata: ``{target: metadata dict}``.
         gold_generation_digest: The content identity of the gold the fits read.
-        no_final_score_ids: The sorted union of every target's ``no_final_score`` exclusions,
-            which the attempt record carries so a later attempt of the date holds them (R10).
+        no_final_score_ids: The sorted union of every target's ``no_final_score`` exclusions.
+            The attempt record carries the date's first-attempt snapshot instead
+            (:func:`no_final_score_game_ids`), read before training can fail (R10).
     """
 
     artifact_ids: dict[str, str]
@@ -252,6 +254,19 @@ def _label(frame: pd.DataFrame, column: str) -> pd.Series:
 
 def _has_final_score(games: pd.DataFrame) -> pd.Series:
     return _numeric(games["home_score"]).notna() & _numeric(games["away_score"]).notna()
+
+
+def no_final_score_game_ids(
+    games: pd.DataFrame, cutoff_utc: datetime
+) -> tuple[str, ...]:
+    """The games that kicked off before *cutoff_utc* with no final score, sorted (record 8, R10).
+
+    The same rule :func:`eligible_rows` excludes as ``no_final_score``. It reads only silver
+    ``games`` and the cutoff, so the re-fit hook takes it at the very start of a date's FIRST
+    attempt, before anything that can refuse or crash, and every later attempt holds it.
+    """
+    kicked = _kicked_off_before(games, _as_utc(cutoff_utc))
+    return tuple(sorted(kicked.loc[~_has_final_score(kicked), "game_id"].astype(str)))
 
 
 def eligible_rows(
