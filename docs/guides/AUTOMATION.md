@@ -108,8 +108,8 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
    its run date, every one of tomorrow's games has already locked: it appends a
    `lock_passed` record to `logs/daily_lock_runs.jsonl`, collects and predicts nothing and
    exits 0. A missed day is never back-filled. On most days it makes ZERO network requests;
-   since Phase 37 (D-17), on a day a re-fit is due it refreshes the schedule and attempts the
-   re-fit (item 4) before the website push and the notifications.
+   since Phase 37 (D-17), on a day an A/A week or a re-fit is due it refreshes the schedule once
+   and runs the re-fit side step (item 4) before the website push and the notifications.
 1. **Schedule refresh.** Captures what nflverse serves now and ingests the season's
    schedule from that capture, so results, moved games and each new playoff round arrive
    with no manual step. The season is read from the recorded schedule and rolls over on

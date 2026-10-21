@@ -8,10 +8,13 @@ the attempt lock it, in order:
 
 1. closes a date whose install a crash interrupted after the swap (``refit.swap.pending_install``),
    without re-training (research Pitfall 2);
-2. before any date list is in force, evaluates every A/A week whose evaluation instant has passed
+2. on a run that made no schedule refresh of its own (``lock_passed``) with an A/A week or a date
+   due, refreshes the schedule once, so the A/A completeness rule and the attempt read today's
+   schedule;
+3. before any date list is in force, evaluates every A/A week whose evaluation instant has passed
    and has no record, in order, recording each, until the trigger stops asking (D-02);
-3. closes every older open date the trigger names ``not run``;
-4. attempts the one due date (:func:`attempt_date`): the code commit is captured once, the
+4. closes every older open date the trigger names ``not run``;
+5. attempts the one due date (:func:`attempt_date`): the code commit is captured once, the
    schedule refresh on a run that made none, the date's first-attempt eligibility snapshot (R10),
    then the recipe fingerprint (P4), the A/A proof, the D-37 build, training, the re-measure, the
    integrity checks and the swap.
@@ -651,6 +654,14 @@ def _run_locked(
 ) -> RefitOutcome:
     """Everything the side step does under the attempt lock (see the module doc)."""
     recovered = _recover_pending_install(ledger, artifacts, run_date_et, now_utc)
+    if not schedule_refreshed and refresh_schedule is not None:
+        pending = _decide(ledger, now_utc)
+        if pending.aa_week_due is not None or pending.due is not None:
+            # A run that made no refresh of its own (lock_passed) refreshes ONCE, before the
+            # A/A evaluation: the first record of a week is binding, and its completeness must
+            # be judged on today's schedule, never the previous day's (WR-C03).
+            refresh_schedule()
+            schedule_refreshed = True
     aa_results = _evaluate_due_aa_weeks(ledger, silver_dir, now_utc)
 
     decision = _decide(ledger, now_utc)
@@ -729,7 +740,7 @@ def run_refit_side_step(
         now_utc: The run's instant at the re-fit point (tz-aware).
         slate: The day's slate on a prediction day, else None.
         schedule_refreshed: Whether this run refreshed the schedule (False on ``lock_passed``).
-        refresh_schedule: Refreshes it before a due attempt when it was not.
+        refresh_schedule: Refreshes it once, before a due A/A week or attempt, when it was not.
         ledger_dir, artifacts_dir, gold_dir, silver_dir: The stores (production defaults).
         steps: The heavy steps; None is the production set.
 

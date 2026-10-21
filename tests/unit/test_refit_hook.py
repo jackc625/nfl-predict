@@ -708,6 +708,58 @@ def test_lock_passed_refreshes_before_training(tmp_path: Path) -> None:
     assert fakes.calls[:2] == ["refresh", "prepare"]
 
 
+def test_a_lock_passed_run_refreshes_once_before_the_aa_week_is_judged(
+    tmp_path: Path,
+) -> None:
+    # WR-C03: a week-8 game moved to Tuesday 19:00 ET after Monday's refresh. The run that
+    # starts at 18:10 ET must judge the binding A/A week on the refreshed schedule.
+    world = build_world(tmp_path)
+    write_aa_schedule(world.silver)
+    write_twins(world.ledger, week8_rows("live"), week8_rows("shadow"))
+    refreshed: list[str] = []
+
+    def refresh_moves_a_game() -> None:
+        refreshed.append("refresh")
+        games_path = world.silver / "games.parquet"
+        games = pd.read_parquet(games_path)
+        moved = games["game_id"] == "2026_08_SF_SEA"
+        games.loc[moved, "kickoff_et"] = pd.Timestamp("2026-11-04T00:00:00+00:00")
+        games.to_parquet(games_path, index=False)
+
+    late_start = datetime(2026, 11, 3, 23, 10, tzinfo=UTC)
+    fakes = Fakes(world)
+    outcome = side_step(
+        world,
+        fakes.steps(),
+        late_start,
+        schedule_refreshed=False,
+        refresh_schedule=refresh_moves_a_game,
+    )
+
+    assert refreshed == ["refresh"]
+    assert [(r.week, r.clean, r.reason) for r in outcome.aa_results] == [
+        (8, False, "week_not_complete")
+    ]
+    assert outcome.status == "waiting"
+    assert fakes.calls == []
+
+    # With the week already recorded clean, a due date is still refreshed exactly once.
+    other = build_world(tmp_path / "due")
+    record_clean_week(other.ledger)
+    counted = Fakes(other)
+    outcome = side_step(
+        other,
+        counted.steps(),
+        late_start,
+        schedule_refreshed=False,
+        refresh_schedule=lambda: counted.calls.append("refresh"),
+    )
+
+    assert outcome.status == "ran"
+    assert counted.calls.count("refresh") == 1
+    assert counted.calls[:2] == ["refresh", "prepare"]
+
+
 def test_an_installed_generation_decides_on_the_next_run(
     tmp_path: Path,
     run_log_path: Path,  # noqa: F811 - the imported fixture, requested by name

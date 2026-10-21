@@ -337,7 +337,8 @@ uv run python scripts/daily_lock_pipeline.py
 
 1. **Passed-lock refusal**, before any request (at or after 18:00 ET it records `lock_passed`
    and collects and predicts nothing). Since Phase 37 that run does not simply stop: it still
-   attempts a due re-fit (step 8), refreshing the schedule first when a re-fit date is due, and
+   attempts a due re-fit (step 8), refreshing the schedule once first when an A/A week or a
+   re-fit date is due (so a binding A/A week is judged on today's schedule), and
    makes no request on any other day (D-17). Then it goes straight to the website push and the
    notifications; it has no settle pass and no end-of-run sync, so whatever the re-fit recorded
    is backed up by the next run's sync.
