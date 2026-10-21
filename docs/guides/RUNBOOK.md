@@ -641,12 +641,28 @@ ledger steps are in `PIPELINE.md`. Every command runs in PowerShell from the rep
 - `ledger/forward_2026.jsonl` -- one line per entry: every forward row and every correction entry,
   chained by sha256 from a published genesis hash. A row is never edited. Grading, the closing line
   and a real fill each fill their own empty columns once, and a score corrected after grading is
-  recorded as a new correction entry, never as an edit.
+  recorded as a new correction entry, never as an edit. Since Phase 37 it holds both arms: the
+  live rows and the frozen arm's shadow twins, told apart by `arm` (`live` or `shadow`). Only the
+  live arm is ever a bet or counted in the verdict.
 - `ledger/snapshots/` -- the exact inputs each decision run scored (candidates, schedule, gold
   rows), so a row can be replayed later.
 - `ledger/artifacts/` and `ledger/recipes/` -- the ledger's own copies of every model, blend and
   converter directory a row was scored with, and of the chain-fit record
   (`ledger/recipes/<sha256>.json`). Replay needs nothing from `artifacts/` or `outputs/`.
+- `ledger/refit/` (Phase 37) -- the re-fit records:
+  - `ledger/refit/dates.jsonl` -- one line per cadence-date event: `attempt`, `install_intent`
+    and `closed`;
+  - `ledger/refit/aa_weeks.jsonl` -- the A/A week results (did the frozen arm match the live arm
+    for a whole week);
+  - `ledger/refit/bet_rules/<sha256>.json` -- each re-fit generation's re-measured bet rule,
+    written once and named by its own hash;
+  - `ledger/refit/shadow_holes.jsonl` -- the frozen-arm holes (a live row written without a
+    shadow twin, with the reason);
+  - `ledger/refit/attempt.lock` -- held while a re-fit attempt runs; never backed up.
+
+  Every record file is append-only (a bet-rule file is written once and never rewritten) and is
+  carried by the private backup with the rest of `ledger/`. `PIPELINE.md`, daily run step 8, says
+  when they are written.
 - `ledger/` is itself a git repository (branch `main`). This public repository ignores it, and it
   is pushed to the PRIVATE repository `jackc625/nfl-predict-ledger`. Every push is a commit, so the
   backup keeps a dated history and a damaged local file can never overwrite the last good copy.
@@ -781,6 +797,43 @@ If a key FILE is missing, `register-deploy-keys` refuses and names it. `create-k
 (it refuses to overwrite an existing file); then repeat steps 2-4. `sync_ledger` exits 1 only when
 the ledger cannot be read, its chain is broken, or it is shorter than its anchor (`SYNC_REFUSED=`):
 nothing is ever published from a broken or shortened ledger, so restore from the backup first.
+
+### A re-fit record that will not read (a torn line)
+
+The re-fit records under `ledger/refit/` are read strictly: a line that is not a complete, valid
+record is never treated as "no records". What you see while one is bad:
+
+- every daily run prints `REFIT= failed RefitRecordFormatError` and sends a
+  `FAILED: model re-fit crashed` push naming that class, until the file is repaired;
+- while the bad line is in `dates.jsonl` or `aa_weeks.jsonl`, the web cache build stops on it too
+  (the Season page's comparison reads both), so the run ends `degraded` and the website is not
+  pushed.
+
+The error names the file and the line: `refit record ledger/refit/<file> line <n> <problem>;
+<advice>`. Repair it outside 16:30-18:15 ET, so no daily run is writing:
+
+1. Copy the file aside, outside the repository, as the restore procedure moves a damaged ledger:
+
+   ```powershell
+   Copy-Item ledger\refit\<file name> "$HOME\<file name>_damaged_$(Get-Date -Format yyyyMMdd_HHmm)"
+   ```
+
+2. If the named line is the LAST line of the file, the advice reads "a torn last line is a crash
+   mid-append: copy the file aside, then delete that one line". Delete only that line, in a plain
+   text editor, and save. Change nothing else.
+3. Confirm the file reads. This must print a count, not an error:
+
+   ```powershell
+   uv run python -c "from refit.records import read_records; print('REFIT_RECORDS=', len(read_records('ledger', '<file name>')))"
+   ```
+
+   The next daily run then prints its normal `REFIT=` line.
+
+If the named line is NOT the last line, the advice says it "is damage, not a torn append": a crash
+mid-append can only tear the last line. Change nothing; compare the file with the private backup
+(the restore procedure above) first. A file under `bet_rules/` that no longer hashes to its name
+raises the same error with its own message; it is written once and never edited, so treat it as
+damage too and compare it with the backup.
 
 ### Recording a real bet
 

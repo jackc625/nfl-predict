@@ -336,7 +336,11 @@ uv run python scripts/daily_lock_pipeline.py
 ```
 
 1. **Passed-lock refusal**, before any request (at or after 18:00 ET it records `lock_passed`
-   and stops).
+   and collects and predicts nothing). Since Phase 37 that run does not simply stop: it still
+   attempts a due re-fit (step 8), refreshing the schedule first when a re-fit date is due, and
+   makes no request on any other day (D-17). Then it goes straight to the website push and the
+   notifications; it has no settle pass and no end-of-run sync, so whatever the re-fit recorded
+   is backed up by the next run's sync.
 2. **Run id.** One id is bound for the whole run and printed as `LEDGER_RUN_ID=`; every ledger
    event below carries it.
 3. **Schedule refresh** -- results, moved games and new playoff rounds arrive here.
@@ -346,15 +350,50 @@ uv run python scripts/daily_lock_pipeline.py
 5. **Settle pass** -- one ledger write that grades settled rows from the refreshed scores,
    appends any correction entry a corrected score is owed, and finalizes closing-line columns
    (`LEDGER_SETTLE=`). A failed settle is recorded and never stops tonight's decisions.
-6. **Select tomorrow's games.** None: if the settle pass changed the ledger, the web cache is
-   rebuilt so the new grades reach `/bets` (`WEB_CACHE_AFTER_SETTLE=`); then a `no_games` record
-   and on to step 8.
+6. **Select tomorrow's games.** None: the re-fit side step (step 8) runs first, then the web
+   cache is rebuilt once if anything changed -- `WEB_CACHE_AFTER_REFIT=` when the re-fit step
+   wrote records, otherwise `WEB_CACHE_AFTER_SETTLE=` when the settle pass changed the ledger, so
+   the new grades reach `/bets` -- then a `no_games` record and on to step 9.
 7. **The run proper** -- collection, the full-history gold build, prediction -- through the
    daily step registry. Its recommend step is the **ledger write**: tomorrow's forward bets are
    stamped and appended to `ledger/forward_2026.jsonl` (first pick stands: a re-run that decides
    a stored row differently is refused and printed as `LEDGER_REFUSED=`), and the web cache is
    then rebuilt from the ledger.
-8. **End-of-run sync**, whether the day returned or raised: a new anchor commit on
+
+   The same ledger write carries the frozen arm (Phase 37, D-04, RFIT-03). For every NEW live
+   row it writes a shadow twin (`arm` = `shadow`), re-decided from the same inputs with the
+   pinned row-19 models, blend and converter in `backtest/shadow_pin_2026.py` and the row-19 bet
+   rule, in the same write, live rows first. A shadow failure -- including too little time left
+   before the slate's deadline -- never touches a live row: each new live row left without a twin
+   is a hole, recorded in `ledger/refit/shadow_holes.jsonl` by exception class only and sent as
+   one FAILED push (folded into the run's first failed push when there is one). Shadow rows are
+   never shown as bets: `/bets` and the Saturday email read the live arm only, and only the
+   CSV/JSON export carries them, each with its `arm`.
+8. **Re-fit side step** (Phase 37, D-15, D-17). It runs on every day that got past the picks: a
+   prediction day whose run ended `success`, `finished_with_skips` or `degraded` (after the
+   ledger write), a `no_games` day (step 6) and a `lock_passed` day (step 1). It never runs on
+   `--dry-run`, on a refused run date (`RUN_REFUSED=`), on a run that failed, or after Ctrl+C.
+   It always runs before the website push and the notifications, so that day's push and email
+   report it.
+   - **Calendar only.** Whether anything is due comes from the pre-registered date lists
+     (`backtest/refit_preregistration_2026.py`, `ROLLING-REFIT-PREREGISTRATION.md`), the clock
+     and its own records, never from a metric. A day with nothing due takes no lock and writes
+     nothing.
+   - **One attempt at most.** Otherwise it works under the attempt lock
+     (`ledger/refit/attempt.lock`; a second run finds it held and reports `busy`): it closes an
+     install a crash interrupted, records every A/A week now due (only until a clean week puts a
+     date list in force), closes older dates `not run`, then makes at most one attempt -- the full-history gold build,
+     training, the re-measure, the integrity checks and the swap through `artifacts/latest.json`.
+   - **Contract line.** `REFIT= <status> date=<date or none> check=<check or none>`, where the
+     status is one of `waiting`, `not_due`, `no_refit_this_season`, `ran`, `ran late`,
+     `refused`, `crashed` or `busy` (`refit.hook.REFIT_STATUSES`), or `REFIT= failed <Class>`
+     when the step itself raised. When it wrote records the web cache is rebuilt once more,
+     printed as `WEB_CACHE_AFTER_REFIT=`.
+   - **Never the exit code.** A refused or crashed re-fit never changes the run's exit code; its
+     date stays open and the next daily run retries it with the same cutoff. Every problem sends
+     one `FAILED:` push. New models serve from the next daily run.
+   - Its records are listed in `RUNBOOK.md`, "Forward ledger".
+9. **End-of-run sync**, whether the day returned or raised: a new anchor commit on
    `ledger-anchor` when the head moved, pushed to GitHub, then the private backup committed and
    pushed (`LEDGER_SYNC=`). A failed push is recorded in `logs/ledger_runs.jsonl` and retried by
    the next sync; it never changes the run's exit code.
