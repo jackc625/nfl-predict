@@ -15,7 +15,10 @@ left out of every test, so no exclusion is silent), then, in this order:
   paired games, both arms' mean loss, the mean gap, the raw and Benjamini-Hochberg adjusted
   p-values, and its result (``better`` / ``worse`` / ``no difference`` / ``too few to test``, or
   ``never tested (generation 0)``);
-* one ``VERDICT=`` line per target: the family size and the pre-registered roll-up word;
+* one ``VERDICT=`` line per target: the family size and the pre-registered roll-up word. While no
+  re-fit generation is installed there is nothing to judge, so a single ``VERDICT= none`` line
+  states the frozen end rule (D-33, ``NO_CLEAN_WEEK_RULE``) instead of a roll-up word computed over
+  an empty family;
 * one ``POOLED_SECONDARY=`` line per target: the same test over the target's family cells, with
   its own p-value, outside the family -- it never changes the word;
 * one ``ROI_SECONDARY=`` line per generation and arm: flat ROI, report-only, with no test.
@@ -45,7 +48,11 @@ import argparse
 import sys
 from pathlib import Path
 
-from backtest.refit_preregistration_2026 import ALPHA, REFIT_SEASON
+from backtest.refit_preregistration_2026 import (
+    ALPHA,
+    NO_CLEAN_WEEK_RULE,
+    REFIT_SEASON,
+)
 from forward_ledger.settle import DEFAULT_SILVER_DIR, load_silver_games
 from forward_ledger.store import (
     LEDGER_DIR,
@@ -61,7 +68,11 @@ from refit.comparison import (
     decide,
     paired_frame,
 )
-from refit.generations import UnknownGenerationError, installed_generations
+from refit.generations import (
+    GENERATION_ZERO,
+    UnknownGenerationError,
+    installed_generations,
+)
 from refit.records import RefitRecordFormatError
 
 
@@ -118,9 +129,16 @@ def report_lines(paired: PairedFrame, result: ComparisonResult) -> list[str]:
             f"mean_gap={_number(cell.mean_gap)} p={_probability(cell.p)} "
             f"adjusted_p={_probability(cell.adjusted_p)} {outcome}"
         )
-    for target, word in result.verdicts.items():
+    if any(cell.generation != GENERATION_ZERO for cell in result.cells):
+        for target, word in result.verdicts.items():
+            lines.append(
+                f"VERDICT= {target} bh_family_m={result.family_size} alpha={ALPHA} {word}"
+            )
+    else:
+        # Every installed generation >= 1 has a cell, so none means no re-fit ever ran (D-33).
         lines.append(
-            f"VERDICT= {target} bh_family_m={result.family_size} alpha={ALPHA} {word}"
+            "VERDICT= none (no re-fit generation is installed; the end rule: "
+            f"{NO_CLEAN_WEEK_RULE})"
         )
     for pooled in result.pooled:
         lines.append(

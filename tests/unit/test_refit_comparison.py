@@ -28,6 +28,7 @@ from backtest.profitability_2025 import benjamini_hochberg_adjusted
 from backtest.refit_preregistration_2026 import (
     ALPHA,
     LOG_LOSS_CLIP,
+    NO_CLEAN_WEEK_RULE,
     REFIT_RECIPE_ID,
     ROLLUP_WORDS,
 )
@@ -710,6 +711,20 @@ def test_generation_zero_is_reported_never_tested(
     assert line.startswith("CELL= wp gen=0 n=40 ")
     assert "mean_gap=0.000000" in line
     assert "p=none" in line
+
+
+def test_no_refit_prints_the_end_rule_not_a_verdict_word() -> None:
+    """WR-D03: with no generation >= 1 the command states the D-33 end rule, never a roll-up word."""
+    paired = synthetic_paired({("ats", 0): [0.0] * 40})
+
+    lines = compare_refit_arms.report_lines(paired, decide(paired, ()))
+
+    verdicts = [line for line in lines if line.startswith("VERDICT= ")]
+    assert verdicts == [
+        "VERDICT= none (no re-fit generation is installed; the end rule: "
+        f"{NO_CLEAN_WEEK_RULE})"
+    ]
+    assert not any(word in line for line in lines for word in ROLLUP_WORDS)
 
 
 def test_pooled_is_after_and_labelled() -> None:
