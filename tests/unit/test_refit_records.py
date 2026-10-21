@@ -315,25 +315,20 @@ def test_install_critical_writes_are_fsynced(
     assert len(calls) == 2
 
 
+def _git(repo: Path, *args: str) -> str:
+    done = subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout.strip()
+
+
 @pytest.mark.usefixtures("isolated_git_env")
 def test_code_commit_reports_head_and_dirty(tmp_path: Path) -> None:
     def git(*args: str) -> str:
-        done = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(tmp_path),
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                *args,
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return done.stdout.strip()
+        return _git(tmp_path, *args)
 
     git("init", "-q")
     (tmp_path / "refit").mkdir()
@@ -350,3 +345,28 @@ def test_code_commit_reports_head_and_dirty(tmp_path: Path) -> None:
     assert code_commit(tmp_path) == f"{head}+dirty"
 
     assert code_commit(tmp_path / "not_a_repo_child_missing") is None
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_code_commit_is_dirty_for_the_elo_engine_and_the_dependency_lock(
+    tmp_path: Path,
+) -> None:
+    """CR-B01: the Elo engine and the library pins shape every fit, so their edits are dirty."""
+    _git(tmp_path, "init", "-q")
+    code_files = ("ratings/elo.py", "pyproject.toml", "uv.lock")
+    runtime_files = (".planning/STATE.md", "config/upstream_live/2026.json")
+    for name in (*code_files, *runtime_files):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("v1\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "initial")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+
+    for name in runtime_files:
+        (tmp_path / name).write_text("rewritten by the daily run\n", encoding="utf-8")
+    assert code_commit(tmp_path) == head
+
+    for name in code_files:
+        (tmp_path / name).write_text("v2\n", encoding="utf-8")
+        assert code_commit(tmp_path) == f"{head}+dirty", name
+        _git(tmp_path, "checkout", "--", name)

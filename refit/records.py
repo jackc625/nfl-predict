@@ -100,13 +100,19 @@ DATE_EVENTS: tuple[str, ...] = ("attempt", "install_intent", "closed")
 ATTEMPT_OUTCOMES: tuple[str, ...] = ("installed", "refused", "crashed")
 CLOSED_STATUSES: tuple[str, ...] = ("ran", "ran late", "not run")
 
-# The code paths whose uncommitted change marks a re-fit's code commit ``+dirty``.
+# The code paths whose uncommitted change marks a re-fit's code commit ``+dirty``: every tracked
+# path that produces or loads the training data. ``ratings`` is the Elo engine every Elo feature
+# comes out of; ``pyproject.toml`` and ``uv.lock`` fix the library versions every fit runs on.
+# ``api`` is imported only for ledger status constants, so it is not listed. A whole-tree check
+# is not used: tracked ``.planning/`` files and the daily run's own ``config/upstream_*`` writes
+# are always modified, and would refuse every re-fit.
 REFIT_CODE_PATHS: tuple[str, ...] = (
     "refit",
     "forward_ledger",
     "backtest",
     "models",
     "features",
+    "ratings",
     "pipeline",
     "scripts",
     "conf",
@@ -114,6 +120,8 @@ REFIT_CODE_PATHS: tuple[str, ...] = (
     "data",
     "config/*.py",
     "config/*.toml",
+    "pyproject.toml",
+    "uv.lock",
 )
 
 # The write-sink kinds.
