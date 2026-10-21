@@ -573,6 +573,10 @@ def _notifications_inert_unless_a_test_turns_them_on(
     The daily run's end-of-run website push (Phase 36, Plan 36-07) is a no-op here too, so no
     unrelated run writes a push-log record; a wiring test restores
     ``monkeypatch.setattr(daily, "SITE_PUSH", daily._push_site)`` itself.
+
+    The daily run's re-fit side step (Phase 37, Plan 37-13) is a no-op here too: the hook builds
+    gold and trains models, so no unrelated run may reach it; a wiring test replaces
+    ``REFIT_HOOK`` with its own recorder, or restores ``daily._run_refit`` itself.
     """
     import pandas as pd
 
@@ -583,6 +587,9 @@ def _notifications_inert_unless_a_test_turns_them_on(
     monkeypatch.setattr(daily_lock_pipeline, "NOTIFY_END_OF_RUN", lambda _report: None)
     monkeypatch.setattr(daily_lock_pipeline, "SITE_PUSH", lambda _report: None)
     monkeypatch.setattr(daily_lock_pipeline, "SEASON_WINDOW", lambda _d: "unknown")
+    monkeypatch.setattr(
+        daily_lock_pipeline, "REFIT_HOOK", lambda _report, **_kwargs: None
+    )
     monkeypatch.setattr(
         capture_closing_lines, "NOTIFY_CLOSING_FAILURE", lambda *_a, **_k: None
     )
