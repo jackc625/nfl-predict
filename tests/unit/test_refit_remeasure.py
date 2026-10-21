@@ -68,6 +68,7 @@ from models.market_probability import ClosingLineInFitError
 from refit import remeasure
 from refit.records import read_bet_rule_record, write_bet_rule_record
 from refit.remeasure import (
+    DETAIL_LATEST_PRELOCK_ONE_SIDED,
     BetRuleNumbers,
     FoldSpec,
     RemeasureRefusal,
@@ -296,9 +297,11 @@ def _silver_for_the_corpus(root: Path) -> pd.DataFrame:
     game_2026("2026_08_EEE_FFF", 8, datetime(2026, 11, 2, 1, 15, tzinfo=UTC), False)
     game_2026("2026_09_GGG_HHH", 9, datetime(2026, 11, 6, 1, 15, tzinfo=UTC), False)
     game_2026("2026_07_III_JJJ", 7, datetime(2026, 10, 25, 17, 0, tzinfo=UTC), True)
+    # The latest pre-lock line has no total.
+    game_2026("2026_08_KKK_LLL", 8, sunday, True)
 
     def line(
-        game_id: str, created: datetime, spread: float, total: float
+        game_id: str, created: datetime, spread: float, total: float | None
     ) -> dict[str, Any]:
         return {
             "game_id": game_id,
@@ -316,6 +319,8 @@ def _silver_for_the_corpus(root: Path) -> pd.DataFrame:
         line("2026_08_AAA_BBB", datetime(2026, 11, 1, 15, 0, tzinfo=UTC), -6.0, 49.0),
         line("2026_08_CCC_DDD", datetime(2026, 11, 1, 12, 0, tzinfo=UTC), 1.5, 41.0),
         line("2026_08_EEE_FFF", datetime(2026, 10, 30, 15, 0, tzinfo=UTC), 3.0, 45.0),
+        line("2026_08_KKK_LLL", datetime(2026, 10, 30, 15, 0, tzinfo=UTC), -1.0, 43.0),
+        line("2026_08_KKK_LLL", datetime(2026, 10, 31, 12, 0, tzinfo=UTC), -1.5, None),
     ]
     frame = pd.DataFrame(games)
     frame["kickoff_et"] = pd.to_datetime(frame["kickoff_et"], utc=True)
@@ -353,6 +358,12 @@ def test_a_2026_game_without_a_prelock_line_is_excluded_and_counted(
     # Unfinished, or at/after the cutoff: neither in the corpus nor counted as an exclusion.
     assert "2026_08_EEE_FFF" not in excluded.index
     assert "2026_09_GGG_HHH" not in excluded.index
+
+    # WR-B06: the decision path's choice is the latest pre-lock row; it has no total, so the
+    # game has no pre-lock line, and the older two-sided capture never stands in.
+    assert "2026_08_KKK_LLL" not in frame.index
+    assert excluded.loc["2026_08_KKK_LLL", "reason"] == EXCLUSION_NO_PRELOCK_LINE
+    assert excluded.loc["2026_08_KKK_LLL", "detail"] == DETAIL_LATEST_PRELOCK_ONE_SIDED
 
     assert_corpus_is_prelock(corpus.frame, games)
     planted = corpus.frame.copy()

@@ -123,6 +123,10 @@ REMEASURE_WINDOW_LABEL: str = "refit_prelock_2020_2024_2026"
 #: (A game whose every row is timed after its lock carries ``DETAIL_POST_LOCK_ONLY``.)
 DETAIL_ABSENT_FROM_ODDS_SNAPSHOT: str = "absent_from_odds_snapshot"
 
+#: Why a finished 2026 game has no pre-lock line: the latest row at or before its lock -- the one
+#: the decision path chose -- lacks its spread or its total. No older capture is used instead.
+DETAIL_LATEST_PRELOCK_ONE_SIDED: str = "latest_prelock_line_one_sided"
+
 #: The silver table holding the live Odds API captures, the 2026 pre-lock source.
 ODDS_SNAPSHOT_FILENAME: str = "odds_snapshot.parquet"
 
@@ -356,8 +360,10 @@ def _season_2026_corpus(
     The selection is the decision path's own (``backtest.weekly_bet_list``): one row per game by
     ``dedupe_odds_by_book_preference(..., locks=..., keep_inadmissible=True)``, judged on
     ``odds_information_time`` (the recorded capture instant), kept only when it is at or before
-    the game's lock. A row with no spread or no total is not a line. A game with no such line is
-    returned in ``excluded`` under ``no_prelock_line``, never filled.
+    the game's lock. The rows are NOT filtered before that choice, exactly as the decision path
+    does not filter them (WR-B06): when the chosen row lacks its spread or its total, the game has
+    no pre-lock line and no older capture stands in. A game with no such line is returned in
+    ``excluded`` under ``no_prelock_line``, never filled, its detail naming why.
     """
     kickoff = _kickoffs(games)
     finished_before = (
@@ -386,17 +392,19 @@ def _season_2026_corpus(
         odds["game_id"].astype(str).isin(sorted(schedule["game_id"]))
     ].copy()
     odds["game_id"] = odds["game_id"].astype(str)
-    lines = odds.dropna(subset=["spread", "total"])
 
-    chosen = dedupe_odds_by_book_preference(lines, locks=locks, keep_inadmissible=True)
+    chosen = dedupe_odds_by_book_preference(odds, locks=locks, keep_inadmissible=True)
     lock_by_game: dict[str, Any] = {str(gid): value for gid, value in locks.items()}
     information_time = odds_information_time(chosen)
     lock = pd.Series(
         pd.to_datetime([lock_by_game[str(gid)] for gid in chosen["game_id"]], utc=True),
         index=chosen.index,
     )
-    admissible = information_time.notna() & (information_time <= lock)
+    prelock = information_time.notna() & (information_time <= lock)
+    two_sided = chosen["spread"].notna() & chosen["total"].notna()
+    admissible = prelock & two_sided
     kept = chosen.loc[admissible]
+    one_sided = set(chosen.loc[prelock & ~two_sided, "game_id"].astype(str))
 
     frame = (
         pd.DataFrame(
@@ -426,7 +434,11 @@ def _season_2026_corpus(
     missing = schedule.loc[~schedule["game_id"].isin(set(frame["game_id"]))].copy()
     missing["reason"] = EXCLUSION_NO_PRELOCK_LINE
     missing["detail"] = [
-        DETAIL_POST_LOCK_ONLY if game_id in seen else DETAIL_ABSENT_FROM_ODDS_SNAPSHOT
+        DETAIL_LATEST_PRELOCK_ONE_SIDED
+        if game_id in one_sided
+        else DETAIL_POST_LOCK_ONLY
+        if game_id in seen
+        else DETAIL_ABSENT_FROM_ODDS_SNAPSHOT
         for game_id in missing["game_id"]
     ]
     excluded = (
