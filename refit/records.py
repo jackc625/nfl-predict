@@ -59,6 +59,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from backtest.refit_preregistration_2026 import REFIT_DATE_LISTS
 from data.write_sink import append_jsonl, current_sink
 from utils.file_lock import exclusive_file_lock
 from utils.logging_config import get_logger
@@ -376,7 +377,7 @@ def _date_event_problem(event: Mapping[str, Any]) -> str | None:
     kind = event["event"]
     problem = _missing_key_problem(
         event, (*_DATE_EVENT_COMMON_KEYS, *_DATE_EVENT_KEYS[kind])
-    )
+    ) or _date_identity_problem(event)
     if problem is not None:
         return problem
     if kind == "attempt":
@@ -384,6 +385,36 @@ def _date_event_problem(event: Mapping[str, Any]) -> str | None:
     if kind == "closed":
         return _vocabulary_problem("status", event["status"], CLOSED_STATUSES)
     return _install_intent_problem(event)
+
+
+def _date_identity_problem(event: Mapping[str, Any]) -> str | None:
+    """Whether the event names one frozen cadence date exactly (WR-B02).
+
+    ``list_week``, ``date_index`` and ``nfl_week`` must be plain ints and ``date`` the ISO text of
+    that list's date, so every reader matches the event to its date whether it coerces or not.
+    """
+    for key in ("list_week", "date_index", "nfl_week"):
+        value = event[key]
+        if not isinstance(value, int) or isinstance(value, bool):
+            return f"field {key!r} value {value!r} is not an integer"
+    dates = REFIT_DATE_LISTS.get(event["list_week"])
+    if dates is None:
+        return (
+            f"field 'list_week' value {event['list_week']!r} names no pre-registered list "
+            f"{sorted(REFIT_DATE_LISTS)}"
+        )
+    if not 1 <= event["date_index"] <= len(dates):
+        return (
+            f"field 'date_index' value {event['date_index']!r} is outside 1-{len(dates)} for "
+            f"list week {event['list_week']}"
+        )
+    day, nfl_week = dates[event["date_index"] - 1]
+    if event["date"] != day or event["nfl_week"] != nfl_week:
+        return (
+            f"fields 'date' and 'nfl_week' ({event['date']!r}, {event['nfl_week']!r}) are not "
+            f"list week {event['list_week']} date {event['date_index']} ({day!r}, {nfl_week})"
+        )
+    return None
 
 
 def _install_intent_problem(event: Mapping[str, Any]) -> str | None:
@@ -416,7 +447,8 @@ def append_date_event(ledger_dir: Path | str, event: Mapping[str, Any]) -> bool:
     Field names (Plans 37-05, 37-11, 37-13, 37-14 read them):
 
     * every event: ``event`` (one of :data:`DATE_EVENTS`), ``list_week``, ``date_index``
-      (1-based), ``date`` (ISO), ``nfl_week``;
+      (1-based), ``date`` (ISO), ``nfl_week`` -- the three numbers plain ints, and the date and
+      NFL week exactly that frozen list's entry (``REFIT_DATE_LISTS``);
     * ``attempt`` adds ``cutoff_utc``, ``attempted_at_utc``, ``run_date_et``, ``code_commit``,
       ``outcome`` (one of :data:`ATTEMPT_OUTCOMES`), ``check``, ``exception_class``,
       ``before_ids``, ``after_ids``, and may carry ``no_final_score_ids`` (the sorted game ids the

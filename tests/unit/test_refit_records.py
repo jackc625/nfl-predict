@@ -285,6 +285,9 @@ def test_an_append_onto_a_torn_last_line_is_refused(tmp_path: Path) -> None:
             "outcome",
         ),
         (_intent("e" * 64, "refit\\bet_rules\\" + "e" * 64 + ".json"), "bet_rule_path"),
+        # WR-B02: a mistyped or mismatched date field never reads as a valid event.
+        ({**_attempt("installed"), "date_index": "1"}, "date_index"),
+        ({**_attempt("installed"), "date": "2026-11-04"}, "date"),
     ],
 )
 def test_a_well_formed_but_invalid_dates_line_is_refused_on_read(
