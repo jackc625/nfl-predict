@@ -44,6 +44,15 @@ THE GENERATION IN FORCE
 to exactly one generation. The pin's ids are generation 0 without reading any record, so a
 generation-0 decision depends on nothing it did not depend on before Phase 37 (D-04).
 
+THE WEBSITE'S EDGE BANDS (D-36)
+-------------------------------
+:func:`in_force_edge_thresholds` hands the cache build the in-force generation's re-measured
+edge-tier thresholds, so the site's display bands follow each generation (owner ruling D-36). It
+is called OUTSIDE ``api/`` (``pipeline/steps.py`` and ``scripts/populate_cache.py``) and its result
+is passed to ``api.cache.populate_cache`` as a plain mapping, because ``api/`` imports no ``refit``
+or ``backtest`` module. Generation 0 -- and an artifacts directory with no ``latest.json`` --
+answers None, which bands with the row-19 constants exactly as before.
+
 Batch code: the daily run, the cache build and the CLIs import it; the request path never does.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -59,7 +68,7 @@ from typing import Any
 from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
 from forward_ledger.schema import ARM_SHADOW
 from forward_ledger.shadow import SHADOW_PIN
-from models.artifacts import ResolvedArtifacts
+from models.artifacts import ResolvedArtifacts, resolve_production_artifacts
 from refit.records import (
     RefitRecordFormatError,
     bet_rule_record_path,
@@ -73,6 +82,7 @@ __all__ = [
     "generation_for_ids",
     "generation_of_row",
     "generation_zero_ids",
+    "in_force_edge_thresholds",
     "in_force_generation",
     "installed_generations",
 ]
@@ -252,6 +262,42 @@ def in_force_generation(
     if resolved == zero.ids:
         return zero
     return generation_for_ids(resolved, installed_generations(ledger_dir))
+
+
+def in_force_edge_thresholds(
+    artifacts_dir: Path | str, ledger_dir: Path | str
+) -> dict[str, tuple[float, float] | None] | None:
+    """The in-force generation's edge-tier thresholds for the website's bands (D-36).
+
+    Args:
+        artifacts_dir: The artifacts directory whose ``latest.json`` the cache build serves --
+            the SAME directory the caller hands to ``api.cache.populate_cache``.
+        ledger_dir: The forward ledger directory holding ``refit/`` (``LEDGER_DIR`` in
+            production).
+
+    Returns:
+        None when *artifacts_dir* holds no ``latest.json`` or its ids are generation 0 (the
+        row-19 constants then band, exactly as before); otherwise the generation's bet-rule
+        record thresholds, ``{target -> (high, medium) | None}`` for every canonical target.
+
+    Raises:
+        UnknownGenerationError: ``latest.json`` names ids no generation produced.
+        RefitRecordFormatError: the generation records, or its bet-rule file, cannot be trusted.
+    """
+    artifacts = Path(artifacts_dir)
+    if not (artifacts / "latest.json").exists():
+        return None
+    generation = in_force_generation(
+        resolve_production_artifacts(artifacts), ledger_dir
+    )
+    if generation.number == GENERATION_ZERO:
+        return None
+    # Imported here, not at load time: backtest.weekly_bet_list imports api.cache and the
+    # selection stack, which the generation-0 answer above never needs.
+    from backtest.weekly_bet_list import load_bet_rule_record
+
+    _fits, thresholds = load_bet_rule_record(generation.bet_rule_path)
+    return thresholds
 
 
 def _model_ids(resolved: ResolvedArtifacts) -> frozenset[str]:

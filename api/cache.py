@@ -76,7 +76,7 @@ from api.cache_schema import (
     parse_season_range,  # noqa: F401
 )
 from utils import get_logger
-from utils.edge_tier import edge_tier_series
+from utils.edge_tier import EdgeThresholds, edge_tier_series
 from utils.team_data import get_team_conference, get_team_division
 
 logger = get_logger(__name__)
@@ -2021,7 +2021,7 @@ def _set_display_wp_edge(frame: pd.DataFrame) -> None:
     frame["wp_edge"] = pd.to_numeric(frame["wp_prob"], errors="coerce") - market_wp
 
 
-def _band_edges(frame: pd.DataFrame) -> None:
+def _band_edges(frame: pd.DataFrame, thresholds: EdgeThresholds | None) -> None:
     """Set the three edge bands in place from the three stored edges -- the ONE band site.
 
     The EDGE BAND comes from the ONE shared source (D31-23). The stored column names keep their
@@ -2037,10 +2037,22 @@ def _band_edges(frame: pd.DataFrame) -> None:
     it, which is stored as SQL NULL, so a game with no line carries no band in the cache, on the
     page or in either export. Both prediction loaders band through this one function, so the
     current-week rows cannot keep a "low" an older CSV wrote for an absent edge.
+
+    THE BANDS FOLLOW THE IN-FORCE GENERATION (Phase 37, D-36). *thresholds* is the in-force re-fit
+    generation's ``{target -> (high, medium) | None}`` mapping, or None for generation 0 (the
+    row-19 constants, exactly as before). It is resolved by the CALLER at cache build
+    (``refit.generations.in_force_edge_thresholds``), because ``api/`` imports no ``refit`` or
+    ``backtest`` module (UIAP-01, HOST-01) and the request path does no computation.
     """
-    frame["wp_confidence"] = edge_tier_series(frame["wp_edge"], "wp")
-    frame["ats_confidence"] = edge_tier_series(frame["ats_edge"], "ats")
-    frame["ou_confidence"] = edge_tier_series(frame["ou_edge"], "ou")
+    frame["wp_confidence"] = edge_tier_series(
+        frame["wp_edge"], "wp", thresholds=thresholds
+    )
+    frame["ats_confidence"] = edge_tier_series(
+        frame["ats_edge"], "ats", thresholds=thresholds
+    )
+    frame["ou_confidence"] = edge_tier_series(
+        frame["ou_edge"], "ou", thresholds=thresholds
+    )
 
 
 def _load_predictions(
@@ -2048,6 +2060,8 @@ def _load_predictions(
     outputs_dir: Path,
     silver_dir: Path,
     artifacts_root: Path = Path("artifacts"),
+    *,
+    edge_thresholds_by_target: EdgeThresholds | None = None,
 ) -> int:
     """Load predictions from backtest outputs into the predictions table.
 
@@ -2062,6 +2076,8 @@ def _load_predictions(
         artifacts_root: Where the deployed blend is read from. Defaults to the production
             ``artifacts/`` exactly as before; a caller that must not read production (a
             test) names its own root rather than inheriting the working directory's.
+        edge_thresholds_by_target: The in-force generation's edge-band thresholds (D-36); None
+            bands with the row-19 constants. See :func:`_band_edges`.
 
     Returns:
         Number of rows inserted.
@@ -2214,7 +2230,7 @@ def _load_predictions(
         _apply_blend(merged, blend_data)
 
     _set_display_wp_edge(merged)
-    _band_edges(merged)
+    _band_edges(merged, edge_thresholds_by_target)
 
     final_df = merged[PREDICTIONS_TABLE_COLUMNS].copy()
 
@@ -2228,6 +2244,8 @@ def _load_current_week_predictions(
     conn: duckdb.DuckDBPyConnection,
     predictions_dir: Path | None,
     silver_dir: Path,
+    *,
+    edge_thresholds_by_target: EdgeThresholds | None = None,
 ) -> int:
     """Add every game in the current-week prediction CSVs to the predictions table.
 
@@ -2248,6 +2266,8 @@ def _load_current_week_predictions(
         conn: Active DuckDB connection, after ``_load_predictions`` has run.
         predictions_dir: Directory holding the current-week CSVs; ``None`` loads nothing.
         silver_dir: Directory containing games.parquet (scores and kickoff times).
+        edge_thresholds_by_target: The in-force generation's edge-band thresholds (D-36); None
+            bands with the row-19 constants. See :func:`_band_edges`.
 
     Returns:
         Number of rows inserted.
@@ -2299,7 +2319,7 @@ def _load_current_week_predictions(
     # rows, never read back from the CSV: a CSV written before 33.2 review C2 CR-04 carries the
     # band "low" for a game with no edge, and a stored band that disagrees with its own edge is
     # the defect that fix removed.
-    _band_edges(merged)
+    _band_edges(merged, edge_thresholds_by_target)
 
     conn.execute("INSERT INTO predictions SELECT * FROM merged")
     logger.info(
@@ -2893,6 +2913,7 @@ def populate_cache(
     bet_graded_outcomes_df: pd.DataFrame | None = None,
     forward_verdict_context: dict[str, Any] | None = None,
     bet_week_results_df: pd.DataFrame | None = None,
+    edge_thresholds_by_target: EdgeThresholds | None = None,
 ) -> None:
     """Populate the DuckDB web cache from artifacts and backtest outputs.
 
@@ -2966,6 +2987,11 @@ def populate_cache(
             aggregated outside ``api/`` by ``backtest.bet_week_results`` from the same rows and
             corrections as the tracker blocks (SPEC R5). ``None`` leaves the
             ``bet_week_results`` table present and empty.
+        edge_thresholds_by_target: The in-force re-fit generation's edge-band thresholds,
+            ``{target -> (high, medium) | None}`` (Phase 37, D-36: the website's bands follow each
+            generation). Resolved by the caller through
+            ``refit.generations.in_force_edge_thresholds`` because ``api/`` imports no ``refit``
+            module; ``None`` (generation 0) bands with the row-19 constants exactly as before.
     """
     tmp_path = db_path.with_suffix(".tmp.duckdb")
     logger.info(
@@ -3030,12 +3056,21 @@ def populate_cache(
         # The blend is read from the SAME artifacts root as everything else populate_cache
         # reads; it used to come from the working directory's artifacts/ regardless.
         pred_table_count = _load_predictions(
-            conn, outputs_dir, silver_dir, artifacts_root=artifacts_dir
+            conn,
+            outputs_dir,
+            silver_dir,
+            artifacts_root=artifacts_dir,
+            edge_thresholds_by_target=edge_thresholds_by_target,
         )
         logger.info("Predictions loaded into cache", count=pred_table_count)
 
         # Every game of every predicted live week, bet or not, market line or not.
-        cw_count = _load_current_week_predictions(conn, predictions_dir, silver_dir)
+        cw_count = _load_current_week_predictions(
+            conn,
+            predictions_dir,
+            silver_dir,
+            edge_thresholds_by_target=edge_thresholds_by_target,
+        )
         logger.info("Current-week predictions loaded into cache", count=cw_count)
 
         # Load game context from gold features + silver games
