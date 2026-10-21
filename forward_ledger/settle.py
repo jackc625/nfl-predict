@@ -21,6 +21,18 @@ existing one-way grader ``backtest.weekly_bet_list.grade_row`` -- neither is re-
 the correction pass (:mod:`forward_ledger.corrections`) and the verify CLI's settled-result check
 (D-19) all go through it, and :func:`load_silver_games` is the one score loader they share.
 
+A TIED GAME RETURNS THE STAKE ON A MONEYLINE BET (Phase 38 D-21)
+---------------------------------------------------------------
+A sportsbook returns the stake on a moneyline bet when the game ends tied, so a live WP bet on a
+tied game grades as a PUSH: outcome None, payout 0, whichever side it backed (this fixes Phase 34
+WR-03, where the strict-binary label graded an away bet on a tie as a full-price win). The rule is
+applied in :func:`regrade_row`, which every grade path calls with a REQUIRED ``tied`` fact read by
+:func:`game_is_tied` from the realized home margin. The WP label itself is NOT changed: a tie still
+scores 0 in :func:`realized_values_from_scores`, because that label also feeds the frozen re-fit
+accuracy comparison (``refit/comparison.py``), which must stay byte-identical. ATS and O/U grading
+is unchanged (a 0-point margin or total is graded against the line exactly as before), and the
+backtest grader (``backtest/simulation.py``) is not this path and is not changed.
+
 Pure functions: nothing here writes. The settle pass (Plan 34-15) applies :func:`grading_updates`
 through ``forward_ledger.store.commit_changes``.
 
@@ -50,6 +62,7 @@ from forward_ledger.store import LedgerEntry
 __all__ = [
     "DEFAULT_SILVER_DIR",
     "SILVER_GAMES_FILENAME",
+    "game_is_tied",
     "grading_updates",
     "live_strategies",
     "load_silver_games",
@@ -112,6 +125,18 @@ def realized_values_from_scores(games: pd.DataFrame) -> dict[str, dict[str, floa
     }
 
 
+def game_is_tied(realized: Mapping[str, Mapping[str, float]], game_id: str) -> bool:
+    """True when *game_id*'s realized home margin (home score minus away score) is exactly 0.
+
+    The tie is read from the ATS margin, never from the WP label, precisely so that
+    :func:`realized_values_from_scores` -- and the WP label the frozen re-fit comparison reads
+    (``refit/comparison.py``) -- stays byte-identical (D-21). A game with no recorded margin, or a
+    mapping with no ``"ats"`` entry at all, is not a tie.
+    """
+    margin = realized.get("ats", {}).get(game_id)
+    return margin is not None and float(margin) == 0.0
+
+
 def live_strategies(
     chain_fit_path: Path | str = DEFAULT_CHAIN_FIT_PATH,
 ) -> dict[str, Any]:
@@ -126,6 +151,7 @@ def regrade_row(
     realized_value: float,
     *,
     graded_at: datetime,
+    tied: bool,
 ) -> dict[str, Any]:
     """The six grading values ``grade_row`` gives *row* against *realized_value* -- THE re-grade path.
 
@@ -134,17 +160,27 @@ def regrade_row(
     re-graded (a correction, the verify CLI's check) without ``AlreadyGradedError`` and without
     anything being written back: *row* itself is never mutated.
 
+    Args:
+        tied: Whether the row's game ended tied (:func:`game_is_tied`). REQUIRED, with no default,
+            so a caller that forgets it raises ``TypeError`` instead of silently grading by the old
+            rule. When True, a WP (moneyline) row grades as a push -- outcome None, payout 0
+            (D-21); every other target is graded by its strategy exactly as before.
+
     Returns:
         ``{grading_status, outcome, clv, payout_flat, realized_units, graded_at}`` with
         ``graded_at`` the datetime given.
     """
-    outcome = strategy.grade(
-        {
-            "bet_side": row.get("bet_side"),
-            "slipped_line": row.get("slipped_line"),
-            "_actual_total": realized_value,
-        }
-    )
+    outcome: bool | None
+    if tied and row.get("target") == "wp":
+        outcome = None
+    else:
+        outcome = strategy.grade(
+            {
+                "bet_side": row.get("bet_side"),
+                "slipped_line": row.get("slipped_line"),
+                "_actual_total": realized_value,
+            }
+        )
     graded = grade_row({**row, **_RESET_GRADING}, outcome, graded_at=graded_at)
     return {name: graded[name] for name in BET_LIST_GRADING_COLUMNS}
 
@@ -203,7 +239,13 @@ def grading_updates(
                 "wrong target's convention."
             )
             raise ValueError(msg)
-        values = regrade_row(row, strategy, value, graded_at=graded_at)
+        values = regrade_row(
+            row,
+            strategy,
+            value,
+            graded_at=graded_at,
+            tied=game_is_tied(realized, str(row["game_id"])),
+        )
         values["graded_at"] = settled_at
         updates[tuple(row[name] for name in LEDGER_ROW_KEY)] = values
     return updates

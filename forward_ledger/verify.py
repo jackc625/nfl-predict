@@ -99,6 +99,7 @@ from forward_ledger.remote_config import (
 from forward_ledger.schema import ARM_LIVE, LEDGER_ROW_KEY
 from forward_ledger.settle import (
     DEFAULT_SILVER_DIR,
+    game_is_tied,
     live_strategies,
     load_silver_games,
     realized_values_from_scores,
@@ -512,7 +513,13 @@ def settled_result_check(
         # The row's own settlement instant, carried through unchanged; it is never compared.
         own_graded_at: Any = row.get("graded_at")
         try:
-            regraded = regrade_row(row, strategy, value, graded_at=own_graded_at)
+            regraded = regrade_row(
+                row,
+                strategy,
+                value,
+                graded_at=own_graded_at,
+                tied=game_is_tied(realized, str(row["game_id"])),
+            )
         except Exception as error:  # noqa: BLE001 - any re-grade failure is named, never skipped
             mismatches.append(
                 RegradeMismatch(

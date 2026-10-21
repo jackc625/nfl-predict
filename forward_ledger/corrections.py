@@ -62,7 +62,7 @@ from forward_ledger.canonical import (
     ENTRY_KIND_ROW,
 )
 from forward_ledger.schema import LEDGER_ROW_KEY
-from forward_ledger.settle import regrade_row
+from forward_ledger.settle import game_is_tied, regrade_row
 from forward_ledger.store import LedgerEntry
 
 __all__ = [
@@ -270,7 +270,13 @@ def correction_payloads(
             )
             raise ValueError(msg)
 
-        regraded = regrade_row(row, strategy, value, graded_at=now)
+        regraded = regrade_row(
+            row,
+            strategy,
+            value,
+            graded_at=now,
+            tied=game_is_tied(realized, str(row["game_id"])),
+        )
         prior = in_force[key]
         if regraded["grading_status"] == prior.grading_status:
             continue
