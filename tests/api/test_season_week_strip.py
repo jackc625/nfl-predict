@@ -74,7 +74,7 @@ class _Request:
 
 
 class _Service:
-    """The five reads ``_build_season_context`` makes, with a chosen current slate."""
+    """The six reads ``_build_season_context`` makes, with a chosen current slate."""
 
     def __init__(self, slate: tuple[int, int] | None, kpis: dict[str, Any]) -> None:
         self._slate = slate
@@ -94,6 +94,9 @@ class _Service:
 
     def get_current_slate(self) -> tuple[int, int] | None:
         return self._slate
+
+    def get_refit_panel(self, season: int | None) -> None:
+        return None  # the comparison panel's tables are not part of these tests
 
 
 _GRADED_KPIS: dict[str, Any] = {

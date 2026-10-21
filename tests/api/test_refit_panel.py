@@ -142,8 +142,8 @@ def _build_cache(
         if with_tables:
             materialize_refit_panel(
                 conn,
-                pd.DataFrame(panel or [], columns=REFIT_PANEL_COLUMNS),
-                pd.DataFrame(aa or [], columns=REFIT_AA_STATUS_COLUMNS),
+                pd.DataFrame(panel or [], columns=pd.Index(REFIT_PANEL_COLUMNS)),
+                pd.DataFrame(aa or [], columns=pd.Index(REFIT_AA_STATUS_COLUMNS)),
             )
         else:
             conn.execute("DROP TABLE IF EXISTS refit_panel")
