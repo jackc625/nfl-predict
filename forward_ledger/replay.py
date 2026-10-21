@@ -19,7 +19,10 @@ WHAT ONE SNAPSHOT'S REPLAY DOES
   4. re-attach the spread-derived market probability WP's second test reads, from the stored
      spread and the ledger's blend copy, compare and substitute it;
   5. run the ONE selection path (``select_weekly_bets`` then ``records_to_bet_list_frame``) over
-     the stored candidates and schedule with the fits from the chain-fit copy;
+     the stored candidates and schedule with the bet rule the row's own generation recorded: the
+     chain-fit copy is read through ``load_bet_rule_record``, so a row-19 record supplies its
+     overlaid fits and the committed edge thresholds, and a re-fit generation's record (Phase 37,
+     research Pitfall 10) its own fits -- no row-19 overlay -- and its own edge thresholds;
   6. compare every decision field of every stored row: categoricals exactly, numerics within
      ``REPLAY_TOLERANCE``.
 
@@ -57,7 +60,7 @@ from backtest.weekly_bet_list import (
     CANONICAL_TARGETS,
     FrozenChainFitError,
     build_strategies,
-    load_frozen_chain_fit,
+    load_bet_rule_record,
     records_to_bet_list_frame,
     select_weekly_bets,
 )
@@ -91,6 +94,7 @@ from forward_ledger.store import (
     read_entries,
     verify_chain,
 )
+from refit.records import RefitRecordFormatError
 
 __all__ = [
     "CATEGORICAL_FIELDS",
@@ -250,7 +254,7 @@ def _rederive(
     copies = ledger / ARTIFACT_COPIES_DIRNAME
     ids = _scoring_ids(rows, snapshot.meta)
     _require_copies(copies, ids.values())
-    fits = load_frozen_chain_fit(_chain_fit_copy(ledger, snapshot.meta))
+    fits, thresholds = load_bet_rule_record(_chain_fit_copy(ledger, snapshot.meta))
 
     notes: Notes = {}
     candidates = snapshot.frames["candidates"].copy()
@@ -272,6 +276,7 @@ def _rederive(
         snapshot.frames["schedule"],
         fits,
         strategies=build_strategies(fits),
+        edge_thresholds=thresholds,
     )
     # The rows' own instant, so the re-derived frame stamps what the stored rows carry. It feeds
     # only ``decided_at_utc``, which no compared field depends on.
@@ -354,7 +359,7 @@ def replay_snapshot_rows(
         reason = f"snapshot digest mismatch in {digest}: part {error.part!r}: {error}"
     except SnapshotMissingError as error:
         reason = f"decision snapshot {digest} is missing: {error}"
-    except (ReplayInputError, FrozenChainFitError) as error:
+    except (ReplayInputError, FrozenChainFitError, RefitRecordFormatError) as error:
         reason = str(error)
     else:
         return [_compare_row(row, derived, notes) for row in rows]
