@@ -14,6 +14,13 @@ week with it, writing the live generation-1 rows and their frozen row-19 twins.
   thresholds, not row-19's.
 * A row-19 ledger replays exactly as before.
 
+A full re-fit cycle then runs over a ledger seeded like the production one before Phase 37
+(NULL-stamp weeks 3-4, row-19 weeks 5-6, all live): a generation-0 decision with its twins, the
+install of generation 1, a generation-1 decision with its twins and a settle pass that grades. No
+entry written before any step changes its seq, immutable values or chain hash (must-NOT P6), and
+the verification CLI -- against a temporary repository whose ``ledger-anchor`` commits that
+ledger's head, and the committed verdict-scope declaration -- passes over every row (R11).
+
 Everything lives under pytest's temporary directories: production ``artifacts/``, ``data/``,
 ``outputs/``, ``logs/`` and ``ledger/`` are never read or written (COLD-05).
 
@@ -22,28 +29,73 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from backtest.neutral_hfa_cold_start_constants import EDGE_TIER_THRESHOLDS_BY_TARGET
+from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
 from backtest.shadow_pin_2026 import SHADOW_RECIPE
-from backtest.weekly_bet_list import load_bet_rule_record
+from backtest.weekly_bet_list import build_weekly_decision_bundle, load_bet_rule_record
+from forward_ledger import runner
 from forward_ledger.artifacts_copy import RECIPE_COPIES_DIRNAME
+from forward_ledger.canonical import ENTRY_KIND_ROW
+from forward_ledger.declarations import VERDICT_SCOPE_MODULE
 from forward_ledger.replay import REPLAY_PASS, replay_ledger
-from forward_ledger.schema import ARM_LIVE, ARM_SHADOW
-from refit.records import BET_RULES_DIRNAME, refit_dir
+from forward_ledger.schema import (
+    ARM_LIVE,
+    ARM_SHADOW,
+    VERDICT_SCOPE_PRE_VERDICT,
+    VERDICT_SCOPE_VERDICT,
+)
+from forward_ledger.settle import SILVER_GAMES_FILENAME, live_strategies
+from forward_ledger.shadow import build_shadow_bundle
+from forward_ledger.stamps import IN_FORCE_RECIPE_ID
+from forward_ledger.store import (
+    LEDGER_STAMP_COLUMNS,
+    LedgerEntry,
+    read_entries,
+    verify_chain,
+)
+from pipeline.daily_steps import DailySlate
+from refit.records import BET_RULES_DIRNAME, append_date_event, refit_dir
+from tests.unit.test_forward_ledger_store import make_row
 from tests.unit.test_refit_decision_path import (
     ADMIT_NO_WP,
     GENERATION_ONE_IDS,
     InstalledFixture,
+    attempt_event,
+    build_stores,
+    closed_event,
     install_generation_one,
+    intent_event,
     ledger_rows,
     record,
     run_log_path,  # noqa: F401 -- the run-log redirect fixture, used by name
+    write_generation_bet_rule,
+    write_manifest_ids,
 )
-from tests.unit.test_replay_ledger import MODEL_IDS, build_fixture_season
+from tests.unit.test_replay_ledger import (
+    DECIDED_AT,
+    GAMES,
+    LOCK,
+    MODEL_IDS,
+    SEASON,
+    build_fixture_season,
+)
+from tests.unit.test_shadow_arm import Stores
+from tests.unit.test_verify_ledger_cli import (
+    PENDING,
+    anchored_repo,
+    cli_args,
+    run_cli,
+    write_ledger,
+)
 
 
 def _arm(rows: list[dict[str, Any]], arm: str) -> list[dict[str, Any]]:
@@ -169,3 +221,219 @@ def test_row19_rows_replay_unchanged(tmp_path: Path) -> None:
         for row in rows
     ]
     assert all(result.status == REPLAY_PASS for result in results)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: a full re-fit cycle rewrites nothing and the verification CLI passes (P6, R11)
+# ---------------------------------------------------------------------------
+
+# Rows shaped like the production ledger before Phase 37: migrated weeks 3-4 rows carry NULL
+# stamps and no snapshot; weeks 5-6 rows carry every row-19 stamp. Their games are not in the
+# fixture schedule, so no decision of the cycle can collide with them.
+_NULL_STAMP_GAMES: dict[int, tuple[str, ...]] = {
+    3: ("2026_03_NE_NYG",),
+    4: ("2026_04_TEN_HOU",),
+}
+_ROW19_GAMES: dict[int, tuple[str, ...]] = {
+    5: ("2026_05_DEN_LV", "2026_05_CIN_PIT"),
+    6: ("2026_06_MIN_DET", "2026_06_TB_NO"),
+}
+
+# (home, away) scores the settle pass grades from; every game of the cycle is played.
+_SCORES: tuple[tuple[float, float], ...] = ((24.0, 17.0), (10.0, 20.0), (27.0, 23.0))
+_SETTLED_AT = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class RefitCycle:
+    """A ledger after a full re-fit cycle, and its entries as they stood before each step."""
+
+    stores: Stores
+    ledger: Path
+    before_each_step: tuple[tuple[LedgerEntry, ...], ...]
+
+
+def _pre_phase_items() -> list[tuple[str, dict[str, Any], Any]]:
+    """The seeded rows: NULL-stamp weeks 3-4, then row-19 weeks 5-6, all live and pending."""
+    null_stamp = [
+        make_row(
+            game_id=game_id,
+            week=week,
+            bet_side="home_cover",
+            verdict_scope=VERDICT_SCOPE_PRE_VERDICT,
+            **dict.fromkeys(LEDGER_STAMP_COLUMNS),
+        )
+        for week, games in _NULL_STAMP_GAMES.items()
+        for game_id in games
+    ]
+    row19 = [
+        make_row(
+            game_id=game_id,
+            week=week,
+            bet_side="home_cover",
+            recipe_id=IN_FORCE_RECIPE_ID,
+            verdict_scope=VERDICT_SCOPE_VERDICT,
+        )
+        for week, games in _ROW19_GAMES.items()
+        for game_id in games
+    ]
+    return [(ENTRY_KIND_ROW, row, PENDING) for row in (*null_stamp, *row19)]
+
+
+def _decide(stores: Stores, ledger: Path, week: int) -> runner.RecordOutcome:
+    """One real ``record_forward_slate`` of fixture *week*, the frozen arm on."""
+    slate = DailySlate(
+        run_date_et=LOCK[week].date(),
+        lock=LOCK[week],
+        schedule=pd.DataFrame(
+            {
+                "game_id": list(GAMES[week]),
+                "season": [SEASON] * len(GAMES[week]),
+                "week": [week] * len(GAMES[week]),
+                "gameday": [date.isoformat(LOCK[week].date() + timedelta(days=1))]
+                * len(GAMES[week]),
+            }
+        ),
+    )
+    return runner.record_forward_slate(
+        slate,
+        decided_at=DECIDED_AT[week],
+        excluded_game_ids=frozenset(),
+        publish_by=None,
+        ledger_dir=ledger,
+        artifacts_dir=stores.artifacts,
+        gold_dir=stores.gold,
+        silver_dir=stores.silver,
+        manifest_dir=stores.manifests,
+        bundle_builder=partial(
+            build_weekly_decision_bundle, chain_fit_path=stores.chain_fit
+        ),
+        shadow_builder=partial(build_shadow_bundle, pin=stores.pin()),
+    )
+
+
+def _install_generation_one(stores: Stores, ledger: Path) -> None:
+    """The fixture install of generation 1: its record, its closed install date, latest.json."""
+    _path, sha = write_generation_bet_rule(ledger, GENERATION_ONE_IDS)
+    assert append_date_event(ledger, intent_event(GENERATION_ONE_IDS, sha))
+    assert append_date_event(ledger, attempt_event("installed"))
+    assert append_date_event(ledger, closed_event("ran"))
+    write_manifest_ids(stores.artifacts, GENERATION_ONE_IDS)
+
+
+def _record_scores(stores: Stores) -> None:
+    """The schedule refresh: every game of the cycle, seeded ones included, now has a score."""
+    path = stores.silver / SILVER_GAMES_FILENAME
+    games = pd.read_parquet(path)
+    seeded = pd.DataFrame(
+        {
+            "game_id": [
+                game_id
+                for weeks in (_NULL_STAMP_GAMES, _ROW19_GAMES)
+                for games_of_week in weeks.values()
+                for game_id in games_of_week
+            ],
+            "season": SEASON,
+            "week": [
+                week
+                for weeks in (_NULL_STAMP_GAMES, _ROW19_GAMES)
+                for week, games_of_week in weeks.items()
+                for _game_id in games_of_week
+            ],
+        }
+    )
+    seeded["kickoff_et"] = games["kickoff_et"].iloc[0]
+    games = pd.concat([games, seeded], ignore_index=True)
+    scores = [_SCORES[index % len(_SCORES)] for index in range(len(games))]
+    games["home_score"] = [home for home, _away in scores]
+    games["away_score"] = [away for _home, away in scores]
+    games.to_parquet(path, index=False)
+
+
+def run_refit_cycle(root: Path) -> RefitCycle:
+    """Seed the pre-phase rows, then decide, install, decide and settle over one ledger."""
+    stores = build_stores(root)
+    ledger = root / "ledger"
+    write_ledger(ledger, _pre_phase_items())
+    snapshots: list[tuple[LedgerEntry, ...]] = []
+
+    snapshots.append(tuple(read_entries(ledger)))
+    generation_zero = _decide(stores, ledger, 4)
+    assert generation_zero.appended and generation_zero.shadow_appended
+
+    snapshots.append(tuple(read_entries(ledger)))
+    _install_generation_one(stores, ledger)
+    generation_one = _decide(stores, ledger, 3)
+    assert generation_one.appended and generation_one.shadow_appended
+
+    snapshots.append(tuple(read_entries(ledger)))
+    _record_scores(stores)
+    settled = runner.settle_ledger(
+        now=_SETTLED_AT,
+        ledger_dir=ledger,
+        silver_dir=stores.silver,
+        manifest_dir=stores.manifests,
+        strategies=live_strategies(stores.chain_fit),
+    )
+    assert settled.changed and settled.graded
+
+    return RefitCycle(stores=stores, ledger=ledger, before_each_step=tuple(snapshots))
+
+
+@pytest.mark.usefixtures("run_log_path")
+def test_a_refit_cycle_rewrites_no_row(tmp_path: Path) -> None:
+    cycle = run_refit_cycle(tmp_path)
+    after = read_entries(cycle.ledger)
+
+    assert verify_chain(after).ok
+    for before in cycle.before_each_step:
+        assert before, "a step started from an empty ledger, so nothing was protected"
+        for old in before:
+            new = after[old.seq]
+            assert (new.seq, new.kind, new.immutable, new.chain_hash) == (
+                old.seq,
+                old.kind,
+                old.immutable,
+                old.chain_hash,
+            ), f"seq {old.seq} was rewritten"
+
+    rows = [entry.immutable for entry in after if entry.kind == ENTRY_KIND_ROW]
+    recipes = {(row["arm"], row["recipe_id"]) for row in rows}
+    assert {
+        (ARM_LIVE, None),
+        (ARM_LIVE, IN_FORCE_RECIPE_ID),
+        (ARM_LIVE, REFIT_RECIPE_ID),
+        (ARM_SHADOW, SHADOW_RECIPE),
+    } <= recipes
+    # The settle pass graded the seeded rows and the decided ones: only mutable halves moved.
+    graded_weeks = {
+        entry.immutable["week"]
+        for entry in after
+        if (entry.grading or {}).get("grading_status") not in (None, "pending")
+    }
+    assert {3, 4, 5, 6} <= graded_weeks
+
+
+@pytest.mark.usefixtures("run_log_path", "isolated_git_env")
+def test_the_verify_cli_passes_over_every_row(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cycle = run_refit_cycle(tmp_path)
+    entries = read_entries(cycle.ledger)
+    repo = anchored_repo(tmp_path / "public", entries)
+    capsys.readouterr()
+
+    code, out = run_cli(
+        capsys, cli_args(cycle.ledger, repo), declaration=VERDICT_SCOPE_MODULE
+    )
+
+    lines = out.splitlines()
+    assert "LOCAL_RESULT= PASS" in lines, out
+    assert not [line for line in lines if line.startswith("FAILURE=")], out
+    assert f"LEDGER_ENTRIES= {len(entries)}" in lines
+    assert "VERDICT_DECLARED= True" in lines
+    assert "VERDICT_STAMPS_OK= True" in lines
+    assert "VERDICT_LABELS_OK= True" in lines
+    regraded = next(line for line in lines if line.startswith("REGRADE_CHECKED= "))
+    assert int(regraded.split()[1]) > 0
+    assert code == 0, out
