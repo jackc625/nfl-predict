@@ -180,6 +180,12 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "editing it in place would destroy that evidence. It reports no model accuracy or "
         "betting result."
     ),
+    "SEASON-VERDICT-PREREGISTRATION.md": (
+        "A sealed pre-registration of how the 2026 forward profit verdict is judged, written "
+        "before the later 2026 results existed and checked by "
+        "tests/unit/test_phase38_preregistration_ancestry.py; editing it in place would destroy "
+        "that evidence. It reports no model accuracy or betting result."
+    ),
     "README.md": (
         "The visitor-facing front page, rewritten from scratch on 2026-10-04. Its text reports "
         "no model accuracy or betting figure from before the fix: it says in words that those "
@@ -266,6 +272,7 @@ class TestTheReadoutSetIsAPartition:
             "COLD-START-PREREGISTRATION.md",
             "PROFITABILITY-PREREGISTRATION.md",
             "ROLLING-REFIT-PREREGISTRATION.md",
+            "SEASON-VERDICT-PREREGISTRATION.md",
         ],
     )
     def test_sealed_preregistrations_are_not_labelled(self, sealed: str) -> None:
