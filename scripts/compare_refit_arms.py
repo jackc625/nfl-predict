@@ -6,8 +6,10 @@ The pre-registered comparison of ROLLING-REFIT-PREREGISTRATION.md section 11, co
 at season close (Phase 38); the command is runnable at any time before then.
 
 Output is ``KEY= value`` lines: ``COMPARISON_SEASON=``, ``UNPAIRED_WEEKS=`` (weeks with live rows but
-no shadow row at all, excluded), ``HOLES=`` (live rows with no shadow twin), ``INVARIANT_FAILURES=``
-(pairs whose twins disagree on a comparability field, excluded), then, in this order:
+no shadow row at all, excluded), ``HOLES=`` (live rows with no shadow twin), one ``EXCLUDED_<REASON>=``
+count per ``refit.comparison.EXCLUDED_REASONS`` entry, in that order (``EXCLUDED_NO_GENERATION=``,
+``EXCLUDED_INVARIANT_FAILURE=``, ``EXCLUDED_NO_MODEL_VALUE=``, ``EXCLUDED_NO_FINAL_SCORE=``: live rows
+left out of every test, so no exclusion is silent), then, in this order:
 
 * one ``CELL=`` line per reported (target, generation) cell, in increasing generation order: its
   paired games, both arms' mean loss, the mean gap, the raw and Benjamini-Hochberg adjusted
@@ -42,6 +44,7 @@ from backtest.refit_preregistration_2026 import ALPHA, REFIT_SEASON
 from forward_ledger.settle import DEFAULT_SILVER_DIR, load_silver_games
 from forward_ledger.store import LEDGER_DIR, LedgerFormatError, read_entries
 from refit.comparison import (
+    EXCLUDED_REASONS,
     STATUS_TESTED,
     ComparisonResult,
     PairedFrame,
@@ -91,8 +94,11 @@ def report_lines(paired: PairedFrame, result: ComparisonResult) -> list[str]:
         f"COMPARISON_SEASON= {REFIT_SEASON}",
         f"UNPAIRED_WEEKS= {weeks or 'none'}",
         f"HOLES= {len(paired.holes)}",
-        f"INVARIANT_FAILURES= {paired.excluded['invariant_failure']}",
     ]
+    lines.extend(
+        f"EXCLUDED_{reason.upper()}= {paired.excluded[reason]}"
+        for reason in EXCLUDED_REASONS
+    )
     for cell in result.cells:
         outcome = cell.result if cell.status == STATUS_TESTED else cell.status
         lines.append(

@@ -359,7 +359,50 @@ def test_an_invariant_failure_is_excluded_and_counted(
         ]
     )
     assert code == 0
-    assert "INVARIANT_FAILURES= 1" in capsys.readouterr().out.splitlines()
+    assert "EXCLUDED_INVARIANT_FAILURE= 1" in capsys.readouterr().out.splitlines()
+
+
+def test_cli_prints_every_exclusion_count(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """WR-D01: a pair left out for want of a final score is counted in the report, not dropped."""
+    ledger = tmp_path / "ledger"
+    write_pairs(
+        ledger,
+        [
+            (
+                live_row("2026_09_KC_BUF", "ats", 3.0, generation=0),
+                shadow_row("2026_09_KC_BUF", "ats", 3.0),
+            ),
+            (
+                live_row("2026_09_DEN_LV", "ats", 1.5, generation=0),
+                shadow_row("2026_09_DEN_LV", "ats", 1.5),
+            ),
+        ],
+    )
+
+    code = compare_refit_arms.main(
+        [
+            "--ledger-dir",
+            str(ledger),
+            "--silver-dir",
+            str(write_silver(tmp_path / "silver")),
+        ]
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 0
+    excluded = [line for line in lines if line.startswith("EXCLUDED_")]
+    assert excluded == [
+        "EXCLUDED_NO_GENERATION= 0",
+        "EXCLUDED_INVARIANT_FAILURE= 0",
+        "EXCLUDED_NO_MODEL_VALUE= 0",
+        "EXCLUDED_NO_FINAL_SCORE= 1",
+    ]
+    first_cell = next(
+        index for index, line in enumerate(lines) if line.startswith("CELL= ")
+    )
+    assert lines.index(excluded[-1]) < first_cell
 
 
 def test_the_frame_carries_status_and_in_force_payout(tmp_path: Path) -> None:
