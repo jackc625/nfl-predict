@@ -221,6 +221,20 @@ def test_inputs_from_the_frozen_pool_within_caps(store, target):
     assert fit.metadata["exclude_groups_provenance"] == "verdict"
 
 
+def test_a_baseline_excluded_group_column_is_never_an_input(store):
+    """WR-B05: the verdict's baseline excludes (here ``market``) leave the pool too."""
+    gold = _gold(store, "ats")
+    label = object.__new__(_TRAINERS["ats"])._get_target_column()
+    # A perfect predictor: admitted to the pool, the input rule would pick it first.
+    gold["snapshot_spread"] = gold[label]
+    assert group_columns(gold, "market") == ["snapshot_spread"]
+    fit = fit_target_at_cutoff(
+        "ats", gold, _games(store), store.cutoff_utc, snapshots=store.snapshots
+    )
+    assert "snapshot_spread" not in fit.metadata["selected_inputs"]
+    assert "snapshot_spread" not in fit.metadata["calibration"]["helper_inputs"]
+
+
 # ---------------------------------------------------------------------------
 # Row count (edge R3 empty)
 # ---------------------------------------------------------------------------

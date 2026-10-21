@@ -25,7 +25,8 @@ THE RULES, AS PRE-REGISTERED (``ROLLING-REFIT-PREREGISTRATION.md`` sections 7-8)
   gold has one. No training row may rest on a PROVISIONAL Elo snapshot (COLD-02).
 * Rows are put in (season, week, game_id) order before anything else: XGBoost's row subsampling
   draws by position, so a shuffled frame would be a different model (research Pitfall 6).
-* The input pool is gold minus the standing excluded groups; inputs are re-picked by the trainers'
+* The input pool is gold minus the standing excluded groups and the baseline excludes the
+  ratified verdict names (``stage1.baseline_excludes``); inputs are re-picked by the trainers'
   own rule within the caps WP 20 / ATS 25 / O/U 25, with each trainer's fixed default settings.
 * NO SEARCH OF ANY KIND. Nothing here tunes, opens a study or changes a setting (RFIT-07).
 * Every fit runs with the thread pools pinned to ONE thread, measured in force
@@ -53,6 +54,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +83,7 @@ from models.calibrate import ProbabilityCalibrator
 from models.temporal import TemporalSplitConfig, WalkForwardSplitter
 from models.train import (
     GOLD_GENERATION_DIGEST_METADATA_KEY,
+    GROUP_GATE_VERDICT_PATH,
     GROUP_VERDICT_DIGEST_METADATA_KEY,
     THREAD_LIMIT_METADATA_KEY,
     pinned_thread_pool,
@@ -374,8 +377,26 @@ def calibration_season(games: pd.DataFrame, cutoff_utc: datetime) -> int:
     return max(complete)
 
 
+def _verdict_baseline_excludes() -> tuple[str, ...]:
+    """The baseline excludes the ratified verdict names (record section 8, WR-B05)."""
+    with GROUP_GATE_VERDICT_PATH.open("rb") as handle:
+        verdict = tomllib.load(handle)
+    baseline = verdict.get("stage1", {}).get("baseline_excludes")
+    if not isinstance(baseline, list) or not baseline:
+        raise RefitTrainingError(
+            _CHECK_INPUT_POOL,
+            f"the group verdict {GROUP_GATE_VERDICT_PATH.name} names no "
+            "stage1.baseline_excludes; the frozen input pool cannot be built",
+        )
+    return tuple(str(group) for group in baseline)
+
+
 def _frozen_pool(gold: pd.DataFrame) -> tuple[pd.DataFrame, str]:
-    """Gold minus the record's excluded groups, refused if the ratified verdict disagrees."""
+    """Gold minus the record's excluded groups and the verdict's baseline excludes.
+
+    Refused if the ratified verdict disagrees with the record or no longer hashes to the frozen
+    digest; the digest check is what makes the baseline-exclude list the frozen one.
+    """
     groups, digest = verdict_exclusion()
     if sorted(groups) != sorted(EXCLUDED_FEATURE_GROUPS):
         raise RefitTrainingError(
@@ -389,9 +410,10 @@ def _frozen_pool(gold: pd.DataFrame) -> tuple[pd.DataFrame, str]:
             f"the group verdict file hashes to {digest}, not the frozen "
             f"{GROUP_VERDICT_NORMALIZED_SHA256}",
         )
-    return select_group_columns(
-        gold, None, exclude_groups=EXCLUDED_FEATURE_GROUPS
-    ), digest
+    exclude = tuple(
+        dict.fromkeys((*EXCLUDED_FEATURE_GROUPS, *_verdict_baseline_excludes()))
+    )
+    return select_group_columns(gold, None, exclude_groups=exclude), digest
 
 
 def _fit_calibration(
