@@ -15,7 +15,8 @@ The classification keys on ``report.status`` alone, so a critical step failure -
 orchestrator raises, so the daily run records it as ``run_failed`` -- is one event, never two
 (RESEARCH Pitfall 5). Push failures are read from the sync's error fields, never from its
 ``*_pushed`` booleans: nothing is pushed on a normal no-new-row day (Pitfall 6). A frozen-arm hole
-(Phase 37) adds no push when the run already owes one: it is merged into the first.
+and a re-fit problem (Phase 37: refused, crashed, ran late, an unclean A/A week) add no push when
+the run already owes one: each is merged into the first.
 
 THE LOCK TIME IS NEVER WRITTEN HERE
 -----------------------------------
@@ -43,7 +44,7 @@ import re
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime, timedelta
 from operator import itemgetter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from api.cache import ARM_LIVE, BET_STATUS_LIVE
 from notify.events import PRIORITY_NORMAL, PRIORITY_TOP, PushMessage, ascii_text
@@ -58,6 +59,10 @@ from notify.report import (
 )
 from notify.transport import scrub_text
 from utils.game_lock import ET
+
+if TYPE_CHECKING:  # typing only: notify never imports refit at load time
+    from refit.aa import AAWeekResult
+    from refit.hook import RefitOutcome
 
 __all__ = [
     "ONE_LINE_ERROR_LIMIT",
@@ -111,6 +116,27 @@ _WEEKDAYS: tuple[str, ...] = (
     "Saturday",
     "Sunday",
 )
+# English short weekday (by date.weekday()) and month (by date.month - 1) names, never the locale's.
+_WEEKDAY_ABBR: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTH_ABBR: tuple[str, ...] = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+# The A/A reason whose first mismatch names a FIELD; every other unclean reason is named itself.
+_AA_FIELD_MISMATCH = "field_mismatch"
+_SEASON_END = "the season ends"
+_REFIT_STATUS_LATE = "ran late"
 
 # What each top-priority daily-run outcome means, after "the daily run for <date>".
 _TOP_WHAT_FAILED: dict[str, str] = {
@@ -481,6 +507,178 @@ def _shadow_hole_message(
     )
 
 
+def _short_day(day: date | str) -> str:
+    """``Tue Nov 3``: a date (or its ISO text) with English names, never the machine's locale."""
+    value = date.fromisoformat(day) if isinstance(day, str) else day
+    return (
+        f"{_WEEKDAY_ABBR[value.weekday()]} {_MONTH_ABBR[value.month - 1]} {value.day}"
+    )
+
+
+def _refit_date_facts(
+    outcome: RefitOutcome, iso_date: str
+) -> tuple[int | None, int | None]:
+    """``(date index, NFL week)`` of the cadence date *iso_date* of the outcome's list.
+
+    The outcome's own date carries both. Another date of the same list -- a recovered close in a
+    run that then attempted a later date -- is looked up in the frozen list (lazy import: notify
+    never imports refit at load time).
+    """
+    if iso_date == outcome.date:
+        return outcome.date_index, outcome.nfl_week
+    if outcome.list_week is None:
+        return None, None
+    from refit.cadence import cadence_dates
+
+    for cadence_date in cadence_dates(outcome.list_week):
+        if cadence_date.date.isoformat() == iso_date:
+            return cadence_date.index, cadence_date.nfl_week
+    return None, None
+
+
+def _week_suffix(nfl_week: int | None) -> str:
+    return "" if nfl_week is None else f" (week {nfl_week})"
+
+
+def _retry_line(next_date: str | None) -> str:
+    until = _short_day(next_date) if next_date else _SEASON_END
+    return f"Next: it retries at every daily run until {until}."
+
+
+def _aa_part(
+    result: AAWeekResult, secrets: Sequence[str]
+) -> tuple[str, str, list[str]]:
+    """The push part of one unclean A/A week: (title fragment, merge fragment, lines)."""
+    mismatch = result.first_mismatch or {}
+    where = (
+        f" (game {game_labels((mismatch['game_id'],))}, target {mismatch['target']})"
+        if mismatch.get("game_id") and mismatch.get("target")
+        else ""
+    )
+    if result.reason == _AA_FIELD_MISMATCH:
+        what = (
+            f"did not match the live arm on {mismatch.get('field', 'unknown')}{where}"
+        )
+    else:
+        what = f"is not a clean A/A week ({result.reason}){where}"
+    return (
+        f"frozen arm mismatch (week {result.week})",
+        "frozen arm mismatch",
+        [
+            _safe_line(f"The frozen arm's week {result.week} {what}.", secrets),
+            "Next: nothing to run; the first re-fit waits for the next clean week.",
+        ],
+    )
+
+
+def _late_part(
+    index: int | None, iso_date: str, nfl_week: int | None, run_date_et: date
+) -> tuple[str, str, list[str]]:
+    """The push part of a re-fit installed after its own day: still FAILED (D-16)."""
+    number = "" if index is None else f" {index}"
+    live_from = _short_day(run_date_et + timedelta(days=1))
+    return (
+        f"model re-fit ran late{_week_suffix(nfl_week)}",
+        "model re-fit ran late",
+        [
+            f"Re-fit{number}, due {_short_day(iso_date)}, ran late, on "
+            f"{_short_day(run_date_et)}. New models are live from {live_from}.",
+            "Next: nothing to run; the late re-fit is recorded.",
+        ],
+    )
+
+
+def _attempt_part(
+    outcome: RefitOutcome, report: RunReport, secrets: Sequence[str]
+) -> tuple[str, str, list[str]] | None:
+    """The push part of the attempt's own status; None for every status that is not trouble."""
+    if outcome.date is None:
+        return None
+    if outcome.status == _REFIT_STATUS_LATE:
+        return _late_part(
+            outcome.date_index, outcome.date, outcome.nfl_week, report.run_date_et
+        )
+    due = f"Re-fit {outcome.date_index}, due {_short_day(outcome.date)}"
+    week = _week_suffix(outcome.nfl_week)
+    if outcome.status == "refused":
+        check = _safe_line(str(outcome.check or "unknown"), secrets)
+        return (
+            f"model re-fit refused{week}",
+            "model re-fit refused",
+            [
+                f"{due}, was refused by the check: {check}. The current models keep serving.",
+                _retry_line(outcome.next_date),
+            ],
+        )
+    if outcome.status == "crashed":
+        error = one_line_error(outcome.exception_class or "unknown", None, secrets)
+        return (
+            f"model re-fit crashed{week}",
+            "model re-fit crashed",
+            [
+                f"{due}, crashed. The current models keep serving.",
+                f"Error: {error}",
+                _retry_line(outcome.next_date),
+            ],
+        )
+    return None
+
+
+def _refit_message(
+    report: RunReport, secrets: Sequence[str]
+) -> tuple[PushMessage, str] | None:
+    """One normal-priority push for every re-fit problem this run produced, and its merge suffix.
+
+    Read from the side step's outcome as it returned it (D-04: never recomputed), in order: each
+    unclean A/A week it evaluated, a recovered close that ran late, the attempt's own status
+    (refused, crashed, ran late), then an exception that escaped the side step. A catch-up run's
+    earlier mismatch is therefore alerted even when the run then installs on time. The title
+    joins every problem with `` + `` (D-16); the merge suffix joins the same problems without
+    their weeks, as the frozen-arm hole merge does. None when there is no problem (ran on time,
+    waiting with clean or no A/A results, not_due, busy, no_refit_this_season). Class names only
+    (D-10).
+    """
+    parts: list[tuple[str, str, list[str]]] = []
+    outcome = report.refit
+    if outcome is not None:
+        parts.extend(
+            _aa_part(result, secrets)
+            for result in outcome.aa_results
+            if not result.clean
+        )
+        if outcome.recovered_close is not None:
+            iso_date, status = outcome.recovered_close
+            if status == _REFIT_STATUS_LATE:
+                index, nfl_week = _refit_date_facts(outcome, iso_date)
+                parts.append(_late_part(index, iso_date, nfl_week, report.run_date_et))
+        attempt = _attempt_part(outcome, report, secrets)
+        if attempt is not None:
+            parts.append(attempt)
+    if report.refit_error is not None:
+        parts.append(
+            (
+                "model re-fit crashed",
+                "model re-fit crashed",
+                [
+                    "The re-fit side step raised before it reported an outcome.",
+                    f"Error: {one_line_error(report.refit_error, None, secrets)}",
+                    "Next: nothing to run; the next daily run tries again.",
+                ],
+            )
+        )
+    if not parts:
+        return None
+    message = PushMessage(
+        event_class="failed",
+        title="FAILED: " + " + ".join(title for title, _merge, _lines in parts),
+        header_lines=tuple(line for *_titles, lines in parts for line in lines),
+        item_lines=(),
+        priority=PRIORITY_NORMAL,
+    )
+    suffix = " + ".join(dict.fromkeys(merge for _title, merge, _lines in parts))
+    return message, suffix
+
+
 def failed_messages(
     report: RunReport, *, now: datetime, secret_values: Iterable[str] = ()
 ) -> list[PushMessage]:
@@ -491,9 +689,10 @@ def failed_messages(
     deferred, closing schedule, anchor push, backup push, sync refused, website push. A clean run
     gives none.
 
-    Last, the frozen arm's holes (Phase 37, SPEC R8/R14): merged into the FIRST message above
-    when the run already owes one (:func:`merge_into_first_failed`), else sent on their own at
-    normal priority.
+    Last, the frozen arm's holes and then the re-fit's problems (Phase 37, SPEC R8/R14, D-16):
+    each adds no push of its own when the run already sends a failed message -- it is merged into
+    the FIRST one (:func:`merge_into_first_failed`), which keeps its priority -- and is otherwise
+    sent on its own at normal priority (D-35). The other failed messages stay unchanged.
     """
     secrets = tuple(secret_values)
     messages: list[PushMessage] = []
@@ -511,6 +710,12 @@ def failed_messages(
             messages,
             standalone=holes,
             title_suffix=f"frozen arm missed {_shadow_hole_count(report)}",
+        )
+    refit = _refit_message(report, secrets)
+    if refit is not None:
+        standalone, suffix = refit
+        messages = merge_into_first_failed(
+            messages, standalone=standalone, title_suffix=suffix
         )
     return messages
 
