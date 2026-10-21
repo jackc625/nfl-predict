@@ -26,9 +26,16 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from backtest.verdict_test_2026 import VERDICT_TARGETS, VERDICT_TOKENS
 from forward_ledger.declarations import load_verdict_scope
 from forward_ledger.settle import DEFAULT_SILVER_DIR, SILVER_GAMES_FILENAME
-from forward_ledger.store import LEDGER_DIR, append_rows, ledger_path, read_entries
+from forward_ledger.store import (
+    LEDGER_DIR,
+    append_rows,
+    apply_updates,
+    ledger_path,
+    read_entries,
+)
 from forward_ledger.verdict import verdict_rows
 from pipeline.skip_log import SKIP_RECORD_PATH
 from scripts import season_readout
@@ -38,7 +45,7 @@ from scripts.season_coverage import (
     CoverageReport,
     classify_coverage,
 )
-from tests.unit.test_forward_ledger_store import make_row
+from tests.unit.test_forward_ledger_store import graded, key_of, make_row
 from utils.current_slate import load_recorded_schedule
 
 REAL_LEDGER = ledger_path(LEDGER_DIR)
@@ -203,6 +210,33 @@ def _report(argv: list[str], *, now: datetime | None) -> CoverageReport:
     )
 
 
+def _figures(lines: list[str]) -> dict[str, dict[str, str]]:
+    """The ``FIGURES=`` fields per target, asserting one line per verdict target in order."""
+    figures = [_fields(line) for line in lines if line.startswith("FIGURES= ")]
+    assert [fields["target"] for fields in figures] == list(VERDICT_TARGETS)
+    return {fields["target"]: fields for fields in figures}
+
+
+def _tree(root: Path) -> dict[str, int]:
+    """Every file under *root* with its size."""
+    return {
+        path.relative_to(root).as_posix(): path.stat().st_size
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _shows_no_test_result(output: str) -> None:
+    """No verdict word and no p-value anywhere in a preview's output (R9, Phase 37 D-13)."""
+    assert [token for token in VERDICT_TOKENS if token in output] == []
+    for marker in ("p=", "p_value", "adjusted"):
+        assert marker not in output
+
+
 def _not_played_lines(lines: list[str]) -> list[str]:
     return [
         line
@@ -298,6 +332,12 @@ def test_each_game_lands_in_exactly_one_state_by_precedence(
     assert _line(lines, "PARTIAL= ") == f"PARTIAL= {partial_game} targets=ats,wp"
     assert _line(lines, "MISSED_GAMES= ") == "MISSED_GAMES= 1"
     assert _line(lines, "NOT_PLAYED= ") == "NOT_PLAYED= none"
+    # The week-4 bet and the shadow twin bet are in no figure.
+    counts = {
+        target: (fields["counted_rows"], fields["bets"])
+        for target, fields in _figures(lines).items()
+    }
+    assert counts == {"wp": ("3", "2"), "ats": ("3", "1"), "ou": ("2", "1")}
     for line in lines:
         if line.startswith("COVERAGE= "):
             week = _fields(line)
@@ -361,13 +401,19 @@ def test_a_postponed_game_reads_as_not_played_until_its_score_lands(
         f"NOT_PLAYED= {postponed} week=5 reason=inferred: no final score while week 6 is scored"
     ]
     assert _fields(_line(lines, "COVERAGE= week=5 "))["scheduled"] == "0"
+    assert _line(lines, "VOID_BETS= ") == f"VOID_BETS= {postponed} target=wp"
+    wp = _figures(lines)["wp"]
+    assert (wp["counted_rows"], wp["bets"], wp["pending"]) == ("0", "0", "0")
 
     scored_argv = _stores(tmp_path / "scored", [_game(postponed), _game(later)], rows)
     code, lines = _run(scored_argv, capsys)
     assert code == 0
     assert _line(lines, "NOT_PLAYED= ") == "NOT_PLAYED= none"
+    assert _line(lines, "VOID_BETS= ") == "VOID_BETS= none"
     week5 = _fields(_line(lines, "COVERAGE= week=5 "))
     assert (week5["scheduled"], week5["bet"]) == ("1", "1")
+    wp = _figures(lines)["wp"]
+    assert (wp["counted_rows"], wp["bets"], wp["pending"]) == ("1", "1", "1")
 
 
 def test_a_future_lock_is_not_yet_due_in_preview_only(tmp_path: Path) -> None:
@@ -422,3 +468,106 @@ def test_each_evidence_file_is_listed_or_named_missing(
         f"EVIDENCE= path={Path(run_log).as_posix()} lines=2 sha256={digest}",
         f"EVIDENCE= path={Path(skip_records).as_posix()} missing",
     ]
+
+
+# ---------------------------------------------------------------------------
+# The preview's raw figures, its label, and what it never shows or writes
+# ---------------------------------------------------------------------------
+
+
+def test_the_figures_count_graded_bets_by_their_in_force_grade(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    won, lost, pushed, pending = (
+        _row("2026_W05_TB@DAL", "ats"),
+        _row("2026_W05_BUF@LA", "ats"),
+        _row("2026_W05_BAL@ATL", "ats"),
+        _row("2026_W05_KC@JAX", "ats"),
+    )
+    suppressed = _row("2026_W05_NYG@WAS", "ats", "suppressed")
+    games = [_game(row["game_id"]) for row in (won, lost, pushed, pending, suppressed)]
+    argv = _stores(tmp_path, games, [won, lost, pushed, pending, suppressed])
+    apply_updates(
+        argv[1],
+        grading_updates={
+            key_of(won): graded("win", 0.9090909090909091, 1.1363636363636365),
+            key_of(lost): graded("loss", -1.0, -1.25),
+            key_of(pushed): graded("push", 0.0, 0.0),
+        },
+    )
+
+    code, lines = _run(argv, capsys)
+
+    assert code == 0
+    ats = _figures(lines)["ats"]
+    assert ats == {
+        "target": "ats",
+        "counted_rows": "5",
+        "bets": "4",
+        "graded": "3",
+        "wins": "1",
+        "losses": "1",
+        "pushes": "1",
+        "pending": "1",
+        "units": f"{1.1363636363636365 - 1.25:.6f}",
+        "flat_roi": f"{(0.9090909090909091 - 1.0) / 3:.6f}",
+    }
+    assert _figures(lines)["wp"]["flat_roi"] == "none"
+
+
+def test_the_preview_shows_no_test_result_and_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    game_id = "2026_W05_TB@DAL"
+    argv = _stores(
+        tmp_path,
+        [_game(game_id)],
+        [_row(game_id, target) for target in VERDICT_TARGETS],
+        run_log=[_run_record("no_games", [])],
+        skip_records=[_skip_record("2026_W05_BUF@LA")],
+    )
+    before = _tree(tmp_path)
+
+    code, lines = _run(argv, capsys)
+
+    assert code == 0
+    assert "READOUT= preview: season to date -- not the verdict" in lines
+    _figures(lines)
+    assert _line(lines, "REFIT_SECTION= ").startswith(
+        "REFIT_SECTION= omitted in preview"
+    )
+    _shows_no_test_result("\n".join(lines))
+    assert _tree(tmp_path) == before
+
+
+def test_the_real_ledger_is_byte_identical_after_a_preview(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """SPEC AC 28: a preview over the production ledger leaves it byte-identical."""
+    _require_real_stores(REAL_LEDGER, REAL_SILVER_GAMES)
+    before = _sha256(REAL_LEDGER)
+
+    code, lines = _run([], capsys)
+
+    assert code == 0
+    assert _sha256(REAL_LEDGER) == before
+    _shows_no_test_result("\n".join(lines))
+
+
+def test_a_preview_over_zero_counted_rows_prints_zero_tables(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SPEC AC 29 (backstop): an empty ledger prints zero-count tables without error."""
+    argv = _stores(tmp_path, [_game("2026_W05_TB@DAL")])
+
+    code, lines = _run(argv, capsys)
+
+    assert code == 0
+    coverage = [_fields(line) for line in lines if line.startswith("COVERAGE= ")]
+    assert coverage and all(week["decided"] == "0" for week in coverage)
+    assert _line(lines, "VOID_BETS= ") == "VOID_BETS= none"
+    for target in VERDICT_TARGETS:
+        assert (
+            f"FIGURES= target={target} counted_rows=0 bets=0 graded=0 wins=0 losses=0 "
+            "pushes=0 pending=0 units=0.000000 flat_roi=none"
+        ) in lines
