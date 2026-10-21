@@ -38,9 +38,18 @@ failed closing reading, every game whose closing value was finalized as missing,
 refusal, and every closing-trigger registration whose read-back did not match. A run log that
 cannot be read is named, with its line number -- never shown as "nothing missed".
 
+THE RE-FIT SECTION (Phase 37, SPEC R14, D-16)
+---------------------------------------------
+After the closing section, the email lists one line per cadence date whose LATEST record (an
+``attempt`` or a ``closed`` event of ``ledger/refit/dates.jsonl``; an ``install_intent`` adds none)
+was recorded since the previous delivered digest, plus one waiting line per unclean A/A week of
+``ledger/refit/aa_weeks.jsonl`` recorded since then. "Since" is decided for every record of both
+files by its ``recorded_at_utc``, the one key ``refit.records.append_record`` stamps on every line.
+Nothing to list is no section at all; a record file that cannot be read is named.
+
 Seams read at call time, so no test reads the real config files: :data:`PROBE_LOG_PATH` and
-:data:`MANIFEST_DIR` (None = ``data.upstream_live.LIVE_MANIFEST_DIR``); the run log is
-``forward_ledger.run_log.LEDGER_RUN_LOG``, which the test suite quarantines.
+:data:`MANIFEST_DIR` (None = ``data.upstream_live.LIVE_MANIFEST_DIR``) and :data:`REFIT_LEDGER_DIR`;
+the run log is ``forward_ledger.run_log.LEDGER_RUN_LOG``, which the test suite quarantines.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -49,7 +58,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -66,8 +75,9 @@ from data.sealed_probe import PROBE_STRATEGY_CONTENT, PROBE_STRATEGY_METADATA
 from data.sealed_probe_log import SEALED_PROBE_LOG_PATH
 from data.upstream_live import CAPTURE_VERDICT_KEY
 from forward_ledger import run_log
-from notify.messages import game_labels
+from notify.messages import _short_day, game_labels, one_line_error
 from notify.transport import OUTCOME_DELIVERED
+from utils.game_lock import ET
 
 __all__ = [
     "ACKNOWLEDGE_COMMAND",
@@ -75,10 +85,12 @@ __all__ = [
     "DATA_CHANGE_EMPTY_LINE",
     "MANIFEST_DIR",
     "PROBE_LOG_PATH",
+    "REFIT_LEDGER_DIR",
     "UNAFFECTED_LINE",
     "UNREADABLE_CORRECTIONS",
     "UNREADABLE_MANIFEST",
     "UNREADABLE_PROBE_LOG",
+    "UNREADABLE_REFIT_RECORD",
     "UNREADABLE_RUN_LOG_RECORD",
     "closing_section",
     "closing_section_lines",
@@ -86,6 +98,8 @@ __all__ = [
     "data_change_section",
     "live_changes",
     "previous_digest_cutoff",
+    "refit_section",
+    "refit_section_lines",
     "sealed_changes",
 ]
 
@@ -94,6 +108,9 @@ PROBE_LOG_PATH: Path = SEALED_PROBE_LOG_PATH
 
 #: Seam, read at call time: the live manifests' directory (None = the default config directory).
 MANIFEST_DIR: Path | None = None
+
+#: Seam, read at call time: the ledger directory whose ``refit/`` records the re-fit section reads.
+REFIT_LEDGER_DIR: Path = Path("ledger")
 
 #: The D-04 owner command (Plan 35-09) that marks one sealed change as seen.
 ACKNOWLEDGE_COMMAND = (
@@ -121,6 +138,12 @@ UNREADABLE_RUN_LOG_RECORD = (
     "A ledger run log record could not be read, so it is not listed."
 )
 TRIGGER_READBACK_LINE = "the closing-line schedule read back wrong"
+
+UNREADABLE_REFIT_RECORD = "A re-fit record could not be read, so it is not listed."
+
+# The A/A reason whose first mismatch names a FIELD; every other unclean reason is named itself.
+_AA_FIELD_MISMATCH = "field_mismatch"
+_SEASON_END = "the season ends"
 
 # The ledger run log's line number inside read_events' refusal message.
 _LINE_NUMBER = re.compile(r"\bline (\d+)\b")
@@ -437,3 +460,128 @@ def closing_section(cutoff: datetime | None) -> dict[str, Any]:
     else:
         lines = closing_section_lines(events, cutoff)
     return {"lines": lines, "empty_line": CLOSING_EMPTY_LINE}
+
+
+def _refit_retry_until(list_week: object, date_index: object) -> str:
+    """The list's date after *date_index*, ``Tue Dec 1``; the season's end after the last date.
+
+    An attempt event carries no next date, so it is read from the frozen list (lazy import:
+    notify never imports refit at load time).
+    """
+    from refit.cadence import cadence_dates
+
+    dates = cadence_dates(int(str(list_week)))
+    index = int(str(date_index))
+    return _short_day(dates[index].date) if index < len(dates) else _SEASON_END
+
+
+def _refit_date_line(event: Mapping[str, Any]) -> str:
+    """The D-16 line for a cadence date whose latest event is *event* (an attempt or a close)."""
+    prefix = (
+        f"Model re-fit {event['date_index']} (due {_short_day(str(event['date']))}):"
+    )
+    if event["event"] == "closed":
+        if event["status"] == "not run":
+            return f"{prefix} not run; the next date arrived first."
+        closed = _instant(event["closed_at_utc"])
+        if closed is None:
+            return UNREADABLE_REFIT_RECORD
+        closed_day = closed.astimezone(ET).date()
+        live_from = _short_day(closed_day + timedelta(days=1))
+        if event["status"] == "ran":
+            return f"{prefix} ran on time. New models live from {live_from}."
+        return f"{prefix} ran late, {_short_day(closed_day)}. New models live from {live_from}."
+    outcome = event["outcome"]
+    if outcome == "installed":
+        return f"{prefix} installed; the next daily run records its close."
+    until = _refit_retry_until(event["list_week"], event["date_index"])
+    if outcome == "refused":
+        return f"{prefix} refused ({event['check']}); retrying daily until {until}."
+    error = one_line_error(str(event["exception_class"]), None, ())
+    return f"{prefix} failed ({error}); retrying daily until {until}."
+
+
+def _waiting_line(record: Mapping[str, Any]) -> str:
+    """Before the first re-fit: the unclean A/A week and its mismatched field (or its reason)."""
+    mismatch = record.get("first_mismatch") or {}
+    reason = record.get("reason")
+    named = mismatch.get("field") if reason == _AA_FIELD_MISMATCH else reason
+    return (
+        f"Waiting for a clean frozen-arm week: week {record['week']} did not match "
+        f"({named})."
+    )
+
+
+def refit_section_lines(
+    date_events: Sequence[Mapping[str, Any]],
+    aa_records: Sequence[Mapping[str, Any]],
+    cutoff: datetime | None,
+) -> list[str]:
+    """SPEC R14 / D-16: one line per unclean A/A week, then one per cadence date, since *cutoff*.
+
+    A record counts when its ``recorded_at_utc`` is after *cutoff* (all when None), for both files
+    alike. A date's line comes from its LATEST such ``attempt`` or ``closed`` event, so a refused
+    date that then ran late shows one line; ``install_intent`` events give none. A record of an
+    unexpected shape is named as unreadable (:data:`UNREADABLE_REFIT_RECORD`), never dropped.
+    """
+    lines: list[str] = []
+    for record in aa_records:
+        try:
+            if record.get("clean") is True or not _after(
+                record.get("recorded_at_utc"), cutoff
+            ):
+                continue
+            lines.append(_waiting_line(record))
+        except Exception:  # noqa: BLE001 - one bad record never costs the section
+            lines.append(UNREADABLE_REFIT_RECORD)
+    latest: dict[tuple[object, object], Mapping[str, Any]] = {}
+    for event in date_events:
+        if event.get("event") == "install_intent" or not _after(
+            event.get("recorded_at_utc"), cutoff
+        ):
+            continue
+        latest[(event.get("list_week"), event.get("date_index"))] = event
+    for event in latest.values():
+        try:
+            lines.append(_refit_date_line(event))
+        except Exception:  # noqa: BLE001 - one bad record never costs the section
+            lines.append(UNREADABLE_REFIT_RECORD)
+    return lines
+
+
+def refit_section(cutoff: datetime | None) -> dict[str, Any] | None:
+    """The re-fit section from ``<REFIT_LEDGER_DIR>/refit/`` (path read at call time); None when
+    there is nothing to list since *cutoff* (SPEC R14: no news, no section).
+
+    Each record file is read on its own. One that cannot be read is ONE line naming the file and,
+    when known, the line number: a malformed record is never shown as "nothing happened".
+
+    Returns:
+        ``{lines}``, or None.
+    """
+    from refit import records
+
+    loaded: dict[str, list[dict[str, Any]]] = {}
+    unreadable: list[str] = []
+    for filename, read in (
+        (records.DATES_FILENAME, records.read_date_events),
+        (records.AA_WEEKS_FILENAME, records.read_aa_records),
+    ):
+        try:
+            loaded[filename] = read(REFIT_LEDGER_DIR)
+        except Exception as exc:  # noqa: BLE001 - named in the email, never read as "nothing"
+            loaded[filename] = []
+            path = (records.refit_dir(REFIT_LEDGER_DIR) / filename).as_posix()
+            found = _LINE_NUMBER.search(str(exc))
+            where = f"at line {found.group(1)}" if found else f"({type(exc).__name__})"
+            unreadable.append(
+                f"The re-fit record {path} could not be read {where}, so its re-fit "
+                "outcomes are not listed."
+            )
+    lines = [
+        *refit_section_lines(
+            loaded[records.DATES_FILENAME], loaded[records.AA_WEEKS_FILENAME], cutoff
+        ),
+        *unreadable,
+    ]
+    return {"lines": lines} if lines else None

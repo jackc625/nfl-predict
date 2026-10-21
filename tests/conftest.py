@@ -568,7 +568,9 @@ def _notifications_inert_unless_a_test_turns_them_on(
     The digest's data-change section (Plan 35-14) reads the sealed probe log and the live manifest
     through ``notify.digest_sections.PROBE_LOG_PATH`` / ``MANIFEST_DIR``; here both point at paths
     that never exist, so no test reads ``config/upstream_probe_log.jsonl`` or
-    ``config/upstream_live``. A section test points them at its own ``tmp_path`` files.
+    ``config/upstream_live``. A section test points them at its own ``tmp_path`` files. The re-fit
+    section (Plan 37-14) reads ``notify.digest_sections.REFIT_LEDGER_DIR``, pointed at an absent
+    ledger the same way, so no test reads the production ``ledger/refit/`` records.
 
     The daily run's end-of-run website push (Phase 36, Plan 36-07) is a no-op here too, so no
     unrelated run writes a push-log record; a wiring test restores
@@ -603,6 +605,7 @@ def _notifications_inert_unless_a_test_turns_them_on(
         digest_sections, "PROBE_LOG_PATH", absent / "upstream_probe_log.jsonl"
     )
     monkeypatch.setattr(digest_sections, "MANIFEST_DIR", absent / "upstream_live")
+    monkeypatch.setattr(digest_sections, "REFIT_LEDGER_DIR", absent / "ledger")
 
 
 # 34-REVIEW WR-32: the ledger's real-git tests run ``git`` directly over tmp_path repositories.
