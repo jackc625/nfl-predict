@@ -31,8 +31,11 @@ JSON line with a missing or out-of-vocabulary field is never read as a valid rec
 A MALFORMED RECORD IS NEVER READ AS "NO RECORDS"
 ------------------------------------------------
 :func:`read_records` returns ``[]`` only for an absent file. A bad line raises
-:class:`RefitRecordFormatError`; when it is the file's last non-blank line the message gives the
-torn-append repair, and for any other line it says to compare with the private backup instead.
+:class:`RefitRecordFormatError`; when it is the file's final line and ends in no newline (the
+shape a crash mid-append leaves) the message gives the torn-append repair, and for any other line
+it says to compare with the private backup instead. An append to a file that ends in a torn line
+is refused by name (WR-B01): it would put a whole record on the torn line, which that repair then
+deletes.
 
 ONE STORED BET-RULE PATH
 ------------------------
@@ -161,9 +164,12 @@ _AA_RECORD_KEYS: tuple[str, ...] = ("season", "week", "clean")
 
 _TORN_LAST_LINE_REPAIR: str = "a torn last line is a crash mid-append: copy the file aside, then delete that one line"
 _DAMAGED_LINE_ADVICE: str = (
-    "a bad line that is not the last line is damage, not a torn append: compare the file with "
+    "a bad line that ends in a newline is damage, not a torn append: compare the file with "
     "the private backup before changing anything"
 )
+# The bytes a whole last line ends in: a text-mode write ends ``\r\n`` on Windows, and a tear
+# between the two leaves a complete line that the universal-newline reader still splits.
+_LINE_END_BYTES: tuple[bytes, ...] = (b"\n", b"\r")
 
 
 class RefitRecordFormatError(Exception):
@@ -194,11 +200,33 @@ def append_record(
 
     Returns:
         True when the line was written (False under a recording sink).
+
+    Raises:
+        RefitRecordFormatError: the file ends in a torn line; nothing is appended.
     """
+    path = refit_dir(ledger_dir) / filename
+    _refuse_a_torn_tail(path)
     stamped = {**record, "recorded_at_utc": datetime.now(tz=UTC).isoformat()}
-    return append_jsonl(
-        refit_dir(ledger_dir) / filename, stamped, kind=kind, durable=durable
+    return append_jsonl(path, stamped, kind=kind, durable=durable)
+
+
+def _refuse_a_torn_tail(path: Path) -> None:
+    """Refuse to append to *path* when its last byte ends no line (a crash mid-append).
+
+    Appending would put a whole record on the torn line, and the torn-line repair, which deletes
+    that line, would then delete the record too. The torn line needs a human first.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open("rb") as handle:
+        handle.seek(-1, os.SEEK_END)
+        if handle.read(1) in _LINE_END_BYTES:
+            return
+    msg = (
+        f"refit record {path.as_posix()} ends in a torn line, so nothing was appended; "
+        f"{_TORN_LAST_LINE_REPAIR}"
     )
+    raise RefitRecordFormatError(msg)
 
 
 def read_records(ledger_dir: Path | str, filename: str) -> list[dict[str, Any]]:
@@ -216,34 +244,35 @@ def _read_validated(
     """Every JSON-object line of *path*, each passed through *problem_of* when it is given."""
     if not path.exists():
         return []
-    lines = path.read_text(encoding="utf-8").splitlines()
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
     numbered = [(number, line) for number, line in enumerate(lines, 1) if line.strip()]
-    last_number = numbered[-1][0] if numbered else 0
+    # Only an unterminated final line can be a torn append; any other bad line is damage.
+    torn_number = len(lines) if lines and not text.endswith("\n") else 0
     records: list[dict[str, Any]] = []
     for number, line in numbered:
+        torn = number == torn_number
         try:
             record = json.loads(line)
         except json.JSONDecodeError as error:
             detail = f"is not JSON: {error}"
             raise RefitRecordFormatError(
-                _line_error(path, number, last_number, detail)
+                _line_error(path, number, torn, detail)
             ) from error
         if not isinstance(record, dict):
             raise RefitRecordFormatError(
-                _line_error(path, number, last_number, "is not one JSON object")
+                _line_error(path, number, torn, "is not one JSON object")
             )
         problem = problem_of(record) if problem_of is not None else None
         if problem is not None:
-            raise RefitRecordFormatError(
-                _line_error(path, number, last_number, problem)
-            )
+            raise RefitRecordFormatError(_line_error(path, number, torn, problem))
         records.append(record)
     return records
 
 
-def _line_error(path: Path, number: int, last_number: int, detail: str) -> str:
+def _line_error(path: Path, number: int, torn: bool, detail: str) -> str:
     """The message naming the file, the line, the problem and the safe repair."""
-    advice = _TORN_LAST_LINE_REPAIR if number == last_number else _DAMAGED_LINE_ADVICE
+    advice = _TORN_LAST_LINE_REPAIR if torn else _DAMAGED_LINE_ADVICE
     return f"refit record {path.as_posix()} line {number} {detail}; {advice}"
 
 

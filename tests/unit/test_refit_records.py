@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from refit.records import (
     DATE_EVENTS,
     DATES_FILENAME,
     REFIT_DIRNAME,
+    SHADOW_HOLES_FILENAME,
     RefitRecordFormatError,
     append_aa_record,
     append_date_event,
@@ -38,6 +40,7 @@ from refit.records import (
     read_aa_records,
     read_bet_rule_record,
     read_date_events,
+    record_shadow_holes,
     write_bet_rule_record,
 )
 from utils.file_lock import FileLockHeldError
@@ -243,6 +246,30 @@ def test_a_malformed_dates_line_is_never_read_as_empty(tmp_path: Path) -> None:
     assert "line 1" in message
     assert "compare the file with the private backup" in message
     assert "delete that one line" not in message
+
+
+def test_an_append_onto_a_torn_last_line_is_refused(tmp_path: Path) -> None:
+    """WR-B01: a record appended onto a torn line would be deleted by the torn-line repair."""
+    decided_at = datetime(2026, 10, 25, 22, 0, tzinfo=UTC)
+
+    def hole(game_id: str) -> tuple[tuple[str, int, int, str], str]:
+        return ((game_id, 2026, 8, "ats"), "no_shadow_row")
+
+    record_shadow_holes(
+        tmp_path,
+        [hole("2026_08_AAA_BBB"), hole("2026_08_CCC_DDD")],
+        decided_at=decided_at,
+    )
+    path = tmp_path / REFIT_DIRNAME / SHADOW_HOLES_FILENAME
+    torn = path.read_bytes() + b'{"game_id": "2026_08_EE'
+    path.write_bytes(torn)
+
+    with pytest.raises(RefitRecordFormatError) as raised:
+        record_shadow_holes(tmp_path, [hole("2026_08_GGG_HHH")], decided_at=decided_at)
+    message = str(raised.value)
+    assert SHADOW_HOLES_FILENAME in message
+    assert "ends in a torn line" in message
+    assert path.read_bytes() == torn
 
 
 @pytest.mark.parametrize(

@@ -818,9 +818,10 @@ The error names the file and the line: `refit record ledger/refit/<file> line <n
    Copy-Item ledger\refit\<file name> "$HOME\<file name>_damaged_$(Get-Date -Format yyyyMMdd_HHmm)"
    ```
 
-2. If the named line is the LAST line of the file, the advice reads "a torn last line is a crash
-   mid-append: copy the file aside, then delete that one line". Delete only that line, in a plain
-   text editor, and save. Change nothing else.
+2. If the named line is the LAST line of the file and ends in no newline, the advice reads "a torn
+   last line is a crash mid-append: copy the file aside, then delete that one line". Delete only
+   that line, in a plain text editor, and save. Change nothing else. Nothing is ever appended onto
+   a torn line (the append is refused by name), so that line holds only the torn bytes.
 3. Confirm the file reads. This must print a count, not an error:
 
    ```powershell
@@ -829,9 +830,9 @@ The error names the file and the line: `refit record ledger/refit/<file> line <n
 
    The next daily run then prints its normal `REFIT=` line.
 
-If the named line is NOT the last line, the advice says it "is damage, not a torn append": a crash
-mid-append can only tear the last line. Change nothing; compare the file with the private backup
-(the restore procedure above) first. A file under `bet_rules/` that no longer hashes to its name
+If the named line ends in a newline (any line but an unterminated last one), the advice says it "is
+damage, not a torn append": a crash mid-append can only leave the last line unterminated. Change
+nothing; compare the file with the private backup (the restore procedure above) first. A file under `bet_rules/` that no longer hashes to its name
 raises the same error with its own message; it is written once and never edited, so treat it as
 damage too and compare it with the backup.
 
