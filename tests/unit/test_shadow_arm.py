@@ -475,6 +475,49 @@ def test_a_slow_shadow_build_never_costs_the_live_write(
     assert sorted(p.name for p in (ledger / SNAPSHOTS_DIRNAME).iterdir()) == [digest]
 
 
+def test_a_shadow_build_that_would_cross_the_deadline_is_never_started(
+    stores: Stores, tmp_path: Path, run_log_path: Path
+) -> None:
+    """37-REVIEW WR-A01: 30 s left before the build, 1 s past the deadline had it run.
+
+    Checked only after the build, the build itself would carry the clock past ``publish_by`` and
+    the store's own deadline check would refuse the LIVE rows too. The headroom is checked before
+    the build starts, so the build never runs and the live rows land as with no shadow arm.
+    """
+    publish_by = LOCK[WEEK]
+    built: list[bool] = []
+
+    def _slow(live: Any, **kwargs: Any) -> Any:
+        built.append(True)
+        return build_shadow_bundle(live, pin=stores.pin(), **kwargs)
+
+    def _crossing_clock() -> datetime:
+        """30 seconds left until the shadow build ran; 1 second past the deadline afterwards."""
+        if built:
+            return publish_by + timedelta(seconds=1)
+        return publish_by - timedelta(seconds=30)
+
+    ledger = tmp_path / "ledger"
+
+    outcome = _record(
+        stores,
+        ledger,
+        publish_by=publish_by,
+        clock=_crossing_clock,
+        shadow_builder=_slow,
+    )
+
+    assert built == [], "a shadow build was started without the deadline headroom"
+    assert outcome.wrote
+    assert ledger_path(ledger).read_bytes() == _shadow_off_bytes(stores, tmp_path)
+    rows = _rows(ledger)
+    assert rows and _arm(rows, ARM_SHADOW) == []
+    assert outcome.shadow_holes == tuple(
+        (_twin_key(row), "ShadowDeadlineHeadroomError") for row in rows
+    )
+    assert len(_hole_records(ledger)) == len(rows)
+
+
 def test_appended_counts_live_rows_only(
     stores: Stores, tmp_path: Path, run_log_path: Path
 ) -> None:

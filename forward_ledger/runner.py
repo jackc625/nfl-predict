@@ -30,9 +30,10 @@ daily run's critical recommend step. In order:
      models and bet rule (``forward_ledger.shadow``), stamped ``arm = shadow`` with the SAME
      reproduction key, decision instant and verdict scope, kept only for keys whose live row is
      new, pre-validated, then given its own snapshot and copies. ANY shadow failure -- including
-     too little time left before the deadline (``SHADOW_COMMIT_HEADROOM``) -- drops every shadow
-     row and records each new live key as a hole named by the exception class; it never blocks,
-     delays or changes a live row;
+     too little time left before the deadline (``SHADOW_COMMIT_HEADROOM``, checked before the
+     shadow build starts, so a build is never begun without it, and again after the build) --
+     drops every shadow row and records each new live key as a hole named by the exception
+     class; it never blocks, delays or changes a live row;
   8. ONE ``commit_changes`` carrying the live rows first and then the shadow rows, with the same
      deadline, which re-reads the clock immediately before the replace -- so an interrupted write
      leaves both arms' rows of the run or neither. Once it wrote, every hole is appended to
@@ -347,15 +348,19 @@ def _shadow_rows(
 ) -> tuple[list[dict[str, Any]], tuple[ShadowHole, ...]]:
     """The shadow twins of the new live rows, ready to commit, and the holes. NEVER raises.
 
-    Every step that can fail runs before anything of the shadow arm is written: build, digest,
-    stamp (the SAME reproduction key, scope and decision instant as the live rows), keep the twins
-    of NEW live keys only, validate them as the store will, check the deadline headroom, and only
-    then store the shadow snapshot and copies. Any exception drops every shadow row and makes
+    Every step that can fail runs before anything of the shadow arm is written: check the deadline
+    headroom (no build is started without it), build, digest, stamp (the SAME reproduction key,
+    scope and decision instant as the live rows), keep the twins of NEW live keys only, validate
+    them as the store will, check the deadline headroom again, and only then store the shadow
+    snapshot and copies. Any exception drops every shadow row and makes
     every new live key a hole named by the exception CLASS only (D-10), so a shadow failure never
     costs a live row.
     """
     live_keys = [_twin_key(row) for row in live_new]
     try:
+        # Before the build as well as after it: a build started with too little time left could
+        # itself carry the clock past the deadline, and the store would then refuse the LIVE rows.
+        _require_shadow_headroom(publish_by, clock)
         shadow = shadow_builder(bundle, artifacts_dir=artifacts_dir)
         if shadow.resolved is None:
             msg = (
@@ -463,7 +468,8 @@ def record_forward_slate(
             unless the store extends the anchored head. None checks no anchor (a ``tmp_path``
             ledger in a test).
         clock: The instant source for *publish_by*, shared by the check before the side files,
-            the shadow headroom check and the one inside ``commit_changes``;
+            the shadow headroom checks (before and after the shadow build) and the one inside
+            ``commit_changes``;
             ``datetime.now(UTC)`` when None.
         shadow_builder: The frozen shadow arm (``forward_ledger.shadow.build_shadow_bundle``),
             called as ``shadow_builder(bundle, artifacts_dir=...)``. None runs no shadow arm; it

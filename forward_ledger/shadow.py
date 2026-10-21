@@ -69,8 +69,9 @@ __all__ = [
     "build_shadow_bundle",
 ]
 
-# The least time that must remain before the slate's publish deadline once the shadow rows are
-# built: less, and the shadow rows are dropped so the live write cannot be refused for lateness.
+# The least time that must remain before the slate's publish deadline both before the shadow build
+# starts and once the shadow rows are built: less, and the shadow rows are dropped so the live write
+# cannot be refused for lateness.
 SHADOW_COMMIT_HEADROOM: timedelta = timedelta(seconds=120)
 
 
@@ -85,8 +86,9 @@ class ShadowPinMismatchError(Exception):
 class ShadowDeadlineHeadroomError(Exception):
     """Too little time is left before the slate's publish deadline to write the shadow rows.
 
-    Raised inside the runner's shadow block once the shadow rows are built and before any shadow
-    side file is written, so the shadow rows are dropped as holes and the live write goes ahead.
+    Raised inside the runner's shadow block before the shadow build starts (so no build begins
+    without the headroom) and again once the shadow rows are built and before any shadow side
+    file is written, so the shadow rows are dropped as holes and the live write goes ahead.
     The ledger store re-checks the deadline immediately before it writes
     (``forward_ledger.store.commit_changes``), so slow shadow work must never reach it.
     """
