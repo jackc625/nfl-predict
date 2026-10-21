@@ -17,9 +17,10 @@ Phase 34 private backup carries it and the ledger stays self-contained. The reco
 APPEND-ONLY, THROUGH THE WRITE SINK
 -----------------------------------
 Each record is one JSON line appended through ``data.write_sink.append_jsonl``, so a dry run
-records the intended write and persists nothing, and the test-write guard sees every write. An
-``install_intent`` and a bet-rule file are install-critical: they are flushed and fsynced before
-the install's ``latest.json`` swap can follow them, matching that manifest's own fsync.
+records the intended write and persists nothing, and the test-write guard sees every write. Every
+cadence-date event and every bet-rule file is flushed and fsynced: the ``install_intent`` and the
+bet rule before the install's ``latest.json`` swap can follow them, matching that manifest's own
+fsync, and the ``attempt`` and ``closed`` events because the decision path reads the same file.
 
 ONE RULE, ENFORCED BOTH WAYS
 ----------------------------
@@ -181,7 +182,16 @@ class RefitRecordFormatError(Exception):
 
     Inherits bare ``Exception`` (the ``data.graded_weeks`` rule): an unreadable record must never
     be degraded into "no records".
+
+    Attributes:
+        location: Which record, built by this module from the path and the line number only
+            (``ledger/refit/dates.jsonl line 7``), never from record content, so the daily run
+            may print and push it (WR-C05); None when no file is named.
     """
+
+    def __init__(self, message: str, *, location: str | None = None) -> None:
+        super().__init__(message)
+        self.location = location
 
 
 def refit_dir(ledger_dir: Path | str) -> Path:
@@ -230,7 +240,7 @@ def _refuse_a_torn_tail(path: Path) -> None:
         f"refit record {path.as_posix()} ends in a torn line, so nothing was appended; "
         f"{_TORN_LAST_LINE_REPAIR}"
     )
-    raise RefitRecordFormatError(msg)
+    raise RefitRecordFormatError(msg, location=f"{path.as_posix()} last line")
 
 
 def read_records(ledger_dir: Path | str, filename: str) -> list[dict[str, Any]]:
@@ -274,24 +284,25 @@ def _read_validated(
                     line=number,
                 )
                 break
-            raise RefitRecordFormatError(
-                _line_error(path, number, torn, detail)
-            ) from error
+            raise _line_error(path, number, torn, detail) from error
         if not isinstance(record, dict):
-            raise RefitRecordFormatError(
-                _line_error(path, number, torn, "is not one JSON object")
-            )
+            raise _line_error(path, number, torn, "is not one JSON object")
         problem = problem_of(record) if problem_of is not None else None
         if problem is not None:
-            raise RefitRecordFormatError(_line_error(path, number, torn, problem))
+            raise _line_error(path, number, torn, problem)
         records.append(record)
     return records
 
 
-def _line_error(path: Path, number: int, torn: bool, detail: str) -> str:
-    """The message naming the file, the line, the problem and the safe repair."""
+def _line_error(
+    path: Path, number: int, torn: bool, detail: str
+) -> RefitRecordFormatError:
+    """The error naming the file, the line, the problem and the safe repair."""
     advice = _TORN_LAST_LINE_REPAIR if torn else _DAMAGED_LINE_ADVICE
-    return f"refit record {path.as_posix()} line {number} {detail}; {advice}"
+    location = f"{path.as_posix()} line {number}"
+    return RefitRecordFormatError(
+        f"refit record {location} {detail}; {advice}", location=location
+    )
 
 
 def record_shadow_holes(
@@ -461,7 +472,9 @@ def append_date_event(ledger_dir: Path | str, event: Mapping[str, Any]) -> bool:
     * ``closed`` adds ``status`` (one of :data:`CLOSED_STATUSES`), ``closed_at_utc``,
       ``before_ids``, ``after_ids``.
 
-    An ``install_intent`` is appended durably (flush + fsync).
+    Every event is appended durably (flush + fsync): an ``install_intent`` must precede its swap
+    on disk, and once a re-fit generation is in force every decision run reads this file, so a
+    torn ``attempt`` or ``closed`` line after a power cut would stop the re-fit step (WR-C05).
 
     Returns:
         The sink's answer: False means it declined and nothing was written (Plan 37-11 refuses the
@@ -479,7 +492,7 @@ def append_date_event(ledger_dir: Path | str, event: Mapping[str, Any]) -> bool:
         DATES_FILENAME,
         event,
         kind=_RECORD_KIND,
-        durable=event["event"] == "install_intent",
+        durable=True,
     )
 
 

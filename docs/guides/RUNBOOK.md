@@ -803,8 +803,10 @@ nothing is ever published from a broken or shortened ledger, so restore from the
 The re-fit records under `ledger/refit/` are read strictly: a line that is not a complete, valid
 record is never treated as "no records". What you see while one is bad:
 
-- every daily run prints `REFIT= failed RefitRecordFormatError` and sends a
-  `FAILED: model re-fit crashed` push naming that class, until the file is repaired;
+- every daily run prints `REFIT= failed RefitRecordFormatError at ledger/refit/<file> line <n>`
+  and sends a `FAILED: model re-fit crashed` push naming that record, that class and this
+  repair, until the file is repaired (the path and the line number only, never the line's
+  content);
 - while the bad line is in `dates.jsonl` or `aa_weeks.jsonl`, the web cache build stops on it too
   (the Season page's comparison reads both), so the run ends `degraded` and the website is not
   pushed;

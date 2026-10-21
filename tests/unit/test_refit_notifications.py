@@ -461,6 +461,24 @@ def test_wrapper_error_is_a_crash() -> None:
     assert "Error: RuntimeError" in message.header_lines
 
 
+def test_an_unreadable_record_push_names_it_and_the_repair() -> None:
+    # WR-C05: a torn record never heals, so "nothing to run" would be wrong every day.
+    message = _one_message(
+        _clean_with_refit(
+            None,
+            refit_error="RefitRecordFormatError",
+            refit_error_location="ledger/refit/dates.jsonl line 7",
+        )
+    )
+
+    assert message.header_lines == (
+        "The re-fit record ledger/refit/dates.jsonl line 7 could not be read.",
+        "Error: RefitRecordFormatError",
+        'Next: repair that record (RUNBOOK.md, "A re-fit record that will not read"); '
+        "the re-fit stays stopped until it reads.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Plan 37-14 Task 2: one Saturday-email line per cadence-date outcome (D-16, SPEC R14)
 # ---------------------------------------------------------------------------

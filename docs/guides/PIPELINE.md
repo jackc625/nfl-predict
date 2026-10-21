@@ -388,7 +388,9 @@ uv run python scripts/daily_lock_pipeline.py
    - **Contract line.** `REFIT= <status> date=<date or none> check=<check or none>`, where the
      status is one of `waiting`, `not_due`, `no_refit_this_season`, `ran`, `ran late`,
      `refused`, `crashed` or `busy` (`refit.hook.REFIT_STATUSES`), or `REFIT= failed <Class>`
-     when the step itself raised. When it wrote records the web cache is rebuilt once more,
+     when the step itself raised (followed by `at ledger/refit/<file> line <n>` when a re-fit
+     record would not read; `RUNBOOK.md` has the repair). When it wrote records the web cache is
+     rebuilt once more,
      printed as `WEB_CACHE_AFTER_REFIT=`.
    - **Never the exit code.** A refused or crashed re-fit never changes the run's exit code; its
      date stays open and the next daily run retries it with the same cutoff. Every problem sends

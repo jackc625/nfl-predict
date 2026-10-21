@@ -303,4 +303,24 @@ def test_a_refit_failure_never_changes_the_exit_code(
         None,
         "RuntimeError",
     )
+    assert seen[-1].refit_error_location is None
     assert baseline == 0
+
+    # WR-C05: an unreadable record is named by its path and line, never by its message.
+    from refit.records import RefitRecordFormatError
+
+    def _torn(_report: RunReport, **_kwargs: Any) -> RefitOutcome:
+        msg = f"refit record ledger/refit/dates.jsonl line 7 {SECRET_TEXT}"
+        raise RefitRecordFormatError(msg, location="ledger/refit/dates.jsonl line 7")
+
+    monkeypatch.setattr(daily, "REFIT_HOOK", _torn)
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == baseline
+    out = capsys.readouterr().out
+    assert (
+        "REFIT= failed RefitRecordFormatError at ledger/refit/dates.jsonl line 7" in out
+    )
+    assert SECRET_TEXT not in out
+    assert (seen[-1].refit_error, seen[-1].refit_error_location) == (
+        "RefitRecordFormatError",
+        "ledger/refit/dates.jsonl line 7",
+    )

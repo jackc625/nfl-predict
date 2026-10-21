@@ -237,6 +237,8 @@ def test_a_malformed_dates_line_is_never_read_as_empty(tmp_path: Path) -> None:
     assert DATES_FILENAME in message
     assert "line 2" in message
     assert "copy the file aside, then delete that one line" in message
+    # WR-C05: the daily run prints and pushes this, built from the path and the line only.
+    assert raised.value.location == f"{path.as_posix()} line 2"
 
     path.write_text("not json\n" + good, encoding="utf-8")
     with pytest.raises(RefitRecordFormatError) as raised:
@@ -316,7 +318,7 @@ def test_a_well_formed_but_invalid_aa_line_is_refused_on_read(tmp_path: Path) ->
     assert "clean" in message
 
 
-def test_install_critical_writes_are_fsynced(
+def test_every_date_event_and_bet_rule_is_fsynced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[int] = []
@@ -328,21 +330,25 @@ def test_install_critical_writes_are_fsynced(
 
     monkeypatch.setattr(os, "fsync", recording_fsync)
 
+    # WR-C05: an attempt or closed line is read by every decision run once a generation is in
+    # force, so it is as durable as the install intent.
     append_date_event(tmp_path, _attempt("refused"))
-    assert calls == []
+    assert len(calls) == 1
+    append_date_event(tmp_path, _closed("not run"))
+    assert len(calls) == 2
 
     _, sha = write_bet_rule_record(tmp_path, _BET_RULE)
-    assert len(calls) == 1
+    assert len(calls) == 3
 
     append_date_event(tmp_path, _intent(sha, bet_rule_relpath(sha)))
-    assert len(calls) == 2
+    assert len(calls) == 4
 
     before = _dates_path(tmp_path).read_bytes()
     with active_sink(RecordingSink()) as sink:
         assert append_date_event(tmp_path, _intent(sha, bet_rule_relpath(sha))) is False
     assert _dates_path(tmp_path).read_bytes() == before
     assert len(sink.intended_writes) == 1
-    assert len(calls) == 2
+    assert len(calls) == 4
 
 
 def _git(repo: Path, *args: str) -> str:

@@ -831,6 +831,20 @@ def _run_refit(_report: RunReport, **kwargs: Any) -> RefitOutcome:
 REFIT_HOOK: Callable[..., RefitOutcome | None] = _run_refit
 
 
+def _unreadable_record(exc: Exception) -> str | None:
+    """The re-fit record *exc* could not read (path and line only, WR-C05), else None.
+
+    Only a ``RefitRecordFormatError`` names one; its ``location`` is built from the path and the
+    line number, never from record content or exception text (D-10). A raise there already
+    imported ``refit.records``, so the lazy import costs nothing.
+    """
+    try:
+        from refit.records import RefitRecordFormatError
+    except Exception:  # noqa: BLE001 - a broken re-fit module is reported by class elsewhere
+        return None
+    return exc.location if isinstance(exc, RefitRecordFormatError) else None
+
+
 def _refit_quietly(
     report: RunReport,
     *,
@@ -842,7 +856,8 @@ def _refit_quietly(
     """Call the re-fit side step; its outcome lands on *report*, and a raise NEVER propagates.
 
     Prints ``REFIT= <status> date=<date> check=<check>``, or ``REFIT= failed <Class>`` when the
-    side step itself raised (class name only, D-10). Only ``Exception`` is caught: a Ctrl+C, and
+    side step itself raised (class name only, D-10), followed by ``at <record> line <n>`` when the
+    raise was an unreadable re-fit record (WR-C05). Only ``Exception`` is caught: a Ctrl+C, and
     the test guard's ``pytest.fail``, still stop the process.
 
     Returns:
@@ -860,8 +875,16 @@ def _refit_quietly(
         )
     except Exception as exc:  # noqa: BLE001 - a re-fit never alters the run's result
         report.refit_error = _failure_text(exc)
-        print(f"REFIT= failed {_failure_text(exc)}")
-        logger.error("Re-fit side step failed", error=_failure_text(exc))
+        report.refit_error_location = _unreadable_record(exc)
+        where = (
+            f" at {report.refit_error_location}" if report.refit_error_location else ""
+        )
+        print(f"REFIT= failed {_failure_text(exc)}{where}")
+        logger.error(
+            "Re-fit side step failed",
+            error=_failure_text(exc),
+            record=report.refit_error_location,
+        )
         return False
     if outcome is None:
         return False

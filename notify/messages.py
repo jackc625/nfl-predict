@@ -671,17 +671,25 @@ def _refit_message(
         if attempt is not None:
             parts.append(attempt)
     if report.refit_error is not None:
-        parts.append(
-            (
-                "model re-fit crashed",
-                "model re-fit crashed",
-                [
-                    "The re-fit side step raised before it reported an outcome.",
-                    f"Error: {one_line_error(report.refit_error, None, secrets)}",
-                    "Next: nothing to run; the next daily run tries again.",
-                ],
-            )
-        )
+        error = f"Error: {one_line_error(report.refit_error, None, secrets)}"
+        if report.refit_error_location is not None:
+            # A torn or damaged record never heals by itself, so say which one and how (WR-C05).
+            lines = [
+                _safe_line(
+                    f"The re-fit record {report.refit_error_location} could not be read.",
+                    secrets,
+                ),
+                error,
+                'Next: repair that record (RUNBOOK.md, "A re-fit record that will not '
+                'read"); the re-fit stays stopped until it reads.',
+            ]
+        else:
+            lines = [
+                "The re-fit side step raised before it reported an outcome.",
+                error,
+                "Next: nothing to run; the next daily run tries again.",
+            ]
+        parts.append(("model re-fit crashed", "model re-fit crashed", lines))
     if not parts:
         return None
     message = PushMessage(

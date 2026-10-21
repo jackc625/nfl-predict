@@ -105,6 +105,9 @@ class RunReport:
         refit_ran: True when the re-fit side step was called (Phase 37, D-15, D-17).
         refit: The side step's ``RefitOutcome``, exactly as it returned it.
         refit_error: The class name of an exception that escaped the side step, if any.
+        refit_error_location: Which re-fit record could not be read, when that is what
+            escaped (``RefitRecordFormatError.location``: a path and a line number, never
+            record content), so the push names the record to repair (WR-C05).
     """
 
     run_date_et: date
@@ -139,6 +142,7 @@ class RunReport:
     refit_ran: bool = False
     refit: RefitOutcome | None = None
     refit_error: str | None = None
+    refit_error_location: str | None = None
 
     def record_exception(self, exc: BaseException) -> None:
         """Note the exception that stopped the run: its class, its first line, a Ctrl+C."""
