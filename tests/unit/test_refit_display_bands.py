@@ -321,6 +321,7 @@ def test_the_manual_rebuild_resolves_from_its_own_artifacts_dir(
         refit_panel=None,
         refit_aa_status=None,
         decided_edge_thresholds={},
+        refit_panel_failure=None,
     )
     monkeypatch.setattr(
         populate_cache_script, "read_bet_cache_sources", lambda *a, **kw: sources

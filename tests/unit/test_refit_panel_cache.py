@@ -34,11 +34,12 @@ import pytest
 from api import cache_schema
 from api.cache import populate_cache
 from api.cache_reader import open_cache_readonly
+from api.services import DataService, clear_cache
 from backtest.refit_preregistration_2026 import REFIT_SEASON
 from forward_ledger import cutover
 from forward_ledger.cache_sources import read_bet_cache_sources
 from forward_ledger.settle import load_silver_games
-from forward_ledger.store import read_entries
+from forward_ledger.store import append_rows, read_entries
 from refit import comparison
 from refit.aa import AAWeekResult, record_week
 from refit.records import append_date_event
@@ -443,6 +444,57 @@ def test_cache_sources_carry_the_panel(
     assert list(off.refit_aa_status.columns) == list(
         cache_schema.REFIT_AA_STATUS_COLUMNS
     )
+
+
+def test_a_panel_failure_never_stops_the_cache_build(
+    tmp_path: Path, switch_on: None
+) -> None:
+    """WR-D05: a display-only panel failure leaves /bets built and the panel "not available"."""
+    ledger = tmp_path / "ledger"
+    write_fixture_ledger(ledger)
+    # A shadow row stamped with an id outside the pin: panel_frames refuses it by name.
+    append_rows(
+        ledger,
+        [
+            live_row("2026_09_DAL_PHI", "wp", 0.4),
+            {
+                **shadow_row("2026_09_DAL_PHI", "wp", 0.4),
+                "model_artifact_id": "wp_not_pinned",
+            },
+        ],
+    )
+    output_dir = tmp_path / "outputs"
+    _write_outputs(output_dir, _replay_rows())
+
+    sources = read_bet_cache_sources(
+        output_dir, ledger_dir=ledger, silver_dir=write_silver(tmp_path / "silver")
+    )
+
+    assert sources.refit_panel_failure == "UnknownGenerationError"
+    assert sources.refit_panel.empty and sources.refit_aa_status.empty
+    assert not sources.bet_list.empty
+
+    empty = _empty_dirs(tmp_path)
+    db_path = tmp_path / "web_cache.duckdb"
+    populate_cache(
+        db_path=db_path,
+        artifacts_dir=empty,
+        outputs_dir=empty,
+        gold_dir=empty,
+        silver_dir=empty,
+        bet_list_df=sources.bet_list,
+        refit_panel_df=sources.refit_panel,
+        refit_aa_status_df=sources.refit_aa_status,
+        refit_panel_failure=sources.refit_panel_failure,
+    )
+
+    assert _read_table(db_path, "bet_list", ["game_id"]) != []
+    clear_cache()
+    conn = open_cache_readonly(db_path)
+    try:
+        assert DataService(conn).get_refit_panel(SEASON) is None
+    finally:
+        conn.close()
 
 
 def test_an_install_with_no_pairs_is_a_period_row(tmp_path: Path) -> None:

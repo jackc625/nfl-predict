@@ -38,8 +38,12 @@ With the switch on, the Season page panel's raw numbers and A/A status come from
 ``refit.comparison.panel_frames`` over the same verified ledger entries, the silver scores and the
 ledger's ``refit/`` records. An absent ``games.parquet`` reads as an empty games frame -- every
 period then counts 0 paired games -- the same degradation ``build_bet_week_schedule`` applies, so
-a cache build never fails for want of scores. With the switch off there is no forward ledger to
-compare, and both frames are empty.
+a cache build never fails for want of scores. A panel that cannot be computed (a stamped id no
+generation knows, an unreadable re-fit record, a period with no start date) never stops the build
+either (WR-D05): the panel is display-only, so its frames are left empty, the exception CLASS is
+logged and handed on as ``refit_panel_failure``, and the Season page says "not available" while
+``/bets`` and every other page are built as usual. Ledger chain failures stay fatal. With the
+switch off there is no forward ledger to compare, and both frames are empty.
 
 THE EDGE BANDS OF DECIDED GAMES (Phase 37, D-36)
 ------------------------------------------------
@@ -94,7 +98,13 @@ from forward_ledger.store import (
     verify_chain,
 )
 from refit.comparison import panel_frames
-from refit.generations import EdgeThresholds, decided_edge_thresholds
+from refit.generations import (
+    EdgeThresholds,
+    UnknownGenerationError,
+    decided_edge_thresholds,
+)
+from refit.records import RefitRecordFormatError
+from utils import get_logger
 
 __all__ = [
     "BetCacheSources",
@@ -102,6 +112,16 @@ __all__ = [
     "LedgerAbsentAfterCutoverError",
     "read_bet_cache_sources",
 ]
+
+logger = get_logger(__name__)
+
+# The panel's own failures (refit.comparison.panel_frames): an unknown stamped id, an unreadable
+# re-fit record, and the ValueError of a period whose cadence date has no event.
+_PANEL_FAILURES: tuple[type[Exception], ...] = (
+    UnknownGenerationError,
+    RefitRecordFormatError,
+    ValueError,
+)
 
 # The context stamped when no verdict scope is declared (or the switch is off).
 _UNDECLARED: dict[str, Any] = {"declared": False, "season": None, "start_week": None}
@@ -162,6 +182,8 @@ class BetCacheSources:
         decided_edge_thresholds: ``game_id -> thresholds`` of the generation whose live bet rule
             decided each game (``refit.generations.decided_edge_thresholds``, D-36). Defaults to
             empty (the switch off): every game is then banded with the in-force generation.
+        refit_panel_failure: The exception class when the panel could not be computed (WR-D05);
+            the two panel frames are then empty. None when it was computed.
     """
 
     bet_list: pd.DataFrame
@@ -176,6 +198,7 @@ class BetCacheSources:
     decided_edge_thresholds: dict[str, EdgeThresholds | None] = field(
         default_factory=dict
     )
+    refit_panel_failure: str | None = None
 
 
 def _empty_corrections() -> pd.DataFrame:
@@ -261,6 +284,21 @@ def _panel_games(silver_dir: Path) -> pd.DataFrame:
     return load_silver_games(silver_dir)
 
 
+def _refit_panel(
+    entries: Sequence[LedgerEntry], silver_dir: Path, ledger_dir: Path
+) -> tuple[pd.DataFrame, pd.DataFrame, str | None]:
+    """The panel's two frames, or two empty frames and the exception class when it fails."""
+    try:
+        panel, aa_status = panel_frames(entries, _panel_games(silver_dir), ledger_dir)
+    except _PANEL_FAILURES as error:
+        failure = type(error).__name__
+        logger.warning(
+            "refit panel not computed; the page says not available", error_class=failure
+        )
+        return _empty_refit_panel(), _empty_refit_aa_status(), failure
+    return panel, aa_status, None
+
+
 def _verdict_context() -> dict[str, Any]:
     """The committed declaration's season and start week; undeclared while none exists.
 
@@ -294,8 +332,8 @@ def read_bet_cache_sources(
         LedgerAbsentAfterCutoverError: switch on and the ledger file does not exist.
         forward_ledger.store.LedgerChainBrokenError: switch on and the chain does not verify.
         forward_ledger.store.LedgerFormatError: switch on and a ledger line cannot be read.
-        Everything ``read_bet_list_cache_sources`` raises for a corrupt artifact, and everything
-        ``refit.comparison.panel_frames`` raises for an unknown model id or a bad re-fit record.
+        Everything ``read_bet_list_cache_sources`` raises for a corrupt artifact. A panel failure
+        never raises here: it is reported as ``refit_panel_failure`` (WR-D05).
     """
     if not forward_rows_go_to_ledger():
         today = read_bet_list_cache_sources(output_dir, silver_dir)
@@ -313,8 +351,8 @@ def read_bet_cache_sources(
     entries = _verified_ledger_entries(Path(ledger_dir))
     union = _union(replay, entries_to_frame(entries))
     corrections = _in_force_corrections(entries)
-    refit_panel, refit_aa_status = panel_frames(
-        entries, _panel_games(Path(silver_dir)), Path(ledger_dir)
+    refit_panel, refit_aa_status, refit_panel_failure = _refit_panel(
+        entries, Path(silver_dir), Path(ledger_dir)
     )
     return BetCacheSources(
         bet_list=union,
@@ -327,4 +365,5 @@ def read_bet_cache_sources(
         refit_panel=refit_panel,
         refit_aa_status=refit_aa_status,
         decided_edge_thresholds=decided_edge_thresholds(entries, Path(ledger_dir)),
+        refit_panel_failure=refit_panel_failure,
     )

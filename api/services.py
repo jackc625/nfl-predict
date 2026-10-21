@@ -60,6 +60,7 @@ from api.cache_schema import (
     PREDICTIONS_TABLE_COLUMNS,
     REFIT_AA_STATUS_COLUMNS,
     REFIT_PANEL_COLUMNS,
+    REFIT_PANEL_FAILED_KEY,
     REFIT_PANEL_PERIOD,
     bet_list_populated_at_key,
     parse_current_slate,
@@ -1296,9 +1297,10 @@ class DataService:
 
         A selection, never a metric: no average, no gap and no test is worked out here (UIAP-01,
         D-13). None -- never an empty panel -- when the tables cannot be read (a cache that
-        predates them, or a failed query), so the page says "not available" rather than showing
-        nothing as if nothing had happened. Bound parameters only; *season* is already
-        whitelisted by the route.
+        predates them, or a failed query) or the cache build could not compute the panel
+        (``REFIT_PANEL_FAILED_KEY`` is stamped, WR-D05), so the page says "not available" rather
+        than showing nothing as if nothing had happened. Bound parameters only; *season* is
+        already whitelisted by the route.
         """
         if season is None:
             return None
@@ -1314,6 +1316,14 @@ class DataService:
 
     def _get_refit_panel_uncached(self, season: int) -> dict[str, Any] | None:
         try:
+            failed = self._conn.execute(
+                "SELECT value FROM cache_meta WHERE key = ?", [REFIT_PANEL_FAILED_KEY]
+            ).fetchone()
+            if failed is not None:
+                logger.warning(
+                    "refit panel was not computed at cache build", error_class=failed[0]
+                )
+                return None
             panel = self._conn.execute(
                 f"SELECT {_REFIT_PANEL_COLUMNS_SQL} FROM refit_panel WHERE season = ? "
                 f"ORDER BY {_REFIT_PANEL_ORDER_SQL}",

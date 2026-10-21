@@ -389,6 +389,11 @@ FORWARD_VERDICT_START_WEEK_KEY = "forward_verdict_start_week"
 BETTING_SIM_PROVENANCE_KEY = "betting_sim_provenance"
 BETTING_SIM_VALIDATION_TYPE_KEY = "betting_sim_validation_type"
 
+# Stamped ONLY when the re-fit comparison panel could not be computed at cache build (Phase 37,
+# WR-D05); the value is the exception class. The rest of the cache is built as usual, and the
+# Season page says the comparison is not available instead of showing an empty panel.
+REFIT_PANEL_FAILED_KEY = "refit_panel_failed"
+
 # The PREFIX of the cache_meta keys stamping when a week's bet list was last materialized. It is
 # a prefix and not a key: see ``bet_list_populated_at_key``.
 BET_LIST_POPULATED_AT_KEY = "bet_list_populated_at"

@@ -131,6 +131,7 @@ def _rebuild(args: argparse.Namespace) -> None:
         decided_edge_thresholds_by_game=sources.decided_edge_thresholds,
         refit_panel_df=sources.refit_panel,
         refit_aa_status_df=sources.refit_aa_status,
+        refit_panel_failure=sources.refit_panel_failure,
     )
 
 

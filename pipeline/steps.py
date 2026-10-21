@@ -1316,6 +1316,7 @@ def populate_web_cache_unlocked() -> None:
         # The Season page's re-fit comparison panel (Phase 37), computed by the same reader.
         refit_panel_df=sources.refit_panel,
         refit_aa_status_df=sources.refit_aa_status,
+        refit_panel_failure=sources.refit_panel_failure,
     )
 
 

@@ -67,6 +67,7 @@ from api.cache_schema import (
     PUSH_TIME_KEY,
     REFIT_AA_STATUS_COLUMNS,
     REFIT_PANEL_COLUMNS,
+    REFIT_PANEL_FAILED_KEY,
     REPLAY_VALIDATION_TYPE_SEASONS,
     VALIDATION_TYPE_CLEAN_HOLDOUT,
     VALIDATION_TYPE_CONTAMINATED,
@@ -3119,6 +3120,7 @@ def populate_cache(
     decided_edge_thresholds_by_game: Mapping[str, EdgeThresholds | None] | None = None,
     refit_panel_df: pd.DataFrame | None = None,
     refit_aa_status_df: pd.DataFrame | None = None,
+    refit_panel_failure: str | None = None,
 ) -> None:
     """Populate the DuckDB web cache from artifacts and backtest outputs.
 
@@ -3208,6 +3210,9 @@ def populate_cache(
             ``None`` leaves the ``refit_panel`` table present and empty.
         refit_aa_status_df: The A/A status rows (``REFIT_AA_STATUS_COLUMNS``) from the same call.
             ``None`` leaves the ``refit_aa_status`` table present and empty.
+        refit_panel_failure: The exception class when the panel could not be computed (WR-D05),
+            stamped as ``REFIT_PANEL_FAILED_KEY`` so the Season page says "not available"; the
+            rest of the cache is built as usual. ``None`` (the panel was computed) stamps nothing.
     """
     tmp_path = db_path.with_suffix(".tmp.duckdb")
     logger.info(
@@ -3423,6 +3428,8 @@ def populate_cache(
             (DATA_FORMAT_VERSION_KEY, str(DATA_FORMAT_VERSION), now),
             *_last_publish_stamp(db_path),
         ]
+        if refit_panel_failure is not None:
+            meta_rows.append((REFIT_PANEL_FAILED_KEY, refit_panel_failure, now))
         conn.executemany(
             "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
             meta_rows,
