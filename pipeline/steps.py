@@ -1275,8 +1275,11 @@ def populate_web_cache_unlocked() -> None:
     """
     from api.cache import populate_cache
     from forward_ledger.cache_sources import read_bet_cache_sources
+    from forward_ledger.store import LEDGER_DIR
+    from refit.generations import in_force_edge_thresholds
 
     silver_dir = Path("data/silver")
+    artifacts_dir = Path("artifacts")
     # Read the DURABLE artifacts and the schedule HERE and hand over frames. ``api/cache.py`` may
     # import no ``backtest`` module (UIAP-01), so it cannot know the artifact names or derive a
     # per-game freeze; this module already imports ``backtest`` and is the permitted seam. The
@@ -1285,10 +1288,16 @@ def populate_web_cache_unlocked() -> None:
     # The ONE reader shared with scripts/populate_cache.py; it follows the forward-rows cutover
     # switch (Phase 34) and reads exactly today's sources while the switch is off.
     sources = read_bet_cache_sources(_bet_list_output_dir(), silver_dir=silver_dir)
+    # The website's edge bands (Phase 37, D-36): a game a live bet rule decided keeps the band of
+    # the generation that decided it (sources.decided_edge_thresholds); every other game follows
+    # the in-force generation, resolved HERE from the same artifacts directory handed to
+    # populate_cache, because api/ imports no refit module. Generation 0 answers None: the row-19
+    # bands, exactly as before.
+    edge_thresholds = in_force_edge_thresholds(artifacts_dir, LEDGER_DIR)
 
     populate_cache(
         db_path=_web_cache_db_path(),
-        artifacts_dir=Path("artifacts"),
+        artifacts_dir=artifacts_dir,
         outputs_dir=Path("outputs/backtest"),
         gold_dir=Path("data/gold"),
         silver_dir=silver_dir,
@@ -1302,6 +1311,12 @@ def populate_web_cache_unlocked() -> None:
         bet_graded_outcomes_df=sources.graded_outcomes,
         forward_verdict_context=sources.verdict_context,
         bet_week_results_df=sources.week_results,
+        edge_thresholds_by_target=edge_thresholds,
+        decided_edge_thresholds_by_game=sources.decided_edge_thresholds,
+        # The Season page's re-fit comparison panel (Phase 37), computed by the same reader.
+        refit_panel_df=sources.refit_panel,
+        refit_aa_status_df=sources.refit_aa_status,
+        refit_panel_failure=sources.refit_panel_failure,
     )
 
 

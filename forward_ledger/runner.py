@@ -8,9 +8,16 @@ daily run's critical recommend step. In order:
 
   1. resolve the production artifact ids ONCE (``models.artifacts.resolve_production_artifacts``)
      and build the week's decision bundle with them, so a ``latest.json`` swap mid-run cannot
-     mis-stamp a row (Plan 34-05);
+     mis-stamp a row (Plan 34-05). The ids name the generation in force
+     (``refit.generations.in_force_generation``, D-19): the pin's ids are generation 0 and the
+     builder is called exactly as before Phase 37 (D-04); a re-fit generation's ids decide with
+     that generation's own bet-rule record (its fits, no row-19 overlay, and its edge thresholds,
+     ``backtest.weekly_bet_list.load_bet_rule_record``), and ids no install records are refused
+     by name before anything is decided or written (research Pitfall 1);
   2. compute the reproduction key and the decision-snapshot digest IN MEMORY (Plan 34-08);
-  3. stamp the rows at the one stamping site (``forward_ledger.stamps``);
+  3. stamp the rows at the one stamping site (``forward_ledger.stamps``) with the generation's
+     recipe -- ``recipe-2026-row19-v1`` for generation 0, ``recipe-2026-refit-v1`` with every
+     installed generation's ids for a re-fit generation (D-20);
   4. first pick stands (D-13, SPEC LDGR-01): an identical repeat is skipped; a row that reached a
      DIFFERENT pick for a stored key is refused, logged by name (``first_pick_refusal``) and
      printed (``LEDGER_REFUSED=``) -- the run does not fail, and new keys still append;
@@ -23,9 +30,10 @@ daily run's critical recommend step. In order:
      models and bet rule (``forward_ledger.shadow``), stamped ``arm = shadow`` with the SAME
      reproduction key, decision instant and verdict scope, kept only for keys whose live row is
      new, pre-validated, then given its own snapshot and copies. ANY shadow failure -- including
-     too little time left before the deadline (``SHADOW_COMMIT_HEADROOM``) -- drops every shadow
-     row and records each new live key as a hole named by the exception class; it never blocks,
-     delays or changes a live row;
+     too little time left before the deadline (``SHADOW_COMMIT_HEADROOM``, checked before the
+     shadow build starts, so a build is never begun without it, and again after the build) --
+     drops every shadow row and records each new live key as a hole named by the exception
+     class; it never blocks, delays or changes a live row;
   8. ONE ``commit_changes`` carrying the live rows first and then the shadow rows, with the same
      deadline, which re-reads the clock immediately before the replace -- so an interrupted write
      leaves both arms' rows of the run or neither. Once it wrote, every hole is appended to
@@ -64,7 +72,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
-from backtest.weekly_bet_list import DecisionBundle, build_weekly_decision_bundle
+from backtest.weekly_bet_list import (
+    DecisionBundle,
+    build_weekly_decision_bundle,
+    load_bet_rule_record,
+)
 from data.upstream_live import load_live_manifest
 from forward_ledger.anchor import read_local_anchor
 from forward_ledger.artifacts_copy import (
@@ -100,7 +112,7 @@ from forward_ledger.snapshots import (
     compute_snapshot_digest,
     write_decision_snapshot,
 )
-from forward_ledger.stamps import stamp_ledger_rows
+from forward_ledger.stamps import IN_FORCE_RECIPE_ID, stamp_ledger_rows
 from forward_ledger.store import (
     LEDGER_DIR,
     LEDGER_SEASON,
@@ -115,10 +127,17 @@ from forward_ledger.store import (
     read_entries,
 )
 from forward_ledger.sync import SyncOutcome, publish_ledger_state
+from refit.generations import (
+    GENERATION_ZERO,
+    Generation,
+    in_force_generation,
+    installed_generations,
+)
 from refit.records import record_shadow_holes
 from utils.logging_config import get_logger
 
 if TYPE_CHECKING:
+    from models.artifacts import ResolvedArtifacts
     from pipeline.daily_steps import DailySlate
 
 __all__ = [
@@ -219,6 +238,50 @@ def _resolve_once(artifacts_dir: Path) -> Any:
     return resolve_production_artifacts(artifacts_dir)
 
 
+def _is_refit(generation: Generation | None) -> bool:
+    """True for a re-fit generation; False for generation 0 and for no resolved ids."""
+    return generation is not None and generation.number != GENERATION_ZERO
+
+
+def _generation_bet_rule(generation: Generation | None) -> dict[str, Any]:
+    """The builder keywords of a re-fit generation's own bet rule; none for generation 0 (D-04).
+
+    The record is loaded (and its bytes checked against its name) BEFORE anything is decided, so
+    a bet-rule file edited after install leaves nothing written.
+    """
+    if generation is None or not _is_refit(generation):
+        return {}
+    fits, thresholds = load_bet_rule_record(generation.bet_rule_path)
+    return {
+        "chain_fit_path": generation.bet_rule_path,
+        "fits": fits,
+        "edge_thresholds": thresholds,
+    }
+
+
+def _live_recipe(generation: Generation | None) -> str:
+    """The recipe a live row is stamped with: the generation's for a re-fit, else today's."""
+    if generation is None or not _is_refit(generation):
+        return IN_FORCE_RECIPE_ID
+    return generation.recipe
+
+
+def _registered_ids(
+    generation: Generation | None, ledger: Path
+) -> tuple[ResolvedArtifacts, ...]:
+    """Every installed re-fit generation's ids (the stamping check of a re-fit row); none else.
+
+    Read as ``in_force_generation`` reads it: a torn last line of ``dates.jsonl`` is left out.
+    """
+    if not _is_refit(generation):
+        return ()
+    return tuple(
+        installed.ids
+        for installed in installed_generations(ledger, skip_torn_tail=True)
+        if installed.number != GENERATION_ZERO
+    )
+
+
 def _verdict_scope_or_none() -> VerdictScope | None:
     """The committed declaration, or None while none exists (a malformed one still raises)."""
     try:
@@ -285,15 +348,19 @@ def _shadow_rows(
 ) -> tuple[list[dict[str, Any]], tuple[ShadowHole, ...]]:
     """The shadow twins of the new live rows, ready to commit, and the holes. NEVER raises.
 
-    Every step that can fail runs before anything of the shadow arm is written: build, digest,
-    stamp (the SAME reproduction key, scope and decision instant as the live rows), keep the twins
-    of NEW live keys only, validate them as the store will, check the deadline headroom, and only
-    then store the shadow snapshot and copies. Any exception drops every shadow row and makes
+    Every step that can fail runs before anything of the shadow arm is written: check the deadline
+    headroom (no build is started without it), build, digest, stamp (the SAME reproduction key,
+    scope and decision instant as the live rows), keep the twins of NEW live keys only, validate
+    them as the store will, check the deadline headroom again, and only then store the shadow
+    snapshot and copies. Any exception drops every shadow row and makes
     every new live key a hole named by the exception CLASS only (D-10), so a shadow failure never
     costs a live row.
     """
     live_keys = [_twin_key(row) for row in live_new]
     try:
+        # Before the build as well as after it: a build started with too little time left could
+        # itself carry the clock past the deadline, and the store would then refuse the LIVE rows.
+        _require_shadow_headroom(publish_by, clock)
         shadow = shadow_builder(bundle, artifacts_dir=artifacts_dir)
         if shadow.resolved is None:
             msg = (
@@ -401,7 +468,8 @@ def record_forward_slate(
             unless the store extends the anchored head. None checks no anchor (a ``tmp_path``
             ledger in a test).
         clock: The instant source for *publish_by*, shared by the check before the side files,
-            the shadow headroom check and the one inside ``commit_changes``;
+            the shadow headroom checks (before and after the shadow build) and the one inside
+            ``commit_changes``;
             ``datetime.now(UTC)`` when None.
         shadow_builder: The frozen shadow arm (``forward_ledger.shadow.build_shadow_bundle``),
             called as ``shadow_builder(bundle, artifacts_dir=...)``. None runs no shadow arm; it
@@ -414,10 +482,17 @@ def record_forward_slate(
     Raises:
         backtest.weekly_bet_list.PublishDeadlinePassedError: the write was ready after
             *publish_by*; nothing was written to ``ledger/`` -- no row, snapshot or copy.
+        refit.generations.UnknownGenerationError: ``latest.json`` names ids that are neither the
+            pin's nor an installed generation's; nothing was decided or written.
+        refit.records.RefitRecordFormatError: the generation records, or the generation's
+            bet-rule file, cannot be read as written; nothing was decided or written.
         Everything the decision, stamping and ``commit_changes`` refuse, by name.
     """
     emit = log or record_event
     ledger = Path(ledger_dir)
+    resolved = _resolve_once(Path(artifacts_dir))
+    # No ids (no latest.json) keeps today's path, which refuses the stamp by name below.
+    generation = None if resolved is None else in_force_generation(resolved, ledger)
     bundle = bundle_builder(
         slate.season,
         slate.week,
@@ -426,7 +501,8 @@ def record_forward_slate(
         silver_dir=silver_dir,
         now=decided_at,
         excluded_game_ids=frozenset(excluded_game_ids),
-        resolved=_resolve_once(Path(artifacts_dir)),
+        resolved=resolved,
+        **_generation_bet_rule(generation),
     )
     frame: pd.DataFrame = bundle.frame
     if frame.empty:
@@ -458,6 +534,8 @@ def record_forward_slate(
         snapshot_digest=stamped_digest,
         scope=scope,
         ledger_has_verdict_rows=ledger_has_verdict_rows,
+        recipe_id=_live_recipe(generation),
+        registered_ids=_registered_ids(generation, ledger),
     )
     decided = cast("pd.DataFrame", stamped[list(IMMUTABLE_COLUMNS_V1)])
     rows = decided.to_dict(orient="records")

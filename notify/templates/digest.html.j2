@@ -13,8 +13,9 @@
       - tracker totals: /bets' six labels; Hit rate "%.1f" of the fraction x 100 plus "%", Return
         (flat, units) "%+.3f"; a NULL or NaN figure is "not measured", never a number.
     Order (SPEC R4): status header, bets, games, last week, season to date, the closing readings
-    and first-pick refusals (item 7, D-23: inputs.closing), the upstream data changes and corrected
-    grades (D-03, D-21: inputs.data_changes; both from notify.digest_sections), then the
+    and first-pick refusals (item 7, D-23: inputs.closing), the model re-fits when there is any
+    news (Phase 37, SPEC R14, D-16: inputs.refit), the upstream data changes and corrected grades
+    (D-03, D-21: inputs.data_changes; all three from notify.digest_sections), then the
     not-advice line LAST. Each value a test reads sits in a data-* hook.
 
     ASCII only, no emoji (CLAUDE.md hard constraint). -#}
@@ -155,6 +156,17 @@
 {%- else %}
 <p data-digest-closing-empty style="margin:0;">{{ inputs.closing.empty_line }}</p>
 {%- endif %}
+</div>
+{%- endif %}
+
+{%- if inputs.refit is not none %}
+<h2 style="{{ H2 }}">Model re-fits</h2>
+<div data-digest-refit>
+<ul style="margin:0 0 0 20px;padding:0;">
+{%- for line in inputs.refit.lines %}
+<li data-digest-refit-line>{{ line }}</li>
+{%- endfor %}
+</ul>
 </div>
 {%- endif %}
 

@@ -568,11 +568,17 @@ def _notifications_inert_unless_a_test_turns_them_on(
     The digest's data-change section (Plan 35-14) reads the sealed probe log and the live manifest
     through ``notify.digest_sections.PROBE_LOG_PATH`` / ``MANIFEST_DIR``; here both point at paths
     that never exist, so no test reads ``config/upstream_probe_log.jsonl`` or
-    ``config/upstream_live``. A section test points them at its own ``tmp_path`` files.
+    ``config/upstream_live``. A section test points them at its own ``tmp_path`` files. The re-fit
+    section (Plan 37-14) reads ``notify.digest_sections.REFIT_LEDGER_DIR``, pointed at an absent
+    ledger the same way, so no test reads the production ``ledger/refit/`` records.
 
     The daily run's end-of-run website push (Phase 36, Plan 36-07) is a no-op here too, so no
     unrelated run writes a push-log record; a wiring test restores
     ``monkeypatch.setattr(daily, "SITE_PUSH", daily._push_site)`` itself.
+
+    The daily run's re-fit side step (Phase 37, Plan 37-13) is a no-op here too: the hook builds
+    gold and trains models, so no unrelated run may reach it; a wiring test replaces
+    ``REFIT_HOOK`` with its own recorder, or restores ``daily._run_refit`` itself.
     """
     import pandas as pd
 
@@ -583,6 +589,9 @@ def _notifications_inert_unless_a_test_turns_them_on(
     monkeypatch.setattr(daily_lock_pipeline, "NOTIFY_END_OF_RUN", lambda _report: None)
     monkeypatch.setattr(daily_lock_pipeline, "SITE_PUSH", lambda _report: None)
     monkeypatch.setattr(daily_lock_pipeline, "SEASON_WINDOW", lambda _d: "unknown")
+    monkeypatch.setattr(
+        daily_lock_pipeline, "REFIT_HOOK", lambda _report, **_kwargs: None
+    )
     monkeypatch.setattr(
         capture_closing_lines, "NOTIFY_CLOSING_FAILURE", lambda *_a, **_k: None
     )
@@ -596,6 +605,7 @@ def _notifications_inert_unless_a_test_turns_them_on(
         digest_sections, "PROBE_LOG_PATH", absent / "upstream_probe_log.jsonl"
     )
     monkeypatch.setattr(digest_sections, "MANIFEST_DIR", absent / "upstream_live")
+    monkeypatch.setattr(digest_sections, "REFIT_LEDGER_DIR", absent / "ledger")
 
 
 # 34-REVIEW WR-32: the ledger's real-git tests run ``git`` directly over tmp_path repositories.

@@ -2,7 +2,7 @@
 
 On 2026-10-04 the public-repo facelift moved most repo-root reports into two folders:
 ``docs/guides/`` (how the system works and how to run it) and ``docs/records/`` (the paper
-trail of readouts, audits and diagnoses). Six history-anchored records stay at the repo root
+trail of readouts, audits and diagnoses). Seven history-anchored records stay at the repo root
 and must never move: their tamper evidence asks git for the last commit that touched each file
 AT ITS ROOT PATH, and a move would make the move commit that last commit.
 
@@ -60,6 +60,7 @@ ROOT_RECORDS: tuple[str, ...] = (
     "MOS-DECODE-COMPARISON.md",
     "NEUTRAL-HFA-BET-RULE-CORRECTION.md",
     "PROFITABILITY-PREREGISTRATION.md",
+    "ROLLING-REFIT-PREREGISTRATION.md",
 )
 
 
@@ -71,7 +72,7 @@ def doc_path(name: str) -> Path:
 
     Returns:
         ``docs/guides/<name>`` or ``docs/records/<name>`` for a moved report, otherwise
-        ``<repo root>/<name>`` (README.md, CLAUDE.md, the six ROOT_RECORDS, and any
+        ``<repo root>/<name>`` (README.md, CLAUDE.md, the seven ROOT_RECORDS, and any
         repo-relative path such as ``config/gate.toml``).
     """
     if name in GUIDES:

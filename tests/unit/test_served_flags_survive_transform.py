@@ -49,6 +49,7 @@ from models.trainers.wp_trainer import (
     _ImputeAndCarryRaw,
 )
 from scripts.build_features import LEVEL_PRESERVED_COLUMN_SUFFIX
+from tests.live_manifest_record import recorded_live_manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS_ROOT = REPO_ROOT / "artifacts"
@@ -119,10 +120,14 @@ class TestWpFlagsSurviveTheServedPipeline:
         )
         assert flags_survive_by_position(frame, out)
         # The served set carries no flag today; if one is ever selected it is checked above.
-        assert flag_columns(features) == [], (
-            "a coverage flag is now in the served WP feature set; the position check above "
-            "covers it, update this finding"
-        )
+        # This is a finding about the row-19 models, so it is asserted only while they serve
+        # (recorded generation 0, Plan 37-20); after a re-fit the position check above covers
+        # any flag the re-fit's own selection picks.
+        if recorded_live_manifest()[0] == 0:
+            assert flag_columns(features) == [], (
+                "a coverage flag is now in the served WP feature set; the position check above "
+                "covers it, update this finding"
+            )
 
     def test_every_gold_flag_survives_the_real_wp_pipeline_on_real_gold(
         self, gold, served

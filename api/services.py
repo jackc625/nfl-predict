@@ -58,6 +58,10 @@ from api.cache_schema import (
     FORWARD_VERDICT_SEASON_KEY,
     FORWARD_VERDICT_START_WEEK_KEY,
     PREDICTIONS_TABLE_COLUMNS,
+    REFIT_AA_STATUS_COLUMNS,
+    REFIT_PANEL_COLUMNS,
+    REFIT_PANEL_FAILED_KEY,
+    REFIT_PANEL_PERIOD,
     bet_list_populated_at_key,
     parse_current_slate,
     parse_season_range,
@@ -165,6 +169,16 @@ _BET_WEEK_RESULTS_COLUMNS_SQL = ", ".join(BET_WEEK_RESULTS_COLUMNS)
 # (``backtest.bet_tracker.graded_outcome_rows``) sorts the rows into before they are written.
 _BET_GRADED_OUTCOMES_ORDER_SQL = (
     "provenance, validation_type, season, week, game_id, target, arm"
+)
+
+# The /season comparison panel's two tables (Phase 37, D-12..D-14), each read with the writer's own
+# column list. The panel's rows come back in page order: Winner, Spread, Totals (the order of the
+# page's KPI tiles), then the period rows before the season-to-date row, then by period.
+_REFIT_PANEL_COLUMNS_SQL = ", ".join(REFIT_PANEL_COLUMNS)
+_REFIT_AA_STATUS_COLUMNS_SQL = ", ".join(REFIT_AA_STATUS_COLUMNS)
+_REFIT_PANEL_ORDER_SQL = (
+    "CASE target WHEN 'wp' THEN 0 WHEN 'ats' THEN 1 WHEN 'ou' THEN 2 ELSE 3 END, target, "
+    "CASE WHEN row_kind = ? THEN 0 ELSE 1 END, period_index NULLS LAST"
 )
 
 
@@ -1266,6 +1280,76 @@ class DataService:
         return sorted(
             rows, key=lambda row: BET_WEEK_CLASS_ORDER.index(row["counting_class"])
         )
+
+    # ------------------------------------------------------------------
+    # Re-fitting vs standing still (Phase 37 -- D-12..D-14, SPEC R13)
+    # ------------------------------------------------------------------
+
+    def get_refit_panel(self, season: int | None) -> dict[str, Any] | None:
+        """Return *season*'s stored comparison panel and A/A status for ``/season``, or None.
+
+        ``{"rows": [...], "aa_weeks": [...], "any_refit": bool}``. ``rows`` are the
+        ``refit_panel`` rows as ``refit.comparison.period_summary`` wrote them at cache build, in
+        page order (Winner, Spread, Totals; the period rows by period, then the season-to-date
+        row). ``aa_weeks`` are the ``refit_aa_status`` rows by week. ``any_refit`` says whether
+        a row has ``period_index`` >= 1: Plan 37-18 writes one from the install on, before its
+        first completed pair, so it follows the INSTALLED state rather than measured rows.
+
+        A selection, never a metric: no average, no gap and no test is worked out here (UIAP-01,
+        D-13). None -- never an empty panel -- when the tables cannot be read (a cache that
+        predates them, or a failed query) or the cache build could not compute the panel
+        (``REFIT_PANEL_FAILED_KEY`` is stamped, WR-D05), so the page says "not available" rather
+        than showing nothing as if nothing had happened. Bound parameters only; *season* is
+        already whitelisted by the route.
+        """
+        if season is None:
+            return None
+        key = ("refit_panel", season)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_refit_panel_uncached(season)
+        if result is None:
+            return None  # an unreadable panel is never cached
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_refit_panel_uncached(self, season: int) -> dict[str, Any] | None:
+        try:
+            failed = self._conn.execute(
+                "SELECT value FROM cache_meta WHERE key = ?", [REFIT_PANEL_FAILED_KEY]
+            ).fetchone()
+            if failed is not None:
+                logger.warning(
+                    "refit panel was not computed at cache build", error_class=failed[0]
+                )
+                return None
+            panel = self._conn.execute(
+                f"SELECT {_REFIT_PANEL_COLUMNS_SQL} FROM refit_panel WHERE season = ? "
+                f"ORDER BY {_REFIT_PANEL_ORDER_SQL}",
+                [season, REFIT_PANEL_PERIOD],
+            )
+            panel_columns = [desc[0] for desc in panel.description]
+            rows = [dict(zip(panel_columns, values)) for values in panel.fetchall()]
+            aa = self._conn.execute(
+                f"SELECT {_REFIT_AA_STATUS_COLUMNS_SQL} FROM refit_aa_status WHERE season = ? "
+                "ORDER BY week, evaluated_at NULLS LAST",
+                [season],
+            )
+            aa_columns = [desc[0] for desc in aa.description]
+            aa_weeks = [dict(zip(aa_columns, values)) for values in aa.fetchall()]
+        except duckdb.Error:
+            # The cache predates Plan 37-18 (no panel tables), or the query failed.
+            logger.warning("refit_panel tables not available in cache")
+            return None
+        return {
+            "rows": rows,
+            "aa_weeks": aa_weeks,
+            "any_refit": any(
+                row["period_index"] is not None and row["period_index"] >= 1
+                for row in rows
+            ),
+        }
 
     def get_betting_sim_evidence_pair(self) -> tuple[str, str] | None:
         """Return the betting simulation's ``(provenance, validation_type)`` pair, or None.

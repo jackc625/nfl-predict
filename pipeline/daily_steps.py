@@ -40,6 +40,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -305,6 +306,41 @@ def build_slate_weather_features(slate: DailySlate) -> None:
     and the run log (the daily entry point prints a ``WEATHER_UNKNOWN`` line for each). An
     unplayed game with no capture outside the slate is out of scope: it is not in tonight's gold
     either (it has no Elo row).
+
+    The build itself is :func:`build_weather_features_through`, which a re-fit attempt's data
+    preparation calls with the same arguments (Phase 37 D-37).
+    """
+    build_weather_features_through(
+        slate.season,
+        slate.game_ids,
+        slate.weather_failures,
+        weather_unknown=slate.weather_unknown,
+    )
+
+
+def build_weather_features_through(
+    season: int,
+    slate_game_ids: frozenset[str],
+    weather_failures: Mapping[str, str],
+    *,
+    weather_unknown: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build and save weather features through *season*'s slate; return its weather-unknown map.
+
+    The body of :func:`build_slate_weather_features`, taking the three slate facts it reads as
+    arguments, so the re-fit's data preparation (``refit.data_prep``, D-37) runs the same build
+    a prediction day runs without a :class:`DailySlate`.
+
+    Args:
+        season: The slate's season.
+        slate_game_ids: The slate's game ids (empty on a day with no slate).
+        weather_failures: ``game_id -> reason`` for each slate game whose forecast failed.
+        weather_unknown: The map to fill (the slate's own, so its entries are recorded BEFORE
+            the build, exactly as before the extraction); a fresh one when None.
+
+    Returns:
+        The filled map: ``game_id -> reason`` for each slate game built with its weather
+        unknown.
     """
     import pandas as pd
 
@@ -317,20 +353,21 @@ def build_slate_weather_features(slate: DailySlate) -> None:
     ids = games_df["game_id"].astype(str)
     recorded = ids.isin(set(weather_df["game_id"].astype(str)))
     kicked_off = pd.to_datetime(games_df["kickoff_et"], utc=True) <= datetime.now(UTC)
-    this_season = games_df["season"] == slate.season
-    in_slate = ids.isin(sorted(slate.game_ids))
+    this_season = games_df["season"] == season
+    in_slate = ids.isin(sorted(slate_game_ids))
 
-    in_scope_mask = (games_df["season"] < slate.season) | (
+    in_scope_mask = (games_df["season"] < season) | (
         this_season & (kicked_off | recorded | in_slate)
     )
     unobserved = frozenset(ids[in_scope_mask & this_season & kicked_off & ~recorded])
+    unknown = {} if weather_unknown is None else weather_unknown
     for game_id in sorted(set(ids[in_slate & ~recorded])):
-        reason = slate.weather_failures.get(game_id, "no forecast was captured")
-        slate.weather_unknown[game_id] = reason
+        reason = weather_failures.get(game_id, "no forecast was captured")
+        unknown[game_id] = reason
         logger.warning(
             "Slate game built with weather unknown", game_id=game_id, reason=reason
         )
-    unobserved |= frozenset(slate.weather_unknown)
+    unobserved |= frozenset(unknown)
 
     features_df = WeatherFeaturesCalculator().build_weather_features(
         games_df=games_df.loc[in_scope_mask],
@@ -339,6 +376,7 @@ def build_slate_weather_features(slate: DailySlate) -> None:
     )
     if len(features_df) > 0:
         save_dataframe(features_df, table_name="weather_features", layer="silver")
+    return unknown
 
 
 # ---------------------------------------------------------------------------

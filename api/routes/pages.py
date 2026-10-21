@@ -30,6 +30,7 @@ from api.cache_schema import (
     BACKTEST_SEASON_RANGE_KEY,
     BETTING_SEASON_RANGE_KEY,
     PROVENANCE_BACKTEST_REPLAY,
+    REFIT_PANEL_SEASON,
     REPLAY_VALIDATION_TYPE_SEASONS,
 )
 from api.chart_ids import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
@@ -303,7 +304,8 @@ def _build_season_context(
 
     Reads ONLY pre-rendered HTML / JSON for the (already-whitelisted) *season*:
     the per-season cumulative + weekly chart HTML (via ``get_chart_html``) and
-    the per-season KPI JSON blob (via ``get_season_kpis``). ZERO hit-rate metric
+    the per-season KPI JSON blob (via ``get_season_kpis``), plus the stored
+    re-fitting vs standing-still rows (via ``get_refit_panel``). ZERO hit-rate metric
     logic runs here -- every statistic was computed during cache population
     (D-12). The ``charts`` dict is keyed by bare chart_id (e.g.
     ``season_cumulative_<year>``) so the template references each slot via
@@ -348,6 +350,10 @@ def _build_season_context(
             if slate is not None and season is not None and slate[0] == season
             else None
         ),
+        # Re-fitting vs standing still (Phase 37, D-12): the raw stored numbers, no logic here. The
+        # template shows the section for the re-fit's own season only, whatever the rows hold.
+        "refit_panel": service.get_refit_panel(season),
+        "refit_panel_season": REFIT_PANEL_SEASON,
     }
 
 

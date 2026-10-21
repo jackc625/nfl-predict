@@ -578,6 +578,9 @@ def test_a_season_with_nothing_graded_renders_the_empty_state_not_zeroes() -> No
         def get_current_slate(self) -> None:
             return None
 
+        def get_refit_panel(self, season: int | None) -> None:
+            return None
+
     class _Request:
         def url_for(self, name: str, **path_params: object) -> str:
             return f"/{name}/{path_params.get('path', '')}"

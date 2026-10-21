@@ -12,7 +12,8 @@ root, through the REAL orchestrator and the REAL daily step registry's ``close_c
    games, and neither predicts the other's. A weekly run structurally cannot get this right.
 5. The cutover ON path (34-REVIEW WR-16): the conftest pin runs cases 1-4 with the ledger switch
    OFF, so one case turns it ON and runs the ledger half for real -- settle, the bound run id, the
-   append into the sandbox's own ``ledger/`` and the end-of-run sync -- naming its extra stand-ins.
+   two-arm append (the live row, then its frozen-arm twin) into the sandbox's own ``ledger/`` and
+   the sync -- naming its extra stand-ins.
 
 REUSED, NOT REBUILT
 -------------------
@@ -503,7 +504,9 @@ def arrange_cut_over_day(rehearsal: Rehearsal) -> None:
     """Turn the ledger switch ON in *rehearsal*'s sandbox and stand in for what it cannot run.
 
     What stands in, beyond the module's stand-ins: the decision bundle (no models are scored here)
-    and the synthetic stores it reads, injected into the real ``record_forward_slate``; the
+    and the synthetic stores it reads, injected into the real ``record_forward_slate``; the frozen
+    arm's re-decision, which returns the live bundle itself (before any re-fit both arms score with
+    the same row-19 ids, so its rows are the real twins), so the production two-arm write runs; the
     publish-deadline clock (``record_forward_slate``'s ``clock``, shared by its pre-write check and
     the store's), which reads the rehearsal clock; the snapshot's ``uv.lock`` path, read from the
     repository because the sandbox has none; and the push destinations, local bare repositories
@@ -565,6 +568,10 @@ def arrange_cut_over_day(rehearsal: Rehearsal) -> None:
 
     real_record = runner.record_forward_slate
 
+    def _shadow(live: DecisionBundle, **_kwargs: Any) -> DecisionBundle:
+        # Generation 0: the frozen arm scores with the live arm's own row-19 ids (WR-C06).
+        return live
+
     def _record(slate: daily_steps.DailySlate, **kwargs: Any) -> Any:
         # The production keywords (decided_at, exclusions, publish_by, repo_dir) pass through;
         # ledger_dir and the run log stay production's defaults, relative to the sandbox.
@@ -577,7 +584,7 @@ def arrange_cut_over_day(rehearsal: Rehearsal) -> None:
             manifest_dir=stores.manifests,
             bundle_builder=_bundle,
             clock=lambda: clock,
-            shadow_builder=None,
+            shadow_builder=_shadow,
         )
 
     monkeypatch.setattr(runner, "record_forward_slate", _record)
@@ -612,7 +619,10 @@ def test_the_cut_over_run_appends_the_slate_to_a_real_ledger_under_one_run_id(
     :func:`arrange_cut_over_day`.
     """
     from forward_ledger.anchor import read_local_anchor
+    from forward_ledger.schema import ARM_LIVE, ARM_SHADOW
     from forward_ledger.store import read_entries, verify_chain
+    from notify.messages import bets_message
+    from notify.report import RunReport
     from tests.unit.test_ledger_anchor import git_out
 
     rehearsal = make_rehearsal("ledger_on", _week_three_schedule())
@@ -620,6 +630,8 @@ def test_the_cut_over_run_appends_the_slate_to_a_real_ledger_under_one_run_id(
     clock = CUT_OVER_CLOCK
     arrange_cut_over_day(rehearsal)
     anchor_remote = root / "anchor_remote.git"
+    reports: list[RunReport] = []
+    rehearsal.monkeypatch.setattr(daily, "NOTIFY_END_OF_RUN", reports.append)
 
     code, contract = rehearsal.run(CUT_OVER_DAY, clock=clock)
 
@@ -633,9 +645,19 @@ def test_the_cut_over_run_appends_the_slate_to_a_real_ledger_under_one_run_id(
 
     entries = read_entries(root / "ledger")
     assert verify_chain(entries).ok
-    assert [entry.immutable["game_id"] for entry in entries] == [THURSDAY_GAME]
+    # The production two-arm write (WR-C06): one write, the live row first, then its shadow twin.
+    assert [
+        (entry.immutable["game_id"], entry.immutable["arm"]) for entry in entries
+    ] == [(THURSDAY_GAME, ARM_LIVE), (THURSDAY_GAME, ARM_SHADOW)]
     assert entries[0].immutable["decided_at_utc"] == clock.astimezone(UTC).isoformat()
-    assert read_local_anchor(root) == (entries[-1].chain_hash, 1)
+    assert read_local_anchor(root) == (entries[-1].chain_hash, 2)
+    # The notifier sees both arms' rows, and the bets push lists the live row only.
+    (report,) = reports
+    assert sorted(row["arm"] for row in report.appended_rows) == [ARM_LIVE, ARM_SHADOW]
+    assert report.shadow_holes == ()
+    bets = bets_message(report)
+    assert bets is not None
+    assert bets.title.startswith("1 new bet:")
     assert git_out(anchor_remote, "rev-parse", "refs/heads/ledger-anchor") == git_out(
         root, "rev-parse", "refs/heads/ledger-anchor"
     )

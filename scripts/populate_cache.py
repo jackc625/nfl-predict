@@ -13,6 +13,11 @@ never produce different tables.
 It holds the publish lock (``pipeline.cache_lock``, Phase 36 D-18) while it rebuilds, like the
 scheduled step, and refuses with exit code 1 while a website push or another rebuild holds it.
 
+The edge bands follow the re-fit generations (Phase 37, D-36): a game a live bet rule decided
+keeps the band of the generation that decided it, and every other game follows the in-force
+generation, resolved from THIS command's ``--artifacts-dir`` -- the directory the cache is built
+from -- so a custom-directory rebuild never bands with production's generation.
+
 Usage:
     python scripts/populate_cache.py
     python scripts/populate_cache.py --db-path data/custom_cache.duckdb
@@ -26,7 +31,9 @@ from pathlib import Path
 from api.cache import populate_cache
 from backtest.weekly_bet_list import DEFAULT_BET_LIST_DIR
 from forward_ledger.cache_sources import read_bet_cache_sources
+from forward_ledger.store import LEDGER_DIR
 from pipeline.cache_lock import REBUILD_LOCK_WAIT_SECONDS, cache_publish_lock
+from refit.generations import in_force_edge_thresholds
 from utils.file_lock import FileLockHeldError
 
 
@@ -102,6 +109,9 @@ def _rebuild(args: argparse.Namespace) -> None:
     # module (UIAP-01), so it cannot know these filenames or derive a per-game freeze instant.
     # The ONE reader shared with the scheduled step; it follows the forward-rows cutover switch.
     sources = read_bet_cache_sources(args.bet_list_dir, silver_dir=args.silver_dir)
+    # The in-force generation's bands (D-36), from the SAME artifacts directory the cache is built
+    # from and the ledger directory the reader above defaults to; None for generation 0.
+    edge_thresholds = in_force_edge_thresholds(args.artifacts_dir, LEDGER_DIR)
 
     populate_cache(
         db_path=args.db_path,
@@ -117,6 +127,11 @@ def _rebuild(args: argparse.Namespace) -> None:
         bet_graded_outcomes_df=sources.graded_outcomes,
         forward_verdict_context=sources.verdict_context,
         bet_week_results_df=sources.week_results,
+        edge_thresholds_by_target=edge_thresholds,
+        decided_edge_thresholds_by_game=sources.decided_edge_thresholds,
+        refit_panel_df=sources.refit_panel,
+        refit_aa_status_df=sources.refit_aa_status,
+        refit_panel_failure=sources.refit_panel_failure,
     )
 
 

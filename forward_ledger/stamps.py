@@ -10,7 +10,7 @@ its reviewed D-14 ``arm`` / ``verdict_scope`` / ``regime_label`` labels):
   * ``arm`` -- ``live`` for every row this phase writes (Phase 37 writes ``shadow``);
   * ``model_artifact_id`` / ``blend_id`` -- from the ids the decision was SCORED by, resolved once
     (Plan 34-05), never re-read here, so a ``latest.json`` swap mid-run cannot mis-stamp a row;
-  * ``recipe_id`` / ``fill_convention_id`` -- the in-force registry entry and ``fill-v1``;
+  * ``recipe_id`` / ``fill_convention_id`` -- the in-force recipe and ``fill-v1``;
   * ``upstream_capture_key`` / ``gold_generation_key`` / ``odds_snapshot_digest`` -- the
     reproduction key (``forward_ledger.repro_key``);
   * ``decision_snapshot_digest`` -- the stored decision-input snapshot (``forward_ledger.snapshots``);
@@ -25,7 +25,10 @@ THE REFUSALS
   * no resolved ids (the bundle found no ``latest.json``) -> ``MissingStampError``: a stamp is
     never invented;
   * scoring ids the in-force recipe entry does not list -> :class:`RecipeArtifactMismatchError`: a
-    row may only claim a recipe that actually produced its models (T-34-27);
+    row may only claim a recipe that actually produced its models (T-34-27). For the Phase 37
+    re-fit recipe (``forward_ledger.declarations.RefitRecipe``, D-20), which lists no ids of its
+    own, the scoring ids must be exactly one installed generation's ids (``registered_ids``,
+    T-37-30);
   * an unregistered recipe or fill id -> the declarations module's named refusals;
   * no verdict-scope declaration while the ledger already holds verdict rows ->
     ``VerdictScopeUndeclaredError``. Before the first verdict row a missing declaration honestly
@@ -35,19 +38,23 @@ THE REFUSALS
 
 THE RUNTIME POINTER
 -------------------
-:data:`IN_FORCE_RECIPE_ID` names the registry entry new rows are stamped with. Phase 37 moves this
-pointer when it registers a new recipe; the registry record itself is never edited.
+:data:`IN_FORCE_RECIPE_ID` stays the generation-0 recipe (``recipe-2026-row19-v1``): the default for
+a row decided by the pinned row-19 models. The runner passes the in-force generation's recipe
+(``refit.generations.in_force_generation``) and, for a re-fit generation, every installed
+generation's ids; the registry record itself is never edited.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from backtest.fill_conventions import FILL_CONVENTION_ID
 from forward_ledger.declarations import (
     BOOTSTRAP_REGIME_WEEKS,
+    RefitRecipe,
     VerdictScope,
     VerdictScopeUndeclaredError,
     resolve_fill_convention,
@@ -80,9 +87,27 @@ class RecipeArtifactMismatchError(Exception):
     """
 
 
-def _require_recipe_artifacts(recipe_id: str, resolved: ResolvedArtifacts) -> None:
-    """Refuse unless every id that scored the decision is the recipe entry's own."""
+def _require_recipe_artifacts(
+    recipe_id: str,
+    resolved: ResolvedArtifacts,
+    registered_ids: Sequence[ResolvedArtifacts],
+) -> None:
+    """Refuse unless every id that scored the decision is the recipe's own.
+
+    A Phase 34 registry entry lists its ids; the re-fit recipe lists none, so its scoring ids must
+    equal one installed generation's ids in *registered_ids*.
+    """
     entry = resolve_recipe(recipe_id)
+    if isinstance(entry, RefitRecipe):
+        if resolved not in registered_ids:
+            msg = (
+                f"the decision was scored by wp={resolved.wp!r}, ats={resolved.ats!r}, "
+                f"ou={resolved.ou!r}, blend={resolved.blend!r}, converter={resolved.converter!r}, "
+                f"which are not the ids of any installed generation of the recipe {recipe_id!r}. "
+                "A row may only claim the recipe that produced its models."
+            )
+            raise RecipeArtifactMismatchError(msg)
+        return
     expected = {
         "wp": entry.model_artifact_ids.get("wp"),
         "ats": entry.model_artifact_ids.get("ats"),
@@ -128,6 +153,7 @@ def stamp_ledger_rows(
     recipe_id: str = IN_FORCE_RECIPE_ID,
     fill_convention_id: str = FILL_CONVENTION_ID,
     arm: str = ARM_LIVE,
+    registered_ids: Sequence[ResolvedArtifacts] = (),
 ) -> pd.DataFrame:
     """A copy of *frame* with the 11 Phase-34 immutable columns set on every row.
 
@@ -138,9 +164,11 @@ def stamp_ledger_rows(
         snapshot_digest: The digest of its stored decision-input snapshot.
         scope: The committed verdict-scope declaration, or None when none exists.
         ledger_has_verdict_rows: Whether the ledger already holds any ``verdict`` row.
-        recipe_id: The registry entry to stamp (the in-force pointer by default).
+        recipe_id: The recipe to stamp (the generation-0 pointer by default).
         fill_convention_id: The fill convention to stamp (``fill-v1`` by default).
         arm: ``live`` (Phase 34) or ``shadow`` (Phase 37).
+        registered_ids: Every installed re-fit generation's ids; read only when *recipe_id* is
+            the re-fit recipe, whose rows must be scored by exactly one of them.
 
     Returns:
         The stamped copy; *frame* is not modified.
@@ -150,7 +178,8 @@ def stamp_ledger_rows(
             is empty.
         InvalidArmError: *arm* is outside ``ARMS``.
         UnknownRecipeError, UnknownFillConventionError: an id does not resolve.
-        RecipeArtifactMismatchError: a scoring id is not the recipe entry's own.
+        RecipeArtifactMismatchError: a scoring id is not the recipe entry's own, or a re-fit
+            recipe's scoring ids are no installed generation's.
         VerdictScopeUndeclaredError: no declaration although verdict rows already exist.
     """
     if resolved is None:
@@ -166,7 +195,7 @@ def stamp_ledger_rows(
     _require_value("gold generation key", repro.gold_generation_key)
     _require_value("odds snapshot digest", repro.odds_snapshot_digest)
     _require_value("decision snapshot digest", snapshot_digest)
-    _require_recipe_artifacts(recipe_id, resolved)
+    _require_recipe_artifacts(recipe_id, resolved, registered_ids)
     resolve_fill_convention(fill_convention_id)
     if scope is None and ledger_has_verdict_rows:
         msg = (

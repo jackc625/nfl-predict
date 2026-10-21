@@ -44,7 +44,7 @@ error -- never on a closing-line objective (:meth:`MarketBlender.tune_weights`).
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -949,6 +949,8 @@ class MarketBlender:
         self,
         tuning_frames: Mapping[str, pd.DataFrame],
         weight_grid: np.ndarray = BLEND_WEIGHT_GRID,
+        *,
+        owned_seasons: Collection[int] = OWNED_LINE_SEASONS,
     ) -> TuningResult:
         """Fit ONE fixed weight per target by grid search on each model's own outcome loss.
 
@@ -977,6 +979,9 @@ class MarketBlender:
                 :data:`BLEND_TUNING_COLUMNS`. Built by ``models.blending_data.
                 build_tuning_frames``.
             weight_grid: The candidate weights, in [0, 1].
+            owned_seasons: The seasons an owned pre-lock line covers. Defaults to the owned
+                purchase (``OWNED_LINE_SEASONS``); the 2026 rolling re-fit adds its own season,
+                whose pre-lock lines are the live captures (``backtest.tune.run_blend_tuning``).
 
         Returns:
             The :class:`TuningResult`. ``self.config.weights`` is updated to the fit.
@@ -998,7 +1003,7 @@ class MarketBlender:
 
         for target, frame in tuning_frames.items():
             model_col, market_col, outcome_col = self._require_tuning_frame(
-                target, frame
+                target, frame, owned_seasons
             )
             model = frame[model_col].to_numpy(dtype=float)
             market = frame[market_col].to_numpy(dtype=float)
@@ -1104,7 +1109,10 @@ class MarketBlender:
         return result
 
     def _require_tuning_frame(
-        self, target: str, frame: pd.DataFrame
+        self,
+        target: str,
+        frame: pd.DataFrame,
+        owned_seasons: Collection[int] = OWNED_LINE_SEASONS,
     ) -> tuple[str, str, str]:
         """Refuse a tuning frame that cannot be scored honestly; return its column triple."""
         if target not in BLEND_TUNING_COLUMNS:
@@ -1129,12 +1137,12 @@ class MarketBlender:
             )
             raise BlendTuningError(msg)
         foreign = sorted(
-            {int(s) for s in frame["season"]} - {int(s) for s in OWNED_LINE_SEASONS}
+            {int(s) for s in frame["season"]} - {int(s) for s in owned_seasons}
         )
         if foreign:
             msg = (
                 f"the {target} tuning frame holds season(s) {foreign}, which no owned "
-                f"pre-lock line covers (owned: {list(OWNED_LINE_SEASONS)}). A row from such "
+                f"pre-lock line covers (owned: {sorted(owned_seasons)}). A row from such "
                 "a season can only have come from another store -- refusing rather than "
                 "tuning on it."
             )

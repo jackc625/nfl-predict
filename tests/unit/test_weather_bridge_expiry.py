@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from tests import phase33_state
+from tests.live_manifest_record import recorded_live_manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIVE_MANIFEST_PATH = REPO_ROOT / "artifacts" / "latest.json"
@@ -633,9 +634,15 @@ class TestTheLiveManifestIsNeverWritten:
     """
 
     def test_the_live_manifest_holds_the_POST_PROMOTION_pointers(self) -> None:
-        """Reading it changed nothing, and the recorded END STATE is what is live."""
+        """Reading it changed nothing, and the recorded END STATE is what is live.
+
+        RE-POINTED for Phase 37 (Plan 37-20): from Tue 2026-11-03 the daily run installs
+        re-fit generations unattended, each recorded before its swap, so the END STATE is the
+        RECORDED one (``tests.live_manifest_record.recorded_live_manifest()``), the row-19 ids
+        until the first recorded install; the row-19 slots stay as that swap's record.
+        """
         manifest = _live_manifest()
-        for target, artifact_id in phase33_state.ROW19_SWAP_ARTIFACT_IDS:
+        for target, artifact_id in recorded_live_manifest()[1].items():
             assert manifest[target] == artifact_id, target
 
     def test_the_phase_331_close_record_is_RETAINED_unedited(self) -> None:

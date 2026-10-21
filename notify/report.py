@@ -31,6 +31,7 @@ if (
     from forward_ledger.runner import SettleOutcome
     from forward_ledger.sync import SyncOutcome
     from pipeline.site_push import PushOutcome
+    from refit.hook import RefitOutcome
 
 __all__ = [
     "STATUS_DEGRADED",
@@ -101,6 +102,12 @@ class RunReport:
             routine returned one.
         site_push_error: The class name of an exception that escaped the push routine, if any.
             No push-log record could be written for that attempt, so this is its only trace.
+        refit_ran: True when the re-fit side step was called (Phase 37, D-15, D-17).
+        refit: The side step's ``RefitOutcome``, exactly as it returned it.
+        refit_error: The class name of an exception that escaped the side step, if any.
+        refit_error_location: Which re-fit record could not be read, when that is what
+            escaped (``RefitRecordFormatError.location``: a path and a line number, never
+            record content), so the push names the record to repair (WR-C05).
     """
 
     run_date_et: date
@@ -132,6 +139,10 @@ class RunReport:
     site_push_ran: bool = False
     site_push: PushOutcome | None = None
     site_push_error: str | None = None
+    refit_ran: bool = False
+    refit: RefitOutcome | None = None
+    refit_error: str | None = None
+    refit_error_location: str | None = None
 
     def record_exception(self, exc: BaseException) -> None:
         """Note the exception that stopped the run: its class, its first line, a Ctrl+C."""

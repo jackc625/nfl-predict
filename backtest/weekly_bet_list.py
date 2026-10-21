@@ -145,6 +145,7 @@ __all__ = [
     "DECIDED_AT_COLUMN",
     "DEFAULT_BET_LIST_DIR",
     "PHASE34_ADDED_COLUMNS",
+    "REFIT_GENERATION_BET_RULE_KIND",
     "AlreadyGradedError",
     "BetListCacheSources",
     "ChainFitOverlayDisagreementError",
@@ -168,6 +169,7 @@ __all__ = [
     "generate_weekly_bet_list",
     "grade_pending_rows",
     "grade_row",
+    "load_bet_rule_record",
     "load_frozen_chain_fit",
     "read_bet_list_artifact",
     "read_bet_list_cache_sources",
@@ -251,6 +253,11 @@ BET_LIST_READ_COLUMNS: tuple[str, ...] = tuple(
 # Neither the 8c9675e record nor the Phase-31 record (``outputs/p31/profitability_2025_verdict.json``)
 # is read live; both stay on disk as the record of what was measured.
 DEFAULT_CHAIN_FIT_PATH: Path = Path(CORRECTED_CHAIN_FIT_RECORD_PATH)
+
+# The ``record_kind`` of a Phase 37 re-fit generation's bet-rule record -- the value
+# ``refit.remeasure.BET_RULE_RECORD_KIND`` writes (tests/unit/test_refit_decision_path.py asserts
+# the two agree). Spelled here rather than imported so this module gains no load-time refit import.
+REFIT_GENERATION_BET_RULE_KIND: str = "refit_generation_bet_rule"
 
 # The candidate column carrying the spread-derived market probability of a home win; the core
 # selector's own name for it, re-exported so the weekly path and its tests spell it once.
@@ -525,6 +532,17 @@ def load_frozen_chain_fit(
         msg = f"the tune-only fit at {fit_path.as_posix()} could not be read: {exc}"
         raise FrozenChainFitError(msg) from exc
 
+    return _overlay_frozen_chain_fit(_parse_tune_fit(record, fit_path))
+
+
+def _parse_tune_fit(
+    record: Mapping[str, Any], fit_path: Path
+) -> dict[str, WeeklyChainFit]:
+    """The per-target fits of a run record's ``tune_fit`` block, exactly as recorded (no overlay).
+
+    Raises:
+        FrozenChainFitError: the record carries no ``tune_fit`` block, or no fit for a target.
+    """
     tune_fit = record.get("tune_fit")
     if not isinstance(tune_fit, dict):
         msg = (
@@ -570,7 +588,78 @@ def load_frozen_chain_fit(
             ),
             fallback_trigger=None if trigger is None else str(trigger),
         )
-    return _overlay_frozen_chain_fit(fits)
+    return fits
+
+
+def _record_kind(path: Path) -> object:
+    """The ``record_kind`` a JSON record names, or None when it names none or cannot be read."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record.get("record_kind") if isinstance(record, dict) else None
+
+
+def _edge_thresholds_of(
+    record: Mapping[str, Any], fit_path: Path
+) -> dict[str, tuple[float, float] | None]:
+    """A generation record's ``(high, medium)`` edge-tier thresholds, one per canonical target.
+
+    Raises:
+        FrozenChainFitError: the block is absent or lacks a target. A missing WP pair would let
+            every WP bet skip its second test, so no target is ever defaulted.
+    """
+    block = record.get("edge_tier_thresholds")
+    if not isinstance(block, dict):
+        block = {}
+    missing = [target for target in CANONICAL_TARGETS if target not in block]
+    if missing:
+        msg = (
+            f"the generation bet-rule record {fit_path.as_posix()} carries no edge-tier "
+            f"threshold for {missing}; a threshold is never defaulted."
+        )
+        raise FrozenChainFitError(msg)
+    return {
+        target: None
+        if block[target] is None
+        else (float(block[target][0]), float(block[target][1]))
+        for target in CANONICAL_TARGETS
+    }
+
+
+def load_bet_rule_record(
+    path: Path | str,
+) -> tuple[dict[str, WeeklyChainFit], dict[str, tuple[float, float] | None]]:
+    """The fits and edge thresholds a bet-rule record decides with, by its ``record_kind``.
+
+    * A Phase 37 re-fit generation's record (``refit_generation_bet_rule``, or any file in a
+      ``bet_rules`` directory) is RE-READ through ``refit.records.read_bet_rule_record``, which
+      refuses bytes that no longer hash to the sha256 in the file name -- so a bet rule cannot
+      change under an unchanged generation id. Only that verified record is parsed, with NO
+      row-19 overlay, and its own thresholds are returned.
+    * Anything else is the row-19 path: :func:`load_frozen_chain_fit` (with its overlay) and the
+      committed ``EDGE_TIER_THRESHOLDS_BY_TARGET``.
+
+    Raises:
+        refit.records.RefitRecordFormatError: a generation record no longer hashes to its name.
+        FrozenChainFitError: the record is unreadable or incomplete.
+    """
+    from refit.records import BET_RULES_DIRNAME, read_bet_rule_record
+
+    fit_path = Path(path)
+    if (
+        fit_path.parent.name == BET_RULES_DIRNAME
+        or _record_kind(fit_path) == REFIT_GENERATION_BET_RULE_KIND
+    ):
+        record = read_bet_rule_record(fit_path)
+        if record.get("record_kind") != REFIT_GENERATION_BET_RULE_KIND:
+            msg = (
+                f"{fit_path.as_posix()} is a content-addressed bet-rule file but names record "
+                f"kind {record.get('record_kind')!r}, not {REFIT_GENERATION_BET_RULE_KIND!r}"
+            )
+            raise FrozenChainFitError(msg)
+        return _parse_tune_fit(record, fit_path), _edge_thresholds_of(record, fit_path)
+    return load_frozen_chain_fit(fit_path), dict(EDGE_TIER_THRESHOLDS_BY_TARGET)
 
 
 def frozen_overlay_season() -> int:
@@ -1754,6 +1843,7 @@ def build_weekly_decision_bundle(
     strategies: list[Any] | None = None,
     excluded_game_ids: frozenset[str] = frozenset(),
     resolved: ResolvedArtifacts | None = None,
+    edge_thresholds: Mapping[str, tuple[float, float] | None] | None = None,
 ) -> DecisionBundle:
     """THE decision path: one week's decision and the exact inputs it was made from. NO write.
 
@@ -1772,6 +1862,9 @@ def build_weekly_decision_bundle(
         season, week, artifacts_dir, gold_dir, silver_dir, chain_fit_path, run_mode, bankroll,
             now, fits, strategies, excluded_game_ids: as :func:`build_weekly_decision_frame`.
         resolved: Pre-resolved production ids; resolved here from *artifacts_dir* when None.
+        edge_thresholds: A re-fit generation's own edge-tier thresholds
+            (:func:`load_bet_rule_record`), handed to :func:`select_weekly_bets`; None keeps the
+            committed row-19 thresholds, exactly as before Phase 37.
 
     Returns:
         The :class:`DecisionBundle`.
@@ -1809,9 +1902,23 @@ def build_weekly_decision_bundle(
         frame = pd.DataFrame(columns=pd.Index(BET_LIST_COLUMNS))
         run_instant = now if now is not None else datetime.now(tz=UTC)
     else:
-        result = select_weekly_bets(
-            candidates, schedule, resolved_fits, strategies=registry, bankroll=bankroll
-        )
+        if edge_thresholds is None:
+            result = select_weekly_bets(
+                candidates,
+                schedule,
+                resolved_fits,
+                strategies=registry,
+                bankroll=bankroll,
+            )
+        else:
+            result = select_weekly_bets(
+                candidates,
+                schedule,
+                resolved_fits,
+                strategies=registry,
+                bankroll=bankroll,
+                edge_thresholds=edge_thresholds,
+            )
         # ONE run instant, so the caller's fence and this stamp cannot disagree by whatever
         # the selection took on a slow week.
         run_instant = now if now is not None else datetime.now(tz=UTC)

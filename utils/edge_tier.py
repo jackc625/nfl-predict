@@ -98,6 +98,16 @@ and neither feeds bet selection, which is the finding
 ``tests.phase33_state.EDGE_TIER_DISPLAY_ONLY_CORRECTED`` records and
 ``tests/unit/test_phase33_preregistration.py`` guards.
 
+THE RULER FOLLOWS THE IN-FORCE RE-FIT GENERATION (Phase 37, D-36)
+------------------------------------------------------------------
+Owner ruling D-36: once a Phase 37 re-fit generation is in force, the display bands use THAT
+generation's re-measured ``(high, medium)`` pairs instead of the row-19 constants. Both functions
+therefore take an optional ``thresholds`` mapping, ``{target -> (high, medium) | None}``. ``None``
+(the default, and generation 0) reads the row-19 mapping exactly as before; a given mapping is
+used AS-IS, with the same refusal for an unknown target. The mapping is resolved by the caller at
+cache build (``refit.generations.in_force_edge_thresholds``), never here: this module stays a
+leaf below ``backtest/`` and ``refit/``. The rule itself is unchanged -- still ONE implementation.
+
 The stored/rendered COLUMN names stay ``wp_confidence`` / ``ats_confidence`` / ``ou_confidence``.
 Renaming them is a schema change that would move every export header -- a published figure -- and
 is out of scope here; the concept rename is in the helper, which is where the ambiguity lived.
@@ -107,6 +117,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import pandas as pd
@@ -140,6 +151,9 @@ EDGE_TIER_TARGETS: tuple[str, str, str] = ("ats", "ou", "wp")
 # module-level import.
 _THRESHOLDS_BY_TARGET: dict[str, tuple[float, float] | None] | None = None
 
+# A ``{target -> (high, medium) | None}`` mapping a caller supplies (D-36); None = the row-19 one.
+EdgeThresholds = Mapping[str, tuple[float, float] | None]
+
 
 class UnknownEdgeTargetError(ValueError):
     """A band was asked for on a target the frozen pre-registration does not price.
@@ -168,18 +182,27 @@ def _thresholds_by_target() -> dict[str, tuple[float, float] | None]:
     return _THRESHOLDS_BY_TARGET
 
 
-def _require_thresholds(target: str) -> tuple[float, float] | None:
+def _require_thresholds(
+    target: str, thresholds: EdgeThresholds | None = None
+) -> tuple[float, float] | None:
     """This target's ``(high, medium)`` pair, or None when it has NO honest threshold.
 
     Refuses an UNKNOWN target by name. A KNOWN target whose pair is ``None`` is not an error: it
     is the correction's recorded verdict that no honest threshold exists, and it is returned as
     ``None`` for the caller to render as unbanded.
+
+    Args:
+        target: The target whose pair is read.
+        thresholds: A caller-supplied mapping (the in-force generation's, D-36), used as-is;
+            None reads the row-19 mapping.
     """
+    source = _thresholds_by_target() if thresholds is None else thresholds
     try:
-        return _thresholds_by_target()[target]
+        return source[target]
     except KeyError:
+        where = "the row-19 mapping" if thresholds is None else "the supplied mapping"
         msg = (
-            f"no frozen edge-band thresholds for target {target!r}; the pre-registered "
+            f"no edge-band thresholds for target {target!r} in {where}; the pre-registered "
             f"vocabulary is {sorted(EDGE_TIER_TARGETS)}. Each target's pair is on its OWN unit "
             "-- ats in POINTS, ou as a ratio of the market total, wp in probability -- so there "
             "is no neutral pair to fall back to and none is invented here. The pairs live in "
@@ -190,7 +213,9 @@ def _require_thresholds(target: str) -> tuple[float, float] | None:
         raise UnknownEdgeTargetError(msg) from None
 
 
-def edge_tier(edge: float | None, target: str) -> str | None:
+def edge_tier(
+    edge: float | None, target: str, *, thresholds: EdgeThresholds | None = None
+) -> str | None:
     """The edge band for ONE edge value, on *target*'s own unit.
 
     THE single implementation. :func:`edge_tier_series` dispatches to it and computes nothing of
@@ -208,6 +233,8 @@ def edge_tier(edge: float | None, target: str) -> str | None:
         target: One of :data:`EDGE_TIER_TARGETS`. REQUIRED, with no default -- see the module
             docstring. A defaulted target would let a forgetful call site band an ATS point edge
             against WP's probability pair, which is the defect this signature exists to remove.
+        thresholds: The in-force generation's ``{target -> (high, medium) | None}`` mapping
+            (D-36), used as-is; None (the default) is the row-19 mapping.
 
     Returns:
         ``"high"``, ``"medium"`` or ``"low"``. ``None`` -- UNBANDED -- in two cases, both
@@ -223,7 +250,7 @@ def edge_tier(edge: float | None, target: str) -> str | None:
         UnknownEdgeTargetError: when *target* is outside the frozen vocabulary. Raised BEFORE the
             absent-edge shortcut, so a bad target is reported even on a null edge.
     """
-    pair = _require_thresholds(target)
+    pair = _require_thresholds(target, thresholds)
     if pair is None:
         return None
     high, medium = pair
@@ -237,7 +264,9 @@ def edge_tier(edge: float | None, target: str) -> str | None:
     return EDGE_TIER_LABELS[0]
 
 
-def edge_tier_series(edge: pd.Series, target: str) -> pd.Series:
+def edge_tier_series(
+    edge: pd.Series, target: str, *, thresholds: EdgeThresholds | None = None
+) -> pd.Series:
     """The edge band for a whole column -- a DISPATCH to :func:`edge_tier`, not a second rule.
 
     Returns a Series of labels aligned to *edge*'s index. It performs no comparison of its own,
@@ -252,9 +281,13 @@ def edge_tier_series(edge: pd.Series, target: str) -> pd.Series:
     A PER-ELEMENT PYTHON DISPATCH IS THE POINT, not an oversight. Vectorizing the comparisons here
     would put threshold logic in a second place, which is the defect CLEAN-01 exists to remove,
     reintroduced as an optimisation. The weekly slate is a few dozen rows.
+
+    *thresholds* is forwarded unchanged to :func:`edge_tier` (D-36; None = the row-19 mapping).
     """
-    _require_thresholds(target)
-    return edge.map(lambda value: edge_tier(value, target)).astype(object)
+    _require_thresholds(target, thresholds)
+    return edge.map(
+        lambda value: edge_tier(value, target, thresholds=thresholds)
+    ).astype(object)
 
 
 def __getattr__(name: str) -> Any:

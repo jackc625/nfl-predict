@@ -9,14 +9,24 @@ Three committed records, each refused by name when it does not resolve:
     and :func:`load_verdict_scope` says so with :class:`VerdictScopeUndeclaredError`. A missing
     declaration is NEVER read as a default scope: a verdict computed against a scope nobody
     declared is the after-the-fact rule choice the pre-registration exists to forbid;
-  * the recipe registry (LDGR-03) -- ``backtest.recipe_registry.RECIPE_REGISTRY``;
+  * the recipe registry (LDGR-03) -- ``backtest.recipe_registry.RECIPE_REGISTRY``, and beside it
+    the Phase 37 re-fit recipe (D-20) -- ``backtest.refit_preregistration_2026.REFIT_RECIPE_ID``;
   * the fill conventions (LDGR-11) -- ``backtest.fill_conventions.REGISTERED_FILL_CONVENTIONS``.
 
 WHY THE DECLARATION PINS NO RECIPE SET
 --------------------------------------
 Phase 37 registers new recipes mid-season by pre-registration (RFIT-01). A verdict row's recipe
-only has to resolve in the committed registry; pinning the set here would make every honest
+only has to resolve in a committed record; pinning the set here would make every honest
 Phase-37 re-fit look like a scope violation.
+
+ONE RE-FIT RECIPE, RESOLVED AFTER THE REGISTRY (D-20)
+-----------------------------------------------------
+The Phase 34 registry is hash-pinned and never edited, so the one recipe id every re-fit
+generation is stamped with (``recipe-2026-refit-v1``) is defined in Phase 37's own frozen record.
+:func:`resolve_recipe` looks the registry up first and only then that record, returning a
+:class:`RefitRecipe`. A re-fit recipe lists no artifact ids of its own: each generation's ids are
+named by the generation records under ``ledger/refit/`` (``refit.generations``), and the stamping
+site checks a row's ids against them.
 
 WHEN A ROW LEARNS ITS LABEL (34-RESEARCH Pitfall 13)
 ----------------------------------------------------
@@ -36,7 +46,7 @@ committed file, reported with the missing constant's name.
 
 IMPORT POSITION
 ---------------
-The two ``backtest`` records are imported INSIDE the resolving functions, the idiom
+The ``backtest`` records are imported INSIDE the resolving functions, the idiom
 ``data/graded_weeks.py`` uses, so importing this module does not pull them in.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -58,6 +68,7 @@ __all__ = [
     "BOOTSTRAP_REGIME_WEEKS",
     "REQUIRED_DECLARATION_CONSTANTS",
     "VERDICT_SCOPE_MODULE",
+    "RefitRecipe",
     "UnknownFillConventionError",
     "UnknownRecipeError",
     "VerdictScope",
@@ -105,6 +116,19 @@ class UnknownRecipeError(Exception):
 
 class UnknownFillConventionError(Exception):
     """A fill convention id that is missing or not a registered convention."""
+
+
+@dataclass(frozen=True)
+class RefitRecipe:
+    """The Phase 37 re-fit recipe (D-20): one id for every re-fit generation.
+
+    Attributes:
+        recipe_id: ``recipe-2026-refit-v1``.
+        fill_convention_id: The fill convention the record names (``fill-v1``).
+    """
+
+    recipe_id: str
+    fill_convention_id: str
 
 
 @dataclass(frozen=True)
@@ -187,21 +211,32 @@ def verdict_scope_label(season: int, week: int, scope: VerdictScope | None) -> s
     return VERDICT_SCOPE_PRE_VERDICT
 
 
-def resolve_recipe(recipe_id: str | None) -> RecipeEntry:
-    """The committed registry entry for *recipe_id*.
+def resolve_recipe(recipe_id: str | None) -> RecipeEntry | RefitRecipe:
+    """The committed record for *recipe_id*: the Phase 34 registry first, then the re-fit recipe.
 
     Raises:
-        UnknownRecipeError: *recipe_id* is missing or not registered.
+        UnknownRecipeError: *recipe_id* is missing or resolves in neither record.
     """
     from backtest.recipe_registry import RECIPE_REGISTRY
 
-    if recipe_id is None or recipe_id not in RECIPE_REGISTRY:
-        msg = (
-            f"recipe_id {recipe_id!r} does not resolve in the committed recipe registry "
-            f"{sorted(RECIPE_REGISTRY)}; a row is never stamped with an unregistered recipe."
+    if recipe_id is not None and recipe_id in RECIPE_REGISTRY:
+        return RECIPE_REGISTRY[recipe_id]
+
+    from backtest.refit_preregistration_2026 import (
+        FILL_CONVENTION_ID,
+        REFIT_RECIPE_ID,
+    )
+
+    if recipe_id is not None and recipe_id == REFIT_RECIPE_ID:
+        return RefitRecipe(
+            recipe_id=REFIT_RECIPE_ID, fill_convention_id=FILL_CONVENTION_ID
         )
-        raise UnknownRecipeError(msg)
-    return RECIPE_REGISTRY[recipe_id]
+    msg = (
+        f"recipe_id {recipe_id!r} does not resolve in the committed recipe registry "
+        f"{sorted(RECIPE_REGISTRY)} nor as the Phase 37 re-fit recipe {REFIT_RECIPE_ID!r}; a "
+        "row is never stamped with an unregistered recipe."
+    )
+    raise UnknownRecipeError(msg)
 
 
 def resolve_fill_convention(fill_id: str | None) -> str:

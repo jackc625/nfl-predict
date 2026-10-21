@@ -641,12 +641,28 @@ ledger steps are in `PIPELINE.md`. Every command runs in PowerShell from the rep
 - `ledger/forward_2026.jsonl` -- one line per entry: every forward row and every correction entry,
   chained by sha256 from a published genesis hash. A row is never edited. Grading, the closing line
   and a real fill each fill their own empty columns once, and a score corrected after grading is
-  recorded as a new correction entry, never as an edit.
+  recorded as a new correction entry, never as an edit. Since Phase 37 it holds both arms: the
+  live rows and the frozen arm's shadow twins, told apart by `arm` (`live` or `shadow`). Only the
+  live arm is ever a bet or counted in the verdict.
 - `ledger/snapshots/` -- the exact inputs each decision run scored (candidates, schedule, gold
   rows), so a row can be replayed later.
 - `ledger/artifacts/` and `ledger/recipes/` -- the ledger's own copies of every model, blend and
   converter directory a row was scored with, and of the chain-fit record
   (`ledger/recipes/<sha256>.json`). Replay needs nothing from `artifacts/` or `outputs/`.
+- `ledger/refit/` (Phase 37) -- the re-fit records:
+  - `ledger/refit/dates.jsonl` -- one line per cadence-date event: `attempt`, `install_intent`
+    and `closed`;
+  - `ledger/refit/aa_weeks.jsonl` -- the A/A week results (did the frozen arm match the live arm
+    for a whole week);
+  - `ledger/refit/bet_rules/<sha256>.json` -- each re-fit generation's re-measured bet rule,
+    written once and named by its own hash;
+  - `ledger/refit/shadow_holes.jsonl` -- the frozen-arm holes (a live row written without a
+    shadow twin, with the reason);
+  - `ledger/refit/attempt.lock` -- held while a re-fit attempt runs; never backed up.
+
+  Every record file is append-only (a bet-rule file is written once and never rewritten) and is
+  carried by the private backup with the rest of `ledger/`. `PIPELINE.md`, daily run step 8, says
+  when they are written.
 - `ledger/` is itself a git repository (branch `main`). This public repository ignores it, and it
   is pushed to the PRIVATE repository `jackc625/nfl-predict-ledger`. Every push is a commit, so the
   backup keeps a dated history and a damaged local file can never overwrite the last good copy.
@@ -745,8 +761,10 @@ disagree, and that has to be understood before anything is written again.
 
 ### If pushes start failing
 
-Every daily run that changes the ledger ends with a sync. It commits a new anchor when the head
-moved and pushes it to `ledger-anchor`, then commits and pushes the backup. A failed push never
+Every daily run that changes the ledger syncs once: right after the day's ledger write and before
+the re-fit side step on a day that reaches it (owner ruling 2026-10-21), otherwise at its end. It
+commits a new anchor when the head moved and pushes it to `ledger-anchor`, then commits and
+pushes the backup. A failed push never
 fails the run: it is printed on the `LEDGER_SYNC=` line, recorded as an `anchor_push` or
 `backup_push` event with `ok` false in `logs/ledger_runs.jsonl`, and retried by the next sync,
 which carries the current head. A missing or locked backup repository is recorded the same way and
@@ -781,6 +799,58 @@ If a key FILE is missing, `register-deploy-keys` refuses and names it. `create-k
 (it refuses to overwrite an existing file); then repeat steps 2-4. `sync_ledger` exits 1 only when
 the ledger cannot be read, its chain is broken, or it is shorter than its anchor (`SYNC_REFUSED=`):
 nothing is ever published from a broken or shortened ledger, so restore from the backup first.
+
+### A re-fit record that will not read (a torn line)
+
+The re-fit records under `ledger/refit/` are read strictly: a line that is not a complete, valid
+record is never treated as "no records". What you see while one is bad:
+
+- every daily run prints `REFIT= failed RefitRecordFormatError at ledger/refit/<file> line <n>`
+  and sends a `FAILED: model re-fit crashed` push naming that record, that class and this
+  repair, until the file is repaired (the path and the line number only, never the line's
+  content);
+- while the bad line is in `dates.jsonl` or `aa_weeks.jsonl`, the web cache build leaves out the
+  Season page's comparison, which reads both (the page shows "Comparison not available"), and
+  builds everything else as usual;
+- once a re-fit generation is in force, a bad line in `dates.jsonl` other than a torn last line
+  stops the whole web cache build, because the website's edge bands read that file too. What
+  happens to the website then depends on the day. On a prediction day the run ends `degraded` and
+  the website is not pushed (`rebuild_incomplete`). On a no-games or `lock_passed` day the run
+  keeps its status: when a cache rebuild was attempted that day (the settle pass changed the
+  ledger, or the re-fit wrote a record) the push is refused the same way, and when no rebuild was
+  due the website is pushed with the previous cache;
+- the day's live and shadow decisions are still made and written when the only bad line is a torn
+  last line of `dates.jsonl` (it is left out of that read and logged); a bad line anywhere else in
+  `dates.jsonl` stops them once a re-fit generation is in force.
+
+The error names the file and the line: `refit record ledger/refit/<file> line <n> <problem>;
+<advice>`. Repair it outside 16:30-18:15 ET, so no daily run is writing:
+
+1. Copy the file aside, outside the repository, as the restore procedure moves a damaged ledger:
+
+   ```powershell
+   Copy-Item ledger\refit\<file name> "$HOME\<file name>_damaged_$(Get-Date -Format yyyyMMdd_HHmm)"
+   ```
+
+2. If the named line is the LAST line of the file and ends in no newline, the advice reads "a torn
+   last line is a crash mid-append: copy the file aside, then delete that one line". Delete only
+   that line, in a plain text editor, and save. Change nothing else. Nothing is ever appended onto
+   a torn line (the append is refused by name), so that line holds only the torn bytes.
+3. Confirm both files read with the same checks the daily run and the cache build apply (the
+   field checks the writer applies, not only "is it JSON"). This must print two counts, not an
+   error:
+
+   ```powershell
+   uv run python -c "from refit.records import read_date_events, read_aa_records; print('DATES=', len(read_date_events('ledger')), 'AA=', len(read_aa_records('ledger')))"
+   ```
+
+   The next daily run then prints its normal `REFIT=` line.
+
+If the named line ends in a newline (any line but an unterminated last one), the advice says it "is
+damage, not a torn append": a crash mid-append can only leave the last line unterminated. Change
+nothing; compare the file with the private backup (the restore procedure above) first. A file under `bet_rules/` that no longer hashes to its name
+raises the same error with its own message; it is written once and never edited, so treat it as
+damage too and compare it with the backup.
 
 ### Recording a real bet
 

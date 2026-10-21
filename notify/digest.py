@@ -26,7 +26,9 @@ UPSTREAM DATA CHANGES AND CORRECTED GRADES (D-03, D-21)
 --------------------------------------------------------
 After the season-to-date block comes the week's closing section (SPEC R4 item 7, D-23: skipped or
 missed closing readings, first-pick refusals and closing-schedule read-back failures from the ledger
-run log). Then, before the not-advice line, the email lists the latest probe
+run log), then, when there is any, the model re-fit section (Phase 37, SPEC R14, D-16: one line per
+cadence-date outcome since the previous digest, from ``ledger/refit/``). Then, before the not-advice
+line, the email lists the latest probe
 line's unacknowledged sealed changes, the live season's WARNING-or-louder verdicts and the corrected
 grades recorded since the previous delivered digest (:mod:`notify.digest_sections`). Each source is
 read on its own: one that cannot be read is named as unreadable in the section, never shown as
@@ -180,6 +182,8 @@ class DigestInputs:
             None renders no section.
         closing: :func:`notify.digest_sections.closing_section`'s output (SPEC R4 item 7, D-23);
             None renders no section.
+        refit: :func:`notify.digest_sections.refit_section`'s output (Phase 37, SPEC R14, D-16):
+            one line per cadence-date outcome since the previous digest; None renders no section.
     """
 
     run_date_et: date
@@ -198,6 +202,7 @@ class DigestInputs:
     schedule_readable: bool = True
     data_changes: dict[str, Any] | None = None
     closing: dict[str, Any] | None = None
+    refit: dict[str, Any] | None = None
 
 
 def _week_of_day(schedule: pd.DataFrame, day: date) -> tuple[int, int] | None:
@@ -498,6 +503,7 @@ def collect_digest_inputs(
         schedule_readable=schedule is not None,
         data_changes=_data_change_section(season, service, cutoff),
         closing=digest_sections.closing_section(cutoff),
+        refit=digest_sections.refit_section(cutoff),
     )
 
 

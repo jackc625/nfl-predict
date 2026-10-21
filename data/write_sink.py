@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -119,13 +120,23 @@ def write_csv(frame: pd.DataFrame, path: Path, *, kind: str) -> bool:
     return True
 
 
-def append_jsonl(path: Path, record: dict[str, Any], *, kind: str) -> bool:
-    """Append one JSON line to *path*, through the sink. Returns True when it was written."""
+def append_jsonl(
+    path: Path, record: dict[str, Any], *, kind: str, durable: bool = False
+) -> bool:
+    """Append one JSON line to *path*, through the sink. Returns True when it was written.
+
+    With ``durable=True`` the line is flushed and fsynced before the handle closes: an
+    install-critical record must survive a power cut, as ``models.artifacts._atomic_write_json``'s
+    manifest does. Every existing caller keeps the default and is byte-for-byte unchanged.
+    """
     if not current_sink().authorize(str(path), kind, 1):
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+        if durable:
+            handle.flush()
+            os.fsync(handle.fileno())
     return True
 
 

@@ -16,7 +16,13 @@ WHAT ONE RUN DOES
 2. Selects tomorrow's games -- the games whose lock is today's 18:00 ET. None: a no-op record.
 3. Runs ``pipeline.daily_steps``: collection, the FULL-HISTORY gold build, then prediction and
    emission, all before the lock (owner ruling "Finish before 6 PM").
-4. Pushes the website (Phase 36, D-13) at the end of every run that did not fail, after the ledger
+4. Attempts a due model re-fit (Phase 37, D-15, D-17) through ``refit.hook``: after the day's
+   ledger write and its ledger sync (moved ahead of the re-fit by owner ruling on 2026-10-21) and
+   before the cache rebuild, the website push and the notifications, on every run
+   that got past the picks (``success``, ``finished_with_skips``, ``degraded``, ``no_games``,
+   ``lock_passed``) and never on a dry run. It is a non-fatal side step: it prints ``REFIT=``,
+   records its own outcome and never changes the exit code. New models serve from the next run.
+5. Pushes the website (Phase 36, D-13) at the end of every run that did not fail, after the ledger
    sync and before the phone pushes, through ``pipeline.site_push``; a run ending ``failed`` or
    ``run_failed`` records "not pushed" instead. Unless ``config/site_push_enabled.json`` reads
    ``"enabled": true``, every push only records "not pushed".
@@ -50,7 +56,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from backtest.weekly_bet_list import _with_gameday, select_games_for_decision_instant
 from data.write_sink import (
@@ -88,6 +94,7 @@ if TYPE_CHECKING:
 
     from forward_ledger.closing_schedule import TriggerRegistration
     from forward_ledger.runner import SettleOutcome
+    from refit.hook import RefitOutcome
 
 logger = get_logger(__name__)
 
@@ -650,13 +657,13 @@ def _settle_ledger(start: datetime, *, report: RunReport) -> SettleOutcome | Non
     return outcome
 
 
-def _rebuild_cache_after_settle(report: RunReport) -> None:
-    """Rebuild the web cache after a settle that changed the ledger on a no-games day.
+def _rebuild_web_cache(report: RunReport, *, contract: str) -> None:
+    """Rebuild the web cache, printing the outcome on the *contract* line (``NAME=``).
 
-    Without it the Super Bowl's grade -- settled on a day with no game tomorrow -- would never
-    reach ``/bets``. A failure is printed and recorded, never propagated. Whether the rebuild was
-    attempted and whether it completed is noted on *report*, so the website push refuses a
-    rebuild that did not finish (Phase 36, RESEARCH Pitfall 10).
+    A failure is printed and recorded, never propagated. Whether the rebuild was attempted and
+    whether it completed is noted on *report*, so the website push refuses a rebuild that did not
+    finish (Phase 36, RESEARCH Pitfall 10). A failed rebuild leaves ``cache_rebuild_completed`` as
+    it was: the cache build swaps atomically, so an earlier completed cache is still in place.
     """
     from pipeline import steps
 
@@ -664,10 +671,21 @@ def _rebuild_cache_after_settle(report: RunReport) -> None:
     try:
         steps.step_populate_web_cache()
         report.cache_rebuild_completed = True
-        print("WEB_CACHE_AFTER_SETTLE= rebuilt")
+        print(f"{contract} rebuilt")
     except Exception as exc:  # noqa: BLE001 - the cache is a convenience, never a run failure
-        print(f"WEB_CACHE_AFTER_SETTLE= failed {_failure_text(exc)}")
-        logger.error("Web cache rebuild after settle failed", error=_failure_text(exc))
+        print(f"{contract} failed {_failure_text(exc)}")
+        logger.error(
+            "Web cache rebuild failed", contract=contract, error=_failure_text(exc)
+        )
+
+
+def _rebuild_cache_after_settle(report: RunReport) -> None:
+    """Rebuild the web cache after a settle that changed the ledger on a no-games day.
+
+    Without it the Super Bowl's grade -- settled on a day with no game tomorrow -- would never
+    reach ``/bets``.
+    """
+    _rebuild_web_cache(report, contract="WEB_CACHE_AFTER_SETTLE=")
 
 
 def _sync_ledger(*, report: RunReport) -> None:
@@ -698,6 +716,19 @@ def _sync_ledger(*, report: RunReport) -> None:
         report.sync_error = _failure_text(exc)
         print(f"LEDGER_SYNC= failed {_failure_text(exc)}")
         logger.error("Ledger sync failed", error=_failure_text(exc))
+
+
+def _sync_before_refit(report: RunReport) -> None:
+    """Back up the day's ledger write BEFORE the re-fit side step (owner ruling, WR-C04).
+
+    D-15 as amended by the owner on 2026-10-21: the sync moves to right after the day's ledger
+    write, so a re-fit of about 17 minutes -- or a laptop unplugged during one -- never holds back
+    the anchor and backup of the day's rows. Everything else stays in D-15's order: the re-fit,
+    the cache rebuild, the website push, the notifications, the check-in. ``run_daily``'s
+    ``finally`` then skips its own sync; what the re-fit records is backed up by the next run's.
+    """
+    if forward_rows_go_to_ledger():
+        _sync_ledger(report=report)
 
 
 # ---------------------------------------------------------------------------
@@ -791,6 +822,95 @@ def _push_site_quietly(report: RunReport) -> None:
         report.site_push = outcome
 
 
+# ---------------------------------------------------------------------------
+# The re-fit side step (Phase 37, D-15, D-17). It runs AFTER the day's ledger write and its ledger
+# sync (WR-C04) and BEFORE the cache rebuild, the website push and the notifier, so that day's push
+# and email report it. It can never change the run's result: it is called only through
+# _refit_quietly.
+# ---------------------------------------------------------------------------
+
+
+def _run_refit(_report: RunReport, **kwargs: Any) -> RefitOutcome:
+    """Run the re-fit side step (``refit.hook``).
+
+    The import is LAZY, like the notifier's: the re-fit stack (training, the re-measure) loads
+    only when a run reaches this point, and a broken re-fit module can never break this script's
+    import.
+    """
+    from refit.hook import run_refit_side_step
+
+    return run_refit_side_step(**kwargs)
+
+
+#: Seam: the test suite keeps it inert (tests/conftest.py); a wiring test restores this default.
+REFIT_HOOK: Callable[..., RefitOutcome | None] = _run_refit
+
+
+def _unreadable_record(exc: Exception) -> str | None:
+    """The re-fit record *exc* could not read (path and line only, WR-C05), else None.
+
+    Only a ``RefitRecordFormatError`` names one; its ``location`` is built from the path and the
+    line number, never from record content or exception text (D-10). A raise there already
+    imported ``refit.records``, so the lazy import costs nothing.
+    """
+    try:
+        from refit.records import RefitRecordFormatError
+    except Exception:  # noqa: BLE001 - a broken re-fit module is reported by class elsewhere
+        return None
+    return exc.location if isinstance(exc, RefitRecordFormatError) else None
+
+
+def _refit_quietly(
+    report: RunReport,
+    *,
+    run_date_et: date,
+    slate: DailySlate | None,
+    schedule_refreshed: bool,
+    refresh_schedule: Callable[[], object] | None,
+) -> bool:
+    """Call the re-fit side step; its outcome lands on *report*, and a raise NEVER propagates.
+
+    Prints ``REFIT= <status> date=<date> check=<check>``, or ``REFIT= failed <Class>`` when the
+    side step itself raised (class name only, D-10), followed by ``at <record> line <n>`` when the
+    raise was an unreadable re-fit record (WR-C05). Only ``Exception`` is caught: a Ctrl+C, and
+    the test guard's ``pytest.fail``, still stop the process.
+
+    Returns:
+        Whether the side step wrote records, so the caller rebuilds the web cache once.
+    """
+    report.refit_ran = True
+    try:
+        outcome = REFIT_HOOK(
+            report,
+            run_date_et=run_date_et,
+            now_utc=datetime.now(UTC),
+            slate=slate,
+            schedule_refreshed=schedule_refreshed,
+            refresh_schedule=refresh_schedule,
+        )
+    except Exception as exc:  # noqa: BLE001 - a re-fit never alters the run's result
+        report.refit_error = _failure_text(exc)
+        report.refit_error_location = _unreadable_record(exc)
+        where = (
+            f" at {report.refit_error_location}" if report.refit_error_location else ""
+        )
+        print(f"REFIT= failed {_failure_text(exc)}{where}")
+        logger.error(
+            "Re-fit side step failed",
+            error=_failure_text(exc),
+            record=report.refit_error_location,
+        )
+        return False
+    if outcome is None:
+        return False
+    report.refit = outcome
+    print(
+        f"REFIT= {outcome.status} date={outcome.date or 'none'} "
+        f"check={outcome.check or 'none'}"
+    )
+    return outcome.wrote_records
+
+
 def _season_window(run_date_et: date) -> str:
     """The watcher's season window for *run_date_et* (``notify.season_window``, Plan 35-13).
 
@@ -824,8 +944,9 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
 
     With the cutover switch on, ONE run id is bound around the whole day (printed as
     ``LEDGER_RUN_ID=``), so every ledger event it writes -- the append, the settle pass and the
-    end-of-run sync's pushes -- names this run (review finding 8); and a non-dry run ends with
-    the ledger sync, whether the day returned or raised. After the sync, a non-dry run that was
+    end-of-run sync's pushes -- names this run (review finding 8); and a non-dry run syncs the
+    ledger once: just before the re-fit side step on a day that reaches it (WR-C04), otherwise at
+    the end, whether the day returned or raised. After the sync, a non-dry run that was
     not interrupted sends its notifications (D-13), filled from one :class:`RunReport`; the
     watcher's season window on that report is read once, at the run's start (Plan 35-13).
 
@@ -865,6 +986,18 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                     lock_passed=len(recorded),
                     next_day_games=len(recorded),
                 )
+                # The re-fit side step (D-17): this run made no schedule refresh, so a due
+                # attempt refreshes it first (D-37). Not on a dry run.
+                if not dry_run and _refit_quietly(
+                    report,
+                    run_date_et=run_date_et,
+                    slate=None,
+                    schedule_refreshed=False,
+                    refresh_schedule=lambda: _refresh_schedule(
+                        run_date_et, dry_run=False
+                    ),
+                ):
+                    _rebuild_web_cache(report, contract="WEB_CACHE_AFTER_REFIT=")
             except BaseException as exc:
                 # A crash on this branch (a schedule read or a record write that raised) is a
                 # failed run like any other: recorded, pushed, then re-raised (35-REVIEW WR-05).
@@ -916,7 +1049,8 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                     report.tomorrow_game_ids = report.unpredicted_game_ids
                 raise
             finally:
-                if cut_over and not dry_run:
+                # A day that reached the re-fit side step already synced before it (WR-C04).
+                if cut_over and not dry_run and not report.sync_ran:
                     _sync_ledger(report=report)
                 # Rows appended before a later failure are still reported (failed, then bets), and
                 # so are the frozen-arm holes the recommend step recorded (Phase 37, SPEC R8).
@@ -927,9 +1061,11 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                 # website push runs BEFORE the check-in the notifier ends with, so it delays that
                 # check-in by at most its own worst case: a 600 s lock wait + a 900 s deploy bound
                 # + 13 read-back attempts (about 130 s) + a self-heal rebuild (about 45 s), roughly
-                # 28 minutes. The 2026-10-17 prediction day ran 17:00-17:14 ET, so the worst case
-                # checks in about 17:45 ET, well before the watcher's 18:30 ET down time. A push
-                # that is switched off returns in milliseconds.
+                # 28 minutes. A day the re-fit side step trains adds the attempt (1012.5 s in the
+                # 2026-10-20 rehearsal) in front of the push, the notifications and the check-in:
+                # the projection is a 17:58:53 ET bets push and check-in on a catch-up prediction
+                # day (AUTOMATION.md, daily run item 4). A push that is switched off returns in
+                # milliseconds.
                 if not dry_run and not report.interrupted:
                     _push_site_quietly(report)
                     _notify_quietly(report)
@@ -976,7 +1112,21 @@ def _run_the_day(
     )
     if slate.schedule.empty:
         logger.info("No games tomorrow; no-op", run_date_et=run_date_et.isoformat())
-        if settle is not None and settle.changed:
+        # The settle pass's ledger write is backed up first (WR-C04), then the re-fit side step
+        # (D-17: a cadence Tuesday usually has no games tomorrow), then ONE cache rebuild when it
+        # or the settle pass changed anything, and only then the no-prediction record.
+        if not dry_run:
+            _sync_before_refit(report)
+        refit_wrote = not dry_run and _refit_quietly(
+            report,
+            run_date_et=run_date_et,
+            slate=None,
+            schedule_refreshed=True,
+            refresh_schedule=None,
+        )
+        if refit_wrote:
+            _rebuild_web_cache(report, contract="WEB_CACHE_AFTER_REFIT=")
+        elif settle is not None and settle.changed:
             _rebuild_cache_after_settle(report)
         report.status = STATUS_NO_GAMES
         report.tomorrow_game_ids = ()
@@ -1044,6 +1194,17 @@ def _run_the_day(
         RunStatus.FINISHED_WITH_SKIPS.value,
         "degraded",
     ):
+        # The ledger sync, right after the picks' ledger write (WR-C04), then the re-fit side
+        # step (D-15); its records reach the site through one more cache rebuild.
+        _sync_before_refit(report)
+        if _refit_quietly(
+            report,
+            run_date_et=run_date_et,
+            slate=slate,
+            schedule_refreshed=True,
+            refresh_schedule=None,
+        ):
+            _rebuild_web_cache(report, contract="WEB_CACHE_AFTER_REFIT=")
         return 0
     return 1
 

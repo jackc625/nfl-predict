@@ -106,8 +106,10 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
 
 0. **Passed-lock refusal, before any request.** If the run starts at or after 18:00 ET on
    its run date, every one of tomorrow's games has already locked: it appends a
-   `lock_passed` record to `logs/daily_lock_runs.jsonl`, makes ZERO network requests and
-   exits 0. A missed day is never back-filled.
+   `lock_passed` record to `logs/daily_lock_runs.jsonl`, collects and predicts nothing and
+   exits 0. A missed day is never back-filled. On most days it makes ZERO network requests;
+   since Phase 37 (D-17), on a day an A/A week or a re-fit is due it refreshes the schedule once
+   and runs the re-fit side step (item 4) before the website push and the notifications.
 1. **Schedule refresh.** Captures what nflverse serves now and ingests the season's
    schedule from that capture, so results, moved games and each new playoff round arrive
    with no manual step. The season is read from the recorded schedule and rolls over on
@@ -128,11 +130,40 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
      build is the real one), then the leakage scan, gold currency and model loading.
    - **Predict and emit** -- tomorrow's predictions merged into the week's file with three
      stamps (`captured_at_utc`, `information_cutoff_utc` = the lock, `computed_at_utc`),
-     the bet list, the exports, validation and the web cache.
+     the bet list, the exports, validation and the web cache. Since Phase 37 the ledger write
+     also writes the frozen arm's shadow twin of every new live row, in the same write
+     (`PIPELINE.md`, daily run step 7).
 
    A defective row refuses only its own game (the live-skip rule), never tomorrow's slate.
    The run prints `RUN_STATUS=` and a `SKIPPED <game>` line per dropped game.
-4. **The website push (Phase 36)** -- after the ledger sync and before the phone pushes, every
+4. **The re-fit side step (Phase 37)** -- after the run proper, its ledger write and the ledger
+   sync, and BEFORE the cache rebuild, the website push and the notifications (D-15; the sync was
+   moved ahead of the re-fit by owner ruling on 2026-10-21), on every run that got past
+   the picks: a prediction day ending `success`, `finished_with_skips` or `degraded`, a
+   `no_games` day and a `lock_passed` day. Never on `--dry-run`. It prints
+   `REFIT= <status> date=<date> check=<check>` (or `REFIT= failed <Class>` when the step itself
+   raised) and, when it wrote records, rebuilds the web cache once more
+   (`WEB_CACHE_AFTER_REFIT=`). It never changes the exit code. Its records live under
+   `ledger/refit/` (`RUNBOOK.md`, "Forward ledger"), and every problem sends one `FAILED:` push.
+   The full rule is `PIPELINE.md`, daily run step 8.
+
+   On most days nothing is due and it returns at once. On a day it trains, the website push and
+   the notifications -- and the watcher check-in at their end -- arrive later by the attempt's
+   length. The 2026-10-20 rehearsal on a scratch copy of the real stores measured one attempt
+   at 1012.5 s (about 17 minutes at one thread, 828 s of it the full-history gold build). Adding
+   that to the latest prediction-day finish (17:14 ET) and the push's 28-minute worst case gave
+   `WATCHER_PROJECTED_ET= 17:58:53` (deadline 18:30 ET, inside by about 31 minutes) and
+   `BETS_PUSH_PROJECTED_ET= 17:58:53` (deadline 18:00 ET, inside by about 67 seconds). The owner
+   was told; on 2026-10-21 the owner ruled to move only the ledger sync (the anchor and the
+   private backup) to right after the day's ledger write, before the re-fit, and to keep the
+   re-fit before the cache rebuild, the website push, the notifications and the check-in. The
+   picks are written to the ledger and backed up before the re-fit starts, so a slow attempt, or a
+   laptop unplugged during one, never costs a pick or its backup; what the re-fit records is
+   backed up by the next run's sync. A `lock_passed`
+   run on a day a re-fit is due runs the attempt too, so its check-in lands after 18:30 ET and
+   the watcher alerts that evening.
+5. **The website push (Phase 36)** -- after the ledger sync, the re-fit side step and its cache
+   rebuild, and before the phone pushes, every
    run that did not fail pushes the dashboard to Vercel (a run that failed records "not pushed"
    instead). See "Website push" near the end of this document.
 
@@ -419,7 +450,8 @@ failure. The owner's setup steps, the TEST command and what each message means a
 ### Who sends, and when
 
 - **The daily run** (`scripts/daily_lock_pipeline.py`) sends at its very END: after the bet-list and
-  ledger writes, after the web cache rebuild and after the ledger sync, on the returning path, on
+  ledger writes, after the ledger sync, after the re-fit side step and the web cache rebuild, on
+  the returning path, on
   the raising path, and on the `lock_passed` early return. The order is: the failed pushes (top
   priority first), then the bets push, then the weekly email (on its digest day only), then the
   watcher check-in LAST. Sending can never change the run's exit code, a prediction, the bet list
@@ -1232,9 +1264,10 @@ The healthchecks.io check-in is unchanged: it is still the last thing the run do
 before it, so it can delay the check-in by at most its own worst case: a 600 s lock wait, a 900 s
 deploy bound, 13 read-back attempts (about 130 s), seven page checks (at most 105 s) and a 45 s
 self-heal rebuild -- about 30 minutes.
-The 2026-10-17 prediction day ran 17:00-17:14 ET, so even the worst case checks in around
-17:45 ET, well before the watcher's 18:30 ET down time. A push that is switched off returns in
-milliseconds.
+The 2026-10-17 prediction day ran 17:00-17:14 ET, so on a day with no re-fit even the worst case
+checks in around 17:45 ET, well before the watcher's 18:30 ET down time. A day the re-fit side
+step trains adds the attempt in front of the push (about 17 minutes measured; the projection is in
+"What one daily run does", item 4). A push that is switched off returns in milliseconds.
 
 ### Under the S4U scheduled task
 

@@ -4178,6 +4178,11 @@ def test_no_rendered_page_states_the_retired_friday_rule(
     is daily. The pages still told readers that lines froze "on the Friday before" each game and
     that the forward record was "written to the cache on the Friday before its game".
     """
+    # The fixture client's pages are read FIRST: each helper client below clears
+    # app.dependency_overrides on exit, which would send a later bets_client request to the real
+    # get_db -- the production web cache -- instead of this test's own cache.
+    bets_body = bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    season_body = bets_client.get("/season").text
     rows = [_suppressed_row("2023_W01_SEA@SFO", "ats", "stale_line")]
     with _client_for(tmp_path, rows, "friday_suppressed") as client:
         suppressed = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
@@ -4200,10 +4205,10 @@ def test_no_rendered_page_states_the_retired_friday_rule(
         refused = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
 
     bodies = {
-        "/bets": bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text,
+        "/bets": bets_body,
         "/bets suppressed": suppressed,
         "/bets refused": refused,
-        "/season": bets_client.get("/season").text,
+        "/season": season_body,
     }
     for page, body in bodies.items():
         assert "friday" not in body.lower(), (

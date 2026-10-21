@@ -99,7 +99,7 @@ def test_ats_residual_converter_fitted(
     trainer: ATSTrainer, synthetic_features_df: pd.DataFrame
 ) -> None:
     """After training, self.residual_converter.is_fitted is True."""
-    trainer.train_and_evaluate(synthetic_features_df)
+    trainer.train_and_evaluate(synthetic_features_df, tune=False)
 
     assert trainer.residual_converter is not None
     assert trainer.residual_converter.is_fitted is True
@@ -109,7 +109,7 @@ def test_ats_cover_probability_range(
     trainer: ATSTrainer, synthetic_features_df: pd.DataFrame
 ) -> None:
     """Cover probabilities derived from converter are in [0, 1] range."""
-    trainer.train_and_evaluate(synthetic_features_df)
+    trainer.train_and_evaluate(synthetic_features_df, tune=False)
 
     # Use converter to compute cover probabilities
     predicted_margins = np.array([3.0, -7.0, 0.0, 14.0, -14.0])
@@ -139,7 +139,7 @@ def test_ats_feature_count_soft_target(
     for i in range(16, 36):
         df[f"feature_{i}"] = np.random.normal(0, 1, len(df))
 
-    results = trainer.train_and_evaluate(df)
+    results = trainer.train_and_evaluate(df, tune=False)
     n_features = len(results["feature_names"])
     assert n_features <= 25, f"Expected <= 25 features, got {n_features}"
 
@@ -148,7 +148,7 @@ def test_ats_train_on_synthetic_data(
     trainer: ATSTrainer, synthetic_features_df: pd.DataFrame
 ) -> None:
     """Train on synthetic data produces margin predictions with reasonable range."""
-    results = trainer.train_and_evaluate(synthetic_features_df)
+    results = trainer.train_and_evaluate(synthetic_features_df, tune=False)
 
     # Check that season results exist for holdout seasons
     assert len(results["season_results"]) > 0, "No season results produced"

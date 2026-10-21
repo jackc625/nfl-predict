@@ -62,7 +62,13 @@ from conf.season_partition import (
     backtest_seasons,
     default_season_partition,
 )
+from refit.generations import installed_generations
 from tests import phase33_state
+from tests.live_manifest_record import (
+    LIVE_LEDGER_DIR,
+    recorded_live_manifest,
+    refit_metadata_problems,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -492,12 +498,45 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
                 "record was edited (D33.1-04 prohibits exactly that)."
             )
 
+    def _served_refit_problems(
+        self, manifest: dict[str, str], generation_number: int
+    ) -> dict[str, list[str]]:
+        """Each served model's breaks of the pre-registered re-fit contract (generation >= 1).
+
+        The cutoff is checked against the served generation's own pre-registered cutoff, so a
+        re-install of an earlier generation's models fails (WR-D07).
+        """
+        generation = next(
+            g
+            for g in installed_generations(LIVE_LEDGER_DIR)
+            if g.number == generation_number
+        )
+        problems: dict[str, list[str]] = {}
+        for target in ("wp", "ats", "ou"):
+            metadata_path = REPO_ROOT / "artifacts" / manifest[target] / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            problems[target] = refit_metadata_problems(metadata, generation)
+        return problems
+
     def test_every_served_model_records_the_live_partition(self) -> None:
+        """RE-POINTED for Phase 37 (Plan 37-20): from Tue 2026-11-03 the daily run installs
+        re-fit generations unattended, so the served set is the RECORDED end state
+        (``tests.live_manifest_record.recorded_live_manifest()``), the row-19 ids until the
+        first recorded install, whose slots stay as that swap's record. A re-fit is trained by
+        the D-26 cutoff split pre-registered in the record, not by the backtest partition
+        (which stays byte-unchanged), so for generation >= 1 each served model must record the
+        re-fit recipe and its pre-registered windows instead.
+        """
         manifest = json.loads(
             (REPO_ROOT / "artifacts" / "latest.json").read_text(encoding="utf-8")
         )
-        # The served set is the WINDOWS row 19 swap's (2026-10-04); was P332_25B_SWAP_*.
-        assert manifest == dict(phase33_state.ROW19_SWAP_ARTIFACT_IDS)
+        # Generation 0 is the WINDOWS row 19 swap's set (2026-10-04); was P332_25B_SWAP_*.
+        generation, expected = recorded_live_manifest()
+        assert manifest == expected
+        if generation >= 1:
+            problems = self._served_refit_problems(manifest, generation)
+            assert problems == {"wp": [], "ats": [], "ou": []}, (generation, problems)
+            return
         live = tuple(_partition().holdout)
         windows = self._incumbent_windows()
         assert set(windows) == {"wp", "ats", "ou"}
@@ -508,9 +547,24 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
             )
 
     def test_the_served_models_carry_no_window_report(self) -> None:
-        """Agreement is silent: ``_incumbent_window`` reports only a difference."""
+        """Agreement is silent: ``_incumbent_window`` reports only a difference.
+
+        RE-POINTED for Phase 37 (Plan 37-20): a re-fit generation's recorded windows differ
+        from the backtest partition by design (the D-26 cutoff split), so "no report" applies
+        to generation 0 only; for generation >= 1 each served model must record the re-fit
+        recipe and its pre-registered windows (unattended recorded installs from
+        Tue 2026-11-03; the row-19 slots stay as that swap's record).
+        """
         from scripts.promote_models import _incumbent_window
 
+        generation, _expected = recorded_live_manifest()
+        if generation >= 1:
+            manifest = json.loads(
+                (REPO_ROOT / "artifacts" / "latest.json").read_text(encoding="utf-8")
+            )
+            problems = self._served_refit_problems(manifest, generation)
+            assert problems == {"wp": [], "ats": [], "ou": []}, (generation, problems)
+            return
         artifacts_dir = REPO_ROOT / "artifacts"
         for target in sorted(self._incumbent_windows()):
             window = _incumbent_window(target, artifacts_dir)

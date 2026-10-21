@@ -113,6 +113,101 @@
 
 {% endif %}
 
+{# Section 5: Re-fitting vs standing still (Phase 37, D-12..D-14). OUTSIDE the KPI guard above, so
+   a season with no graded game still shows the frozen-arm check, and INSIDE this block, so the
+   season swap carries it. Gated on the season ONLY, never on whether rows exist, so all three
+   states are reachable: tables unreadable -> "not available"; no installed re-fit -> "No re-fit
+   yet." beside the weekly check; otherwise one table per bet type.
+   RAW NUMBERS ONLY (D-13): every figure is the stored value, formatted to three decimals of log
+   loss or two of points; nothing is computed or tested here, and the section never shows a test
+   result or a range. Accuracy only, no return per arm (D-14). Monochrome, like Track Record's
+   model-vs-market gap: a gap compares two measurements, so it is never coloured as a win or a
+   loss. The season-to-date row is the one with no period index. #}
+{% if current_season is not none and current_season == refit_panel_season %}
+<section id="refit-comparison" class="mb-8" aria-label="Re-fitting vs standing still">
+  {{ bc.section_head("Re-fitting vs standing still -- not the verdict", meta="live models re-fitted every four weeks vs today's models frozen") }}
+  <p class="text-sm text-muted max-w-3xl">Lower is better: each number is the average error per game -- log loss for the winner, points for the spread and the total.</p>
+  <p class="text-sm text-muted mt-1 mb-4 max-w-3xl">The pre-registered test runs once, at season close. These numbers move week to week.</p>
+
+  {% if refit_panel is none %}
+    {% with heading="Comparison not available",
+            body="The re-fitting comparison is not available in this copy of the data. The next daily run's cache rebuild writes it.",
+            action_text=none, action_url=none %}
+      {% include "components/_empty_state.html" %}
+    {% endwith %}
+  {% else %}
+    {% if not refit_panel.any_refit %}
+    <p class="text-sm text-fg font-semibold mb-4">No re-fit yet.</p>
+    {% endif %}
+
+    {% set refit_targets = [("wp", "Winner", "%.3f", "%+.3f"), ("ats", "Spread", "%.2f", "%+.2f"), ("ou", "Totals", "%.2f", "%+.2f")] %}
+    {% for target, target_label, value_fmt, gap_fmt in refit_targets %}
+    {% set target_rows = refit_panel.rows|selectattr("target", "equalto", target)|list %}
+    {% if target_rows %}
+    <div class="panel p-0 overflow-hidden mb-4">
+      <h3 class="panel-title px-4 pt-4 pb-3">{{ target_label }} <span class="font-sans text-xs font-normal text-muted">{{ target_rows[0].unit }} per game</span></h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-line">
+              <th scope="col" class="label px-4 py-2 text-left">Period</th>
+              <th scope="col" class="label px-4 py-2 text-right">Live</th>
+              <th scope="col" class="label px-4 py-2 text-right">Frozen</th>
+              <th scope="col" class="label px-4 py-2 text-right">Gap</th>
+              <th scope="col" class="label px-4 py-2 text-left">Ahead</th>
+              <th scope="col" class="label px-4 py-2 text-right">Paired games</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-line">
+            {% for row in target_rows %}
+            <tr class="hover:bg-panel-2 transition-colors">
+              <th scope="row" class="px-4 py-2.5 text-left text-fg {{ 'font-semibold' if row.period_index is none else 'font-normal' }}">{{ row.period_label }}</th>
+              {% if row.live_error is none or row.frozen_error is none %}
+              <td colspan="5" class="px-4 py-2.5 text-muted">not measured yet ({{ row.paired_games }} paired games)</td>
+              {% else %}
+              <td class="px-4 py-2.5 text-right text-fg num">{{ value_fmt|format(row.live_error) }}</td>
+              <td class="px-4 py-2.5 text-right text-fg num">{{ value_fmt|format(row.frozen_error) }}</td>
+              <td class="px-4 py-2.5 text-right text-fg font-semibold num">{{ gap_fmt|format(row.gap) if row.gap is not none else "--" }}</td>
+              <td class="px-4 py-2.5 text-fg">{{ row.ahead|capitalize if row.ahead else "--" }}</td>
+              <td class="px-4 py-2.5 text-right text-fg num">{{ row.paired_games }}</td>
+              {% endif %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% if refit_panel.rows %}
+    <p class="text-xs text-muted mb-4 max-w-3xl">Gap = live minus frozen, so a negative gap means the re-fitted live models erred less. Ahead names the side with the lower error; even means no difference.</p>
+    {% endif %}
+
+    {% if refit_panel.aa_weeks or not refit_panel.any_refit %}
+    <div class="panel p-4">
+      <h3 class="panel-title mb-1">Frozen-arm check</h3>
+      <p class="text-xs text-muted mb-3 max-w-3xl">Until the first re-fit goes live, each finished week is checked: the frozen models must match the live models on every game. The first re-fit waits for a week that matched.</p>
+      {% if refit_panel.aa_weeks %}
+      <ul class="text-sm text-fg space-y-1">
+        {% for aa_week in refit_panel.aa_weeks %}
+        {% if aa_week.clean %}
+        <li>Week {{ aa_week.week }}: matched</li>
+        {% elif aa_week.mismatch_field %}
+        <li>Week {{ aa_week.week }}: did not match ({{ aa_week.mismatch_field }})</li>
+        {% else %}
+        <li>Week {{ aa_week.week }}: did not qualify ({{ (aa_week.reason or "no reason recorded")|replace("_", " ") }})</li>
+        {% endif %}
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-sm text-muted">No week has been checked yet.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  {% endif %}
+</section>
+{% endif %}
+
 {% endblock %}
 </div>
 {% endblock %}
