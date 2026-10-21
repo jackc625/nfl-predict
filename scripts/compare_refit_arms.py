@@ -8,6 +8,7 @@ at season close (Phase 38); the command is runnable at any time before then.
 Output is ``KEY= value`` lines: ``COMPARISON_SEASON=``, ``UNPAIRED_WEEKS=`` (weeks with live rows but
 no shadow row at all, excluded), ``HOLES=`` (live rows with no shadow twin), one ``EXCLUDED_<REASON>=``
 count per ``refit.comparison.EXCLUDED_REASONS`` entry, in that order (``EXCLUDED_NO_GENERATION=``,
+``EXCLUDED_DRESS_REHEARSAL=`` -- the week-7 dress-rehearsal pairs, D-38 --,
 ``EXCLUDED_INVARIANT_FAILURE=``, ``EXCLUDED_NO_MODEL_VALUE=``, ``EXCLUDED_NO_FINAL_SCORE=``: live rows
 left out of every test, so no exclusion is silent), then, in this order:
 

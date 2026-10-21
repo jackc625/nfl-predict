@@ -26,6 +26,7 @@ import pytest
 
 from backtest.profitability_2025 import benjamini_hochberg_adjusted
 from backtest.refit_preregistration_2026 import (
+    AA_FIRST_WEEK,
     ALPHA,
     LOG_LOSS_CLIP,
     NO_CLEAN_WEEK_RULE,
@@ -396,6 +397,7 @@ def test_cli_prints_every_exclusion_count(
     excluded = [line for line in lines if line.startswith("EXCLUDED_")]
     assert excluded == [
         "EXCLUDED_NO_GENERATION= 0",
+        "EXCLUDED_DRESS_REHEARSAL= 0",
         "EXCLUDED_INVARIANT_FAILURE= 0",
         "EXCLUDED_NO_MODEL_VALUE= 0",
         "EXCLUDED_NO_FINAL_SCORE= 1",
@@ -727,24 +729,82 @@ def test_no_refit_prints_the_end_rule_not_a_verdict_word() -> None:
     assert not any(word in line for line in lines for word in ROLLUP_WORDS)
 
 
-def test_generation_zero_shadow_rows_are_never_bets() -> None:
-    """WR-D04 (D-38): a generation-0 shadow row is never counted as a bet in the ROI secondary."""
-    paired = synthetic_paired({("ats", 0): [0.0] * 6, ("ats", 1): [0.0] * 6})
-    frame = paired.frame
-    # Every frozen twin a live, graded bet, so a generation-0 frozen ROI would count six.
-    frame["frozen_status"] = "live"
-    frame["frozen_grading_status"] = "win"
-    frame["frozen_payout_flat"] = 0.9090909090909091
+# One generation-0 pair in the week-7 dress rehearsal and one in the first A/A week (D-38, D-14).
+DRESS_GAME: str = f"2026_{AA_FIRST_WEEK - 1:02d}_KC_BUF"
+AA_GAME: str = f"2026_{AA_FIRST_WEEK:02d}_KC_BUF"
+DRESS_SCORES: dict[str, tuple[int | None, int | None]] = {
+    DRESS_GAME: (27, 24),  # margin +3
+    AA_GAME: (17, 20),  # margin -3
+}
 
-    result = decide(paired, installed(1))
 
-    assert [(roi.generation, roi.arm, roi.bets) for roi in result.roi] == [
-        (0, "live", 6),
-        (1, "live", 6),
-        (1, "frozen", 6),
+def write_dress_and_aa_pairs(ledger: Path) -> None:
+    """The two generation-0 ATS pairs, both arms graded: dress rehearsal win, A/A week loss."""
+    pairs: list[tuple[dict[str, Any], dict[str, Any] | None]] = [
+        (
+            live_row(game_id, "ats", 1.0, generation=0),
+            shadow_row(game_id, "ats", 1.0),
+        )
+        for game_id in (DRESS_GAME, AA_GAME)
     ]
-    lines = compare_refit_arms.report_lines(paired, result)
-    assert not any(line.startswith("ROI_SECONDARY= gen=0 arm=frozen") for line in lines)
+    write_pairs(ledger, pairs)
+    outcome = {
+        DRESS_GAME: graded("win", 0.9090909090909091, 1.1363636363636365),
+        AA_GAME: graded("loss", -1.0, -1.25),
+    }
+    apply_updates(
+        ledger,
+        grading_updates={
+            key_of(row): outcome[row["game_id"]]
+            for pair in pairs
+            for row in pair
+            if row is not None
+        },
+    )
+
+
+def test_the_dress_rehearsal_is_excluded_and_counted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """WR-D04 (D-38): a week-7 pair reaches no cell and is counted under its own reason."""
+    ledger = tmp_path / "ledger"
+    write_dress_and_aa_pairs(ledger)
+
+    paired = paired_frame(read_entries(ledger), games_frame(DRESS_SCORES), ())
+
+    assert list(paired.frame["game_id"]) == [AA_GAME]
+    assert paired.excluded["dress_rehearsal"] == 1
+    code = compare_refit_arms.main(
+        [
+            "--ledger-dir",
+            str(ledger),
+            "--silver-dir",
+            str(write_silver(tmp_path / "silver", DRESS_SCORES)),
+        ]
+    )
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 0
+    assert "EXCLUDED_DRESS_REHEARSAL= 1" in lines
+    (cell,) = [line for line in lines if line.startswith("CELL= ")]
+    assert cell.startswith("CELL= ats gen=0 n=1 ")
+
+
+def test_the_frozen_arm_has_a_generation_zero_roi_without_the_dress_rehearsal(
+    tmp_path: Path,
+) -> None:
+    """WR-D04 (D-14): both arms report a generation-0 ROI line over the A/A weeks only."""
+    write_dress_and_aa_pairs(tmp_path)
+
+    paired = paired_frame(read_entries(tmp_path), games_frame(DRESS_SCORES), ())
+    result = decide(paired, ())
+
+    # Only the A/A-week loss counts; the dress-rehearsal win would have made it one win, one loss.
+    assert [
+        (roi.generation, roi.arm, roi.bets, roi.flat_roi) for roi in result.roi
+    ] == [
+        (0, "live", 1, -1.0),
+        (0, "frozen", 1, -1.0),
+    ]
 
 
 def test_pooled_is_after_and_labelled() -> None:

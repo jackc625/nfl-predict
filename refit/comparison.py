@@ -35,10 +35,14 @@ WHAT IS A PAIR (R8)
 2. A week with live rows but no shadow row at all (before the shadow start, or a lost slate) is
    excluded and listed by week (``unpaired_weeks``).
 3. A live row of a week that has shadow rows but no twin of its own is a hole, never a pair.
-4. A pair whose twins disagree on a comparability field (``odds_snapshot_digest``,
+4. A pair of an NFL week before ``AA_FIRST_WEEK`` (the week-7 dress rehearsal) is excluded
+   (``excluded["dress_rehearsal"]``): its shadow rows are "generation 0, never tested, never
+   counted, and never shown as bets" (record section 2, D-38), so it reaches no cell, no ROI line
+   and no panel row.
+5. A pair whose twins disagree on a comparability field (``odds_snapshot_digest``,
    ``gold_generation_key``, ``decided_at_utc``) is not comparable
    (``excluded["invariant_failure"]``).
-5. A pair with no stored model value (``no_model_value``) or whose game has no final score
+6. A pair with no stored model value (``no_model_value``) or whose game has no final score
    (``no_final_score``) is excluded and counted.
 
 Each pair also carries both arms' stored ``status`` and their IN-FORCE grading through
@@ -71,9 +75,11 @@ generation is the mean in-force ``payout_flat`` over that arm's live-status pair
 or push, with no test. Generation 0 is reported (its count and its gap, exactly zero in A/A weeks)
 and never tested.
 
-GENERATION-0 SHADOW ROWS ARE NEVER BETS (record section 2, D-38). The week-7 dress-rehearsal shadow
-rows, and every other generation-0 shadow row, are "never tested, never counted, and never shown as
-bets": the frozen arm has no generation-0 ROI line, and the panel has no generation-0 row.
+THE WEEK-7 DRESS REHEARSAL IS EXCLUDED; GENERATION 0 OF THE A/A WEEKS IS REPORTED. Only the
+dress-rehearsal pairs (weeks before ``AA_FIRST_WEEK``) leave the comparison, in one place
+(:func:`paired_frame`, D-38). The generation-0 pairs of the A/A weeks stay: they are reported --
+their CELL lines, both arms' generation-0 ROI lines, and the panel's ``Before the first re-fit``
+row (D-14) -- and never tested (record section 11).
 
 CLV APPEARS NOWHERE (must-NOT P5). No frame column, result field or printed line carries a CLV
 value; the deciding figure is accuracy only.
@@ -82,11 +88,12 @@ THE SEASON PAGE'S PANEL (D-12, D-13, D-14, SPEC R13)
 ----------------------------------------------------
 :func:`panel_frames` hands the cache build the panel's RAW numbers -- never a p-value, a confidence
 range or a test result: the test runs once, at season close. :func:`period_summary` gives, per
-target, one ``Period N, from Tue Nov 3`` row per installed generation N >= 1 -- from the moment it
-is installed, so a generation with no completed pair yet is a row with 0 paired games and NULL
+target, a ``Before the first re-fit`` row over the generation-0 pairs of the A/A weeks (when there
+are any; D-14 labels that stretch as such, and the week-7 dress rehearsal is never in it, D-38),
+one ``Period N, from Tue Nov 3`` row per installed generation N >= 1 -- from the moment it is
+installed, so a generation with no completed pair yet is a row with 0 paired games and NULL
 figures, never "no re-fit yet" -- and a season-to-date row over every paired game since the first
-re-fit. The generation-0 pairs are never counted on the panel (D-38); before the first re-fit the
-page shows "No re-fit yet." and the A/A status. A period starts on its cadence date (the date its install intent names). The panel is
+re-fit. A period starts on its cadence date (the date its install intent names). The panel is
 accuracy only: no betting return per arm, so frozen-arm bets never look like bets.
 
 Batch code: the comparison CLI (``scripts/compare_refit_arms.py``) and the cache build
@@ -124,6 +131,7 @@ from api.cache_schema import (
 )
 from backtest.profitability_2025 import benjamini_hochberg_adjusted
 from backtest.refit_preregistration_2026 import (
+    AA_FIRST_WEEK,
     ALPHA,
     LOG_LOSS_CLIP,
     MIN_PAIRED_GAMES,
@@ -149,6 +157,7 @@ __all__ = [
     "AHEAD_FROZEN",
     "AHEAD_LIVE",
     "ARM_LABELS",
+    "BEFORE_FIRST_REFIT_LABEL",
     "EXCLUDED_REASONS",
     "FRAME_COLUMNS",
     "RESULT_BETTER",
@@ -195,7 +204,6 @@ _HELPED, _HURT, _MIXED, _NO_DETECTABLE_DIFFERENCE = ROLLUP_WORDS
 
 # The two arms of the report-only ROI figure: the frame's column prefix is the label.
 ARM_LABELS: tuple[str, ...] = ("live", "frozen")
-_FROZEN_ARM_LABEL: str = ARM_LABELS[1]
 
 # The grading statuses a flat ROI counts: every settled bet.
 _GRADED: tuple[str, ...] = (
@@ -207,6 +215,7 @@ _GRADED: tuple[str, ...] = (
 # Why a live row of a paired week left the comparison, in the order the checks run.
 EXCLUDED_REASONS: tuple[str, ...] = (
     "no_generation",
+    "dress_rehearsal",
     "invariant_failure",
     "no_model_value",
     "no_final_score",
@@ -387,6 +396,10 @@ def paired_frame(
             if key not in generation_by_key:
                 continue
             generation_of_row(frozen["model_artifact_id"], ARM_SHADOW, generations)
+            # The one place the week-7 dress rehearsal leaves the comparison (D-38).
+            if week < AA_FIRST_WEEK:
+                excluded["dress_rehearsal"] += 1
+                continue
             if key in failed:
                 excluded["invariant_failure"] += 1
                 continue
@@ -652,12 +665,9 @@ def decide(paired: PairedFrame, generations: Sequence[Generation]) -> Comparison
         )
         for target in TARGETS
     )
-    # A generation-0 shadow row is never a bet (D-38), so the frozen arm has no generation-0 ROI.
+    # Generation 0 here is the A/A weeks only: the dress rehearsal never entered the frame (D-38).
     roi = tuple(
-        _flat_roi(rows, generation, arm)
-        for generation in numbers
-        for arm in ARM_LABELS
-        if not (generation == GENERATION_ZERO and arm == _FROZEN_ARM_LABEL)
+        _flat_roi(rows, generation, arm) for generation in numbers for arm in ARM_LABELS
     )
     return ComparisonResult(
         cells=tuple(cells),
@@ -677,6 +687,8 @@ def decide(paired: PairedFrame, generations: Sequence[Generation]) -> Comparison
 AHEAD_LIVE: str = "live"
 AHEAD_FROZEN: str = "frozen"
 AHEAD_EVEN: str = "even"
+
+BEFORE_FIRST_REFIT_LABEL: str = "Before the first re-fit"
 
 # The unit each target's per-game error is measured in (D-07).
 _UNITS: dict[str, str] = {"wp": "log loss", "ats": "points", "ou": "points"}
@@ -780,11 +792,13 @@ def period_summary(
 ) -> pd.DataFrame:
     """The panel's rows (``REFIT_PANEL_COLUMNS``): raw numbers per target and period, no test.
 
-    Per target, in this order: one ``Period N, from <date>`` row per installed generation N >= 1,
-    present from its install even with no completed pair (0 paired games, NULL figures); and,
-    whenever a generation >= 1 is installed, a season-to-date row over every pair of generation
-    >= 1, whose label names the first re-fit's date. The generation-0 pairs -- the week-7 dress
-    rehearsal and every A/A week -- are never counted here (record section 2, D-38).
+    Per target, in this order: the ``Before the first re-fit`` row over the generation-0 pairs
+    of the A/A weeks (only when there are any; D-14), reported and never tested; one
+    ``Period N, from <date>`` row per installed generation N >= 1, present from its install even
+    with no completed pair (0 paired games, NULL figures); and, whenever a generation >= 1 is
+    installed, a season-to-date row over every pair of generation >= 1, whose label names the
+    first re-fit's date. The week-7 dress rehearsal is in no row: :func:`paired_frame` already
+    excluded it (record section 2, D-38).
 
     Args:
         paired: :func:`paired_frame`'s result.
@@ -803,6 +817,20 @@ def period_summary(
     records: list[dict[str, Any]] = []
     for target in TARGETS:
         target_rows = [row for row in rows if row["target"] == target]
+        before = [
+            row for row in target_rows if int(row["generation"]) == GENERATION_ZERO
+        ]
+        if before:
+            records.append(
+                _panel_row(
+                    target,
+                    GENERATION_ZERO,
+                    REFIT_PANEL_PERIOD,
+                    BEFORE_FIRST_REFIT_LABEL,
+                    None,
+                    before,
+                )
+            )
         for generation in installs:
             start = starts[generation.number]
             records.append(
