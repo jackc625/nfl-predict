@@ -572,17 +572,20 @@ def _aa_part(
 
 
 def _late_part(
-    index: int | None, iso_date: str, nfl_week: int | None, run_date_et: date
+    index: int | None, iso_date: str, nfl_week: int | None, swapped_on: date
 ) -> tuple[str, str, list[str]]:
-    """The push part of a re-fit installed after its own day: still FAILED (D-16)."""
+    """The push part of a re-fit installed after its own day: still FAILED (D-16).
+
+    *swapped_on* is the ET day the swap happened, so the new models serve from the next day's run.
+    """
     number = "" if index is None else f" {index}"
-    live_from = _short_day(run_date_et + timedelta(days=1))
+    live_from = _short_day(swapped_on + timedelta(days=1))
     return (
         f"model re-fit ran late{_week_suffix(nfl_week)}",
         "model re-fit ran late",
         [
             f"Re-fit{number}, due {_short_day(iso_date)}, ran late, on "
-            f"{_short_day(run_date_et)}. New models are live from {live_from}.",
+            f"{_short_day(swapped_on)}. New models are live from {live_from}.",
             "Next: nothing to run; the late re-fit is recorded.",
         ],
     )
@@ -656,10 +659,14 @@ def _refit_message(
             if not result.clean
         )
         if outcome.recovered_close is not None:
-            iso_date, status = outcome.recovered_close
+            iso_date, status, swapped_on = outcome.recovered_close
             if status == _REFIT_STATUS_LATE:
                 index, nfl_week = _refit_date_facts(outcome, iso_date)
-                parts.append(_late_part(index, iso_date, nfl_week, report.run_date_et))
+                parts.append(
+                    _late_part(
+                        index, iso_date, nfl_week, date.fromisoformat(swapped_on)
+                    )
+                )
         attempt = _attempt_part(outcome, report, secrets)
         if attempt is not None:
             parts.append(attempt)

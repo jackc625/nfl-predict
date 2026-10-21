@@ -109,6 +109,17 @@ def _clean_code_commit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(refit.records, "code_commit", lambda _repo_root: CLEAN_COMMIT)
 
 
+def stamp_records_at(monkeypatch: pytest.MonkeyPatch, instant: datetime) -> None:
+    """Every record appended from now on is stamped ``recorded_at_utc`` = *instant*."""
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+            return instant if tz is None else instant.astimezone(tz)
+
+    monkeypatch.setattr(refit.records, "datetime", _Clock)
+
+
 # ---------------------------------------------------------------------------
 # The fixture world (tmp only) and the injected steps
 # ---------------------------------------------------------------------------
@@ -549,27 +560,36 @@ def test_a_catch_up_run_keeps_every_aa_result(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_pending_install_closes_without_retraining(tmp_path: Path) -> None:
+def test_pending_install_closes_without_retraining(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The swap happened in the date's own Tuesday run; only the closing record was lost.
     world = build_world(tmp_path)
     record_clean_week(world.ledger)
-    swap.install_generation(
-        world.ledger,
-        world.artifacts,
-        date=cadence_dates(8)[0],
-        ids=ids_of(NEW_IDS),
-        bet_rule_sha256=world.sha,
-        code_commit=CLEAN_COMMIT,
-    )
+    with monkeypatch.context() as clock:
+        stamp_records_at(clock, NOV3)
+        swap.install_generation(
+            world.ledger,
+            world.artifacts,
+            date=cadence_dates(8)[0],
+            ids=ids_of(NEW_IDS),
+            bet_rule_sha256=world.sha,
+            code_commit=CLEAN_COMMIT,
+        )
     assert kinds(world.ledger) == [("install_intent", "")]
     fakes = Fakes(world)
 
     outcome = side_step(world, fakes.steps(), NOV4)
 
-    assert outcome.recovered_close == ("2026-11-03", "ran late")
-    assert outcome.status == "ran late"
+    # Judged on the swap's day, not the recovering run's (WR-C02): on time.
+    assert outcome.recovered_close == ("2026-11-03", "ran", "2026-11-03")
+    assert outcome.status == "ran"
     assert outcome.wrote_records is True
     assert fakes.calls == [], "a swapped date was re-trained"
-    assert kinds(world.ledger) == [("install_intent", ""), ("closed", "ran late")]
+    assert kinds(world.ledger) == [("install_intent", ""), ("closed", "ran")]
+    closed = read_date_events(world.ledger)[-1]
+    assert closed["closed_at_utc"] == NOV3.isoformat()
+    assert closed["after_ids"] == ids_of(NEW_IDS)
 
 
 def land_the_postponed_score(silver: Path) -> None:
@@ -644,11 +664,12 @@ def test_a_first_attempt_that_crashes_before_training_still_holds_its_unscored_g
     ]
 
 
-def test_a_crash_after_the_swap_closes_on_the_next_run(
+def test_a_crash_after_the_swap_closes_in_the_same_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     world = build_world(tmp_path)
     record_clean_week(world.ledger)
+    stamp_records_at(monkeypatch, NOV3)
     fakes = Fakes(world)
     real_replace: Callable[..., None] = swap.replace_manifest
 
@@ -661,21 +682,27 @@ def test_a_crash_after_the_swap_closes_on_the_next_run(
         patch.setattr(swap, "replace_manifest", replace_then_die)
         outcome = side_step(world, fakes.steps(), NOV3)
 
-    assert (outcome.status, outcome.exception_class) == ("crashed", "RuntimeError")
-    assert kinds(world.ledger) == [("install_intent", ""), ("attempt", "crashed")]
+    # The swap wrote, so the same run closes the date on time and reports the new models
+    # serving, never "the current models keep serving" (WR-C02).
+    assert (outcome.status, outcome.exception_class) == ("ran", "RuntimeError")
+    assert outcome.after_ids == ids_of(NEW_IDS)
+    assert kinds(world.ledger) == [
+        ("install_intent", ""),
+        ("attempt", "crashed"),
+        ("closed", "ran"),
+    ]
     assert served_pointers(world.artifacts) == pointers_of(NEW_IDS)
     generation = generation_for_ids(NEW_IDS, installed_generations(world.ledger))
     assert generation.number == 1
+    closed = read_date_events(world.ledger)[-1]
+    assert closed["before_ids"] == ids_of(OLD_IDS)
+    assert closed["after_ids"] == ids_of(NEW_IDS)
     calls_after_crash = list(fakes.calls)
 
     outcome = side_step(world, fakes.steps(), NOV4)
 
-    assert outcome.recovered_close == ("2026-11-03", "ran late")
-    assert kinds(world.ledger) == [
-        ("install_intent", ""),
-        ("attempt", "crashed"),
-        ("closed", "ran late"),
-    ]
+    assert outcome.recovered_close is None
+    assert outcome.status == "not_due"
     assert fakes.calls == calls_after_crash, "the recovered date was re-trained"
     intent = first_refit_intent(world.ledger)
     assert intent is not None

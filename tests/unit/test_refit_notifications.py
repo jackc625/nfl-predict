@@ -351,10 +351,14 @@ def test_late_push_is_failed() -> None:
 
 
 def test_a_recovered_late_close_is_reported_once() -> None:
-    # The outcome refit.hook returns when a run only recovers a pending install (WR-C01).
-    recovered = _refit("ran late", recovered_close=("2026-11-03", "ran late"))
+    # The outcome refit.hook returns when a run only recovers a pending install (WR-C01): the
+    # swap ran late on Wed Nov 4 and Thu Nov 5's run closed it. The day named is the swap's,
+    # not the recovering run's (WR-C02).
+    recovered = _refit(
+        "ran late", recovered_close=("2026-11-03", "ran late", "2026-11-04")
+    )
 
-    message = _one_message(_clean_with_refit(recovered, run_date_et=date(2026, 11, 4)))
+    message = _one_message(_clean_with_refit(recovered, run_date_et=date(2026, 11, 5)))
 
     assert message.title == "FAILED: model re-fit ran late (week 9)"
     assert message.header_lines == (

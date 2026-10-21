@@ -87,6 +87,7 @@ from refit.training import (
     no_final_score_game_ids,
     train_generation,
 )
+from utils.date_utils import ET
 from utils.file_lock import FileLockHeldError
 from utils.logging_config import get_logger
 
@@ -139,8 +140,9 @@ class RefitOutcome:
         exception_class: The class name of a crashed attempt's exception.
         aa_results: EVERY A/A week evaluated in this run, in order (a catch-up run's earlier
             mismatch is never overwritten by a later clean week).
-        recovered_close: ``(date ISO, "ran" | "ran late")`` when this run closed a date whose
-            swap a crash interrupted.
+        recovered_close: ``(date ISO, "ran" | "ran late", swap day ISO)`` when this run began by
+            closing a date whose swap an earlier run's crash interrupted; the status and the ET
+            day are the swap's (the models serve from the run after that day).
         closed_not_run: The dates this run closed ``not run``, ISO.
         wrote_records: True when the run appended any record.
         after_ids: The five ids serving after an install or a recovered close.
@@ -155,7 +157,7 @@ class RefitOutcome:
     check: str | None = None
     exception_class: str | None = None
     aa_results: tuple[AAWeekResult, ...] = ()
-    recovered_close: tuple[str, str] | None = None
+    recovered_close: tuple[str, str, str] | None = None
     closed_not_run: tuple[str, ...] = ()
     wrote_records: bool = False
     after_ids: dict[str, str | None] | None = None
@@ -563,33 +565,56 @@ def _idle_status(decision: TriggerDecision) -> str:
     return "not_due"
 
 
+def _swap_instant(intent: Mapping[str, Any], fallback: datetime) -> datetime:
+    """When the swap of *intent* happened: the intent's own stamp, written just before it."""
+    stamp = intent.get("recorded_at_utc")
+    return datetime.fromisoformat(stamp) if isinstance(stamp, str) else fallback
+
+
 def _recover_pending_install(
-    ledger: Path, artifacts: Path, run_date_et: date, now_utc: datetime
-) -> tuple[CadenceDate, str, dict[str, str | None]] | None:
-    """Close the date whose last intent ``latest.json`` serves, with no re-training (Pitfall 2)."""
+    ledger: Path, artifacts: Path, now_utc: datetime
+) -> tuple[CadenceDate, str, dict[str, str | None], date] | None:
+    """Close the date whose last intent ``latest.json`` serves, with no re-training (Pitfall 2).
+
+    The close is the SWAP's, not the recovering run's (WR-C02): ``ran`` or ``ran late`` is judged
+    on the ET day of the intent's stamp, ``closed_at_utc`` is that instant (so the digest's
+    "live from" day is the day after the swap), and the before ids are those the date's latest
+    attempt recorded, when one did. The close line's own ``recorded_at_utc`` says when it was
+    written.
+
+    Returns:
+        ``(date, status, served ids, the ET day of the swap)``, or None when nothing is pending.
+    """
     index = pending_install(ledger, artifacts)
     if index is None:
         return None
     events = records.read_date_events(ledger)
     list_week = int(events[0]["list_week"])
     cadence_date = cadence_dates(list_week)[index - 1]
-    intents = [
-        event
-        for event in _own_events(events, cadence_date)
-        if event["event"] == "install_intent"
-    ]
+    own = _own_events(events, cadence_date)
+    intents = [event for event in own if event["event"] == "install_intent"]
     served: dict[str, str | None] = dict(intents[-1]["ids"])
-    status = _RAN if on_time(cadence_date, run_date_et) else _RAN_LATE
+    swapped_at = _swap_instant(intents[-1], now_utc)
+    swapped_day = swapped_at.astimezone(ET).date()
+    status = _RAN if on_time(cadence_date, swapped_day) else _RAN_LATE
+    before = next(
+        (
+            dict(event["before_ids"])
+            for event in reversed(own)
+            if event["event"] == "attempt" and event.get("before_ids") is not None
+        ),
+        None,
+    )
     records.append_date_event(
         ledger,
         _closed_event(
-            cadence_date, status, closed_at=now_utc, before=None, after=served
+            cadence_date, status, closed_at=swapped_at, before=before, after=served
         ),
     )
     logger.info(
         "Re-fit install recovered", date=cadence_date.date.isoformat(), status=status
     )
-    return cadence_date, status, served
+    return cadence_date, status, served, swapped_day
 
 
 def _evaluate_due_aa_weeks(
@@ -653,7 +678,7 @@ def _run_locked(
     steps: RefitSteps,
 ) -> RefitOutcome:
     """Everything the side step does under the attempt lock (see the module doc)."""
-    recovered = _recover_pending_install(ledger, artifacts, run_date_et, now_utc)
+    recovered = _recover_pending_install(ledger, artifacts, now_utc)
     if not schedule_refreshed and refresh_schedule is not None:
         pending = _decide(ledger, now_utc)
         if pending.aa_week_due is not None or pending.due is not None:
@@ -678,7 +703,7 @@ def _run_locked(
         "aa_results": aa_results,
         "recovered_close": None
         if recovered is None
-        else (recovered[0].date.isoformat(), recovered[1]),
+        else (recovered[0].date.isoformat(), recovered[1], recovered[3].isoformat()),
         "closed_not_run": closed_not_run,
     }
 
@@ -697,9 +722,17 @@ def _run_locked(
             silver_dir=silver_dir,
             steps=steps,
         )
+        if attempted.status == "crashed":
+            # A crash after the swap wrote: close it in this run, so tonight's push says the
+            # new models serve instead of "the current models keep serving" (WR-C02).
+            swapped = _recover_pending_install(ledger, artifacts, now_utc)
+            if swapped is not None:
+                attempted = dataclasses.replace(
+                    attempted, status=swapped[1], after_ids=swapped[2]
+                )
         return dataclasses.replace(attempted, **shared)
     if recovered is not None:
-        cadence_date, status, served = recovered
+        cadence_date, status, served, _swapped_day = recovered
         return RefitOutcome(
             status=status,
             wrote_records=True,
