@@ -346,17 +346,18 @@ def saved_files(root: Path) -> dict[str, bytes]:
     THE THREE NAMED DIFFERENCES, and nothing else: the cut-over arrangement's synthetic stores live
     inside each fresh sandbox, so the decision snapshot records a different absolute
     ``chain_fit_path``, and the two digests taken over that snapshot differ with it -- the
-    snapshot's own digest (also its directory name and the row's ``decision_snapshot_digest``) and
-    the ledger row's ``chain_hash``. Each is replaced by a named placeholder, in file names and in
-    bytes; every other byte is compared exactly as written.
+    snapshot's own digest (also its directory name and the rows' ``decision_snapshot_digest``) and
+    each ledger row's ``chain_hash`` (the live row and its shadow twin, WR-C06). Each is replaced by
+    a named placeholder, in file names and in bytes; every other byte is compared exactly as
+    written.
     """
     (snapshot,) = (root / "ledger" / "snapshots").iterdir()
     ledger_text = (root / "ledger" / "forward_2026.jsonl").read_text(encoding="utf-8")
-    (row,) = ledger_text.splitlines()
+    rows = [json.loads(line) for line in ledger_text.splitlines()]
     named = {
         root.as_posix(): "<sandbox>",
         snapshot.name: "<snapshot_digest>",
-        json.loads(row)["chain_hash"]: "<chain_hash>",
+        **{row["chain_hash"]: f"<chain_hash_{n}>" for n, row in enumerate(rows, 1)},
     }
 
     def _name(content: bytes) -> bytes:
@@ -423,7 +424,8 @@ def test_a_failing_push_leaves_exit_code_ledger_and_outputs_identical(
     assert codes == {"succeeded": 0, "failed": 0, "raised": 0}
     baseline = results["succeeded"][1]
     assert "ledger/forward_2026.jsonl" in baseline
-    assert b"<chain_hash>" in baseline["ledger/forward_2026.jsonl"]
+    assert b"<chain_hash_1>" in baseline["ledger/forward_2026.jsonl"]
+    assert b"<chain_hash_2>" in baseline["ledger/forward_2026.jsonl"]
     assert b"<sandbox>" in baseline["ledger/snapshots/<snapshot_digest>/meta.json"]
     assert any(key.startswith("outputs/predictions/") for key in baseline)
     for name in ("failed", "raised"):
