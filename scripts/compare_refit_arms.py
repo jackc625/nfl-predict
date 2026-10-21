@@ -25,7 +25,12 @@ line carries CLV.
 
 No module under ``api/`` may import this CLI; nothing on the daily run imports it either.
 
-Exit codes: 0 the comparison was computed; 2 a store cannot be read.
+The ledger is read through its chain check (``forward_ledger.store.verify_chain``), as the cache build
+reads it: a verdict is never computed over a ledger whose chain does not verify.
+
+Exit codes: 0 the comparison was computed; 2 a store cannot be read -- the ledger is unreadable or
+its chain does not verify (``LEDGER_UNREADABLE=``), or a re-fit record, the silver store or a row's
+generation cannot be read (``STORE_UNREADABLE=``, naming the exception class).
 
 Usage:
     uv run python -m scripts.compare_refit_arms
@@ -42,7 +47,12 @@ from pathlib import Path
 
 from backtest.refit_preregistration_2026 import ALPHA, REFIT_SEASON
 from forward_ledger.settle import DEFAULT_SILVER_DIR, load_silver_games
-from forward_ledger.store import LEDGER_DIR, LedgerFormatError, read_entries
+from forward_ledger.store import (
+    LEDGER_DIR,
+    LedgerFormatError,
+    read_entries,
+    verify_chain,
+)
 from refit.comparison import (
     EXCLUDED_REASONS,
     STATUS_TESTED,
@@ -51,7 +61,8 @@ from refit.comparison import (
     decide,
     paired_frame,
 )
-from refit.generations import installed_generations
+from refit.generations import UnknownGenerationError, installed_generations
+from refit.records import RefitRecordFormatError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -133,8 +144,23 @@ def main(argv: list[str] | None = None) -> int:
     except LedgerFormatError as error:
         print(f"LEDGER_UNREADABLE= {error}")
         return 2
-    generations = installed_generations(args.ledger_dir)
-    paired = paired_frame(entries, load_silver_games(args.silver_dir), generations)
+    verdict = verify_chain(entries)
+    if not verdict.ok:
+        print(
+            f"LEDGER_UNREADABLE= the chain does not verify at seq {verdict.first_broken_seq} "
+            f"(key {verdict.first_broken_key}): {verdict.reason}"
+        )
+        return 2
+    try:
+        generations = installed_generations(args.ledger_dir)
+        paired = paired_frame(entries, load_silver_games(args.silver_dir), generations)
+    except (
+        RefitRecordFormatError,
+        FileNotFoundError,
+        UnknownGenerationError,
+    ) as error:
+        print(f"STORE_UNREADABLE= {type(error).__name__}: {error}")
+        return 2
     for line in report_lines(paired, decide(paired, generations)):
         print(line)
     return 0

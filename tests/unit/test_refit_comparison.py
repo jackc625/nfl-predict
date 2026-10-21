@@ -499,6 +499,35 @@ def test_cli_prints_one_cell(
     assert out.startswith("LEDGER_UNREADABLE= ")
 
 
+def test_cli_refuses_a_broken_chain_and_a_missing_store(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """WR-D02: no verdict over a ledger whose chain does not verify; a missing store is exit 2."""
+    ledger = tmp_path / "ledger"
+    write_pairs(ledger, ats_pairs())
+    silver = write_silver(tmp_path / "silver")
+
+    code = compare_refit_arms.main(
+        ["--ledger-dir", str(ledger), "--silver-dir", str(tmp_path / "no_silver")]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert out.startswith("STORE_UNREADABLE= FileNotFoundError: ")
+
+    text = ledger_path(ledger).read_text(encoding="utf-8")
+    tampered = text.replace('"model_value":3.0', '"model_value":9.0', 1)
+    assert tampered != text
+    ledger_path(ledger).write_text(tampered, encoding="utf-8")
+
+    code = compare_refit_arms.main(
+        ["--ledger-dir", str(ledger), "--silver-dir", str(silver)]
+    )
+    out = capsys.readouterr().out
+    assert code == 2
+    assert out.startswith("LEDGER_UNREADABLE= the chain does not verify")
+    assert "VERDICT=" not in out
+
+
 # ---------------------------------------------------------------------------
 # Task 2: the pre-registered decision
 # ---------------------------------------------------------------------------
