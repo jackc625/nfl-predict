@@ -15,8 +15,11 @@ THE RULES, AS PRE-REGISTERED (``ROLLING-REFIT-PREREGISTRATION.md`` sections 7-8)
 ------------------------------------------------------------------------------
 * A training row is a game from 2002 that kicked off STRICTLY before the cutoff and has a final
   score. A game at the cutoff is out. Each excluded game is counted by reason
-  (``no_final_score``, ``no_gold_row``), and the row count must equal the finished games minus
-  those exclusions.
+  (``no_final_score``, ``no_gold_row``), so the row count is the finished games minus those
+  exclusions by construction. That identity cannot catch a partial gold build, so a finished game
+  of a season before ``REFIT_SEASON`` with no gold row is refused: the full-history build leaves
+  none out, and only the current season can lag gold (a 2026 corpus game with no gold row has no
+  prediction, which the re-measure refuses).
 * Labels come from silver scores by the gold label formula
   (``forward_ledger.settle.realized_values_from_scores``) and must equal gold's label wherever
   gold has one. No training row may rest on a PROVISIONAL Elo snapshot (COLD-02).
@@ -50,7 +53,6 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +66,7 @@ from backtest.refit_preregistration_2026 import (
     GROUP_VERDICT_NORMALIZED_SHA256,
     INPUT_CAPS,
     REFIT_RECIPE_ID,
+    REFIT_SEASON,
     THREAD_LIMIT,
     TRAINING_START_SEASON,
 )
@@ -265,8 +268,8 @@ def eligible_rows(
     Raises:
         RefitTrainingError: ``training_scope`` -- a naive cutoff, duplicate gold rows, a gold
             label that disagrees with silver's scores (naming the game), no eligible row, a
-            season with finished games but no gold row at all, or a row count that does not
-            equal the finished games minus the recorded exclusions.
+            season with finished games but no gold row at all, or a finished game of a season
+            before ``REFIT_SEASON`` with no gold row (a partial gold build).
     """
     cutoff = _as_utc(cutoff_utc)
     label_column = _target_column(target)
@@ -322,12 +325,18 @@ def eligible_rows(
             "which have finished games: this is not the full-history gold build",
         )
 
-    expected = len(finished_ids) - len(no_gold_row)
-    if len(frame) != expected:
+    no_gold_frame = finished.loc[finished["game_id"].astype(str).isin(no_gold_row)]
+    past_without_gold = sorted(
+        no_gold_frame.loc[no_gold_frame["season"].astype(int) < REFIT_SEASON, "game_id"]
+        .astype(str)
+        .tolist()
+    )
+    if past_without_gold:
         raise RefitTrainingError(
             _CHECK_TRAINING_SCOPE,
-            f"{target} has {len(frame)} training rows but {len(finished_ids)} finished "
-            f"games minus {len(no_gold_row)} without a gold row is {expected}",
+            f"{target} gold has no row for {len(past_without_gold)} finished game(s) before "
+            f"season {REFIT_SEASON}, e.g. {past_without_gold[:10]}: the full-history gold "
+            "build leaves out no finished past game, so this is a partial build",
         )
 
     frame = frame.sort_values(_ROW_ORDER, kind="mergesort").reset_index(drop=True)
@@ -587,15 +596,6 @@ def _hold_no_score(games: pd.DataFrame, held: frozenset[str]) -> pd.DataFrame:
     return held_games
 
 
-def _expected_training_rows(
-    games: pd.DataFrame, cutoff: datetime, exclusions: Mapping[str, tuple[str, ...]]
-) -> int:
-    """Finished games from the training start to the cutoff, minus the no-gold-row exclusions."""
-    kicked = _kicked_off_before(games, cutoff)
-    finished = int(_has_final_score(kicked).sum())
-    return finished - len(exclusions[EXCLUSION_NO_GOLD_ROW])
-
-
 def train_generation(
     cutoff_utc: datetime,
     *,
@@ -646,13 +646,6 @@ def train_generation(
         gold = pd.read_parquet(gold_root / f"features_{target}.parquet")
         with pinned_thread_pool(THREAD_LIMIT):
             fit = fit_target_at_cutoff(target, gold, games, cutoff, snapshots=snapshots)
-        expected = _expected_training_rows(games, cutoff, fit.eligible.exclusions)
-        if fit.metadata["training_rows"] != expected:
-            raise RefitTrainingError(
-                _CHECK_TRAINING_SCOPE,
-                f"{target} trained on {fit.metadata['training_rows']} rows; the finished "
-                f"games minus the recorded exclusions are {expected}",
-            )
         fit.metadata[GOLD_GENERATION_DIGEST_METADATA_KEY] = digest
         no_final_score.update(fit.eligible.exclusions[EXCLUSION_NO_FINAL_SCORE])
         metadata[target] = fit.metadata

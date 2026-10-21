@@ -251,6 +251,17 @@ def test_a_gold_missing_a_whole_season_is_refused(store):
     assert "2011" in str(refused.value)
 
 
+def test_a_gold_missing_some_past_games_is_refused(store):
+    """WR-B03: a partial build of a past season is refused, never absorbed as exclusions."""
+    gold = _gold(store, "wp")
+    dropped = sorted(gold.loc[gold["season"] == 2011, "game_id"].astype(str))[:3]
+    short = gold[~gold["game_id"].astype(str).isin(dropped)]
+    with pytest.raises(RefitTrainingError) as refused:
+        eligible_rows(short, _games(store), store.cutoff_utc, "wp")
+    assert refused.value.check == "training_scope"
+    assert dropped[0] in str(refused.value)
+
+
 def test_an_empty_gold_is_refused(store):
     gold = _gold(store, "ats").iloc[0:0]
     with pytest.raises(RefitTrainingError) as refused:
