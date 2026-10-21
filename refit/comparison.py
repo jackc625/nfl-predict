@@ -74,8 +74,20 @@ and never tested.
 CLV APPEARS NOWHERE (must-NOT P5). No frame column, result field or printed line carries a CLV
 value; the deciding figure is accuracy only.
 
-Batch code: the comparison CLI (``scripts/compare_refit_arms.py``) and the cache build import it.
-No module under ``api/`` may import it, so the request path never loads it.
+THE SEASON PAGE'S PANEL (D-12, D-13, D-14, SPEC R13)
+----------------------------------------------------
+:func:`panel_frames` hands the cache build the panel's RAW numbers -- never a p-value, a confidence
+range or a test result: the test runs once, at season close. :func:`period_summary` gives, per
+target, a ``Before the first re-fit`` row over the generation-0 pairs (when there are any), one
+``Period N, from Tue Nov 3`` row per installed generation N >= 1 -- from the moment it is
+installed, so a generation with no completed pair yet is a row with 0 paired games and NULL
+figures, never "no re-fit yet" -- and a season-to-date row over every paired game since the first
+re-fit. A period starts on its cadence date (the date its install intent names). The panel is
+accuracy only: no betting return per arm, so frozen-arm bets never look like bets.
+
+Batch code: the comparison CLI (``scripts/compare_refit_arms.py``) and the cache build
+(``forward_ledger.cache_sources``) import it. No module under ``api/`` may import it, so the
+request path never loads it.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -84,8 +96,10 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
@@ -97,6 +111,12 @@ from api.cache import (
     GRADING_STATUS_PENDING,
     GRADING_STATUS_PUSH,
     GRADING_STATUS_WIN,
+)
+from api.cache_schema import (
+    REFIT_AA_STATUS_COLUMNS,
+    REFIT_PANEL_COLUMNS,
+    REFIT_PANEL_PERIOD,
+    REFIT_PANEL_SEASON_TO_DATE,
 )
 from backtest.profitability_2025 import benjamini_hochberg_adjusted
 from backtest.refit_preregistration_2026 import (
@@ -112,10 +132,20 @@ from forward_ledger.schema import ARM_LIVE, ARM_SHADOW
 from forward_ledger.settle import realized_values_from_scores
 from forward_ledger.store import LedgerEntry
 from refit.aa import week_pairs
-from refit.generations import GENERATION_ZERO, Generation, generation_of_row
+from refit.generations import (
+    GENERATION_ZERO,
+    Generation,
+    generation_of_row,
+    installed_generations,
+)
+from refit.records import read_aa_records, read_date_events
 
 __all__ = [
+    "AHEAD_EVEN",
+    "AHEAD_FROZEN",
+    "AHEAD_LIVE",
     "ARM_LABELS",
+    "BEFORE_FIRST_REFIT_LABEL",
     "EXCLUDED_REASONS",
     "FRAME_COLUMNS",
     "RESULT_BETTER",
@@ -136,6 +166,8 @@ __all__ = [
     "line_loss",
     "paired_frame",
     "paired_test",
+    "panel_frames",
+    "period_summary",
     "rollup_word",
     "wp_loss",
 ]
@@ -626,3 +658,239 @@ def decide(paired: PairedFrame, generations: Sequence[Generation]) -> Comparison
         pooled=pooled,
         roi=roi,
     )
+
+
+# ---------------------------------------------------------------------------
+# The Season page's panel: raw numbers only (D-12, D-13, D-14)
+# ---------------------------------------------------------------------------
+
+# Which arm erred less over a panel row: the live arm (negative gap), the frozen arm (positive) or
+# neither (exactly zero, as in every A/A week).
+AHEAD_LIVE: str = "live"
+AHEAD_FROZEN: str = "frozen"
+AHEAD_EVEN: str = "even"
+
+BEFORE_FIRST_REFIT_LABEL: str = "Before the first re-fit"
+
+# The unit each target's per-game error is measured in (D-07).
+_UNITS: dict[str, str] = {"wp": "log loss", "ats": "points", "ou": "points"}
+
+# Fixed English abbreviations, so a label never depends on the machine's locale.
+_WEEKDAYS: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS: tuple[str, ...] = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+
+def _short_date(day: date) -> str:
+    """``Tue Nov 3``: the weekday, the month and the day without a leading zero."""
+    return f"{_WEEKDAYS[day.weekday()]} {_MONTHS[day.month - 1]} {day.day}"
+
+
+def _period_starts(
+    installs: Sequence[Generation], date_events: Sequence[Mapping[str, Any]]
+) -> dict[int, date]:
+    """Generation number -> its cadence date, read from the date events its install names.
+
+    Raises:
+        ValueError: an installed generation's cadence date has no event (never guessed).
+    """
+    dates: dict[tuple[int | None, int | None], str] = {
+        (int(event["list_week"]), int(event["date_index"])): str(event["date"])
+        for event in date_events
+    }
+    starts: dict[int, date] = {}
+    for generation in installs:
+        key = (generation.list_week, generation.date_index)
+        if key not in dates:
+            msg = (
+                f"generation {generation.number} names cadence date {key} (list week, index), "
+                "which no date event records; a period start is never guessed"
+            )
+            raise ValueError(msg)
+        starts[generation.number] = date.fromisoformat(dates[key])
+    return starts
+
+
+def _ahead(gap: float | None) -> str | None:
+    if gap is None:
+        return None
+    if gap < 0.0:
+        return AHEAD_LIVE
+    if gap > 0.0:
+        return AHEAD_FROZEN
+    return AHEAD_EVEN
+
+
+def _panel_row(
+    target: str,
+    period_index: int | None,
+    row_kind: str,
+    label: str,
+    start: date | None,
+    members: Sequence[Mapping[Any, Any]],
+) -> dict[str, Any]:
+    """One panel row: both arms' mean error over *members*, the gap and who is ahead."""
+    gap = _mean([float(row["gap"]) for row in members])
+    return {
+        "season": REFIT_SEASON,
+        "target": target,
+        "period_index": period_index,
+        "row_kind": row_kind,
+        "period_label": label,
+        "period_start": None if start is None else start.isoformat(),
+        "live_error": _mean([float(row["live_loss"]) for row in members]),
+        "frozen_error": _mean([float(row["frozen_loss"]) for row in members]),
+        "gap": gap,
+        "ahead": _ahead(gap),
+        "paired_games": len(members),
+        "unit": _UNITS[target],
+    }
+
+
+def _panel_frame(records: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
+    frame = pd.DataFrame.from_records(list(records), columns=REFIT_PANEL_COLUMNS)
+    # A season-to-date row has no period index; keep the column integer, NULL there.
+    frame["period_index"] = frame["period_index"].astype("Int64")
+    frame["paired_games"] = frame["paired_games"].astype("int64")
+    return frame
+
+
+def period_summary(
+    paired: PairedFrame,
+    generations: Sequence[Generation],
+    date_events: Sequence[Mapping[str, Any]],
+) -> pd.DataFrame:
+    """The panel's rows (``REFIT_PANEL_COLUMNS``): raw numbers per target and period, no test.
+
+    Per target, in this order: the ``Before the first re-fit`` row over the generation-0 pairs
+    (only when there are any); one ``Period N, from <date>`` row per installed generation N >= 1,
+    present from its install even with no completed pair (0 paired games, NULL figures); and,
+    whenever a generation >= 1 is installed, a season-to-date row over every pair of generation
+    >= 1, whose label names the first re-fit's date.
+
+    Args:
+        paired: :func:`paired_frame`'s result.
+        generations: The installed generations (``refit.generations.installed_generations``).
+        date_events: The cadence-date events (``refit.records.read_date_events``).
+
+    Raises:
+        ValueError: an installed generation's cadence date has no event.
+    """
+    rows = paired.frame.to_dict("records")
+    installs = sorted(
+        (g for g in generations if g.number != GENERATION_ZERO),
+        key=lambda g: g.number,
+    )
+    starts = _period_starts(installs, date_events)
+    records: list[dict[str, Any]] = []
+    for target in TARGETS:
+        target_rows = [row for row in rows if row["target"] == target]
+        before = [
+            row for row in target_rows if int(row["generation"]) == GENERATION_ZERO
+        ]
+        if before:
+            records.append(
+                _panel_row(
+                    target,
+                    GENERATION_ZERO,
+                    REFIT_PANEL_PERIOD,
+                    BEFORE_FIRST_REFIT_LABEL,
+                    None,
+                    before,
+                )
+            )
+        for generation in installs:
+            start = starts[generation.number]
+            records.append(
+                _panel_row(
+                    target,
+                    generation.number,
+                    REFIT_PANEL_PERIOD,
+                    f"Period {generation.number}, from {_short_date(start)}",
+                    start,
+                    [
+                        row
+                        for row in target_rows
+                        if int(row["generation"]) == generation.number
+                    ],
+                )
+            )
+        if installs:
+            first = starts[installs[0].number]
+            records.append(
+                _panel_row(
+                    target,
+                    None,
+                    REFIT_PANEL_SEASON_TO_DATE,
+                    f"Season to date: every paired game since {_short_date(first)}",
+                    first,
+                    [
+                        row
+                        for row in target_rows
+                        if int(row["generation"]) != GENERATION_ZERO
+                    ],
+                )
+            )
+    return _panel_frame(records)
+
+
+def _aa_status_frame(records: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
+    """One ``REFIT_AA_STATUS_COLUMNS`` row per A/A week record, in file order."""
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        mismatch = record.get("first_mismatch") or {}
+        rows.append(
+            {
+                "season": int(record["season"]),
+                "week": int(record["week"]),
+                "evaluated_at": record.get("evaluated_at_utc"),
+                "clean": bool(record["clean"]),
+                "reason": record.get("reason"),
+                "live_rows": record.get("live_rows"),
+                "twins": record.get("twins"),
+                "mismatch_field": mismatch.get("field"),
+                "mismatch_game": mismatch.get("game_id"),
+                "mismatch_target": mismatch.get("target"),
+            }
+        )
+    return pd.DataFrame.from_records(rows, columns=REFIT_AA_STATUS_COLUMNS)
+
+
+def panel_frames(
+    entries: Sequence[LedgerEntry],
+    games: pd.DataFrame,
+    ledger_dir: Path | str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The Season page panel's two cache frames, computed at cache build (D-12..D-14, R13).
+
+    Args:
+        entries: The ledger, in file order (``forward_ledger.store.read_entries``).
+        games: A silver-``games``-shaped frame (``game_id``, ``home_score``, ``away_score``); an
+            empty one leaves every pair without a final score, so every period counts 0 games.
+        ledger_dir: The ledger directory holding ``refit/`` (the generations, the cadence dates
+            and the A/A week records).
+
+    Returns:
+        ``(panel rows, A/A status rows)`` in ``REFIT_PANEL_COLUMNS`` and
+        ``REFIT_AA_STATUS_COLUMNS``; both empty before any shadow row or install exists.
+
+    Raises:
+        refit.generations.UnknownGenerationError: a row's stamped id belongs to no generation.
+        refit.records.RefitRecordFormatError: a re-fit record cannot be read.
+    """
+    generations = installed_generations(ledger_dir)
+    paired = paired_frame(entries, games, generations)
+    panel = period_summary(paired, generations, read_date_events(ledger_dir))
+    return panel, _aa_status_frame(read_aa_records(ledger_dir))

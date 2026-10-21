@@ -127,6 +127,8 @@ def _rebuild(args: argparse.Namespace) -> None:
         forward_verdict_context=sources.verdict_context,
         bet_week_results_df=sources.week_results,
         edge_thresholds_by_target=edge_thresholds,
+        refit_panel_df=sources.refit_panel,
+        refit_aa_status_df=sources.refit_aa_status,
     )
 
 

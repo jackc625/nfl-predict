@@ -78,6 +78,7 @@ from api.cache import (
     materialize_bet_tracker_blocks,
     materialize_bet_week_freeze,
     materialize_bet_week_results,
+    materialize_refit_panel,
 )
 from api.services import clear_cache
 from backtest.bet_tracker import graded_outcome_rows
@@ -115,7 +116,8 @@ _POPULATE_FUNCTION = "populate_cache"
 # The bet-list, schedule and tracker writers THIS module drives in stage two. Case FOUR asserts
 # this is exactly the set ``populate_cache`` calls, so the hermetic substitution is checkable.
 # Was: four writers; Phase 34 (Plan 34-16) added the corrections and result-strip writers, and
-# Phase 35 (Plan 35-03) the per-week actual-vs-expected writer.
+# Phase 35 (Plan 35-03) the per-week actual-vs-expected writer, and Phase 37 (Plan 37-18) the
+# re-fit comparison panel's writer.
 _DRIVEN_WRITERS: frozenset[str] = frozenset(
     {
         "materialize_bet_list_with_marker",
@@ -125,6 +127,7 @@ _DRIVEN_WRITERS: frozenset[str] = frozenset(
         "materialize_bet_list_corrections",
         "materialize_bet_graded_outcomes",
         "materialize_bet_week_results",
+        "materialize_refit_panel",
     }
 )
 
@@ -348,6 +351,9 @@ def _stage_two_populate(
         materialize_bet_graded_outcomes(conn, graded_outcome_rows(sources.bet_list))
         # Phase 35 (Plan 35-03): last week's actual vs expected, from the same bet-list frame.
         materialize_bet_week_results(conn, aggregate_bet_weeks(sources.bet_list))
+        # Phase 37 (Plan 37-18): before the ledger cutover there is no forward ledger to compare,
+        # so the panel's two tables exist and stay empty.
+        materialize_refit_panel(conn, None, None)
         conn.executemany(
             "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
             [["last_updated", now.isoformat(), now]],

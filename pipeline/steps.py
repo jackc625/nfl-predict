@@ -1310,6 +1310,9 @@ def populate_web_cache_unlocked() -> None:
         forward_verdict_context=sources.verdict_context,
         bet_week_results_df=sources.week_results,
         edge_thresholds_by_target=edge_thresholds,
+        # The Season page's re-fit comparison panel (Phase 37), computed by the same reader.
+        refit_panel_df=sources.refit_panel,
+        refit_aa_status_df=sources.refit_aa_status,
     )
 
 

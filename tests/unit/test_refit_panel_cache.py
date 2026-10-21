@@ -452,7 +452,8 @@ def test_an_install_with_no_pairs_is_a_period_row(tmp_path: Path) -> None:
         assert period["period_label"] == "Period 1, from Tue Nov 3"
         assert period["paired_games"] == 0
         for column in ("live_error", "frozen_error", "gap", "ahead"):
-            assert pd.isna(period[column]), f"{target} {column} is {period[column]!r}"
+            value = period[column]
+            assert value is None or math.isnan(value), f"{target} {column} is {value!r}"
         to_date = panel_row(panel, target, "season_to_date", None)
         assert to_date["paired_games"] == 0
     assert set(panel["row_kind"]) == {"period", "season_to_date"}

@@ -289,6 +289,58 @@ BET_WEEK_RESULTS_COLUMNS: list[str] = [
     "expected_return_units",
 ]
 
+# The re-fitting vs standing-still panel on /season (Phase 37, D-12..D-14, SPEC R13), PRECOMPUTED at
+# cache build by ``refit.comparison.panel_frames`` from the ledger, the silver scores and the re-fit
+# records. RAW NUMBERS ONLY (D-13): no p-value, no confidence range and no test result is ever
+# stored here -- the pre-registered test runs once, at season close. Per target, one ``period`` row
+# per period (``period_index`` 0 is the stretch before the first re-fit, N is re-fit generation N,
+# present from its install even with no completed pair) and one ``season_to_date`` row over every
+# paired game since the first re-fit (``period_index`` NULL). ``gap`` is live minus frozen, so a
+# negative gap means the live arm erred less; ``ahead`` names the arm with the lower error
+# (``live``, ``frozen`` or ``even``). A NULL error, gap or ``ahead`` means "not measured yet",
+# never 0.0. THREE SITES like ``bet_week_results``: the CACHE_SCHEMA literal, the standalone CREATE,
+# and the explicit-column INSERT in ``api.cache.materialize_refit_panel``.
+REFIT_PANEL_COLUMNS: list[str] = [
+    "season",
+    "target",
+    "period_index",
+    "row_kind",
+    "period_label",
+    "period_start",
+    "live_error",
+    "frozen_error",
+    "gap",
+    "ahead",
+    "paired_games",
+    "unit",
+]
+
+# The two ``row_kind`` values of ``refit_panel``.
+REFIT_PANEL_PERIOD = "period"
+REFIT_PANEL_SEASON_TO_DATE = "season_to_date"
+
+# The A/A status beside the panel (D-14: before the first re-fit the panel shows which weeks were
+# checked and whether each was clean), one row per evaluated A/A week record in
+# ``ledger/refit/aa_weeks.jsonl``, with the first mismatched field, game and target of an unclean
+# week (NULL for a clean one). Materialized with ``refit_panel`` by the same writer.
+REFIT_AA_STATUS_COLUMNS: list[str] = [
+    "season",
+    "week",
+    "evaluated_at",
+    "clean",
+    "reason",
+    "live_rows",
+    "twins",
+    "mismatch_field",
+    "mismatch_game",
+    "mismatch_target",
+]
+
+# The one season the comparison panel belongs to. The page gates on it (Plan 37-19) because api/
+# may not import the pre-registration record; ``tests/unit/test_refit_panel_cache.py`` pins it to
+# ``backtest.refit_preregistration_2026.REFIT_SEASON``.
+REFIT_PANEL_SEASON: int = 2026
+
 # The ``predictions`` table's columns in CACHE_SCHEMA order. Both loaders in ``api.cache`` select
 # exactly this list, so the positional ``INSERT ... SELECT *`` lines up with the schema for either
 # source.
@@ -445,8 +497,9 @@ def parse_current_slate(value: str | None) -> tuple[int, int] | None:
 # older cache lacks. ``tests/unit/test_cache_data_format.py`` pins every table and column name the
 # writer builds beside this number, so a layout change without a bump fails there. KNOWN LIMIT:
 # that test sees table and column names only. A change inside a stored blob -- the pre-rendered
-# chart HTML, a JSON payload -- is not detected and must be judged by hand.
-DATA_FORMAT_VERSION: int = 1
+# chart HTML, a JSON payload -- is not detected and must be judged by hand. Version 2 (Phase 37,
+# D-14): the ``refit_panel`` and ``refit_aa_status`` tables were added.
+DATA_FORMAT_VERSION: int = 2
 DATA_FORMAT_VERSION_KEY = "data_format_version"
 
 # The publish stamp the push writes into cache_meta on a copy of the cache (D-14,

@@ -32,6 +32,15 @@ the tiles are drawn from one frame (review finding 4). Last week's actual vs exp
 (``backtest.bet_week_results.aggregate_bet_weeks``, Phase 35 SPEC R5) is computed from that same
 frame and those same corrections, so it can never disagree with the tracker about which rows count.
 
+THE RE-FIT COMPARISON PANEL (Phase 37, D-12..D-14)
+--------------------------------------------------
+With the switch on, the Season page panel's raw numbers and A/A status come from
+``refit.comparison.panel_frames`` over the same verified ledger entries, the silver scores and the
+ledger's ``refit/`` records. An absent ``games.parquet`` reads as an empty games frame -- every
+period then counts 0 paired games -- the same degradation ``build_bet_week_schedule`` applies, so
+a cache build never fails for want of scores. With the switch off there is no forward ledger to
+compare, and both frames are empty.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -49,6 +58,8 @@ from api.cache import (
     BET_LIST_CORRECTIONS_COLUMNS,
     BET_WEEK_RESULTS_COLUMNS,
     PROVENANCE_FORWARD,
+    REFIT_AA_STATUS_COLUMNS,
+    REFIT_PANEL_COLUMNS,
 )
 from backtest.bet_tracker import (
     aggregate_all_blocks,
@@ -65,6 +76,7 @@ from backtest.weekly_bet_list import (
 from forward_ledger.corrections import in_force_outcomes
 from forward_ledger.cutover import forward_rows_go_to_ledger
 from forward_ledger.declarations import VerdictScopeUndeclaredError, load_verdict_scope
+from forward_ledger.settle import SILVER_GAMES_FILENAME, load_silver_games
 from forward_ledger.store import (
     LEDGER_DIR,
     LedgerChainBrokenError,
@@ -74,6 +86,7 @@ from forward_ledger.store import (
     read_entries,
     verify_chain,
 )
+from refit.comparison import panel_frames
 
 __all__ = [
     "BetCacheSources",
@@ -102,6 +115,24 @@ def _empty_week_results() -> pd.DataFrame:
     return pd.DataFrame(columns=pd.Index(BET_WEEK_RESULTS_COLUMNS))
 
 
+def _empty_refit_panel() -> pd.DataFrame:
+    return pd.DataFrame(columns=pd.Index(REFIT_PANEL_COLUMNS))
+
+
+def _empty_refit_aa_status() -> pd.DataFrame:
+    return pd.DataFrame(columns=pd.Index(REFIT_AA_STATUS_COLUMNS))
+
+
+# The silver ``games`` columns the panel reads, for the empty frame an absent store reads as.
+_PANEL_GAMES_COLUMNS: tuple[str, ...] = (
+    "game_id",
+    "season",
+    "week",
+    "home_score",
+    "away_score",
+)
+
+
 @dataclass(frozen=True)
 class BetCacheSources:
     """Every frame ``api.cache.populate_cache`` loads for ``/bets`` and Track Record.
@@ -116,6 +147,10 @@ class BetCacheSources:
         week_results: Last week's actual vs expected rows (``BET_WEEK_RESULTS_COLUMNS``), one per
             season, week and counting class, aggregated from the same rows and corrections as
             the tracker (SPEC R5). Defaults to an empty frame with those columns.
+        refit_panel: The Season page panel's raw numbers (``REFIT_PANEL_COLUMNS``, Phase 37).
+            Defaults to an empty frame with those columns (the switch off).
+        refit_aa_status: The A/A week status rows (``REFIT_AA_STATUS_COLUMNS``). Defaults to an
+            empty frame with those columns.
     """
 
     bet_list: pd.DataFrame
@@ -125,6 +160,8 @@ class BetCacheSources:
     graded_outcomes: pd.DataFrame
     verdict_context: dict[str, Any]
     week_results: pd.DataFrame = field(default_factory=_empty_week_results)
+    refit_panel: pd.DataFrame = field(default_factory=_empty_refit_panel)
+    refit_aa_status: pd.DataFrame = field(default_factory=_empty_refit_aa_status)
 
 
 def _empty_corrections() -> pd.DataFrame:
@@ -199,6 +236,17 @@ def _union(replay: pd.DataFrame, forward: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True)
 
 
+def _panel_games(silver_dir: Path) -> pd.DataFrame:
+    """The silver ``games`` the panel scores against; an empty frame when the store is absent.
+
+    ``load_silver_games`` refuses an absent store by name, which the settle and verify passes need;
+    the panel instead counts 0 paired games, as every other source of this build degrades.
+    """
+    if not (Path(silver_dir) / SILVER_GAMES_FILENAME).exists():
+        return pd.DataFrame(columns=pd.Index(_PANEL_GAMES_COLUMNS))
+    return load_silver_games(silver_dir)
+
+
 def _verdict_context() -> dict[str, Any]:
     """The committed declaration's season and start week; undeclared while none exists.
 
@@ -232,7 +280,8 @@ def read_bet_cache_sources(
         LedgerAbsentAfterCutoverError: switch on and the ledger file does not exist.
         forward_ledger.store.LedgerChainBrokenError: switch on and the chain does not verify.
         forward_ledger.store.LedgerFormatError: switch on and a ledger line cannot be read.
-        Everything ``read_bet_list_cache_sources`` raises for a corrupt artifact.
+        Everything ``read_bet_list_cache_sources`` raises for a corrupt artifact, and everything
+        ``refit.comparison.panel_frames`` raises for an unknown model id or a bad re-fit record.
     """
     if not forward_rows_go_to_ledger():
         today = read_bet_list_cache_sources(output_dir, silver_dir)
@@ -250,6 +299,9 @@ def read_bet_cache_sources(
     entries = _verified_ledger_entries(Path(ledger_dir))
     union = _union(replay, entries_to_frame(entries))
     corrections = _in_force_corrections(entries)
+    refit_panel, refit_aa_status = panel_frames(
+        entries, _panel_games(Path(silver_dir)), Path(ledger_dir)
+    )
     return BetCacheSources(
         bet_list=union,
         tracker=to_tracker_frame(aggregate_all_blocks(union, corrections=corrections)),
@@ -258,4 +310,6 @@ def read_bet_cache_sources(
         graded_outcomes=graded_outcome_rows(union, corrections=corrections),
         verdict_context=_verdict_context(),
         week_results=aggregate_bet_weeks(union, corrections=corrections),
+        refit_panel=refit_panel,
+        refit_aa_status=refit_aa_status,
     )

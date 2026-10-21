@@ -257,6 +257,8 @@ def test_the_manual_rebuild_resolves_from_its_own_artifacts_dir(
         graded_outcomes=None,
         verdict_context=None,
         week_results=None,
+        refit_panel=None,
+        refit_aa_status=None,
     )
     monkeypatch.setattr(
         populate_cache_script, "read_bet_cache_sources", lambda *a, **kw: sources

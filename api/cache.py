@@ -64,6 +64,8 @@ from api.cache_schema import (
     PROVENANCE_FORWARD,
     PUBLISH_ID_KEY,
     PUSH_TIME_KEY,
+    REFIT_AA_STATUS_COLUMNS,
+    REFIT_PANEL_COLUMNS,
     REPLAY_VALIDATION_TYPE_SEASONS,
     VALIDATION_TYPE_CLEAN_HOLDOUT,
     VALIDATION_TYPE_CONTAMINATED,
@@ -376,6 +378,40 @@ CREATE TABLE IF NOT EXISTS bet_week_results (
     -- PRECOMPUTED per-week actual vs expected (SPEC R5), one row per season, week and counting
     -- class. Built outside api/ by backtest/bet_week_results.py and only persisted here. A NULL
     -- return means not measured, never zero.
+);
+
+CREATE TABLE IF NOT EXISTS refit_panel (
+    season INTEGER,
+    target VARCHAR,
+    period_index INTEGER,
+    row_kind VARCHAR,
+    period_label VARCHAR,
+    period_start VARCHAR,
+    live_error DOUBLE,
+    frozen_error DOUBLE,
+    gap DOUBLE,
+    ahead VARCHAR,
+    paired_games INTEGER,
+    unit VARCHAR
+    -- The re-fitting vs standing-still panel on /season (Phase 37, D-12..D-14), raw numbers only:
+    -- no p-value, no confidence range, no test result. Built outside api/ by
+    -- refit/comparison.py panel_frames and only persisted here. A NULL error, gap or ahead means
+    -- not measured yet, never zero.
+);
+
+CREATE TABLE IF NOT EXISTS refit_aa_status (
+    season INTEGER,
+    week INTEGER,
+    evaluated_at VARCHAR,
+    clean BOOLEAN,
+    reason VARCHAR,
+    live_rows INTEGER,
+    twins INTEGER,
+    mismatch_field VARCHAR,
+    mismatch_game VARCHAR,
+    mismatch_target VARCHAR
+    -- One row per evaluated A/A week record (D-14), with the first mismatch of an unclean week.
+    -- Built outside api/ by refit/comparison.py panel_frames and only persisted here.
 );
 """
 
@@ -1045,6 +1081,61 @@ CREATE TABLE IF NOT EXISTS bet_week_results (
     expected_return_units DOUBLE
 )
 """
+
+# The re-fitting vs standing-still panel and its A/A status (Phase 37, D-12..D-14, SPEC R13),
+# PRECOMPUTED at cache build by ``refit.comparison.panel_frames``. Raw numbers only (D-13). THREE
+# SITES like ``bet_week_results``: the CACHE_SCHEMA literal, these standalone CREATEs, and the
+# explicit-column INSERT in :func:`materialize_refit_panel`.
+REFIT_PANEL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS refit_panel (
+    season INTEGER,
+    target VARCHAR,
+    period_index INTEGER,
+    row_kind VARCHAR,
+    period_label VARCHAR,
+    period_start VARCHAR,
+    live_error DOUBLE,
+    frozen_error DOUBLE,
+    gap DOUBLE,
+    ahead VARCHAR,
+    paired_games INTEGER,
+    unit VARCHAR
+)
+"""
+
+REFIT_AA_STATUS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS refit_aa_status (
+    season INTEGER,
+    week INTEGER,
+    evaluated_at VARCHAR,
+    clean BOOLEAN,
+    reason VARCHAR,
+    live_rows INTEGER,
+    twins INTEGER,
+    mismatch_field VARCHAR,
+    mismatch_game VARCHAR,
+    mismatch_target VARCHAR
+)
+"""
+
+# The columns of each panel table that may be NULL ("not measured"), passed to DuckDB as None.
+_REFIT_PANEL_NULLABLE: tuple[str, ...] = (
+    "period_index",
+    "period_start",
+    "live_error",
+    "frozen_error",
+    "gap",
+    "ahead",
+)
+_REFIT_AA_STATUS_NULLABLE: tuple[str, ...] = (
+    "evaluated_at",
+    "reason",
+    "live_rows",
+    "twins",
+    "mismatch_field",
+    "mismatch_game",
+    "mismatch_target",
+)
 
 # The forward-verdict and betting-simulation cache_meta keys moved to api/cache_schema.py
 # (Phase 36, D-11).
@@ -1762,6 +1853,62 @@ def materialize_bet_week_results(
     return _explicit_column_insert(
         conn, "bet_week_results", BET_WEEK_RESULTS_COLUMNS, subset
     )
+
+
+def _insert_with_nulls(
+    conn: duckdb.DuckDBPyConnection,
+    table: str,
+    columns: list[str],
+    frame: pd.DataFrame,
+    nullable: tuple[str, ...],
+) -> int:
+    """Insert *frame* into *table* with every NULL of a *nullable* column passed as None."""
+    _require_columns(frame, columns, "materialize_refit_panel", f"{table} frame")
+    # Same pandas-stubs gap as materialize_bet_list_corrections above.
+    subset: pd.DataFrame = frame[columns].copy()  # pyright: ignore[reportAssignmentType]
+    for column in nullable:
+        subset[column] = _null_as_none(subset[column])  # pyright: ignore[reportArgumentType]
+    return _explicit_column_insert(conn, table, columns, subset)
+
+
+def materialize_refit_panel(
+    conn: duckdb.DuckDBPyConnection,
+    panel_df: pd.DataFrame | None,
+    aa_status_df: pd.DataFrame | None,
+) -> tuple[int, int]:
+    """Persist the PRECOMPUTED comparison panel and its A/A status (Phase 37, D-12..D-14).
+
+    Pure persistence: the rows come from ``refit.comparison.panel_frames``, computed at cache build
+    outside ``api/``; this writer averages nothing and tests nothing (UIAP-01, D-13). Both tables
+    are ALWAYS created, also when a frame is None or empty, so the page can tell "no re-fit yet"
+    from a cache built before the panel existed (that one is refused by the data-format version).
+    A NULL error, gap or ``ahead`` reaches DuckDB as SQL NULL ("not measured yet"), never 0.0.
+
+    Args:
+        conn: An open DuckDB connection.
+        panel_df: Rows carrying every ``REFIT_PANEL_COLUMNS`` field, or None.
+        aa_status_df: Rows carrying every ``REFIT_AA_STATUS_COLUMNS`` field, or None.
+
+    Returns:
+        ``(panel rows inserted, A/A status rows inserted)``.
+    """
+    conn.execute(REFIT_PANEL_SCHEMA)
+    conn.execute(REFIT_AA_STATUS_SCHEMA)
+    panel_count = 0
+    if panel_df is not None and not panel_df.empty:
+        panel_count = _insert_with_nulls(
+            conn, "refit_panel", REFIT_PANEL_COLUMNS, panel_df, _REFIT_PANEL_NULLABLE
+        )
+    aa_count = 0
+    if aa_status_df is not None and not aa_status_df.empty:
+        aa_count = _insert_with_nulls(
+            conn,
+            "refit_aa_status",
+            REFIT_AA_STATUS_COLUMNS,
+            aa_status_df,
+            _REFIT_AA_STATUS_NULLABLE,
+        )
+    return panel_count, aa_count
 
 
 def stamp_forward_verdict_context(
@@ -2914,6 +3061,8 @@ def populate_cache(
     forward_verdict_context: dict[str, Any] | None = None,
     bet_week_results_df: pd.DataFrame | None = None,
     edge_thresholds_by_target: EdgeThresholds | None = None,
+    refit_panel_df: pd.DataFrame | None = None,
+    refit_aa_status_df: pd.DataFrame | None = None,
 ) -> None:
     """Populate the DuckDB web cache from artifacts and backtest outputs.
 
@@ -2992,6 +3141,11 @@ def populate_cache(
             generation). Resolved by the caller through
             ``refit.generations.in_force_edge_thresholds`` because ``api/`` imports no ``refit``
             module; ``None`` (generation 0) bands with the row-19 constants exactly as before.
+        refit_panel_df: The re-fitting vs standing-still panel rows (``REFIT_PANEL_COLUMNS``,
+            Phase 37 D-12..D-14), computed outside ``api/`` by ``refit.comparison.panel_frames``.
+            ``None`` leaves the ``refit_panel`` table present and empty.
+        refit_aa_status_df: The A/A status rows (``REFIT_AA_STATUS_COLUMNS``) from the same call.
+            ``None`` leaves the ``refit_aa_status`` table present and empty.
     """
     tmp_path = db_path.with_suffix(".tmp.duckdb")
     logger.info(
@@ -3170,6 +3324,16 @@ def populate_cache(
         if bet_week_results_df is not None:
             week_results_count = materialize_bet_week_results(conn, bet_week_results_df)
             logger.info("Bet week results loaded", count=week_results_count)
+        # The comparison panel and its A/A status (Phase 37): both tables always exist, and a
+        # ``None`` source leaves them empty.
+        panel_count, aa_status_count = materialize_refit_panel(
+            conn, refit_panel_df, refit_aa_status_df
+        )
+        logger.info(
+            "Re-fit comparison panel loaded",
+            panel_rows=panel_count,
+            aa_status_rows=aa_status_count,
+        )
 
         # Pre-render charts from populated data
         chart_count = _prerender_charts(conn)

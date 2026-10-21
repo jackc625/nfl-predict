@@ -208,7 +208,7 @@ def test_populate_stamps_the_data_format_version(built_cache: Path) -> None:
 
 # The layout the writer builds, at the data-format version it was pinned at. GENERATED from a real
 # populate_cache build (information_schema.columns, ordinal order) and pasted; never hand-typed.
-PINNED_VERSION = 1
+PINNED_VERSION = 2
 PINNED_LAYOUT: dict[str, tuple[str, ...]] = {
     "available_bet_weeks": (
         "season",
@@ -425,6 +425,32 @@ PINNED_LAYOUT: dict[str, tuple[str, ...]] = {
         "blended_ats",
         "blended_ou",
         "market_wp",
+    ),
+    "refit_aa_status": (
+        "season",
+        "week",
+        "evaluated_at",
+        "clean",
+        "reason",
+        "live_rows",
+        "twins",
+        "mismatch_field",
+        "mismatch_game",
+        "mismatch_target",
+    ),
+    "refit_panel": (
+        "season",
+        "target",
+        "period_index",
+        "row_kind",
+        "period_label",
+        "period_start",
+        "live_error",
+        "frozen_error",
+        "gap",
+        "ahead",
+        "paired_games",
+        "unit",
     ),
     "simulation_results": (
         "strategy",
