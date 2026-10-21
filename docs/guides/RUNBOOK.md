@@ -809,9 +809,16 @@ record is never treated as "no records". What you see while one is bad:
   and sends a `FAILED: model re-fit crashed` push naming that record, that class and this
   repair, until the file is repaired (the path and the line number only, never the line's
   content);
-- while the bad line is in `dates.jsonl` or `aa_weeks.jsonl`, the web cache build stops on it too
-  (the Season page's comparison reads both), so the run ends `degraded` and the website is not
-  pushed;
+- while the bad line is in `dates.jsonl` or `aa_weeks.jsonl`, the web cache build leaves out the
+  Season page's comparison, which reads both (the page shows "Comparison not available"), and
+  builds everything else as usual;
+- once a re-fit generation is in force, a bad line in `dates.jsonl` other than a torn last line
+  stops the whole web cache build, because the website's edge bands read that file too. What
+  happens to the website then depends on the day. On a prediction day the run ends `degraded` and
+  the website is not pushed (`rebuild_incomplete`). On a no-games or `lock_passed` day the run
+  keeps its status: when a cache rebuild was attempted that day (the settle pass changed the
+  ledger, or the re-fit wrote a record) the push is refused the same way, and when no rebuild was
+  due the website is pushed with the previous cache;
 - the day's live and shadow decisions are still made and written when the only bad line is a torn
   last line of `dates.jsonl` (it is left out of that read and logged); a bad line anywhere else in
   `dates.jsonl` stops them once a re-fit generation is in force.
@@ -829,10 +836,12 @@ The error names the file and the line: `refit record ledger/refit/<file> line <n
    last line is a crash mid-append: copy the file aside, then delete that one line". Delete only
    that line, in a plain text editor, and save. Change nothing else. Nothing is ever appended onto
    a torn line (the append is refused by name), so that line holds only the torn bytes.
-3. Confirm the file reads. This must print a count, not an error:
+3. Confirm both files read with the same checks the daily run and the cache build apply (the
+   field checks the writer applies, not only "is it JSON"). This must print two counts, not an
+   error:
 
    ```powershell
-   uv run python -c "from refit.records import read_records; print('REFIT_RECORDS=', len(read_records('ledger', '<file name>')))"
+   uv run python -c "from refit.records import read_date_events, read_aa_records; print('DATES=', len(read_date_events('ledger')), 'AA=', len(read_aa_records('ledger')))"
    ```
 
    The next daily run then prints its normal `REFIT=` line.
