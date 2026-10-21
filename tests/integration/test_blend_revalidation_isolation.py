@@ -80,15 +80,13 @@ from models.blending import (
     MarketBlender,
     TuningResult,
 )
+from tests.live_manifest_record import expected_manifest_text, recorded_live_manifest
 from tests.phase30_state import (
     DATA_BASELINES_TREE_SHA256,
     DEPLOYED_BLEND_VERSION,
     MANIFEST_SHA256_AFTER,
 )
-from tests.phase33_state import (
-    ROW19_POST_SWAP_LATEST_JSON_SHA256,
-    ROW19_SWAP_ARTIFACT_IDS,
-)
+from tests.phase33_state import ROW19_POST_SWAP_LATEST_JSON_SHA256
 
 # Repo root resolved from this file: tests/integration/test_blend_revalidation_isolation.py.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -402,20 +400,36 @@ def test_live_production_manifest_is_the_recorded_post_promotion_manifest() -> N
     the neutral-site Elo gold, through the same script and ``replace_manifest``, is now the most
     recent authorised write -- ``ROW19_SWAP_ARTIFACT_IDS`` and
     ``ROW19_POST_SWAP_LATEST_JSON_SHA256``. The Plan 33.2-25 slots stay as its record.
+
+    RE-POINTED for Phase 37 (Plan 37-20): from Tue 2026-11-03 the daily run installs re-fit
+    generations unattended, each recorded in ``ledger/refit/dates.jsonl`` before its swap, so a
+    hand re-pin per swap is no longer possible. The expected state is now the RECORDED end state,
+    ``tests.live_manifest_record.recorded_live_manifest()``: generation 0 (the row-19 record,
+    asserted exactly as before -- same ids, same recorded digest) until the first recorded
+    install, then the newest installed generation, whose bytes must be exactly what the manifest
+    writer serializes. The row-19 slots stay as that swap's record.
     """
     if not _PROD_LATEST.exists():
         pytest.skip(f"production manifest not present at {_PROD_LATEST}")
 
     manifest = json.loads(_PROD_LATEST.read_text())
-    expected = dict(ROW19_SWAP_ARTIFACT_IDS)
+    generation, expected = recorded_live_manifest()
     assert manifest == expected, (
-        f"the production pointers moved: {manifest} != {expected}. Something swapped production "
-        "after the row-19 recorded swap without appending its own record"
+        f"the production pointers moved: {manifest} != {expected} (recorded generation "
+        f"{generation}). Something swapped production without appending its own record"
     )
-    assert _sha256(_PROD_LATEST) == ROW19_POST_SWAP_LATEST_JSON_SHA256, (
-        "artifacts/latest.json is not byte-identical to the manifest the row-19 swap recorded "
-        "after the authorised swap; something rewrote the sole production swap surface afterwards"
-    )
+    if generation == 0:
+        assert _sha256(_PROD_LATEST) == ROW19_POST_SWAP_LATEST_JSON_SHA256, (
+            "artifacts/latest.json is not byte-identical to the manifest the row-19 swap recorded "
+            "(generation 0); something rewrote the sole production swap surface afterwards"
+        )
+    else:
+        written = _PROD_LATEST.read_bytes().replace(b"\r\n", b"\n")
+        assert written == expected_manifest_text(expected).encode("ascii"), (
+            "artifacts/latest.json is not byte-identical to what the manifest writer serializes "
+            f"for recorded generation {generation}; something rewrote the sole production swap "
+            "surface outside the recorded install"
+        )
 
 
 @pytest.mark.integration
