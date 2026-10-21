@@ -25,45 +25,67 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import shutil
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import joblib
+import pandas as pd
 import pytest
 
-from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
+from backtest.refit_preregistration_2026 import (
+    EV_FLOORS,
+    EXCLUDED_FEATURE_GROUPS,
+    GROUP_VERDICT_NORMALIZED_SHA256,
+    INTEGRITY_CHECKS,
+    MODEL_SETTINGS,
+    REFIT_RECIPE_ID,
+    THREAD_LIMIT,
+)
 from backtest.weekly_bet_list import load_bet_rule_record
 from data.write_sink import RecordingSink, active_sink
 from forward_ledger.schema import ARM_LIVE
 from forward_ledger.store import read_entries, verify_chain
 from models.artifacts import ResolvedArtifacts
 from models.blending import BLEND_PAYLOAD_FILENAME, BlendProvenance
+from models.train import (
+    GOLD_GENERATION_DIGEST_METADATA_KEY,
+    GROUP_VERDICT_DIGEST_METADATA_KEY,
+    THREAD_LIMIT_METADATA_KEY,
+)
 from refit import swap
 from refit.cadence import CadenceDate, cadence_dates
 from refit.generations import installed_generations
-from refit.integrity import IntegrityRefusal
+from refit.integrity import IntegrityRefusal, check_aa_proof, run_integrity_checks
 from refit.records import (
     append_date_event,
     bet_rule_relpath,
     read_date_events,
 )
+from refit.remeasure import BetRuleNumbers
 from refit.swap import (
     InstallIntentNotRecordedError,
     install_generation,
     pending_install,
 )
+from refit.training import GenerationTraining
+from refit.witness import PREREGISTRATION_PATHS, REPO_ROOT
 from tests.unit.test_refit_decision_path import (
     GENERATION_ONE_IDS,
     attempt_event,
     build_stores,
     closed_event,
+    fixture_bet_rule_numbers,
     intent_event,
     ledger_rows,
     record,
     run_log_path,  # noqa: F401 - a pytest fixture, used by name
     write_generation_bet_rule,
 )
+from tests.unit.test_shadow_arm import Stores
 
 # The clean fixture code commit every install in this file passes explicitly.
 CLEAN_COMMIT: str = "c" * 40
@@ -483,3 +505,406 @@ def test_the_intent_helper_and_the_swap_store_one_path_form(tmp_path: Path) -> N
     fixture = intent_event(NEW_IDS, sha)
     assert written["bet_rule_path"] == fixture["bet_rule_path"]
     assert written["ids"] == fixture["ids"]
+
+
+# ---------------------------------------------------------------------------
+# Task 2: the pre-registered checks, each refusing by name with latest.json untouched
+# ---------------------------------------------------------------------------
+
+LIST_WEEK: int = 8
+CLEAN_WEEK_8: dict[str, Any] = {"season": 2026, "week": 8, "clean": True}
+UNCLEAN_WEEK_8: dict[str, Any] = {
+    "season": 2026,
+    "week": 8,
+    "clean": False,
+    "reason": "field_mismatch",
+}
+FIXTURE_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "wp": (0.05, 0.02),
+    "ats": (1.0, 0.5),
+    "ou": (0.03, 0.01),
+}
+USABLE_ROWS: int = 150
+# A helper-season game (2024) planted among the calibration games.
+HELPER_SEASON_GAME: str = "2024_01_AAA_BBB"
+# An injury-group input, which the frozen pool excludes.
+EXCLUDED_INPUT: str = "home_qb_out_flag"
+
+
+def history_games() -> pd.DataFrame:
+    """Two finished games a season, 2002-2025: the training and calibration history."""
+    rows = [
+        {
+            "game_id": f"{season}_{week:02d}_AAA_BBB",
+            "season": season,
+            "week": week,
+            "kickoff_et": pd.Timestamp(
+                datetime(season, 9, 7 * week, 17, 0, tzinfo=UTC)
+            ),
+            "home_score": float(20 + week),
+            "away_score": float(17),
+        }
+        for season in range(2002, 2026)
+        for week in (1, 2)
+    ]
+    # The rest of the 2026 schedule: a game after the cutoff, so 2026 is not a complete season.
+    rows.append(
+        {
+            "game_id": "2026_18_GGG_HHH",
+            "season": 2026,
+            "week": 18,
+            "kickoff_et": pd.Timestamp(datetime(2027, 1, 10, 18, 0, tzinfo=UTC)),
+            "home_score": float("nan"),
+            "away_score": float("nan"),
+        }
+    )
+    return pd.DataFrame(rows)
+
+
+def training_record(games: pd.DataFrame, cutoff: datetime) -> GenerationTraining:
+    """What train_generation would record for generation 1 over *games* at *cutoff*."""
+    kickoff = pd.to_datetime(games["kickoff_et"], utc=True)
+    scored = games["home_score"].notna() & games["away_score"].notna()
+    before = kickoff < pd.Timestamp(cutoff)
+    no_final_score = sorted(games.loc[before & ~scored, "game_id"].astype(str))
+    calibration_ids = sorted(games.loc[games["season"] == 2025, "game_id"].astype(str))
+    metadata = {
+        target: {
+            "target": target,
+            "feature_names": ["f1", "f2"],
+            "refit_recipe": REFIT_RECIPE_ID,
+            "cutoff_utc": cutoff.isoformat(),
+            "training_rows": int((before & scored).sum()),
+            "exclusions": {"no_final_score": no_final_score, "no_gold_row": []},
+            "selected_inputs": ["f1", "f2"],
+            "calibration": {
+                "season": 2025,
+                "helper_seasons": list(range(2002, 2025)),
+                "helper_inputs": ["f1", "f2"],
+                "game_ids": calibration_ids,
+                "method": "platt" if target == "wp" else "normal",
+            },
+            "best_params": dict(MODEL_SETTINGS[target]),
+            "exclude_groups": list(EXCLUDED_FEATURE_GROUPS),
+            "exclude_groups_provenance": "verdict",
+            GROUP_VERDICT_DIGEST_METADATA_KEY: GROUP_VERDICT_NORMALIZED_SHA256,
+            THREAD_LIMIT_METADATA_KEY: THREAD_LIMIT,
+            GOLD_GENERATION_DIGEST_METADATA_KEY: GOLD_DIGEST,
+        }
+        for target in _TARGETS
+    }
+    return GenerationTraining(
+        artifact_ids={t: GENERATION_ONE_IDS.model_id_for(t) for t in _TARGETS},
+        metadata=metadata,
+        gold_generation_digest=GOLD_DIGEST,
+        no_final_score_ids=tuple(no_final_score),
+    )
+
+
+def remeasured_numbers() -> BetRuleNumbers:
+    """Generation 1's re-measured numbers: 150 usable rows a target, the fixed EV floors."""
+    return dataclasses.replace(
+        fixture_bet_rule_numbers(FIXTURE_THRESHOLDS),
+        ev_floors=dict(EV_FLOORS),
+        rows_by_target={
+            target: {"usable": USABLE_ROWS, "residual_pool": 180, "edge_rows": 150}
+            for target in _TARGETS
+        },
+    )
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """A generation 1 that passes every check: stores, its record, its schedule."""
+
+    stores: Stores
+    ledger: Path
+    sha: str
+    games: pd.DataFrame
+
+    def check_options(self) -> dict[str, Any]:
+        """The keywords of run_integrity_checks for this generation, every check passing."""
+        cutoff = first_date().cutoff_utc
+        return {
+            "repo_root": REPO_ROOT,
+            "list_week": LIST_WEEK,
+            "aa_records": [CLEAN_WEEK_8],
+            "first_refit": True,
+            "training": training_record(self.games, cutoff),
+            "games": self.games,
+            "cutoff_utc": cutoff,
+            "numbers": remeasured_numbers(),
+        }
+
+
+def build_baseline(root: Path) -> Baseline:
+    stores = build_stores(root)
+    make_generation_one_installable(stores.artifacts)
+    ledger = root / "ledger"
+    _path, sha = write_generation_bet_rule(ledger, GENERATION_ONE_IDS)
+    silver = pd.read_parquet(stores.silver / "games.parquet")
+    games = pd.concat([history_games(), silver], ignore_index=True)
+    return Baseline(stores=stores, ledger=ledger, sha=sha, games=games)
+
+
+def attempt(baseline: Baseline, options: Mapping[str, Any]) -> None:
+    """The hook's order: every pre-swap check, then the install."""
+    run_integrity_checks(**options)
+    install_generation(
+        baseline.ledger,
+        baseline.stores.artifacts,
+        date=first_date(),
+        ids=ids_of(GENERATION_ONE_IDS),
+        bet_rule_sha256=baseline.sha,
+        code_commit=CLEAN_COMMIT,
+    )
+
+
+def _with_metadata(
+    training: GenerationTraining, target: str, **changes: Any
+) -> GenerationTraining:
+    metadata = {name: dict(values) for name, values in training.metadata.items()}
+    metadata[target].update(changes)
+    return dataclasses.replace(training, metadata=metadata)
+
+
+# Each plant takes the baseline, its check options and a scratch dir, and returns the options
+# with one planted failure (or plants it in the stores and returns the options unchanged).
+Plant = Callable[[Baseline, dict[str, Any], Path], dict[str, Any]]
+
+
+def _plant_edited_record(
+    _baseline: Baseline, options: dict[str, Any], scratch: Path
+) -> dict[str, Any]:
+    repo = scratch / "repo"
+    for relative in PREREGISTRATION_PATHS:
+        destination = repo / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / relative, destination)
+    edited = repo / PREREGISTRATION_PATHS[0]
+    edited.write_bytes(edited.read_bytes() + b"x")
+    return {**options, "repo_root": repo}
+
+
+def _plant_unclean_aa(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    return {**options, "aa_records": [UNCLEAN_WEEK_8]}
+
+
+def _plant_row_count_off_by_one(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    training = options["training"]
+    rows = training.metadata["ou"]["training_rows"] + 1
+    return {**options, "training": _with_metadata(training, "ou", training_rows=rows)}
+
+
+def _plant_row_at_the_cutoff(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    at_cutoff = pd.DataFrame(
+        [
+            {
+                "game_id": "2026_09_EEE_FFF",
+                "season": 2026,
+                "week": 9,
+                "kickoff_et": pd.Timestamp(first_date().cutoff_utc),
+                "home_score": 20.0,
+                "away_score": 10.0,
+            }
+        ]
+    )
+    games = pd.concat([options["games"], at_cutoff], ignore_index=True)
+    training = options["training"]
+    for target in _TARGETS:
+        counted = training.metadata[target]["training_rows"] + 1
+        training = _with_metadata(training, target, training_rows=counted)
+    return {**options, "games": games, "training": training}
+
+
+def _plant_excluded_input(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    names = ["f1", "f2", EXCLUDED_INPUT]
+    training = _with_metadata(
+        options["training"], "wp", feature_names=names, selected_inputs=names
+    )
+    return {**options, "training": training}
+
+
+def _plant_over_the_cap(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    names = [f"f{index}" for index in range(21)]
+    training = _with_metadata(
+        options["training"], "wp", feature_names=names, selected_inputs=names
+    )
+    return {**options, "training": training}
+
+
+def _plant_non_default_setting(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    settings = {**MODEL_SETTINGS["ats"], "n_estimators": 300}
+    training = _with_metadata(options["training"], "ats", best_params=settings)
+    return {**options, "training": training}
+
+
+def _plant_two_threads(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    training = _with_metadata(
+        options["training"], "wp", **{THREAD_LIMIT_METADATA_KEY: 2}
+    )
+    return {**options, "training": training}
+
+
+def _plant_helper_game_in_calibration(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    training = options["training"]
+    calibration = dict(training.metadata["wp"]["calibration"])
+    calibration["game_ids"] = [*calibration["game_ids"], HELPER_SEASON_GAME]
+    return {
+        **options,
+        "training": _with_metadata(training, "wp", calibration=calibration),
+    }
+
+
+def _plant_99_usable_rows(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    numbers = options["numbers"]
+    rows = {target: dict(values) for target, values in numbers.rows_by_target.items()}
+    rows["wp"]["usable"] = 99
+    return {**options, "numbers": dataclasses.replace(numbers, rows_by_target=rows)}
+
+
+def _plant_moved_floor(
+    _baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    numbers = options["numbers"]
+    floors = {**numbers.ev_floors, "ou": 0.0}
+    return {**options, "numbers": dataclasses.replace(numbers, ev_floors=floors)}
+
+
+def _plant_blend_on_other_models(
+    baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    payload_path = (
+        baseline.stores.artifacts / GENERATION_ONE_IDS.blend / BLEND_PAYLOAD_FILENAME
+    )
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    payload["source_artifact_ids"] = {t: OLD_IDS.model_id_for(t) for t in _TARGETS}
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    return options
+
+
+PLANTS: dict[str, list[Plant]] = {
+    "recipe_fingerprint": [_plant_edited_record],
+    "aa_proof": [_plant_unclean_aa],
+    "training_scope": [_plant_row_count_off_by_one, _plant_row_at_the_cutoff],
+    "input_pool_and_caps": [_plant_excluded_input, _plant_over_the_cap],
+    "fixed_settings": [_plant_non_default_setting, _plant_two_threads],
+    "out_of_sample_calibration": [_plant_helper_game_in_calibration],
+    "remeasure_complete": [_plant_99_usable_rows, _plant_moved_floor],
+    "bundle_validation": [_plant_blend_on_other_models],
+}
+
+PLANTED_CASES: list[Any] = [
+    pytest.param(check, plant, id=f"{check}-{plant.__name__.removeprefix('_plant_')}")
+    for check, plants in PLANTS.items()
+    for plant in plants
+]
+
+# The checks the swap itself runs, after the pre-swap checks.
+SWAP_CHECKS: frozenset[str] = frozenset({"clean_code_commit", "bundle_validation"})
+
+
+def _check_of(plant: Plant) -> str:
+    return next(check for check, plants in PLANTS.items() if plant in plants)
+
+
+def test_the_baseline_passes_every_check_and_installs(tmp_path: Path) -> None:
+    """Non-vacuity: with nothing planted, every check passes and the four ids go live."""
+    baseline = build_baseline(tmp_path)
+
+    attempt(baseline, baseline.check_options())
+
+    written = manifest(baseline.stores.artifacts)
+    for key in ("wp", "ats", "ou", "blend"):
+        assert written[key] == getattr(GENERATION_ONE_IDS, key)
+
+
+@pytest.mark.parametrize(("check", "plant"), PLANTED_CASES)
+def test_each_check_refuses_by_name(tmp_path: Path, check: str, plant: Plant) -> None:
+    baseline = build_baseline(tmp_path)
+    options = plant(baseline, baseline.check_options(), tmp_path / "scratch")
+    latest = baseline.stores.artifacts / "latest.json"
+    latest_sha = sha256_of(latest)
+
+    with pytest.raises(IntegrityRefusal) as raised:
+        attempt(baseline, options)
+
+    assert raised.value.check == check
+    assert str(raised.value).startswith(f"{check}: ")
+    assert sha256_of(latest) == latest_sha
+    if check not in SWAP_CHECKS:
+        assert read_date_events(baseline.ledger) == []
+
+
+def test_every_pre_registered_check_has_a_planted_failure() -> None:
+    """Every name but clean_code_commit is planted here; clean_code_commit has its own test."""
+    assert set(PLANTS) == set(INTEGRITY_CHECKS) - {
+        "clean_code_commit",
+        "scores_frame",
+        "dry_stamp_and_validate",
+    }
+
+
+@pytest.mark.parametrize(
+    ("earlier", "later"),
+    [
+        (_plant_unclean_aa, _plant_99_usable_rows),
+        (_plant_row_count_off_by_one, _plant_two_threads),
+        (_plant_edited_record, _plant_helper_game_in_calibration),
+    ],
+)
+def test_checks_run_in_the_registered_order(
+    tmp_path: Path, earlier: Plant, later: Plant
+) -> None:
+    baseline = build_baseline(tmp_path)
+    scratch = tmp_path / "scratch"
+    options = later(baseline, baseline.check_options(), scratch)
+    options = earlier(baseline, options, scratch)
+    assert INTEGRITY_CHECKS.index(_check_of(earlier)) < INTEGRITY_CHECKS.index(
+        _check_of(later)
+    )
+
+    with pytest.raises(IntegrityRefusal) as raised:
+        run_integrity_checks(**options)
+
+    assert raised.value.check == _check_of(earlier)
+
+
+def test_aa_proof_only_for_the_first_refit(tmp_path: Path) -> None:
+    # A second-date re-fit is never held by the A/A record.
+    check_aa_proof(LIST_WEEK, [UNCLEAN_WEEK_8], first_refit=False)
+    baseline = build_baseline(tmp_path)
+    run_integrity_checks(
+        **{
+            **baseline.check_options(),
+            "aa_records": [UNCLEAN_WEEK_8],
+            "first_refit": False,
+        }
+    )
+
+    # The first re-fit is: an unclean week 8 selects no week-8 list, but lets week 9's stand.
+    with pytest.raises(IntegrityRefusal) as raised:
+        check_aa_proof(LIST_WEEK, [UNCLEAN_WEEK_8], first_refit=True)
+    assert raised.value.check == "aa_proof"
+    week_9 = {"season": 2026, "week": 9, "clean": True}
+    check_aa_proof(9, [UNCLEAN_WEEK_8, week_9], first_refit=True)
+    with pytest.raises(IntegrityRefusal):
+        check_aa_proof(9, [CLEAN_WEEK_8, week_9], first_refit=True)
