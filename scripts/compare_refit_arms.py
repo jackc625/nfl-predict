@@ -7,9 +7,19 @@ at season close (Phase 38); the command is runnable at any time before then.
 
 Output is ``KEY= value`` lines: ``COMPARISON_SEASON=``, ``UNPAIRED_WEEKS=`` (weeks with live rows but
 no shadow row at all, excluded), ``HOLES=`` (live rows with no shadow twin), ``INVARIANT_FAILURES=``
-(pairs whose twins disagree on a comparability field, excluded), then one ``CELL=`` line per
-(target, generation) with paired games, in increasing generation order. A gap is live loss minus
-frozen loss, so a negative gap means the live arm was more accurate. No line carries CLV.
+(pairs whose twins disagree on a comparability field, excluded), then, in this order:
+
+* one ``CELL=`` line per reported (target, generation) cell, in increasing generation order: its
+  paired games, both arms' mean loss, the mean gap, the raw and Benjamini-Hochberg adjusted
+  p-values, and its result (``better`` / ``worse`` / ``no difference`` / ``too few to test``, or
+  ``never tested (generation 0)``);
+* one ``VERDICT=`` line per target: the family size and the pre-registered roll-up word;
+* one ``POOLED_SECONDARY=`` line per target: the same test over the target's family cells, with
+  its own p-value, outside the family -- it never changes the word;
+* one ``ROI_SECONDARY=`` line per generation and arm: flat ROI, report-only, with no test.
+
+A gap is live loss minus frozen loss, so a negative gap means the live arm was more accurate. No
+line carries CLV.
 
 No module under ``api/`` may import this CLI; nothing on the daily run imports it either.
 
@@ -28,10 +38,16 @@ import argparse
 import sys
 from pathlib import Path
 
-from backtest.refit_preregistration_2026 import REFIT_SEASON
+from backtest.refit_preregistration_2026 import ALPHA, REFIT_SEASON
 from forward_ledger.settle import DEFAULT_SILVER_DIR, load_silver_games
 from forward_ledger.store import LEDGER_DIR, LedgerFormatError, read_entries
-from refit.comparison import cell_gaps, paired_frame, paired_test
+from refit.comparison import (
+    STATUS_TESTED,
+    ComparisonResult,
+    PairedFrame,
+    decide,
+    paired_frame,
+)
 from refit.generations import installed_generations
 
 
@@ -63,6 +79,46 @@ def _number(value: float | None) -> str:
     return "none" if value is None else f"{value:.6f}"
 
 
+def _probability(value: float | None) -> str:
+    """A p-value at six significant digits, or ``none`` when no test produced one."""
+    return "none" if value is None else f"{value:.6g}"
+
+
+def report_lines(paired: PairedFrame, result: ComparisonResult) -> list[str]:
+    """Every output line, in the pre-registered order (cells, verdicts, pooled, ROI)."""
+    weeks = ",".join(str(week) for week in paired.unpaired_weeks)
+    lines = [
+        f"COMPARISON_SEASON= {REFIT_SEASON}",
+        f"UNPAIRED_WEEKS= {weeks or 'none'}",
+        f"HOLES= {len(paired.holes)}",
+        f"INVARIANT_FAILURES= {paired.excluded['invariant_failure']}",
+    ]
+    for cell in result.cells:
+        outcome = cell.result if cell.status == STATUS_TESTED else cell.status
+        lines.append(
+            f"CELL= {cell.target} gen={cell.generation} n={cell.n} "
+            f"live_loss={_number(cell.live_loss)} frozen_loss={_number(cell.frozen_loss)} "
+            f"mean_gap={_number(cell.mean_gap)} p={_probability(cell.p)} "
+            f"adjusted_p={_probability(cell.adjusted_p)} {outcome}"
+        )
+    for target, word in result.verdicts.items():
+        lines.append(
+            f"VERDICT= {target} bh_family_m={result.family_size} alpha={ALPHA} {word}"
+        )
+    for pooled in result.pooled:
+        lines.append(
+            f"POOLED_SECONDARY= {pooled.target} n={pooled.n} "
+            f"mean_gap={_number(pooled.mean_gap)} p={_probability(pooled.p)} {pooled.status} "
+            "(secondary: outside the BH family, never changes the VERDICT)"
+        )
+    for roi in result.roi:
+        lines.append(
+            f"ROI_SECONDARY= gen={roi.generation} arm={roi.arm} bets={roi.bets} "
+            f"flat_roi={_number(roi.flat_roi)} (report-only, no test)"
+        )
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     args = build_parser().parse_args(argv)
@@ -71,25 +127,10 @@ def main(argv: list[str] | None = None) -> int:
     except LedgerFormatError as error:
         print(f"LEDGER_UNREADABLE= {error}")
         return 2
-    paired = paired_frame(
-        entries,
-        load_silver_games(args.silver_dir),
-        installed_generations(args.ledger_dir),
-    )
-
-    print(f"COMPARISON_SEASON= {REFIT_SEASON}")
-    weeks = ",".join(str(week) for week in paired.unpaired_weeks)
-    print(f"UNPAIRED_WEEKS= {weeks or 'none'}")
-    print(f"HOLES= {len(paired.holes)}")
-    print(f"INVARIANT_FAILURES= {paired.excluded['invariant_failure']}")
-    for (target, generation), cell in cell_gaps(paired).items():
-        test = paired_test(cell["gap"].tolist())
-        print(
-            f"CELL= {target} gen={generation} n={test['n']} "
-            f"live_loss={_number(float(cell['live_loss'].mean()))} "
-            f"frozen_loss={_number(float(cell['frozen_loss'].mean()))} "
-            f"mean_gap={_number(test['mean_gap'])} {test['status']}"
-        )
+    generations = installed_generations(args.ledger_dir)
+    paired = paired_frame(entries, load_silver_games(args.silver_dir), generations)
+    for line in report_lines(paired, decide(paired, generations)):
+        print(line)
     return 0
 
 

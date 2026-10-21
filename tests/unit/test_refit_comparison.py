@@ -436,10 +436,16 @@ def test_cli_prints_one_cell(
     assert "COMPARISON_SEASON= 2026" in lines
     assert "HOLES= 0" in lines
     cells = [line for line in lines if line.startswith("CELL= ")]
-    assert len(cells) == 1
-    assert cells[0].startswith("CELL= ats gen=1 n=3 ")
-    assert "mean_gap=-1.000000" in cells[0]
-    assert "too few to test" in cells[0]
+    (ats,) = [line for line in cells if line.startswith("CELL= ats ")]
+    assert ats.startswith("CELL= ats gen=1 n=3 ")
+    assert "mean_gap=-1.000000" in ats
+    assert "too few to test" in ats
+    # The installed generation is reported for every target, even with no paired game yet.
+    assert [line.split()[1:4] for line in cells] == [
+        ["wp", "gen=1", "n=0"],
+        ["ats", "gen=1", "n=3"],
+        ["ou", "gen=1", "n=0"],
+    ]
 
     ledger_path(ledger).write_bytes(b"not json\n")
     code = compare_refit_arms.main(

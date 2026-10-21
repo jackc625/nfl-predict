@@ -54,6 +54,23 @@ difference with no p-value (scipy would answer NaN); otherwise it calls
 two-sided. Nothing is resampled, so no block can cross a generation boundary, and no test ever pools
 two generations.
 
+THE DECISION (D-08, D-10, D-11, D-32)
+-------------------------------------
+:func:`decide` tests every (target, generation >= 1) cell. The Benjamini-Hochberg family is every
+such cell with at least ``MIN_PAIRED_GAMES`` paired games, and its size ``m`` is passed explicitly
+to ``backtest.profitability_2025.benjamini_hochberg_adjusted`` at ``ALPHA``: a cell in the family
+whose gaps are all zero has no p-value yet still counts in ``m``. A cell is ``better`` when its
+adjusted p-value is below ``ALPHA`` and its mean gap is negative, ``worse`` when it is below and
+the mean gap is positive, else ``no difference`` (or ``too few to test``). Per target the
+``ROLLUP_WORDS`` follow: some better and none worse is HELPED, some worse and none better HURT,
+both MIXED, neither NO DETECTABLE DIFFERENCE.
+
+Secondary, never changing a word: the POOLED figure per target is :func:`paired_test` over every
+game of that target's family cells, with its own p-value, outside the family; flat ROI per arm and
+generation is the mean in-force ``payout_flat`` over that arm's live-status pairs graded win, loss
+or push, with no test. Generation 0 is reported (its count and its gap, exactly zero in A/A weeks)
+and never tested.
+
 CLV APPEARS NOWHERE (must-NOT P5). No frame column, result field or printed line carries a CLV
 value; the deciding figure is accuracy only.
 
@@ -65,19 +82,29 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import dataclasses
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
 import pandas as pd
 from scipy import stats
 
-from api.cache import GRADING_STATUS_PENDING
+from api.cache import (
+    BET_STATUS_LIVE,
+    GRADING_STATUS_LOSS,
+    GRADING_STATUS_PENDING,
+    GRADING_STATUS_PUSH,
+    GRADING_STATUS_WIN,
+)
+from backtest.profitability_2025 import benjamini_hochberg_adjusted
 from backtest.refit_preregistration_2026 import (
+    ALPHA,
     LOG_LOSS_CLIP,
     MIN_PAIRED_GAMES,
     REFIT_SEASON,
+    ROLLUP_WORDS,
 )
 from forward_ledger.canonical import ENTRY_KIND_ROW
 from forward_ledger.corrections import InForce, in_force_outcomes
@@ -85,30 +112,61 @@ from forward_ledger.schema import ARM_LIVE, ARM_SHADOW
 from forward_ledger.settle import realized_values_from_scores
 from forward_ledger.store import LedgerEntry
 from refit.aa import week_pairs
-from refit.generations import Generation, generation_of_row
+from refit.generations import GENERATION_ZERO, Generation, generation_of_row
 
 __all__ = [
+    "ARM_LABELS",
     "EXCLUDED_REASONS",
     "FRAME_COLUMNS",
+    "RESULT_BETTER",
+    "RESULT_NOT_TESTED",
+    "RESULT_NO_DIFFERENCE",
+    "RESULT_WORSE",
     "STATUS_ALL_ZERO",
+    "STATUS_GENERATION_ZERO",
     "STATUS_TESTED",
     "STATUS_TOO_FEW",
     "TARGETS",
+    "CellResult",
+    "ComparisonResult",
     "PairedFrame",
-    "cell_gaps",
+    "PooledResult",
+    "RoiResult",
+    "decide",
     "line_loss",
     "paired_frame",
     "paired_test",
+    "rollup_word",
     "wp_loss",
 ]
 
 # The three targets, in the order every report lists them.
 TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
 
-# The per-cell statuses :func:`paired_test` answers with.
+# The per-cell statuses :func:`paired_test` answers with, and generation 0's.
 STATUS_TESTED: str = "tested"
 STATUS_TOO_FEW: str = "too few to test"
 STATUS_ALL_ZERO: str = "no difference (all paired gaps zero)"
+STATUS_GENERATION_ZERO: str = "never tested (generation 0)"
+
+# A cell's result after the correction (D-10 reads these).
+RESULT_BETTER: str = "better"
+RESULT_WORSE: str = "worse"
+RESULT_NO_DIFFERENCE: str = "no difference"
+RESULT_NOT_TESTED: str = "not tested"
+
+# The D-10 words, unpacked from the frozen record in its order, never re-typed.
+_HELPED, _HURT, _MIXED, _NO_DETECTABLE_DIFFERENCE = ROLLUP_WORDS
+
+# The two arms of the report-only ROI figure: the frame's column prefix is the label.
+ARM_LABELS: tuple[str, ...] = ("live", "frozen")
+
+# The grading statuses a flat ROI counts: every settled bet.
+_GRADED: tuple[str, ...] = (
+    GRADING_STATUS_WIN,
+    GRADING_STATUS_LOSS,
+    GRADING_STATUS_PUSH,
+)
 
 # Why a live row of a paired week left the comparison, in the order the checks run.
 EXCLUDED_REASONS: tuple[str, ...] = (
@@ -336,15 +394,235 @@ def paired_frame(
     )
 
 
-def cell_gaps(paired: PairedFrame) -> Mapping[tuple[str, int], pd.DataFrame]:
-    """The paired frame split into its (target, generation) cells, generations ascending."""
-    frame = paired.frame
-    cells: dict[tuple[str, int], pd.DataFrame] = {}
-    for generation in sorted({int(value) for value in frame["generation"]}):
+@dataclass(frozen=True)
+class CellResult:
+    """One (target, generation) cell: its raw figures and, for generation >= 1, its test.
+
+    Attributes:
+        target: ``wp``, ``ats`` or ``ou``.
+        generation: The generation of the cell's live rows.
+        n: Its paired games.
+        live_loss: The live arm's mean per-game loss (None with no game).
+        frozen_loss: The frozen arm's mean per-game loss (None with no game).
+        mean_gap: The mean of live loss minus frozen loss (None with no game).
+        t: The paired t-statistic, or None when the cell was not tested.
+        p: The raw two-sided p-value, or None when the cell was not tested.
+        adjusted_p: The Benjamini-Hochberg adjusted p-value, or None when it passed none.
+        status: :data:`STATUS_TESTED`, :data:`STATUS_TOO_FEW`, :data:`STATUS_ALL_ZERO` or
+            :data:`STATUS_GENERATION_ZERO`.
+        result: :data:`RESULT_BETTER`, :data:`RESULT_WORSE`, :data:`RESULT_NO_DIFFERENCE`,
+            :data:`STATUS_TOO_FEW` or :data:`RESULT_NOT_TESTED` (generation 0).
+    """
+
+    target: str
+    generation: int
+    n: int
+    live_loss: float | None
+    frozen_loss: float | None
+    mean_gap: float | None
+    t: float | None
+    p: float | None
+    adjusted_p: float | None
+    status: str
+    result: str
+
+
+@dataclass(frozen=True)
+class PooledResult:
+    """The secondary pooled figure of one target: outside the family, never moving the word."""
+
+    target: str
+    n: int
+    mean_gap: float | None
+    t: float | None
+    p: float | None
+    status: str
+
+
+@dataclass(frozen=True)
+class RoiResult:
+    """Report-only flat ROI of one arm in one generation; no test is ever run on it."""
+
+    generation: int
+    arm: str
+    bets: int
+    flat_roi: float | None
+
+
+@dataclass(frozen=True)
+class ComparisonResult:
+    """The pre-registered comparison: the cells, the family, the words and the secondaries.
+
+    Attributes:
+        cells: Every reported cell, generations ascending, then in :data:`TARGETS` order.
+        family_size: The BH family size ``m`` (cells of generation >= 1 with enough games).
+        verdicts: Target -> its ``ROLLUP_WORDS`` word.
+        pooled: The secondary pooled figure per target, in :data:`TARGETS` order.
+        roi: Report-only flat ROI per generation and arm.
+    """
+
+    cells: tuple[CellResult, ...]
+    family_size: int
+    verdicts: dict[str, str]
+    pooled: tuple[PooledResult, ...]
+    roi: tuple[RoiResult, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        """The result as plain JSON-ready values."""
+        return dataclasses.asdict(self)
+
+
+def _mean(values: Sequence[float]) -> float | None:
+    return math.fsum(values) / len(values) if values else None
+
+
+def rollup_word(results: Sequence[str]) -> str:
+    """The D-10 word for one target's generation >= 1 cell results (after the correction)."""
+    better = RESULT_BETTER in results
+    worse = RESULT_WORSE in results
+    if better and worse:
+        return _MIXED
+    if better:
+        return _HELPED
+    if worse:
+        return _HURT
+    return _NO_DETECTABLE_DIFFERENCE
+
+
+def _cell_result(status: str, mean_gap: float | None, adjusted_p: float | None) -> str:
+    """A tested cell is better or worse only when its adjusted p-value is below ``ALPHA``."""
+    if status == STATUS_TOO_FEW:
+        return STATUS_TOO_FEW
+    if status != STATUS_TESTED or adjusted_p is None or mean_gap is None:
+        return RESULT_NO_DIFFERENCE
+    if adjusted_p < ALPHA and mean_gap < 0.0:
+        return RESULT_BETTER
+    if adjusted_p < ALPHA and mean_gap > 0.0:
+        return RESULT_WORSE
+    return RESULT_NO_DIFFERENCE
+
+
+def _flat_roi(rows: Sequence[dict[Any, Any]], generation: int, arm: str) -> RoiResult:
+    """Mean in-force ``payout_flat`` over *arm*'s live-status settled pairs of *generation*."""
+    payouts = [
+        float(row[f"{arm}_payout_flat"])
+        for row in rows
+        if int(row["generation"]) == generation
+        and row[f"{arm}_status"] == BET_STATUS_LIVE
+        and row[f"{arm}_grading_status"] in _GRADED
+    ]
+    return RoiResult(
+        generation=generation, arm=arm, bets=len(payouts), flat_roi=_mean(payouts)
+    )
+
+
+def decide(paired: PairedFrame, generations: Sequence[Generation]) -> ComparisonResult:
+    """The pre-registered decision over *paired* (ROLLING-REFIT-PREREGISTRATION.md section 11).
+
+    Args:
+        paired: :func:`paired_frame`'s result.
+        generations: The installed generations; every generation >= 1 among them is reported,
+            with a count of 0 when it has no paired game yet.
+    """
+    rows = paired.frame.to_dict("records")
+    installed = {g.number for g in generations if g.number != GENERATION_ZERO}
+    numbers = sorted({int(row["generation"]) for row in rows} | installed)
+
+    cells_rows: list[tuple[str, int, list[dict[Any, Any]]]] = []
+    for generation in numbers:
         for target in TARGETS:
-            cell = frame.loc[
-                (frame["generation"] == generation) & (frame["target"] == target)
+            members = [
+                row
+                for row in rows
+                if row["target"] == target and int(row["generation"]) == generation
             ]
-            if not cell.empty:
-                cells[(target, generation)] = cell
-    return cells
+            if generation != GENERATION_ZERO or members:
+                cells_rows.append((target, generation, members))
+
+    tests = {
+        index: paired_test([float(row["gap"]) for row in members])
+        for index, (_target, generation, members) in enumerate(cells_rows)
+        if generation != GENERATION_ZERO
+    }
+    family = [index for index, test in tests.items() if test["n"] >= MIN_PAIRED_GAMES]
+    tested = [index for index in family if tests[index]["status"] == STATUS_TESTED]
+    adjusted: dict[int, float] = {}
+    if family:
+        values = benjamini_hochberg_adjusted(
+            [tests[i]["p"] for i in tested], len(family)
+        )
+        adjusted = dict(zip(tested, values, strict=True))
+
+    cells: list[CellResult] = []
+    for index, (target, generation, members) in enumerate(cells_rows):
+        live_loss = _mean([float(row["live_loss"]) for row in members])
+        frozen_loss = _mean([float(row["frozen_loss"]) for row in members])
+        test = tests.get(index)
+        if test is None:
+            cells.append(
+                CellResult(
+                    target=target,
+                    generation=generation,
+                    n=len(members),
+                    live_loss=live_loss,
+                    frozen_loss=frozen_loss,
+                    mean_gap=_mean([float(row["gap"]) for row in members]),
+                    t=None,
+                    p=None,
+                    adjusted_p=None,
+                    status=STATUS_GENERATION_ZERO,
+                    result=RESULT_NOT_TESTED,
+                )
+            )
+            continue
+        adjusted_p = adjusted.get(index)
+        cells.append(
+            CellResult(
+                target=target,
+                generation=generation,
+                n=test["n"],
+                live_loss=live_loss,
+                frozen_loss=frozen_loss,
+                mean_gap=test["mean_gap"],
+                t=test["t"],
+                p=test["p"],
+                adjusted_p=adjusted_p,
+                status=test["status"],
+                result=_cell_result(test["status"], test["mean_gap"], adjusted_p),
+            )
+        )
+
+    verdicts = {
+        target: rollup_word(
+            [
+                cell.result
+                for cell in cells
+                if cell.target == target and cell.generation != GENERATION_ZERO
+            ]
+        )
+        for target in TARGETS
+    }
+    pooled = tuple(
+        PooledResult(
+            target=target,
+            **paired_test(
+                [
+                    float(row["gap"])
+                    for index in family
+                    if cells_rows[index][0] == target
+                    for row in cells_rows[index][2]
+                ]
+            ),
+        )
+        for target in TARGETS
+    )
+    roi = tuple(
+        _flat_roi(rows, generation, arm) for generation in numbers for arm in ARM_LABELS
+    )
+    return ComparisonResult(
+        cells=tuple(cells),
+        family_size=len(family),
+        verdicts=verdicts,
+        pooled=pooled,
+        roi=roi,
+    )
