@@ -71,6 +71,7 @@ from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WP_PIPELINE_STEP_NAMES, WPTrainer
 from tests.data_boundary import digest_file
 from tests.gold_generation import GOLD_MATRIX_PATHS
+from tests.live_manifest_record import expected_manifest_text, recorded_live_manifest
 from tests.phase33_state import (
     FINAL_FIT_NOT_RUN_IN_PHASE_331,
     GOLD_GENERATION_AFTER_ELO_REBUILD,
@@ -740,6 +741,13 @@ class TestPhase33Wave15IsTheCallerAndTheBoundaryMovedByOneModule:
         are unedited. RE-POINTED 2026-10-04 to the WINDOWS row 19 swap's post-swap digest
         (``ROW19_POST_SWAP_LATEST_JSON_SHA256``, the re-fits on the neutral-site Elo gold);
         Plan 33.2-25's slot stays as its record.
+
+        RE-POINTED for Phase 37 (Plan 37-20): from Tue 2026-11-03 the daily run installs
+        re-fit generations unattended, each recorded before its swap, so the expected state
+        is the RECORDED one (``tests.live_manifest_record.recorded_live_manifest()``):
+        generation 0 keeps the row-19 digest exactly; a later generation's bytes must be
+        exactly what the manifest writer serializes for its ids. The row-19 slots stay as
+        that swap's record.
         """
         latest = Path("artifacts") / "latest.json"
         if not latest.exists():
@@ -749,11 +757,21 @@ class TestPhase33Wave15IsTheCallerAndTheBoundaryMovedByOneModule:
             )
 
         live = digest_file(latest)
+        generation, expected = recorded_live_manifest()
 
-        assert live == ROW19_POST_SWAP_LATEST_JSON_SHA256, (
-            "the live manifest digest is not the row-19 swap's recorded post-swap state. "
-            "Something moved the production swap surface outside an owner-authorised pass."
-        )
+        if generation == 0:
+            assert live == ROW19_POST_SWAP_LATEST_JSON_SHA256, (
+                "the live manifest digest is not the row-19 swap's recorded post-swap state "
+                "(generation 0). Something moved the production swap surface outside an "
+                "owner-authorised pass."
+            )
+        else:
+            written = latest.read_bytes().replace(b"\r\n", b"\n")
+            assert written == expected_manifest_text(expected).encode("ascii"), (
+                "the live manifest is not the manifest writer's serialization of recorded "
+                f"generation {generation}. Something moved the production swap surface "
+                "outside a recorded install."
+            )
         assert live != FINAL_FIT_NOT_RUN_IN_PHASE_331["latest_json_digest_after"]
 
     def test_the_entry_point_writes_nothing_under_production_artifacts(

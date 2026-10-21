@@ -50,6 +50,7 @@ from scripts import run_phase33_gate as runner
 from tests import phase33_gate_fixtures as fx
 from tests import phase33_state
 from tests.data_boundary import digest_file, digest_tree
+from tests.live_manifest_record import recorded_live_manifest
 
 COMMITTED_VERDICT_PATH = Path("config/phase33_gate_verdict.toml")
 LIVE_MANIFEST_PATH = Path("artifacts") / "latest.json"
@@ -1009,9 +1010,14 @@ class TestThePromotedAndRetainedSetsAreRecordedAndDisjoint:
         RE-POINTED 2026-10-04 for WINDOWS row 19: the swap of the re-fits on the
         neutral-site Elo gold is now the most recent authorised write, so the end state is
         ``ROW19_SWAP_ARTIFACT_IDS``; ``P332_25B_SWAP_ARTIFACT_IDS`` stays as its record.
+
+        RE-POINTED for Phase 37 (Plan 37-20): from Tue 2026-11-03 the daily run installs
+        re-fit generations unattended, each recorded before its swap, so the end state is the
+        RECORDED one, ``tests.live_manifest_record.recorded_live_manifest()`` -- the row-19
+        ids until the first recorded install. The row-19 slots stay as that swap's record.
         """
         manifest = json.loads(LIVE_MANIFEST_PATH.read_text(encoding="utf-8"))
-        assert manifest == dict(phase33_state.ROW19_SWAP_ARTIFACT_IDS)
+        assert manifest == recorded_live_manifest()[1]
 
     def test_every_live_pointer_resolves_to_a_directory_on_disk(self) -> None:
         manifest = json.loads(LIVE_MANIFEST_PATH.read_text(encoding="utf-8"))

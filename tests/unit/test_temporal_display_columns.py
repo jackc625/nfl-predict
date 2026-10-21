@@ -93,6 +93,7 @@ import pytest
 
 from models.temporal import TemporalSplitConfig, WalkForwardSplitter
 from tests import phase33_state
+from tests.live_manifest_record import recorded_live_manifest
 from utils.feature_columns import (
     DISPLAY_ONLY_COLUMNS,
     NORMALIZATION_IDENTIFIER_COLUMNS,
@@ -666,15 +667,22 @@ class TestDeployedArtifactResidue:
     def test_the_manifest_names_the_swapped_artifacts_and_each_has_a_feature_list(
         self,
     ) -> None:
-        """Non-vacuity for the ``{}`` above: ``_deployed_residue`` skips a missing list."""
+        """Non-vacuity for the ``{}`` above: ``_deployed_residue`` skips a missing list.
+
+        RE-POINTED for Phase 37 (Plan 37-20): from Tue 2026-11-03 the daily run installs
+        re-fit generations unattended, each recorded before its swap, so the served set is
+        the RECORDED end state (``tests.live_manifest_record.recorded_live_manifest()``), the
+        row-19 ids until the first recorded install; the row-19 slots stay as that swap's
+        record.
+        """
         import json
 
         manifest = json.loads(
             (_ARTIFACTS_DIR / "latest.json").read_text(encoding="utf-8")
         )
-        # The served set is the WINDOWS row 19 swap's (2026-10-04); was P332_25B_SWAP_*.
+        # Generation 0 is the WINDOWS row 19 swap's set (2026-10-04); was P332_25B_SWAP_*.
         # MEASURED 2026-10-04: none of the three re-fits consumes a display column either.
-        assert manifest == dict(phase33_state.ROW19_SWAP_ARTIFACT_IDS)
+        assert manifest == recorded_live_manifest()[1]
         for target in ("wp", "ats", "ou"):
             assert (_ARTIFACTS_DIR / manifest[target] / "feature_list.json").is_file()
 
