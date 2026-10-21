@@ -28,11 +28,12 @@ import json
 import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -47,8 +48,10 @@ from backtest.refit_preregistration_2026 import (
 )
 from backtest.weekly_bet_list import load_bet_rule_record
 from data.write_sink import RecordingSink, active_sink
+from forward_ledger.artifacts_copy import ARTIFACT_COPIES_DIRNAME
 from forward_ledger.schema import ARM_LIVE
-from forward_ledger.store import read_entries, verify_chain
+from forward_ledger.snapshots import SNAPSHOTS_DIRNAME
+from forward_ledger.store import ledger_path, read_entries, verify_chain
 from models.artifacts import ResolvedArtifacts
 from models.blending import BLEND_PAYLOAD_FILENAME, BlendProvenance
 from models.train import (
@@ -57,11 +60,19 @@ from models.train import (
     THREAD_LIMIT_METADATA_KEY,
 )
 from refit import swap
-from refit.cadence import CadenceDate, cadence_dates
-from refit.generations import installed_generations
-from refit.integrity import IntegrityRefusal, check_aa_proof, run_integrity_checks
+from refit.cadence import CadenceDate, cadence_dates, decide
+from refit.generations import Generation, installed_generations
+from refit.integrity import (
+    IntegrityRefusal,
+    check_aa_proof,
+    check_dry_stamp_and_validate,
+    check_scores_frame,
+    integrity_frame,
+    run_integrity_checks,
+)
 from refit.records import (
     append_date_event,
+    bet_rule_record_path,
     bet_rule_relpath,
     read_date_events,
 )
@@ -85,7 +96,7 @@ from tests.unit.test_refit_decision_path import (
     run_log_path,  # noqa: F401 - a pytest fixture, used by name
     write_generation_bet_rule,
 )
-from tests.unit.test_shadow_arm import Stores
+from tests.unit.test_shadow_arm import WEEK, Stores
 
 # The clean fixture code commit every install in this file passes explicitly.
 CLEAN_COMMIT: str = "c" * 40
@@ -622,6 +633,31 @@ class Baseline:
     sha: str
     games: pd.DataFrame
 
+    def generation(self, ids: ResolvedArtifacts = GENERATION_ONE_IDS) -> Generation:
+        """The candidate generation the hook builds, its bet rule by the one resolver."""
+        return Generation(
+            number=1,
+            ids=ids,
+            recipe=REFIT_RECIPE_ID,
+            bet_rule_path=bet_rule_record_path(self.ledger, self.sha),
+            date_index=first_date().index,
+            list_week=LIST_WEEK,
+        )
+
+    def frame_options(self) -> dict[str, Any]:
+        """The keywords of check_dry_stamp_and_validate: the fixture week just finished."""
+        return {
+            "season": 2026,
+            "finished_week": WEEK,
+            "slate_game_ids": frozenset(),
+            "generation": self.generation(),
+            "artifacts_dir": self.stores.artifacts,
+            "gold_dir": self.stores.gold,
+            "silver_dir": self.stores.silver,
+            "ledger_dir": self.ledger,
+            "manifest_dir": self.stores.manifests,
+        }
+
     def check_options(self) -> dict[str, Any]:
         """The keywords of run_integrity_checks for this generation, every check passing."""
         cutoff = first_date().cutoff_utc
@@ -634,6 +670,7 @@ class Baseline:
             "games": self.games,
             "cutoff_utc": cutoff,
             "numbers": remeasured_numbers(),
+            **self.frame_options(),
         }
 
 
@@ -801,6 +838,25 @@ def _plant_blend_on_other_models(
     return options
 
 
+def _plant_non_gold_input(
+    baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    path = baseline.stores.artifacts / GENERATION_ONE_IDS.wp / "feature_list.json"
+    path.write_text(json.dumps(["f1", "f2", "f3"]), encoding="utf-8")
+    return options
+
+
+def _plant_unregistered_converter(
+    baseline: Baseline, options: dict[str, Any], _scratch: Path
+) -> dict[str, Any]:
+    # The generation records a converter its blend is not bound to, so the ids the next run
+    # resolves from latest.json are not the generation's registered ids.
+    ids = dataclasses.replace(GENERATION_ONE_IDS, converter=UNBOUND_CONVERTER)
+    return {**options, "generation": baseline.generation(ids)}
+
+
+UNBOUND_CONVERTER: str = "market_probability_20990101_000000"
+
 PLANTS: dict[str, list[Plant]] = {
     "recipe_fingerprint": [_plant_edited_record],
     "aa_proof": [_plant_unclean_aa],
@@ -809,6 +865,8 @@ PLANTS: dict[str, list[Plant]] = {
     "fixed_settings": [_plant_non_default_setting, _plant_two_threads],
     "out_of_sample_calibration": [_plant_helper_game_in_calibration],
     "remeasure_complete": [_plant_99_usable_rows, _plant_moved_floor],
+    "scores_frame": [_plant_non_gold_input],
+    "dry_stamp_and_validate": [_plant_unregistered_converter],
     "bundle_validation": [_plant_blend_on_other_models],
 }
 
@@ -855,12 +913,10 @@ def test_each_check_refuses_by_name(tmp_path: Path, check: str, plant: Plant) ->
 
 
 def test_every_pre_registered_check_has_a_planted_failure() -> None:
-    """Every name but clean_code_commit is planted here; clean_code_commit has its own test."""
-    assert set(PLANTS) == set(INTEGRITY_CHECKS) - {
-        "clean_code_commit",
-        "scores_frame",
-        "dry_stamp_and_validate",
-    }
+    """Every name but clean_code_commit is planted here; clean_code_commit has its own test
+    (test_a_dirty_or_unknown_code_commit_refuses_before_the_intent), so all eleven are."""
+    assert set(PLANTS) == set(INTEGRITY_CHECKS) - {"clean_code_commit"}
+    assert len(INTEGRITY_CHECKS) == 11
 
 
 @pytest.mark.parametrize(
@@ -908,3 +964,204 @@ def test_aa_proof_only_for_the_first_refit(tmp_path: Path) -> None:
     check_aa_proof(9, [UNCLEAN_WEEK_8, week_9], first_refit=True)
     with pytest.raises(IntegrityRefusal):
         check_aa_proof(9, [CLEAN_WEEK_8, week_9], first_refit=True)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: the D-34 frame, the scores check, the dry stamp-and-validate; the crash proof
+# ---------------------------------------------------------------------------
+
+
+class NonFiniteRegressor:
+    """A loadable model that returns NaN for every row."""
+
+    def predict(self, features: pd.DataFrame) -> np.ndarray:
+        return np.full(len(features), np.nan)
+
+
+class OverOneCalibrator:
+    """A loadable WP calibrator that maps every raw probability to 1.5."""
+
+    def predict(self, raw: np.ndarray) -> np.ndarray:
+        return np.full(len(raw), 1.5)
+
+
+def _gold_row(game_id: str, week: int) -> dict[str, Any]:
+    return {
+        "game_id": game_id,
+        "season": 2026,
+        "week": week,
+        "f1": 0.1,
+        "f2": 0.2,
+        "home_win": np.nan,
+        "home_margin": np.nan,
+        "total_points": np.nan,
+    }
+
+
+def test_integrity_frame_is_the_finished_week_plus_todays_slate(tmp_path: Path) -> None:
+    week_7 = ["2026_07_AAA_BBB"]
+    week_8 = ["2026_08_CCC_DDD", "2026_08_EEE_FFF"]
+    week_9 = ["2026_09_GGG_HHH", "2026_09_III_JJJ"]
+    slate = week_9[0]
+    games = pd.DataFrame(
+        {
+            "game_id": [*week_7, *week_8, *week_9],
+            "season": [2026] * 5,
+            "week": [7, 8, 8, 9, 9],
+        }
+    )
+    gold = tmp_path / "gold"
+    gold.mkdir()
+    rows = [
+        *(_gold_row(g, 7) for g in week_7),
+        *(_gold_row(g, 8) for g in week_8),
+        *(_gold_row(g, 9) for g in week_9),
+    ]
+    for target in _TARGETS:
+        pd.DataFrame(rows).to_parquet(gold / f"features_{target}.parquet", index=False)
+
+    frame = integrity_frame(
+        gold, games, finished_week=8, slate_game_ids=frozenset({slate})
+    )
+
+    assert set(frame) == set(_TARGETS)
+    for target in _TARGETS:
+        assert list(frame[target]["game_id"]) == [*week_8, slate]
+    without_slate = integrity_frame(
+        gold, games, finished_week=8, slate_game_ids=frozenset()
+    )
+    assert list(without_slate["wp"]["game_id"]) == week_8
+
+
+def _scored_frame(baseline: Baseline) -> dict[str, pd.DataFrame]:
+    return integrity_frame(
+        baseline.stores.gold,
+        baseline.games,
+        finished_week=WEEK,
+        slate_game_ids=frozenset(),
+    )
+
+
+def _generation_one_models() -> dict[str, str]:
+    return {t: GENERATION_ONE_IDS.model_id_for(t) for t in _TARGETS}
+
+
+def test_scores_frame_refuses_a_missing_feature_or_a_nan(tmp_path: Path) -> None:
+    baseline = build_baseline(tmp_path)
+    artifacts = baseline.stores.artifacts
+    frame = _scored_frame(baseline)
+    assert all(not rows.empty for rows in frame.values())
+    check_scores_frame(_generation_one_models(), frame, artifacts)
+
+    def refused() -> IntegrityRefusal:
+        with pytest.raises(IntegrityRefusal) as raised:
+            check_scores_frame(_generation_one_models(), frame, artifacts)
+        assert raised.value.check == "scores_frame"
+        return raised.value
+
+    features = artifacts / GENERATION_ONE_IDS.wp / "feature_list.json"
+    original_features = features.read_bytes()
+    features.write_text(json.dumps(["f1", "f2", "f3"]), encoding="utf-8")
+    assert "f3" in str(refused())
+    features.write_bytes(original_features)
+
+    model = artifacts / GENERATION_ONE_IDS.ats / "model.pkl"
+    original_model = model.read_bytes()
+    joblib.dump(NonFiniteRegressor(), model)
+    assert "non-finite" in str(refused())
+    model.write_bytes(original_model)
+
+    calibrator = artifacts / GENERATION_ONE_IDS.wp / "calibrator.pkl"
+    joblib.dump(OverOneCalibrator(), calibrator)
+    assert "outside [0, 1]" in str(refused())
+
+
+def _tree(root: Path) -> dict[str, str]:
+    """Every file under *root* (relative POSIX path -> sha256); empty when *root* is absent."""
+    if not root.exists():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): sha256_of(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_dry_stamp_and_validate_writes_nothing(tmp_path: Path) -> None:
+    baseline = build_baseline(tmp_path)
+    ledger_before = _tree(baseline.ledger)
+    artifacts_before = _tree(baseline.stores.artifacts)
+    assert not ledger_path(baseline.ledger).exists()
+
+    check_dry_stamp_and_validate(**baseline.frame_options())
+
+    assert _tree(baseline.ledger) == ledger_before
+    assert _tree(baseline.stores.artifacts) == artifacts_before
+    assert not (baseline.ledger / SNAPSHOTS_DIRNAME).exists()
+    assert not (baseline.ledger / ARTIFACT_COPIES_DIRNAME).exists()
+    assert read_entries(baseline.ledger) == []
+
+    # The generation's ids are not the ids the next run will resolve: refused, still no write.
+    unbound = dataclasses.replace(GENERATION_ONE_IDS, converter=UNBOUND_CONVERTER)
+    with pytest.raises(IntegrityRefusal) as raised:
+        check_dry_stamp_and_validate(
+            **{**baseline.frame_options(), "generation": baseline.generation(unbound)}
+        )
+    assert raised.value.check == "dry_stamp_and_validate"
+    assert "RecipeArtifactMismatchError" in str(raised.value)
+    assert _tree(baseline.ledger) == ledger_before
+
+
+def test_a_crash_inside_the_manifest_write_leaves_latest_all_old(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = build_artifacts(tmp_path)
+    ledger = tmp_path / "ledger"
+    sha = write_record(ledger, NEW_IDS)
+    latest = artifacts / "latest.json"
+    old_bytes = latest.read_bytes()
+    files_before = sorted(path.name for path in artifacts.iterdir())
+
+    with monkeypatch.context() as patch:
+
+        def crash(self: Path, target: Any) -> Path:
+            msg = "simulated crash at the atomic rename of latest.json"
+            raise OSError(msg)
+
+        patch.setattr(Path, "replace", crash)
+        with pytest.raises(OSError, match="simulated crash"):
+            install(ledger, artifacts, sha)
+
+    assert latest.read_bytes() == old_bytes
+    assert sorted(path.name for path in artifacts.iterdir()) == files_before, (
+        "a crashed write left a temp file behind"
+    )
+    # The intent was on disk before the crash; latest.json does not serve it, so it is not pending.
+    assert [e["event"] for e in read_date_events(ledger)] == ["install_intent"]
+    assert pending_install(ledger, artifacts) is None
+
+    install(ledger, artifacts, sha)
+
+    written = manifest(artifacts)
+    assert {key: written[key] for key in ("wp", "ats", "ou", "blend")} == {
+        key: getattr(NEW_IDS, key) for key in ("wp", "ats", "ou", "blend")
+    }
+
+
+def test_a_completed_install_is_never_swapped_again(tmp_path: Path) -> None:
+    artifacts = build_artifacts(tmp_path)
+    ledger = tmp_path / "ledger"
+    sha = write_record(ledger, NEW_IDS)
+    install(ledger, artifacts, sha)
+    assert pending_install(ledger, artifacts) == first_date().index
+    assert append_date_event(ledger, attempt_event("installed"))
+    assert append_date_event(ledger, closed_event("ran"))
+
+    assert pending_install(ledger, artifacts) is None
+    # The day after, and every day before the next date: nothing is due, nothing closes.
+    for day_after in (1, 20):
+        now = first_date().cutoff_utc + timedelta(days=day_after)
+        decision = decide(now, [CLEAN_WEEK_8], read_date_events(ledger))
+        assert decision.in_force_list == LIST_WEEK
+        assert decision.due is None
+        assert decision.close_not_run == ()
