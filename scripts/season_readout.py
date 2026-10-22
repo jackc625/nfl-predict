@@ -40,18 +40,53 @@ verdict (Plan 38-09) takes its bets, wins, losses, pushes, units and flat ROI fr
 them, so the preview's and the binding run's figures cannot drift apart.
 
 The ledger is read through its chain check (``forward_ledger.store.verify_chain``): nothing is
-reported over a ledger whose chain does not verify. The readout writes no file anywhere (D-16).
+reported over a ledger whose chain does not verify. The preview writes no file anywhere (D-16).
+
+THE BINDING RUN (``--binding``; Plan 38-09, SPEC R8-R9, D-09, D-24)
+--------------------------------------------------------------------
+Run ONCE, after the Super Bowl is graded. It reads the same stores, checks every condition below
+IN THIS ORDER before anything is computed or written, and prints ``BINDING_REFUSED= <sentence>``
+naming the first one unmet:
+
+1. a counted bet (status live) of a played game is not graded (suppressed rows and void bets never
+   block);
+2. an in-scope game that is not "not played" lacks a final score;
+3. the schedule holds no played week-22 game;
+4. the binding record ``<repo root>/docs/records/SEASON-2026-READOUT.md`` exists, or that path
+   appears anywhere in git history (``git log --all``);
+5. the R6 lock commit (the commit that added ``backtest/verdict_test_2026.py``) cannot be found;
+6. a commit after the lock touches ``SEASON-VERDICT-PREREGISTRATION.md`` or
+   ``backtest/verdict_test_2026.py`` without naming the lock sha as INVALIDATED, or either file
+   has an uncommitted change;
+7. a frozen value (``FROZEN_VALUE_PINS``: alpha, the bootstrap B and seed, the family size) no
+   longer holds its pinned number;
+8. the re-fit comparison (``scripts.compare_refit_arms``) cannot run (exit other than 0).
+
+What each refusal means: (1)-(3) clear by waiting for the next 17:00 ET daily run to grade the
+bets and record the scores; (4) means the binding run already happened and will never run again;
+(5)-(7), and any failed git command, are repository-integrity refusals -- stop and investigate,
+never work around them; (8) needs the store the comparison names fixed.
+
+When every condition holds it computes each target's verdict (:func:`measure_targets`), embeds the
+comparison's stdout byte for byte, and writes the one document atomically (sibling ``.tmp`` then
+replace, ASCII, LF line endings) to ``<repo root>/docs/records/SEASON-2026-READOUT.md`` -- the path
+is DERIVED from ``--repo-root`` and never chosen (there is no option naming another path). It then
+prints ``BINDING_WRITTEN= <path>`` and one ``VERDICT_<TARGET>= <word>`` line per target. No run
+ledger is kept (D-09): the output is deterministic (fixed bootstrap seed; nothing writes the ledger
+after the Super Bowl).
 
 No module under ``api/`` may import this CLI; nothing on the daily run imports it either.
 
-Exit codes: 0 the readout was printed; 2 a store cannot be read -- the ledger is unreadable or its
-chain does not verify (``LEDGER_UNREADABLE=``), or the silver schedule, the run log or the skip
-records cannot be read (``STORE_UNREADABLE=``, naming the exception class). A malformed evidence
-line refuses; it is never read as absent.
+Exit codes: 0 the readout was printed (preview) or the binding document was written (binding); 2 a
+store cannot be read -- the ledger is unreadable or its chain does not verify
+(``LEDGER_UNREADABLE=``), or the silver schedule, the run log or the skip records cannot be read
+(``STORE_UNREADABLE=``, naming the exception class); 3 the binding run refused
+(``BINDING_REFUSED=``). A malformed evidence line refuses; it is never read as absent.
 
 Usage:
     uv run python -m scripts.season_readout
     uv run python -m scripts.season_readout --ledger-dir path/to/ledger --silver-dir data/silver
+    uv run python -m scripts.season_readout --binding
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -59,7 +94,12 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import argparse
+import contextlib
+import functools
+import io
+import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,11 +121,13 @@ from backtest.profitability_2025 import (
     benjamini_hochberg_adjusted,
 )
 from backtest.roi_significance import flat_roi, roi_ci_and_p
+from backtest.weekly_bet_list import _replace_atomically
 from forward_ledger.declarations import VerdictScope, load_verdict_scope
 from forward_ledger.settle import (
     DEFAULT_SILVER_DIR,
     SILVER_GAMES_FILENAME,
     load_silver_games,
+    realized_values_from_scores,
 )
 from forward_ledger.store import (
     LEDGER_DIR,
@@ -96,7 +138,9 @@ from forward_ledger.store import (
 )
 from forward_ledger.verdict import verdict_rows
 from pipeline.skip_log import SKIP_RECORD_PATH, SkipRecordCorrupt, parse_skip_records
+from scripts import compare_refit_arms
 from scripts.season_coverage import (
+    STATE_NOT_PLAYED,
     CoverageReport,
     EvidenceFile,
     EvidenceUnreadableError,
@@ -114,6 +158,27 @@ from utils.current_slate import (
 from utils.game_lock import MissingKickoffError
 
 PREVIEW_LABEL: str = "season to date -- not the verdict"
+
+# The repository this file lives in: the binding run's default --repo-root.
+REPO_ROOT: Path = Path(__file__).resolve().parent.parent
+
+# The binding command a reader re-runs; named in the document's first sentence.
+BINDING_COMMAND: str = "uv run python -m scripts.season_readout --binding"
+
+# The two files of the R6 record (one pre-registration in two files), repository-relative.
+RULE_MODULE_PATH: str = "backtest/verdict_test_2026.py"
+RULE_PATHS: tuple[str, ...] = ("SEASON-VERDICT-PREREGISTRATION.md", RULE_MODULE_PATH)
+
+# Pins the binding run CHECKS (refusal 7), never values it computes with: the computation reads
+# backtest.verdict_test_2026, whose alpha, bootstrap B and seed are imported by identity from
+# upstream modules an edit could move without touching either R6 file.
+# tests/unit/test_phase38_preregistration_ancestry.py (Plan 38-03) pins the same values.
+FROZEN_VALUE_PINS: dict[str, float | int] = {
+    "ALPHA": 0.05,
+    "BOOTSTRAP_B": 2000,
+    "BOOTSTRAP_SEED": 2704,
+    "BH_FAMILY_SIZE": 3,
+}
 
 # The daily run's record of every run, written by scripts/daily_lock_pipeline.py
 # (DAILY_RUN_RECORDS). Named here, not imported: that module loads the whole daily run.
@@ -392,6 +457,457 @@ def measure_targets(
     return tuple(results)
 
 
+# ---------------------------------------------------------------------------
+# The binding run's checks on the frozen rule (D-09, SPEC R9)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RuleLock:
+    """The R6 lock commit as git records it.
+
+    Attributes:
+        sha: The oldest commit that added ``backtest/verdict_test_2026.py`` (the lock commit).
+        committed_at: Its committer date, ISO 8601 with offset (``%cI``).
+        last_touch_sha: The newest commit touching either R6 file; the lock itself unless an
+            honest later commit named the lock INVALIDATED.
+    """
+
+    sha: str
+    committed_at: str
+    last_touch_sha: str
+
+
+class GitCheckError(Exception):
+    """A git command the binding run depends on failed. The run refuses (fail closed, D-09)."""
+
+
+class RuleLockMissingError(Exception):
+    """The repository holds no commit that added the R6 record module."""
+
+
+def _git(repo_root: Path, *args: str) -> str:
+    """The stdout of ``git -C <repo_root> <args>``; any failure raises :class:`GitCheckError`."""
+    command = ["git", "-C", str(repo_root), *args]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        stderr = getattr(error, "stderr", None) or str(error)
+        msg = f"`git {' '.join(args)}` failed in {Path(repo_root).as_posix()}: {stderr.strip()}"
+        raise GitCheckError(msg) from error
+    return completed.stdout
+
+
+def lock_commit(repo_root: Path) -> RuleLock:
+    """The R6 lock commit, its committer date and the last commit touching either R6 file.
+
+    Raises:
+        RuleLockMissingError: no commit added the record module.
+        GitCheckError: a git call failed (never a default answer).
+    """
+    added = _git(
+        repo_root,
+        "log",
+        "--diff-filter=A",
+        "--format=%H%x09%cI",
+        "--",
+        RULE_MODULE_PATH,
+    ).strip()
+    if not added:
+        msg = f"no commit in {Path(repo_root).as_posix()} added {RULE_MODULE_PATH}"
+        raise RuleLockMissingError(msg)
+    # git lists newest first, so the last line is the oldest commit that added the module.
+    sha, committed_at = added.splitlines()[-1].split("\t")
+    last_touch = _git(repo_root, "log", "-1", "--format=%H", "--", *RULE_PATHS).strip()
+    return RuleLock(sha=sha, committed_at=committed_at, last_touch_sha=last_touch)
+
+
+def quiet_rule_edits(repo_root: Path, lock_sha: str) -> list[tuple[str, str]]:
+    """Changes to the R6 files the binding run must not consume under the original lock.
+
+    The query of ``tests/unit/test_phase33_preregistration_ancestry.py``'s
+    ``uninvalidating_commits_touching_the_rule``, reimplemented here because that helper lives in
+    a test module that imports pytest: a commit after *lock_sha* touching either R6 file is
+    honest only when its message says "invalidat" (any case) and names the lock sha (full or its
+    first 12 characters).
+
+    Returns:
+        ``(sha, subject)`` per offending commit, newest first, then ``("uncommitted", path)`` per
+        R6 file with an uncommitted change. Empty is the good case.
+
+    Raises:
+        GitCheckError: a git call failed; an empty list always means git answered.
+    """
+    listing = _git(
+        repo_root,
+        "log",
+        "--format=%H%x00%B%x1e",
+        f"{lock_sha}..HEAD",
+        "--",
+        *RULE_PATHS,
+    )
+    offenders: list[tuple[str, str]] = []
+    for record in listing.split("\x1e"):
+        if not record.strip():
+            continue
+        sha, _, message = record.strip().partition("\x00")
+        honest = "invalidat" in message.lower() and (
+            lock_sha in message or lock_sha[:12] in message
+        )
+        if not honest:
+            subject = message.strip().splitlines()[0] if message.strip() else ""
+            offenders.append((sha, subject))
+    status = _git(repo_root, "status", "--porcelain", "--", *RULE_PATHS)
+    offenders.extend(
+        ("uncommitted", line[3:].strip())
+        for line in status.splitlines()
+        if line.strip()
+    )
+    return offenders
+
+
+def refit_section(ledger_dir: Path, silver_dir: Path) -> tuple[int, str]:
+    """The re-fit comparison command's exit code and its stdout, captured unaltered (D-25)."""
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        code = compare_refit_arms.main(
+            ["--ledger-dir", str(ledger_dir), "--silver-dir", str(silver_dir)]
+        )
+    return code, captured.getvalue()
+
+
+def _first_five(names: Sequence[str]) -> str:
+    """Up to five names, comma-separated, with how many more there are."""
+    shown = ", ".join(names[:5])
+    return shown if len(names) <= 5 else f"{shown} (and {len(names) - 5} more)"
+
+
+def binding_refusal(
+    *,
+    counted: pd.DataFrame,
+    schedule: pd.DataFrame,
+    scores: pd.DataFrame,
+    report: CoverageReport,
+    scope: VerdictScope,
+    repo_root: Path,
+    comparison: Callable[[], tuple[int, str]],
+) -> str | None:
+    """The first unmet binding condition as a plain sentence, or None when every one holds.
+
+    Evaluated in the documented order (module docstring), before anything is computed or
+    written. *comparison* runs only when conditions (1)-(7) hold.
+    """
+    played = set(realized_values_from_scores(scores)["ats"])
+
+    # (1) A counted bet of a played game is ungraded (suppressed rows and void bets never block).
+    if not counted.empty:
+        live = counted.loc[counted["status"] == BET_STATUS_LIVE]
+        ungraded = live.loc[
+            (live["grading_status"] == GRADING_STATUS_PENDING)
+            & _on_games(live, frozenset(played))
+        ]
+        if not ungraded.empty:
+            keys = [
+                f"{game_id} {target}"
+                for game_id, target in zip(
+                    ungraded["game_id"], ungraded["target"], strict=True
+                )
+            ]
+            return (
+                f"{len(keys)} counted bet(s) of played games are not graded yet: "
+                f"{_first_five(keys)}. Wait for the next 17:00 ET daily run to grade them."
+            )
+
+    # (2) An in-scope game that is not 'not played' lacks a final score.
+    unscored = [
+        game.game_id
+        for game in report.games
+        if game.state != STATE_NOT_PLAYED and game.game_id not in played
+    ]
+    if unscored:
+        return (
+            f"{len(unscored)} in-scope game(s) lack a final score: {_first_five(unscored)}. "
+            "Wait for the next 17:00 ET daily run to record the scores."
+        )
+
+    # (3) The schedule holds no played game of the scope's last week.
+    final_week = schedule.loc[
+        (schedule["season"] == scope.season) & (schedule["week"] == scope.end_week)
+    ]
+    if not any(str(game_id) in played for game_id in final_week["game_id"]):
+        return (
+            f"the schedule holds no played week-{scope.end_week} game; the binding run waits "
+            "for the Super Bowl's final score."
+        )
+
+    # (4) The one-shot rule: the record exists, or it ever existed in git history.
+    record = repo_root / rule.BINDING_RECORD_PATH
+    if record.exists():
+        return f"the binding record {record.as_posix()} already exists; the binding run happened."
+    try:
+        history = _git(
+            repo_root, "log", "--all", "--format=%H", "--", rule.BINDING_RECORD_PATH
+        ).strip()
+    except GitCheckError as error:
+        return f"a git check failed, so the run refuses (fail closed): {error}"
+    if history:
+        first = history.splitlines()[-1]
+        return (
+            f"{rule.BINDING_RECORD_PATH} appears in git history (first in {first}); the binding "
+            "run happened, and deleting or moving the record never reopens it."
+        )
+
+    # (5) The R6 lock commit must be in this repository.
+    try:
+        lock = lock_commit(repo_root)
+    except GitCheckError as error:
+        return f"a git check failed, so the run refuses (fail closed): {error}"
+    except RuleLockMissingError as error:
+        return f"the R6 lock commit cannot be found: {error}."
+
+    # (6) No quiet edit and no uncommitted change to either R6 file.
+    try:
+        edits = quiet_rule_edits(repo_root, lock.sha)
+    except GitCheckError as error:
+        return f"a git check failed, so the run refuses (fail closed): {error}"
+    if edits:
+        named = "; ".join(f"{sha} {subject}" for sha, subject in edits)
+        return f"the rule moved after its lock {lock.sha} without naming it INVALIDATED: {named}."
+
+    # (7) Every frozen value still holds its pinned number.
+    for name, pin in FROZEN_VALUE_PINS.items():
+        held = getattr(rule, name)
+        if held != pin:
+            return f"the frozen value {name} is pinned at {pin} but now holds {held}."
+
+    # (8) The re-fit comparison must run.
+    code, text = comparison()
+    if code != 0:
+        first_line = text.splitlines()[0] if text.strip() else "(no output)"
+        return f"the re-fit comparison could not run (exit {code}): {first_line}"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# The binding document (SPEC R8, D-09)
+# ---------------------------------------------------------------------------
+
+
+def _probability(value: float | None) -> str:
+    """A p-value at six significant digits, or ``none``."""
+    return "none" if value is None else f"{value:.6g}"
+
+
+def _counted_word(counted: bool) -> str:
+    return "counted" if counted else "not counted"
+
+
+def weeks_graded_at(counted: pd.DataFrame, committed_at: str) -> list[int]:
+    """The weeks with a counted bet graded at or before *committed_at* (an ISO 8601 instant)."""
+    if counted.empty:
+        return []
+    cutoff = pd.Timestamp(datetime.fromisoformat(committed_at)).tz_convert(UTC)
+    bets = counted.loc[counted["status"] == BET_STATUS_LIVE]
+    graded_at = pd.to_datetime(bets["graded_at"], utc=True)
+    weeks = bets.loc[graded_at.notna() & (graded_at <= cutoff), "week"]
+    return sorted({int(week) for week in weeks})
+
+
+def _coverage_section(report: CoverageReport, void: pd.DataFrame) -> list[str]:
+    """Section 1: the missed-game count, the per-week table and the named exceptions."""
+    header = "| Week | Scheduled | Decided | Bet | No bet | Failed or refused | Missed | Not played |"
+    lines = [
+        "## 1. Coverage",
+        "",
+        f"Missed games: {report.missed_total}",
+        "",
+        header,
+        "|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for week in report.weeks:
+        lines.append(
+            f"| {week.week} | {week.scheduled} | {week.decided} | {week.bet} | {week.no_bet} "
+            f"| {week.failed_or_refused} | {week.missed} | {week.not_played} |"
+        )
+    totals = [
+        sum(getattr(week, field) for week in report.weeks)
+        for field in (
+            "scheduled",
+            "decided",
+            "bet",
+            "no_bet",
+            "failed_or_refused",
+            "missed",
+            "not_played",
+        )
+    ]
+    lines.append("| Total | " + " | ".join(str(total) for total in totals) + " |")
+    lines += ["", "Partial games (rows for fewer than the three targets):"]
+    lines += [
+        f"- {game.game_id} (targets: {', '.join(game.targets)})"
+        for game in report.partial
+    ] or ["- none"]
+    lines += ["", "Games not played (each inferred, with its reason):"]
+    lines += [
+        f"- {game.game_id} (week {game.week}): {game.reason}"
+        for game in report.not_played
+    ] or ["- none"]
+    lines += ["", "Void bets (D-20: in no bet count, no ROI and no test):"]
+    lines += [
+        f"- {game_id} {target}"
+        for game_id, target in zip(void["game_id"], void["target"], strict=True)
+    ] or ["- none"]
+    return lines
+
+
+def _scope_section(scope: VerdictScope) -> list[str]:
+    """Section 2: the committed verdict scope, as read."""
+    return [
+        "## 2. Verdict scope",
+        "",
+        f"- Season: {scope.season}",
+        f"- Weeks: {scope.start_week}-{scope.end_week}",
+        f"- Counted arm: {scope.counted_arm}",
+        f"- Playoff weeks: {_counted_word(scope.includes_playoff_weeks)} (D40-08)",
+        f"- Neutral-site games: {_counted_word(scope.includes_neutral_site_games)}",
+        f"- Outcome rule: {scope.outcome_rule}",
+        f"- Fill convention: {scope.fill_convention_id}",
+        f"- Source: {rule.VERDICT_SCOPE_MODULE.replace('.', '/')}.py",
+    ]
+
+
+def _verdict_section(results: Sequence[TargetResult]) -> list[str]:
+    """Section 3: the per-target table, each word's 2026 meaning, and the rounding note."""
+    lines = [
+        "## 3. The verdict per target",
+        "",
+        f"| Target | Bets | Wins | Losses | Pushes | Units | Flat ROI | Raw p "
+        f"| Adjusted p (BH, m = {rule.BH_FAMILY_SIZE}) | Verdict |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+    ]
+    for result in results:
+        fig = result.figures
+        lines.append(
+            f"| {fig.target} | {fig.bets} | {fig.wins} | {fig.losses} | {fig.pushes} "
+            f"| {fig.units:.6f} | {_number(fig.flat_roi)} | {_probability(result.raw_p)} "
+            f"| {_probability(result.adjusted_p)} | {result.token} |"
+        )
+    lines += ["", "What each verdict means in 2026:", ""]
+    lines += [
+        f"- {result.figures.target}, {result.token}: {result.meaning}"
+        for result in results
+    ]
+    absent = [result for result in results if result.raw_p is None]
+    if absent:
+        lines += ["", "Targets without a p-value:", ""]
+        lines += [
+            f"- {result.figures.target}: {result.p_absent_reason}" for result in absent
+        ]
+    lines += [
+        "",
+        "Every decision used the unrounded values; this table is rounded for display only "
+        "(6 decimals, p-values at 6 significant digits).",
+    ]
+    return lines
+
+
+def _lock_section(lock: RuleLock, graded_weeks: Sequence[int]) -> list[str]:
+    """Section 4: the R6 lock commit, its time and the weeks already graded then."""
+    weeks = ", ".join(str(week) for week in graded_weeks) or "none"
+    lines = [
+        "## 4. The rule's lock",
+        "",
+        f"- Lock commit: {lock.sha}",
+        f"- Committed at: {lock.committed_at}",
+        f"- Weeks with a counted bet graded at or before the lock: {weeks}",
+    ]
+    if lock.last_touch_sha != lock.sha:
+        lines.append(
+            f"- A later commit touches the rule and names this lock INVALIDATED: "
+            f"{lock.last_touch_sha}"
+        )
+    return lines
+
+
+def _refit_section_lines(refit_text: str) -> list[str]:
+    """Section 5: the comparison command's stdout inside one fenced block, unaltered."""
+    body = refit_text if refit_text.endswith("\n") else refit_text + "\n"
+    return [
+        "## 5. Re-fit comparison (ROLLING-REFIT-PREREGISTRATION.md section 11)",
+        "",
+        "```text\n" + body + "```",
+    ]
+
+
+def _read_section(
+    ledger: tuple[str, int], evidence: Sequence[EvidenceFile], silver_dir: Path
+) -> list[str]:
+    """Section 6: the ledger chain head and entry count, the evidence files, the silver store."""
+    head, entry_count = ledger
+    lines = [
+        "## 6. What this readout read",
+        "",
+        f"- Ledger chain head: {head}",
+        f"- Ledger entries: {entry_count}",
+    ]
+    for item in evidence:
+        if item.missing:
+            lines.append(f"- Evidence {item.path}: missing")
+        else:
+            lines.append(
+                f"- Evidence {item.path}: {item.lines} lines, sha256 {item.sha256}"
+            )
+    lines.append(f"- Silver directory: {silver_dir.as_posix()}")
+    return lines
+
+
+def render_document(
+    *,
+    report: CoverageReport,
+    void: pd.DataFrame,
+    scope: VerdictScope,
+    results: Sequence[TargetResult],
+    lock: RuleLock,
+    graded_weeks: Sequence[int],
+    refit_text: str,
+    ledger: tuple[str, int],
+    evidence: Sequence[EvidenceFile],
+    silver_dir: Path,
+    written_at: datetime,
+) -> str:
+    """The one binding document: ASCII, LF line endings, the six sections in order."""
+    sections = [
+        _coverage_section(report, void),
+        _scope_section(scope),
+        _verdict_section(results),
+        _lock_section(lock, graded_weeks),
+        _refit_section_lines(refit_text),
+        _read_section(ledger, evidence, silver_dir),
+    ]
+    lines = [
+        "# The 2026 season-close readout (binding)",
+        "",
+        f"Written once by `{BINDING_COMMAND}` at "
+        f"{written_at.astimezone(UTC).isoformat(timespec='seconds')} (UTC), under the rule "
+        "frozen in SEASON-VERDICT-PREREGISTRATION.md.",
+    ]
+    for section in sections:
+        lines += ["", *section]
+    return "\n".join(lines) + "\n"
+
+
+def _write_text(text: str, path: Path) -> None:
+    """Write *text* as ASCII bytes (LF kept) at *path*."""
+    path.write_bytes(text.encode("ascii"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The CLI parser."""
     parser = argparse.ArgumentParser(
@@ -423,6 +939,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=SKIP_RECORD_PATH,
         help=f"The skip record (default: {SKIP_RECORD_PATH.as_posix()})",
+    )
+    parser.add_argument(
+        "--binding",
+        action="store_true",
+        help=(
+            "The ONE binding run, after week 22 is graded: refuses until every condition holds, "
+            f"then writes <repo root>/{rule.BINDING_RECORD_PATH}"
+        ),
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=REPO_ROOT,
+        help=(
+            "The repository whose history the binding run checks and under which it writes "
+            f"its record (default: {REPO_ROOT.as_posix()})"
+        ),
     )
     return parser
 
@@ -520,6 +1053,63 @@ def figure_lines(counted: pd.DataFrame, report: CoverageReport) -> list[str]:
     return lines
 
 
+def _binding_run(
+    args: argparse.Namespace,
+    *,
+    ledger: tuple[str, int],
+    evidence: Sequence[EvidenceFile],
+    counted: pd.DataFrame,
+    schedule: pd.DataFrame,
+    scores: pd.DataFrame,
+    report: CoverageReport,
+    scope: VerdictScope,
+) -> int:
+    """The one binding run: refuse (exit 3) or write the document (exit 0)."""
+    repo_root = Path(args.repo_root)
+    # Run at most once: the refusal's last check and the document read the same capture.
+    comparison = functools.cache(
+        lambda: refit_section(args.ledger_dir, args.silver_dir)
+    )
+    refusal = binding_refusal(
+        counted=counted,
+        schedule=schedule,
+        scores=scores,
+        report=report,
+        scope=scope,
+        repo_root=repo_root,
+        comparison=comparison,
+    )
+    if refusal is not None:
+        print(f"BINDING_REFUSED= {refusal}")
+        return 3
+
+    _code, refit_text = comparison()
+    void = void_bets(counted, report)
+    void_game_ids = frozenset(str(game_id) for game_id in void["game_id"])
+    results = measure_targets(counted, void_game_ids)
+    lock = lock_commit(repo_root)
+    text = render_document(
+        report=report,
+        void=void,
+        scope=scope,
+        results=results,
+        lock=lock,
+        graded_weeks=weeks_graded_at(counted, lock.committed_at),
+        refit_text=refit_text,
+        ledger=ledger,
+        evidence=evidence,
+        silver_dir=Path(args.silver_dir),
+        written_at=datetime.now(UTC),
+    )
+    record = repo_root / rule.BINDING_RECORD_PATH
+    record.parent.mkdir(parents=True, exist_ok=True)
+    _replace_atomically(functools.partial(_write_text, text), record)
+    print(f"BINDING_WRITTEN= {record.as_posix()}")
+    for result in results:
+        print(f"VERDICT_{result.figures.target.upper()}= {result.token}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     args = build_parser().parse_args(argv)
@@ -541,12 +1131,24 @@ def main(argv: list[str] | None = None) -> int:
         schedule = load_recorded_schedule(args.silver_dir / SILVER_GAMES_FILENAME)
         scores = load_silver_games(args.silver_dir)
         evidence, refused = read_refusal_evidence(args.run_log, args.skip_records)
-        report = classify_coverage(
-            schedule, scores, counted, refused, scope, now=datetime.now(UTC)
-        )
+        # The binding run passes no instant: there, nothing is ever "not yet due".
+        now = None if args.binding else datetime.now(UTC)
+        report = classify_coverage(schedule, scores, counted, refused, scope, now=now)
     except _STORE_ERRORS as error:
         print(f"STORE_UNREADABLE= {type(error).__name__}: {error}")
         return 2
+
+    if args.binding:
+        return _binding_run(
+            args,
+            ledger=ledger_head(entries),
+            evidence=evidence,
+            counted=counted,
+            schedule=schedule,
+            scores=scores,
+            report=report,
+            scope=scope,
+        )
 
     head, entry_count = ledger_head(entries)
     print(f"READOUT= preview: {PREVIEW_LABEL}")

@@ -16,27 +16,56 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import pytest
 
-from backtest.profitability_2025 import benjamini_hochberg_adjusted
+from backtest.profitability_2025 import (
+    TargetMeasurement,
+    assign_verdict_token,
+    benjamini_hochberg_adjusted,
+)
 from backtest.roi_significance import roi_ci_and_p
 from backtest.verdict_test_2026 import (
+    ALPHA,
     BH_FAMILY_SIZE,
+    BINDING_RECORD_PATH,
+    ROI_MIN_ATTAINABLE_P,
     UNDISCHARGEABLE_NO_BETS,
     VERDICT_TARGETS,
     VERDICT_TOKENS,
 )
 from forward_ledger.declarations import load_verdict_scope
+from forward_ledger.settle import SILVER_GAMES_FILENAME
 from forward_ledger.shadow import SHADOW_PIN
-from forward_ledger.store import append_rows, apply_updates, read_entries
+from forward_ledger.store import append_rows, apply_updates, ledger_head, read_entries
 from forward_ledger.verdict import verdict_rows
-from scripts import season_readout
+from scripts import compare_refit_arms, season_readout
 from tests.unit.test_forward_ledger_store import graded, key_of, make_row
+
+# The real repository: only READ here (the R6 record files are copied into synthetic repos).
+REAL_REPO_ROOT = Path(__file__).resolve().parents[2]
+RULE_FILES: tuple[str, ...] = (
+    "SEASON-VERDICT-PREREGISTRATION.md",
+    "backtest/verdict_test_2026.py",
+)
+
+# The synthetic lock commit's committer date (the real R6 lock's instant).
+LOCK_COMMITTED_AT: str = "2026-10-21T19:19:13-04:00"
+
+# One ET kickoff day per week (the recorded schedule refuses two weeks on one day).
+KICKOFF_BY_WEEK: dict[int, datetime] = {
+    5: datetime(2026, 10, 11, 17, 0, tzinfo=UTC),
+    6: datetime(2026, 10, 18, 17, 0, tzinfo=UTC),
+    22: datetime(2027, 2, 14, 23, 30, tzinfo=UTC),
+}
 
 # The verdict words, by their VERDICT_TOKENS position (profitable, unprofitable, inconclusive,
 # no bets, no chain) -- never retyped.
@@ -51,6 +80,9 @@ BET_GAMES: tuple[str, ...] = (*WEEK5_GAMES, *WEEK6_GAMES, SUPER_BOWL)
 
 # A game whose only counted row is a suppressed (no-bet) WP candidate.
 NO_BET_GAME: str = "2026_W06_DEN@LV"
+
+# A scored game nobody decided: the binding run reads it as missed (it never blocks the run).
+MISSED_GAME: str = "2026_W06_GB@CHI"
 
 # Every counted bet's in-force grade, per (game, target).
 COMPLETE_GRADES: dict[tuple[str, str], str] = {
@@ -269,3 +301,274 @@ def test_the_degenerate_targets_keep_the_family_at_three(tmp_path: Path) -> None
     assert ats.figures.flat_roi is not None and ats.figures.flat_roi < 0
     assert ats.token == _UNPROFITABLE  # a non-positive return needs no p-value
     assert ou.token == _NO_BETS
+
+
+# ---------------------------------------------------------------------------
+# Binding fixture builders: the silver schedule, the evidence files, a synthetic repository
+# ---------------------------------------------------------------------------
+
+
+def schedule_game(game_id: str, *, scored: bool = True) -> dict[str, Any]:
+    """One silver ``games`` row; the week comes from the standard game id."""
+    week = _week_of(game_id)
+    return {
+        "game_id": game_id,
+        "season": 2026,
+        "week": week,
+        "kickoff_et": pd.Timestamp(KICKOFF_BY_WEEK[week]),
+        "game_type": "SB" if week == 22 else "REG",
+        "home_score": 24.0 if scored else None,
+        "away_score": 17.0 if scored else None,
+    }
+
+
+def complete_games() -> list[dict[str, Any]]:
+    """Every game of the complete fixture, all scored (the missed game included)."""
+    return [
+        schedule_game(game_id) for game_id in (*BET_GAMES, NO_BET_GAME, MISSED_GAME)
+    ]
+
+
+def _jsonl(path: Path, records: Sequence[dict[str, Any]]) -> None:
+    path.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def git(repo: Path, *args: str, env: Mapping[str, str] | None = None) -> str:
+    """Run one git command in *repo* (raising on failure) and return its stdout."""
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=None if env is None else {**os.environ, **env},
+    )
+    return completed.stdout
+
+
+def synthetic_repo(root: Path) -> Path:
+    """A throwaway repository whose one commit adds copies of both R6 record files (the lock)."""
+    repo = root / "repo"
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "binding@example.invalid")
+    git(repo, "config", "user.name", "Binding Fixture")
+    for name in RULE_FILES:
+        target = repo / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((REAL_REPO_ROOT / name).read_bytes())
+    git(repo, "add", *RULE_FILES)
+    dated = {
+        "GIT_AUTHOR_DATE": LOCK_COMMITTED_AT,
+        "GIT_COMMITTER_DATE": LOCK_COMMITTED_AT,
+    }
+    git(repo, "commit", "-q", "-m", "freeze the 2026 verdict rule", env=dated)
+    return repo
+
+
+def binding_fixture(
+    root: Path,
+    *,
+    rows: Sequence[dict[str, Any]] | None = None,
+    grades: Mapping[tuple[str, str], str] = COMPLETE_GRADES,
+    games: Sequence[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Write a complete binding fixture under *root*; return the binding argv that reads it.
+
+    By default: the complete ledger (every bet graded, one suppressed row, one shadow twin), a
+    schedule holding every game scored (plus one missed game), a run log, empty skip records and
+    a synthetic repository holding the R6 lock commit.
+    """
+    ledger_dir, silver_dir = root / "ledger", root / "silver"
+    silver_dir.mkdir(parents=True)
+    write_ledger(ledger_dir, complete_rows() if rows is None else rows, grades)
+    schedule = complete_games() if games is None else list(games)
+    pd.DataFrame(schedule).to_parquet(silver_dir / SILVER_GAMES_FILENAME)
+    run_log, skip_records = root / "daily_lock_runs.jsonl", root / "skip_records.jsonl"
+    no_games = {
+        "game_ids": [],
+        "outcome": "no_games",
+        "recorded_at": "2026-10-10T21:00:00+00:00",
+        "run_date_et": "2026-10-10",
+    }
+    _jsonl(run_log, [no_games])
+    _jsonl(skip_records, [])
+    repo = synthetic_repo(root)
+    return [
+        "--binding",
+        "--repo-root",
+        str(repo),
+        "--ledger-dir",
+        str(ledger_dir),
+        "--silver-dir",
+        str(silver_dir),
+        "--run-log",
+        str(run_log),
+        "--skip-records",
+        str(skip_records),
+    ]
+
+
+def _arg(argv: Sequence[str], name: str) -> Path:
+    """The path the option *name* carries in *argv*."""
+    return Path(argv[list(argv).index(name) + 1])
+
+
+def _run(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, list[str]]:
+    code = season_readout.main(argv)
+    return code, capsys.readouterr().out.splitlines()
+
+
+def _table_row(document: str, target: str) -> list[str]:
+    """The cells of section 3's table row for *target*."""
+    (row,) = [
+        line for line in document.splitlines() if line.startswith(f"| {target} |")
+    ]
+    return [cell.strip() for cell in row.strip("|").split("|")]
+
+
+SECTION_HEADINGS: tuple[str, ...] = (
+    "## 1. Coverage",
+    "## 2. Verdict scope",
+    "## 3. The verdict per target",
+    "## 4. The rule's lock",
+    "## 5. Re-fit comparison (ROLLING-REFIT-PREREGISTRATION.md section 11)",
+    "## 6. What this readout read",
+)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: the binding run writes its one document
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_a_binding_run_writes_the_document_in_order(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SPEC AC 23, 24, 25: six sections in order, figures equal an independent recomputation."""
+    argv = binding_fixture(tmp_path)
+    repo = _arg(argv, "--repo-root")
+    ledger_dir, silver_dir = _arg(argv, "--ledger-dir"), _arg(argv, "--silver-dir")
+
+    code, lines = _run(argv, capsys)
+
+    assert code == 0, lines
+    record = repo / BINDING_RECORD_PATH
+    assert lines[0] == f"BINDING_WRITTEN= {record.as_posix()}"
+    raw = record.read_bytes()
+    assert b"\r\n" not in raw
+    document = raw.decode("ascii")
+    positions = [document.index(heading) for heading in SECTION_HEADINGS]
+    assert positions == sorted(positions)
+    assert "Missed games: 1\n" in document
+    assert "- Playoff weeks: counted (D40-08)\n" in document
+
+    # Section 3 against a hand recomputation (bets, wins, units, flat ROI) and against the
+    # reused statistic, correction and word functions called here directly.
+    counted = counted_of(ledger_dir)
+    stats = {
+        target: roi_ci_and_p(_per_bet(counted, target)) for target in VERDICT_TARGETS
+    }
+    raws = [float(stats[target]["p_value"]) for target in VERDICT_TARGETS]
+    adjusted = dict(
+        zip(VERDICT_TARGETS, benjamini_hochberg_adjusted(raws, m=3), strict=True)
+    )
+    results = {
+        result.figures.target: result
+        for result in season_readout.measure_targets(counted, frozenset())
+    }
+    for target in VERDICT_TARGETS:
+        target_grades = [COMPLETE_GRADES[(game_id, target)] for game_id in BET_GAMES]
+        units = sum(PAYOUTS[grade][1] for grade in target_grades)
+        # Flat stake 1.0 per bet, so the ROI is the mean payout.
+        roi = sum(PAYOUTS[grade][0] for grade in target_grades) / len(BET_GAMES)
+        stat = stats[target]
+        token, _ = assign_verdict_token(
+            TargetMeasurement(
+                target=target,
+                chain_resolved=True,
+                control_passed=True,
+                control_bet_count=0,
+                bet_count=len(BET_GAMES),
+                flat_roi=stat["point_estimate"],
+                adjusted_p=adjusted[target],
+                raw_p=stat["p_value"],
+                p_absent_reason=None,
+                n_blocks=stat["n_blocks"],
+                n_push=target_grades.count("push"),
+                n_ungraded=0,
+                fallback_fired=False,
+                fallback_trigger=None,
+            ),
+            alpha=ALPHA,
+            min_attainable_p=ROI_MIN_ATTAINABLE_P,
+        )
+        assert _table_row(document, target) == [
+            target,
+            str(len(BET_GAMES)),  # the shadow twin and the suppressed row are no bet
+            str(target_grades.count("win")),
+            str(target_grades.count("loss")),
+            str(target_grades.count("push")),
+            f"{units:.6f}",
+            f"{roi:.6f}",
+            f"{stat['p_value']:.6g}",
+            f"{adjusted[target]:.6g}",
+            token,
+        ]
+        assert f"VERDICT_{target.upper()}= {token}" in lines
+        # Decided on the unrounded float, shown rounded.
+        unrounded = results[target].figures.flat_roi
+        assert unrounded == stat["point_estimate"]
+        assert repr(unrounded) not in document
+
+    # Section 4: the lock commit, its time and the weeks graded by then.
+    lock_sha = git(repo, "rev-parse", "HEAD").strip()
+    assert f"- Lock commit: {lock_sha}\n" in document
+    assert f"- Committed at: {LOCK_COMMITTED_AT}\n" in document
+    assert "- Weeks with a counted bet graded at or before the lock: 5, 6\n" in document
+
+    # Section 5: the comparison command's own stdout, byte for byte.
+    refit_argv = ["--ledger-dir", str(ledger_dir), "--silver-dir", str(silver_dir)]
+    assert compare_refit_arms.main(refit_argv) == 0
+    refit_stdout = capsys.readouterr().out
+    assert "```text\n" + refit_stdout + "```" in document
+
+    # Section 6: the ledger head and entry count read.
+    head, entries = ledger_head(read_entries(ledger_dir))
+    assert f"- Ledger chain head: {head}\n" in document
+    assert f"- Ledger entries: {entries}\n" in document
+    assert f"- Silver directory: {silver_dir.as_posix()}\n" in document
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_a_void_bet_leaves_the_test(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D-20: a bet on a game never played is listed by name, in no figure, and never blocks."""
+    void_game = "2026_W06_NYJ@BUF"  # unscored while week 22 is scored: not played
+    base = binding_fixture(tmp_path / "base")
+    code, _ = _run(base, capsys)
+    assert code == 0
+    base_document = (_arg(base, "--repo-root") / BINDING_RECORD_PATH).read_text("ascii")
+
+    argv = binding_fixture(
+        tmp_path / "void",
+        rows=[*complete_rows(), ledger_row(void_game, "wp")],
+        games=[*complete_games(), schedule_game(void_game, scored=False)],
+    )
+    code, lines = _run(argv, capsys)
+
+    assert code == 0, lines
+    document = (_arg(argv, "--repo-root") / BINDING_RECORD_PATH).read_text("ascii")
+    void_section = document.split("Void bets (D-20")[1].split("## 2.")[0]
+    assert f"- {void_game} wp\n" in void_section
+    assert (
+        f"- {void_game} (week 6): inferred: no final score while week 22 is scored\n"
+        in document
+    )
+    assert _table_row(document, "wp") == _table_row(base_document, "wp")
+    assert _table_row(document, "wp")[1] == str(len(BET_GAMES))
