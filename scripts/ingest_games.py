@@ -999,8 +999,11 @@ class GameDataIngester:
             # Validate data using hard-fail quality gate
             validated_df = validate_bronze_to_silver(games_df, GameSchema)
 
-            # Add metadata timestamp
-            validated_df["created_at"] = datetime.now(UTC)
+            # Add metadata timestamp, at the one unit silver stores a tz-aware instant in
+            # (datetime64[ns, UTC], as kickoff_et beside it). A bare datetime.now(UTC)
+            # broadcasts as datetime64[us, UTC] under pandas 2.x, and upsert_silver only
+            # aligns a stored/new pair whose units DIFFER, so the table kept two units.
+            validated_df["created_at"] = pd.Timestamp(datetime.now(UTC)).as_unit("ns")
 
             # Save to bronze layer (raw, timestamped, append-only)
             save_bronze_snapshot(
