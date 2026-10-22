@@ -210,6 +210,25 @@ def tier_of(node_id: str) -> str:
     )
 
 
+def normalised_node_id(node_id: str) -> str:
+    """A node id with Windows path separators turned into ``/``, before any ``[`` only.
+
+    A module, class or function name cannot hold a backslash, so one before the first
+    ``[`` is a path separator. One after it belongs to the parametrize id, where pytest
+    writes its escapes (``\\n``, ``\\xb2``, ``\\\\``) the same way in a collect listing and
+    in a JUnit name; rewriting it would make the two disagree. This is the split
+    ``mangle_test_address`` itself makes.
+
+    Args:
+        node_id: A pytest node id, ``path::Class::test[params]`` style.
+
+    Returns:
+        The node id with only its path part normalised.
+    """
+    path, bracket, params = node_id.partition("[")
+    return path.replace("\\", "/") + bracket + params
+
+
 def junit_key(node_id: str) -> tuple[str, str]:
     """The ``(classname, name)`` a JUnit report files a node id under.
 
@@ -218,12 +237,13 @@ def junit_key(node_id: str) -> tuple[str, str]:
     name). Forward mapping only: a classname cannot tell a module dot from a class dot.
 
     Args:
-        node_id: A pytest node id; backslash path separators are normalised first.
+        node_id: A pytest node id; backslash path separators are normalised first, never
+            inside the parametrize id (``normalised_node_id``).
 
     Returns:
         The testcase's ``(classname, name)``.
     """
-    names = mangle_test_address(node_id.replace("\\", "/"))
+    names = mangle_test_address(normalised_node_id(node_id))
     return ".".join(names[:-1]), names[-1]
 
 
@@ -678,8 +698,9 @@ def test_every_tripwire_node_id_is_still_collectible() -> None:
         "tests/phase33_state.py under the append protocol -- appended as a new slot "
         f"naming the plan that renamed it -- and NEVER dropped.\n\n{output}"
     )
+    collected = "\n".join(normalised_node_id(line) for line in output.splitlines())
     for node_id in node_ids:
-        assert node_id in output.replace("\\", "/"), (
+        assert node_id in collected, (
             f"deliberate tripwire node id no longer collects:\n  {node_id}\n\n"
             "It was deleted, renamed, or moved to another module or class. A renamed "
             "tripwire must be re-recorded in tests/phase33_state.py under the append "
@@ -899,6 +920,73 @@ def test_the_full_run_judge_refuses_a_bad_report(tmp_path: Path) -> None:
     _write_planted_tier(sixth, "unit", {_PLANTED_BYSTANDER: "failed"})
     regression = full_run_problems(sixth, tripwires)
     assert _kinds(regression) == ["REGRESSION"], regression
+
+
+# Parametrize ids pytest writes with an escape: a newline (`\n`), a non-ASCII character
+# (`\xb2`) and a literal backslash (`\\`). A raw string, so the planted module's source
+# holds the escapes exactly as written here.
+_PLANTED_ESCAPED_IDS_MODULE = r"""
+import pytest
+
+
+@pytest.mark.parametrize("text", ["import x\n", "\xb2", "a\\b", "plain"])
+def test_escaped(text):
+    pass
+
+
+def test_plain():
+    pass
+"""
+
+
+def test_the_judge_keys_a_listing_and_a_report_pytest_wrote(tmp_path: Path) -> None:
+    """Every collected id pytest listed has an outcome, escaped parametrize ids included.
+
+    ``test_the_full_run_judge_refuses_a_bad_report`` builds its report WITH ``junit_key``,
+    so its report and listing always agree whatever that function does, and it can never
+    catch a key bug. Here pytest itself writes both the ``--collect-only -q`` listing and
+    the JUnit report, the way the recorded run does. Phase 38's discovery run found the
+    bug this pins: the path-separator normalisation ran over the whole node id, turned
+    the backslash of every escaped parametrize id into a slash, and reported 97 tests
+    that had passed as having no outcome.
+    """
+    if os.environ.get(CHILD_ENV):
+        pytest.skip(CHILD_SESSION_SKIP)
+
+    tier_root = tmp_path / "tests" / "unit"
+    tier_root.mkdir(parents=True)
+    module = tier_root / "test_planted_escapes.py"
+    module.write_text(_PLANTED_ESCAPED_IDS_MODULE, encoding="utf-8")
+    arguments = [str(module), f"--rootdir={tmp_path}", "-p", "no:cacheprovider"]
+    listing = _run_pytest(["--collect-only", *arguments], timeout=300)
+    report = tmp_path / "unit.xml"
+    output = _run_pytest(arguments, timeout=300, report=report)
+    outcomes = _judged_outcomes(report, output)
+
+    listed = [
+        line
+        for line in listing.splitlines()
+        if line.startswith("tests/") and "::" in line
+    ]
+    escaped = [node_id for node_id in listed if "\\" in node_id]
+    assert len(listed) == 5 and len(escaped) == 3, f"{listed}\n\n{listing}"
+    assert _listing_problems("unit", listing, outcomes) == [], listing
+
+    # A collected test whose testcase is missing is still caught, escaped id or not.
+    for missing in (*escaped, f"{module.relative_to(tmp_path).as_posix()}::test_plain"):
+        cut = {
+            key: states for key, states in outcomes.items() if key != junit_key(missing)
+        }
+        assert len(cut) == len(outcomes) - 1, (missing, sorted(outcomes))
+        problems = _listing_problems("unit", listing, cut)
+        assert _kinds(problems) == ["INCOMPLETE"], problems
+        assert problems[0].endswith(missing), problems
+
+    # Windows path separators are still normalised, and only before the parametrize id.
+    assert junit_key("tests\\unit\\test_x.py::TestK::test_a[a\\n]") == (
+        "tests.unit.test_x.TestK",
+        "test_a[a\\n]",
+    )
 
 
 # ---------------------------------------------------------------------------
