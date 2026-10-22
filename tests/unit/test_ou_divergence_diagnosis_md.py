@@ -14,9 +14,9 @@ The eight required section markers (D26-15) are asserted present so a future edi
 drop a required section. The harness-run validation is the anti-rot core (T-26-10): the doc cannot
 silently drift because this test reproduces its load-bearing numbers from the committed orchestrator.
 
-This module is ALSO the single owner of the STATE.md verdict assertion (Task 4, the TestStateVerdict
-class) -- the repo-precedent placement (no second ``scripts/check_state_verdict.py``). That class is
-skip-guarded because .planning/STATE.md is gitignored and may be absent on a clean CI checkout.
+The STATE.md verdict assertion (the TestStateVerdict class) was DELETED on 2026-10-21 by owner
+ruling (Phase 38): STATE.md is a digest that no longer holds D26-14, and the copy git tracks never
+did. The verdict is recorded in this document's Section 8.
 
 ASCII only, no emoji (CLAUDE.md).
 """
@@ -25,12 +25,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 # Repo root resolved from this file: tests/unit/test_ou_divergence_diagnosis_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DIAGNOSIS_MD = REPO_ROOT / "docs" / "records" / "OU-DIVERGENCE-DIAGNOSIS.md"
-STATE_MD = REPO_ROOT / ".planning" / "STATE.md"
 
 # Gold presence skip-guard: the harness-run validation needs the Phase-20 rebuilt canonical gold.
 _GOLD_WP_PATH = REPO_ROOT / "data" / "gold" / "features_wp.parquet"
@@ -119,47 +116,6 @@ class TestDiagnosisMdSections:
 #      D29-06-02 -- 'pinning a point estimate to moving gold is the mistake this guard
 #      class made once'.
 # The DOC-level assertions in this file are untouched and still run unconditionally.
-
-
-class TestStateVerdict:
-    """The go/no-go verdict is recorded in .planning/STATE.md as a LOCKED Phase-27 input (D26-14).
-
-    This is the repo-precedent placement for the STATE-verdict assertion (Task 4): it lives in
-    THIS doc-drift module, not a second ``scripts/check_state_verdict.py`` throwaway. It is
-    skip-guarded because ``.planning/STATE.md`` is gitignored (commit_docs:false) and may be absent
-    on a clean CI checkout -- the working-tree edit is the deliverable, not a committed artifact.
-
-    Guards T-26-11 (repudiation of the verdict): the verdict + its basis MUST be present in STATE.md
-    as a recorded, LOCKED Phase-27 input, not left informal.
-    """
-
-    # One of the three pre-registered verdict tokens must appear in the Phase-26 entry.
-    _VERDICT_TOKENS = ("GO", "SCOPED GO", "NO-GO")
-
-    def test_state_md_records_phase26_verdict(self) -> None:
-        """STATE.md carries a Phase-26 verdict entry with one of the three verdict tokens."""
-        if not STATE_MD.exists():
-            pytest.skip(
-                f"STATE.md not present at {STATE_MD} (gitignored; absent on clean checkout)"
-            )
-
-        content = STATE_MD.read_text(encoding="utf-8")
-
-        # A Phase-26 verdict decision entry must exist (the D26-14 LOCKED Phase-27 input).
-        assert "D26-14" in content, (
-            "STATE.md is missing the D26-14 go/no-go verdict decision entry"
-        )
-
-        # At least one of the three pre-registered verdict tokens must appear in STATE.md.
-        assert any(tok in content for tok in self._VERDICT_TOKENS), (
-            "STATE.md does not record any of the verdict tokens "
-            f"{self._VERDICT_TOKENS!r} (the go/no-go ruling)"
-        )
-
-        # The verdict must be recorded as a LOCKED input to Phase 27 (not informal).
-        assert "LOCKED" in content and "Phase 27" in content, (
-            "STATE.md must record the verdict as a LOCKED input to Phase 27 (D26-14)"
-        )
 
 
 # ---------------------------------------------------------------------------
