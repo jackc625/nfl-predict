@@ -835,6 +835,8 @@ class TestTheAdditiveJuiceColumns:
         """The clause-2 proof: juice is ADDED and the four stored line values are preserved."""
         _require_silver_odds()
         _require_gold_ou()
+        from backtest.ev_chain_constants import ODDS_SPORTSBOOK_LABEL
+        from data.schemas import LIVE_ODDS_CAPTURE_KEY
         from scripts.ingest_historical_odds import (
             JUICE_COLUMNS,
             PROTECTED_LINE_COLUMNS,
@@ -846,12 +848,23 @@ class TestTheAdditiveJuiceColumns:
         sandbox_odds = _sandbox_silver_copy(tmp_path)
 
         before = pd.read_parquet(sandbox_odds)
+        # Each row kind is compared under its own key, the per-kind rule the production merge
+        # enforces (assert_odds_table_keys, review 937258c; owner ruling 2026-10-21). The rows
+        # this ingest writes are unique on (game_id, sportsbook). Live 2026 captures are not: a
+        # decision reading and a closing reading of one game and book share the lock's
+        # snapshot_ts and are told apart by created_at (LIVE_ODDS_CAPTURE_KEY), so they are
+        # checked separately below.
+        before_historical = before["sportsbook"].astype(str) == ODDS_SPORTSBOOK_LABEL
         # Compare on CANONICAL keys: the merge re-keys the stored LAR rows to LA first, so a
         # raw-key comparison would report every Rams row as vanished when it was only renamed.
-        before_keyed = before.assign(
-            game_id=before["game_id"].astype(str).map(canonical_game_id),
-            sportsbook=before["sportsbook"].astype(str),
-        ).set_index(["game_id", "sportsbook"])
+        before_keyed = (
+            before.loc[before_historical]
+            .assign(
+                game_id=lambda f: f["game_id"].astype(str).map(canonical_game_id),
+                sportsbook=lambda f: f["sportsbook"].astype(str),
+            )
+            .set_index(["game_id", "sportsbook"])
+        )
 
         incoming = transform_nfl_odds_to_standard_format(_load_live_schedule(2024))
         report = write_odds_additively(
@@ -861,15 +874,34 @@ class TestTheAdditiveJuiceColumns:
         )
 
         after = pd.read_parquet(sandbox_odds)
-        after_keyed = after.assign(
-            game_id=after["game_id"].astype(str),
-            sportsbook=after["sportsbook"].astype(str),
-        ).set_index(["game_id", "sportsbook"])
+        after_historical = after["sportsbook"].astype(str) == ODDS_SPORTSBOOK_LABEL
+        after_keyed = (
+            after.loc[after_historical]
+            .assign(
+                game_id=lambda f: f["game_id"].astype(str),
+                sportsbook=lambda f: f["sportsbook"].astype(str),
+            )
+            .set_index(["game_id", "sportsbook"])
+        )
 
         survived = before_keyed.index.intersection(after_keyed.index)
         assert len(survived) == len(before_keyed), (
             f"{len(before_keyed)} stored rows went in and only {len(survived)} keys came out. "
             "The merge is additive; it never drops a stored row."
+        )
+
+        # Every live capture comes out of the merge present and unchanged, on the key that
+        # identifies it. The 2024 merge never touches a 2026 game, so any difference here is a
+        # stored observation lost or rewritten.
+        live_key = list(LIVE_ODDS_CAPTURE_KEY)
+        before_live = before.loc[~before_historical].set_index(live_key).sort_index()
+        after_live = after.loc[~after_historical].set_index(live_key).sort_index()
+        assert len(before_live) > 0, (
+            "the sandbox holds no live capture rows, so the live half of this proof would pass "
+            "for free."
+        )
+        pd.testing.assert_frame_equal(
+            before_live, after_live, obj="stored live capture rows across the merge"
         )
 
         for column in PROTECTED_LINE_COLUMNS:
@@ -1587,7 +1619,7 @@ class TestTheWritePathInvariants:
         _require_gold_ou()
         from scripts.audit_odds_preingest import sha256_file
         from scripts.ingest_historical_odds import (
-            assert_one_row_per_key,
+            assert_odds_table_keys,
             canonical_game_id,
             transform_nfl_odds_to_standard_format,
             write_odds_additively,
@@ -1632,8 +1664,12 @@ class TestTheWritePathInvariants:
         after = pd.read_parquet(sandbox_odds)
         after_ids = after["game_id"].astype(str)
 
-        # Clause 6: one row per (game_id, sportsbook, snapshot_ts), on what is on DISK.
-        assert_one_row_per_key(after, stage="post-merge sandbox")
+        # Clause 6, on what is on DISK, each row kind under its own key -- the per-kind rule the
+        # production merge enforces (review 937258c; owner ruling 2026-10-21): the rows this
+        # ingest writes on (game_id, sportsbook, snapshot_ts), live 2026 captures on
+        # LIVE_ODDS_CAPTURE_KEY, because a decision reading and a closing reading of one game
+        # and book share the lock's snapshot_ts and differ only in created_at.
+        assert_odds_table_keys(after, stage="post-merge sandbox")
 
         # Clause 5: the non-canonical spelling appears ZERO times in the destination.
         assert int(after_ids.str.contains("LAR").sum()) == 0, (
