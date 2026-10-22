@@ -16,6 +16,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -27,6 +28,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+import backtest.verdict_test_2026
 from backtest.profitability_2025 import (
     TargetMeasurement,
     assign_verdict_token,
@@ -43,10 +45,19 @@ from backtest.verdict_test_2026 import (
     VERDICT_TOKENS,
 )
 from forward_ledger.declarations import load_verdict_scope
-from forward_ledger.settle import SILVER_GAMES_FILENAME
+from forward_ledger.settle import DEFAULT_SILVER_DIR, SILVER_GAMES_FILENAME
 from forward_ledger.shadow import SHADOW_PIN
-from forward_ledger.store import append_rows, apply_updates, ledger_head, read_entries
+from forward_ledger.store import (
+    LEDGER_DIR,
+    append_rows,
+    apply_updates,
+    ledger_head,
+    ledger_path,
+    read_entries,
+)
 from forward_ledger.verdict import verdict_rows
+from pipeline.skip_log import SKIP_RECORD_PATH
+from refit.records import DATES_FILENAME, refit_dir
 from scripts import compare_refit_arms, season_readout
 from tests.unit.test_forward_ledger_store import graded, key_of, make_row
 
@@ -572,3 +583,201 @@ def test_a_void_bet_leaves_the_test(
     )
     assert _table_row(document, "wp") == _table_row(base_document, "wp")
     assert _table_row(document, "wp")[1] == str(len(BET_GAMES))
+
+
+# ---------------------------------------------------------------------------
+# Task 3: binding refuses until the season is graded, refuses an edited rule, and runs once
+# ---------------------------------------------------------------------------
+
+REFUSED = "BINDING_REFUSED= "
+
+
+def _tree(root: Path) -> dict[str, int]:
+    """Every file under *root* with its size."""
+    return {
+        path.relative_to(root).as_posix(): path.stat().st_size
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _refusal(lines: list[str]) -> str:
+    """The one output line, asserted to be a refusal."""
+    assert len(lines) == 1, lines
+    assert lines[0].startswith(REFUSED), lines
+    return lines[0]
+
+
+def _assert_refuses(
+    argv: list[str], capsys: pytest.CaptureFixture[str], root: Path
+) -> str:
+    """Run binding on *argv*: exit 3, one refusal line, and nothing new or changed under *root*."""
+    before = _tree(root)
+    code, lines = _run(argv, capsys)
+    assert code == 3, lines
+    assert _tree(root) == before
+    assert not (_arg(argv, "--repo-root") / BINDING_RECORD_PATH).exists()
+    return _refusal(lines)
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_on_todays_real_ledger(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SPEC AC 27, 28: today's real ledger refuses, and its bytes do not move."""
+    ledger_file = REAL_REPO_ROOT / ledger_path(LEDGER_DIR)
+    stores = {
+        "--ledger-dir": REAL_REPO_ROOT / LEDGER_DIR,
+        "--silver-dir": REAL_REPO_ROOT / DEFAULT_SILVER_DIR,
+        "--run-log": REAL_REPO_ROOT / season_readout.DEFAULT_RUN_LOG,
+        "--skip-records": REAL_REPO_ROOT / SKIP_RECORD_PATH,
+    }
+    for path in (ledger_file, stores["--silver-dir"] / SILVER_GAMES_FILENAME):
+        if not path.exists():
+            pytest.skip(f"the real store {path.as_posix()} is absent on this machine")
+    repo = synthetic_repo(tmp_path)
+    before = hashlib.sha256(ledger_file.read_bytes()).hexdigest()
+    argv = ["--binding", "--repo-root", str(repo)]
+    for name, path in stores.items():
+        argv += [name, str(path)]
+
+    line = _assert_refuses(argv, capsys, tmp_path)
+
+    assert (
+        "counted bet(s) of played games are not graded yet" in line
+        or "in-scope game(s) lack a final score" in line
+    ), line
+    assert hashlib.sha256(ledger_file.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_without_a_played_week_22_game(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The Super Bowl is REMOVED from the schedule and the ledger (an unscored week-22 game
+    would trip refusal 2 first: with no later week it is never 'not played')."""
+    argv = binding_fixture(
+        tmp_path,
+        rows=[row for row in complete_rows() if row["game_id"] != SUPER_BOWL],
+        games=[game for game in complete_games() if game["game_id"] != SUPER_BOWL],
+    )
+
+    line = _assert_refuses(argv, capsys, tmp_path)
+
+    assert "the schedule holds no played week-22 game" in line
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_while_a_counted_bet_is_ungraded(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D-24: one pending bet of a scored game refuses; the suppressed pending row never does."""
+    ungraded = (WEEK6_GAMES[0], "ats")
+    grades = {key: grade for key, grade in COMPLETE_GRADES.items() if key != ungraded}
+    argv = binding_fixture(tmp_path, grades=grades)
+    # The fixture also holds a suppressed row, which is never graded.
+    suppressed = counted_of(_arg(argv, "--ledger-dir"))
+    assert (suppressed["status"] == "suppressed").sum() == 1
+
+    line = _assert_refuses(argv, capsys, tmp_path)
+
+    assert line == (
+        f"{REFUSED}1 counted bet(s) of played games are not graded yet: "
+        f"{ungraded[0]} {ungraded[1]}. Wait for the next 17:00 ET daily run to grade them."
+    )
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_a_second_binding_run_refuses_even_after_the_record_is_deleted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D-09: once written, never again -- not while the record exists, not after it is deleted,
+    and not at a path the caller chooses (there is no such option)."""
+    argv = binding_fixture(tmp_path)
+    repo = _arg(argv, "--repo-root")
+    record = repo / BINDING_RECORD_PATH
+    code, _ = _run(argv, capsys)
+    assert code == 0 and record.exists()
+
+    # The record exists: refused, and nothing anywhere under tmp_path changes.
+    before = _tree(tmp_path)
+    code, lines = _run(argv, capsys)
+    assert code == 3
+    assert "already exists; the binding run happened" in _refusal(lines)
+    assert _tree(tmp_path) == before
+
+    # Committed, then deleted: git history still refuses it.
+    git(repo, "add", BINDING_RECORD_PATH)
+    git(repo, "commit", "-q", "-m", "the 2026 season-close readout")
+    record.unlink()
+    line = _assert_refuses(argv, capsys, tmp_path)
+    assert f"{BINDING_RECORD_PATH} appears in git history" in line
+
+    # A second run cannot be pointed at a fresh path: the option does not exist.
+    with pytest.raises(SystemExit):
+        season_readout.main([*argv, "--record-path", str(tmp_path / "elsewhere.md")])
+    assert not (tmp_path / "elsewhere.md").exists()
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_when_the_rule_moved(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refusals 6 and 7: the rule binding reads must be the rule that was locked."""
+    module = "backtest/verdict_test_2026.py"
+    quiet_edit = "\n# a quiet edit after the lock\n"
+
+    # (a) A later commit edits the record without naming the lock INVALIDATED.
+    committed = binding_fixture(tmp_path / "committed")
+    repo = _arg(committed, "--repo-root")
+    with (repo / module).open("a", encoding="utf-8") as handle:
+        handle.write(quiet_edit)
+    git(repo, "commit", "-q", "-am", "tidy the rule")
+    quiet_sha = git(repo, "rev-parse", "HEAD").strip()
+    line = _assert_refuses(committed, capsys, tmp_path / "committed")
+    assert "the rule moved after its lock" in line
+    assert f"{quiet_sha} tidy the rule" in line
+
+    # (a) The same edit left uncommitted.
+    uncommitted = binding_fixture(tmp_path / "uncommitted")
+    repo = _arg(uncommitted, "--repo-root")
+    with (repo / module).open("a", encoding="utf-8") as handle:
+        handle.write(quiet_edit)
+    line = _assert_refuses(uncommitted, capsys, tmp_path / "uncommitted")
+    assert f"uncommitted {module}" in line
+
+    # (a) An honest commit naming the lock INVALIDATED is not a quiet edit.
+    honest_repo = synthetic_repo(tmp_path / "honest")
+    lock = season_readout.lock_commit(honest_repo)
+    with (honest_repo / module).open("a", encoding="utf-8") as handle:
+        handle.write("\n# corrected\n")
+    message = f"correct the rule\n\nThis commit INVALIDATES the pre-registration at {lock.sha}."
+    git(honest_repo, "commit", "-q", "-am", message)
+    assert season_readout.quiet_rule_edits(honest_repo, lock.sha) == []
+    assert season_readout.lock_commit(honest_repo).sha == lock.sha
+
+    # (b) A frozen value moved upstream of the record.
+    moved = binding_fixture(tmp_path / "moved")
+    monkeypatch.setattr(backtest.verdict_test_2026, "ALPHA", 0.1)
+    line = _assert_refuses(moved, capsys, tmp_path / "moved")
+    assert (
+        line == f"{REFUSED}the frozen value ALPHA is pinned at 0.05 but now holds 0.1."
+    )
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_when_the_comparison_cannot_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Refusal 8: a malformed re-fit date record makes the comparison exit 2."""
+    argv = binding_fixture(tmp_path)
+    dates = refit_dir(_arg(argv, "--ledger-dir")) / DATES_FILENAME
+    dates.parent.mkdir(parents=True, exist_ok=True)
+    dates.write_text("not json\n", encoding="utf-8")
+
+    line = _assert_refuses(argv, capsys, tmp_path)
+
+    assert line.startswith(f"{REFUSED}the re-fit comparison could not run (exit 2): ")
+    assert "STORE_UNREADABLE= " in line
