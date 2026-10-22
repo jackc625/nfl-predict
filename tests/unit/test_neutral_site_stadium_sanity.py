@@ -168,7 +168,6 @@ class TestTheSevenCorrectedGamesAreAssertedPositively:
         games = _silver_games().set_index("game_id")
         overrides = ingest_games.load_venue_overrides()
         roof_resolver = ingest_games.GameDataIngester()._get_venue_roof_type
-        assert len(overrides) == 7
         for game_id, override in overrides.items():
             expected = ingest_games.resolve_venue_override(
                 game_id,

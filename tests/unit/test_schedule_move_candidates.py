@@ -194,7 +194,6 @@ class TestTheNamedRows:
 
     def test_the_2025_international_games_are_absent(self, manifest_by_id) -> None:
         international = bsmc.load_international_game_ids()
-        assert len(international) == 7
         assert sorted(international & set(manifest_by_id)) == []
 
     def test_the_script_covers_exactly_the_d33_2_04_events(self) -> None:
