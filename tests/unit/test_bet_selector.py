@@ -20,15 +20,15 @@ Covers:
 
 A TRAP FOR THE NEXT GUARD AUTHOR -- key on the MODULE PATH, never on the class name.
 
-  There are TWO classes named ``BetSelector`` and both are loaded in EVERY process. The live one
-  is ``backtest.bet_selector.BetSelector``; the other is a DEAD v1.0 class at
-  ``utils/bet_selector.py``, which ``utils/__init__.py`` re-exports into the ``utils`` namespace
-  and lists in ``utils.__all__``. Because ``backtest/bet_selector.py`` does ``from utils import
-  get_logger``, importing the live class EXECUTES ``utils/__init__`` and pulls in the dead one as
-  a side effect -- they are never separable at runtime. A structural guard that asks "is there a
-  second selection path?" by matching the class NAME will therefore always find the dead cluster
-  and always false-positive; it must match on ``node.module`` (``backtest.bet_selector`` vs
-  ``utils`` / ``utils.bet_selector``) instead. The converse trap is equally real: the simulator
+  There are TWO classes named ``BetSelector``. The live one is
+  ``backtest.bet_selector.BetSelector``; the other is a DEAD v1.0 class at
+  ``utils/bet_selector.py``. The package init is lazy (Phase 36) and no longer re-exports the dead
+  class (CLEAN-02, Phase 38: ``from utils import BetSelector`` now raises ImportError), but the
+  dead module stays on disk, so both classes can still be loaded in one process by module path.
+  A structural guard that asks "is there a second selection path?" by matching the class NAME
+  will therefore find the dead cluster and false-positive; it must match on ``node.module``
+  (``backtest.bet_selector`` vs ``utils`` / ``utils.bet_selector``) instead. The converse trap is
+  equally real: the simulator
   receives the selector by INJECTION (``BettingSimulator(..., ou_bet_selector=...)``), so there is
   no import edge to find and an import-graph test alone cannot prove the production path routes
   through the real selector. Plan 31-17 owns the one-path guard that rests on both halves of this.
@@ -1620,21 +1620,38 @@ class TestNameCollisionTrapIsDocumented:
     """T-31-26: the dead v1.0 ``BetSelector`` must never satisfy a name-keyed guard."""
 
     def test_both_bet_selector_classes_are_live_in_one_process(self) -> None:
-        """The collision is a FACT of every run, not a latent risk on disk.
+        """Both classes named ``BetSelector`` can be loaded side by side in one process.
 
-        ``backtest/bet_selector.py`` does ``from utils import get_logger``, which executes
-        ``utils/__init__`` and imports the DEAD v1.0 class as a side effect of importing the live
-        one. Any structural guard over this area must key on the MODULE PATH, never the class
-        name; Plan 31-17 owns the one-path guard that depends on this.
+        The package init no longer re-exports the DEAD v1.0 class (lazy since Phase 36, the name
+        removed by CLEAN-02 in Phase 38), but its module is still on disk and still importable by
+        module path, so the two classes can coexist at runtime. Any structural guard over this
+        area must key on the MODULE PATH, never the class name; Plan 31-17 owns the one-path
+        guard that depends on this.
         """
-        import utils
         from backtest.bet_selector import BetSelector as LiveSelector
+        from utils.bet_selector import BetSelector as DeadSelector
 
-        dead_selector = utils.BetSelector
+        dead_selector = DeadSelector
         assert dead_selector is not LiveSelector
         assert dead_selector.__name__ == LiveSelector.__name__ == "BetSelector"
         assert LiveSelector.__module__ == "backtest.bet_selector"
         assert dead_selector.__module__ == "utils.bet_selector"
+
+    def test_the_dead_names_no_longer_resolve_through_utils(self) -> None:
+        """CLEAN-02 (SPEC R1, F-2): the dead v1.0 names leave the ``utils`` package surface.
+
+        ``from utils import BetSelector`` used to return the DEAD class silently, a second
+        decision path under the live class's name. Both dead names now raise, and the live class
+        still imports from its own module.
+        """
+        with pytest.raises(ImportError):
+            from utils import BetSelector  # noqa: F401
+        with pytest.raises(ImportError):
+            from utils import BetRecommender  # noqa: F401
+
+        from backtest.bet_selector import BetSelector as LiveSelector
+
+        assert LiveSelector.__module__ == "backtest.bet_selector"
 
     def test_this_module_records_the_module_path_rule(self) -> None:
         """The rule is written where the next guard author will read it -- this file's docstring."""

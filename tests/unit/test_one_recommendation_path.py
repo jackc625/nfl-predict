@@ -445,8 +445,8 @@ def test_the_dead_cluster_is_still_present_and_still_collides_by_name() -> None:
         "genuinely gone, this guard's module-path rule can be simplified -- but verify first. "
         f"Shared names: {sorted(collision)}"
     )
-    # And the dead class is re-exported into the utilities namespace, so it is loaded in the same
-    # process as the live one on every run. This is the reason a name-keyed scan is unusable.
+    # The dead class itself is no longer re-exported (CLEAN-02), while the dead module's other
+    # names still are, which keeps the module referenced from the package init.
     assert "bet_selector" in pathlib.Path("utils/__init__.py").read_text(
         encoding="utf-8"
     )

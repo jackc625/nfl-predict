@@ -9,8 +9,9 @@ Every existing import site keeps working unedited: ``from utils import X`` goes 
 ``__getattr__``, and ``import utils.game_lock as lock_rule`` or a monkeypatch string such as
 ``"utils.date_utils.get_current_nfl_week"`` work because importing a submodule sets the package
 attribute itself. The ``if TYPE_CHECKING:`` block lets pyright see every type; nothing in it runs.
-``_LAZY`` must name exactly ``__all__`` (a test pins it); ``__all__`` is unchanged, and CLEAN-02
-(Phase 38) owns removing names from it.
+``_LAZY`` must name exactly ``__all__`` (a test pins it). CLEAN-02 (Phase 38) removed the dead
+v1.0 ``BetSelector`` and ``BetRecommender`` from the package surface; their modules stay on disk
+and are imported by module path only.
 """
 
 from __future__ import annotations
@@ -25,13 +26,11 @@ if TYPE_CHECKING:  # pyright reads these; nothing is imported at run time
     from .bankroll_manager import BettingSession as BettingSession
     from .bankroll_manager import RiskLevel as RiskLevel
     from .bet_recommender import BetRecommendation as BetRecommendation
-    from .bet_recommender import BetRecommender as BetRecommender
     from .bet_recommender import RecommendationAction as RecommendationAction
     from .bet_recommender import RecommendationPortfolio as RecommendationPortfolio
     from .bet_recommender import RecommendationTier as RecommendationTier
     from .bet_selector import BetCandidate as BetCandidate
     from .bet_selector import BetSelectionResult as BetSelectionResult
-    from .bet_selector import BetSelector as BetSelector
     from .bet_selector import FilterCriteria as FilterCriteria
     from .bet_selector import FilterReason as FilterReason
     from .bet_selector import create_aggressive_criteria as create_aggressive_criteria
@@ -99,13 +98,11 @@ _LAZY: dict[str, str] = {
     "BettingSession": ".bankroll_manager",
     "RiskLevel": ".bankroll_manager",
     "BetRecommendation": ".bet_recommender",
-    "BetRecommender": ".bet_recommender",
     "RecommendationAction": ".bet_recommender",
     "RecommendationPortfolio": ".bet_recommender",
     "RecommendationTier": ".bet_recommender",
     "BetCandidate": ".bet_selector",
     "BetSelectionResult": ".bet_selector",
-    "BetSelector": ".bet_selector",
     "FilterCriteria": ".bet_selector",
     "FilterReason": ".bet_selector",
     "create_aggressive_criteria": ".bet_selector",
@@ -167,9 +164,7 @@ __all__ = [
     "BankrollManager",
     "BetCandidate",
     "BetRecommendation",
-    "BetRecommender",
     "BetSelectionResult",
-    "BetSelector",
     # Betting utilities
     "BetType",
     "BettingResult",
