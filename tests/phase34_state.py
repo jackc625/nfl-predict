@@ -33,6 +33,7 @@ measured when it was written.
 * Plan 34-22 Task 3 -- ``P34_PREREGISTRATION_WITNESS``, ``P34_W``,
   ``P34_W_FIRST_LOCK_UTC``, ``P34_W_FIRST_DECISION_RUN_UTC``.
 * Plan 34-23 Task 1 -- ``P34_FIRST_LIVE_READBACK``.
+* Plan 38-07 Task 3 -- ``P38_EXPECTED_FAILURE_BASELINE``.
 """
 
 from __future__ import annotations
@@ -438,4 +439,118 @@ P34_FIRST_LIVE_READBACK: dict[str, object] = {
     "replay_week_w": {"REPLAY_PASS": 6, "REPLAY_NOT_REPLAYABLE": 0, "REPLAY_FAIL": 0},
     "rows_by_week": ((2026, 3, 42), (2026, 4, 45), (2026, 5, 6)),
     "null_stamp_rows_by_week": ((2026, 3, 42), (2026, 4, 45), (2026, 5, 0)),
+}
+
+# ---------------------------------------------------------------------------
+# Plan 38-07 Task 3 -- the expected failure set after Phase 38 cleared the
+# quarantines, MEASURED 2026-10-21 (ET, read via PowerShell Get-Date, 20:24) on
+# HEAD 60e3e3fd83c59be165f9ae25a20b2a1154af2294.
+#
+# This slot SUPERSEDES P34_EXPECTED_FAILURE_BASELINE for the gate in
+# tests/integration/test_phase34_expected_failure_set.py; that slot is left
+# byte-unchanged as the record of what was measured on 2026-10-05.
+#
+# What changed since then: Plan 38-07 Task 2 FIXED the one real defect among
+# the nine quarantines (DEF-31-07, the synthetic-stamp detector), and Tasks 1-2
+# DELETED the other eight by owner ruling (six DEF-31-06 comparisons and two
+# D30-DEFER-08 anchors, all of them reproductions of retired models that
+# today's gold cannot score). Task 1 also deleted three dead-baseline
+# duplicates of tripwires 1 and 5 (SPEC R4).
+#
+# The three runs, each with its pytest summary line verbatim:
+#
+# 1. The five ids of tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS, passed
+#    on the command line:
+#        "5 failed, 29 warnings in 10.98s"  -- all five FAILED, as they must.
+#
+# 2. uv run python -m pytest tests/integration/test_ingest_2025_odds.py
+#        tests/integration/test_ou_divergence.py -q -p no:cacheprovider -rxX
+#        "2 failed, 90 passed, 1 skipped, 47 warnings in 59.79s"
+#    Zero xfails. The two failures are NOT quarantines and NOT caused by this
+#    plan: both copy the production silver odds store into tmp_path, and that
+#    store now holds 99 duplicated (game_id, sportsbook, snapshot_ts) keys,
+#    all in 2026 live captures (for example 2026_W05_BUF@LA, a second reading
+#    per book whose market_last_update falls after the game's lock). They are
+#    recorded below under `unrelated_reds_measured` with that cause, and are
+#    left for the owner; no test was skipped, marked or loosened for them.
+#
+# 3. The four data-dependent node ids of P34_EXPECTED_FAILURE_BASELINE:
+#        "4 passed, 27 warnings in 5.59s"
+#    All four measured PASSED, recorded as measured.
+# ---------------------------------------------------------------------------
+
+P38_EXPECTED_FAILURE_BASELINE: dict[str, object] = {
+    "measured_on": "2026-10-21",
+    "head": "60e3e3fd83c59be165f9ae25a20b2a1154af2294",
+    "plan": "38-07",
+    "tripwires": {
+        "source": "tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS",
+        "measured_failed": 5,
+    },
+    "xfail_quarantines": (),
+    "closed_quarantines": {
+        "fixed": (
+            "tests/integration/test_ou_divergence.py::TestTheSyntheticStampDetectorIsInverted::test_the_detector_reports_that_derivation_as_synthetic",
+        ),
+        "deleted_by_owner_ruling": (
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_each_per_season_figure_matches[2021]",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_each_per_season_figure_matches[2022]",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_each_per_season_figure_matches[2023]",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_each_per_season_figure_matches[2024]",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_the_pooled_figure_matches",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_the_negative_mean_season_set_is_still_exactly_2022",
+            "tests/integration/test_ou_divergence.py::TestOuDivergence::test_deployed_population",
+            "tests/integration/test_ou_divergence.py::TestOuDivergence::test_orchestrator_early_exit_is_skip_aware",
+        ),
+    },
+    "data_dependent_reds": (
+        (
+            "tests/api/test_health_endpoint.py::TestHealthDegraded::test_health_stale_pipeline_log",
+            "passed",
+        ),
+        (
+            "tests/integration/test_activation_parity.py::test_part_a_cache_predictions_equal_backtest_csv",
+            "passed",
+        ),
+        (
+            "tests/integration/test_bet_list_completeness.py::TestTheStoredReplayRowsAreNeverBackfilled::test_the_stored_artifact_is_all_replay_and_carries_no_observation_time",
+            "passed",
+        ),
+        (
+            "tests/integration/test_bet_list_completeness.py::TestTheStoredReplayRowsAreNeverBackfilled::test_reading_through_the_shim_does_not_write_the_column_back",
+            "passed",
+        ),
+    ),
+    "unrelated_reds_measured": (
+        (
+            "tests/integration/test_ingest_2025_odds.py::TestTheAdditiveJuiceColumns::test_the_stored_lines_are_byte_unchanged_by_a_merge_into_a_temporary_copy",
+            "failed",
+        ),
+        (
+            "tests/integration/test_ingest_2025_odds.py::TestTheWritePathInvariants::test_a_merge_into_a_temporary_copy_holds_every_invariant",
+            "failed",
+        ),
+    ),
+    "unrelated_reds_cause": (
+        "the production silver odds store holds 99 duplicated (game_id, sportsbook, "
+        "snapshot_ts) keys, all 2026 live captures (e.g. 2026_W05_BUF@LA: a second "
+        "reading per book with market_last_update after the lock); both tests merge into a "
+        "tmp_path copy of that store. Not caused by Plan 38-07; left for the owner."
+    ),
+    "deleted_dead_baseline_duplicates": (
+        "tests/integration/test_drift_tripwire_sees_frozen_seasons.py::TestTheLiveFrameWouldAbort::test_passing_the_live_frame_RAISES_naming_a_zero_sample_size",
+        "tests/integration/test_drift_tripwire_sees_frozen_seasons.py::TestTheLiveFrameWouldAbort::test_passing_the_frozen_frame_does_NOT_raise",
+        "tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore",
+    ),
+    "retired_count_baseline": {
+        "line": "6 failed / 3603 passed / 7 skipped / 14 xfailed",
+        "source": "tests.phase32_state.V30_CLOSE_BASELINE",
+        "retired_on": "2026-10-21",
+        "reason": (
+            "the v3.0 close count counted quarantines that no longer exist and predates "
+            "five phases of tests; the gate now asserts an enumerated set -- exactly the "
+            "five tripwires and zero xfails -- and the whole-suite baseline recorded at the "
+            "Phase 38 close (three tier lines plus their sum, D-28) replaces it"
+        ),
+    },
 }

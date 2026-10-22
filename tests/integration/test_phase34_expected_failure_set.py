@@ -1,9 +1,11 @@
 """The Phase-34 expected failure set, as MEASURED and recorded, still holds (34-REVIEW WR-24).
 
-``tests.phase34_state.P34_EXPECTED_FAILURE_BASELINE`` enumerates, by node id, the failures the
-phase EXPECTS. 34-VALIDATION.md says that set is "asserted unchanged"; until this module, nothing
-read it. This module reads it and never edits it: the baseline is a committed record under its
-module's append protocol, and a re-measurement is a new slot written by a plan, not by a test.
+``tests.phase34_state.P38_EXPECTED_FAILURE_BASELINE`` enumerates, by node id, the failures the
+suite EXPECTS. It is the newest slot; ``P34_EXPECTED_FAILURE_BASELINE`` is the earlier one and is
+checked here only as an unchanged record. 34-VALIDATION.md says the set is "asserted unchanged";
+until this module, nothing read it. This module reads the slots and never edits them: each is a
+committed record under its module's append protocol, and a re-measurement is a new slot written
+by a plan, not by a test.
 
 WHAT IS ASSERTED, HALF BY HALF
 ------------------------------
@@ -18,10 +20,12 @@ WHAT IS ASSERTED, HALF BY HALF
   ``tests/`` outside the recorded set. A quarantine therefore cannot be erased by deleting the
   test or un-marking it, and a new one cannot appear unrecorded.
 
-THE FIGURE IS NINE, NOT SEVEN. Older records (and CLAUDE.md) quote "7 xfailed" as the standing
-quarantine. The baseline MEASURED nine strict xfails in these two modules and recorded nine; this
-gate holds the measured, committed figure. Making the count agree with the older "7" would mean
-deleting two quarantines, which is the failure mode the baseline exists to prevent.
+THE FIGURE IS ZERO (Phase 38). The P34 slot measured nine strict xfails on 2026-10-05 (older
+records quote "7 xfailed"; nine is what was measured). Phase 38 fixed one of them (DEF-31-07, the
+synthetic-stamp detector) and deleted the other eight by owner ruling, as reproductions of retired
+models that today's gold cannot score. The P38 slot records zero, so the scan below now asserts
+that no xfail site exists anywhere under ``tests/``. The v3.0 close count is retired; see the
+slot's ``retired_count_baseline`` for its date and reason.
 
 The data-dependent nodes are checked for collectability only: their recorded outcomes ("passed")
 depend on the wall clock and the live stores, as the baseline itself says.
@@ -43,7 +47,10 @@ from typing import Any
 
 import pytest
 
-from tests.phase34_state import P34_EXPECTED_FAILURE_BASELINE
+from tests.phase34_state import (
+    P34_EXPECTED_FAILURE_BASELINE,
+    P38_EXPECTED_FAILURE_BASELINE,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -52,7 +59,8 @@ TESTS_ROOT = REPO_ROOT / "tests"
 PHASE33_GATE = TESTS_ROOT / "integration" / "test_phase33_expected_failure_set.py"
 PHASE33_GATE_TEST = "test_the_measured_failing_set_equals_the_tripwire_constant"
 
-_BASELINE: dict[str, Any] = dict(P34_EXPECTED_FAILURE_BASELINE)
+_BASELINE: dict[str, Any] = dict(P38_EXPECTED_FAILURE_BASELINE)
+_EARLIER_BASELINE: dict[str, Any] = dict(P34_EXPECTED_FAILURE_BASELINE)
 _QUARANTINES: tuple[str, ...] = tuple(_BASELINE["xfail_quarantines"])
 _DATA_DEPENDENT: tuple[str, ...] = tuple(
     node_id for node_id, _outcome in _BASELINE["data_dependent_reds"]
@@ -130,10 +138,18 @@ def _strict_xfail(definition: ast.AST) -> bool:
 
 
 def test_the_baseline_is_the_measured_record() -> None:
-    """Anti-vacuity: every check below runs over these values, so they are pinned as recorded."""
-    assert _BASELINE["head"] == "c75119420f30a38592c59343a32abd02b398c3b5"
-    assert len(_QUARANTINES) == len(set(_QUARANTINES)) == 9
+    """Anti-vacuity: every check below runs over these values, so they are pinned as recorded.
+
+    The earlier P34 slot is pinned too: the append protocol leaves it as written, nine
+    quarantines on its own head.
+    """
+    assert _BASELINE["head"] == "60e3e3fd83c59be165f9ae25a20b2a1154af2294"
+    assert len(_QUARANTINES) == 0
     assert len(_DATA_DEPENDENT) == 4
+
+    earlier_quarantines = tuple(_EARLIER_BASELINE["xfail_quarantines"])
+    assert _EARLIER_BASELINE["head"] == "c75119420f30a38592c59343a32abd02b398c3b5"
+    assert len(earlier_quarantines) == len(set(earlier_quarantines)) == 9
 
 
 def test_the_tripwire_half_resolves_to_the_one_constant_and_its_gate() -> None:
@@ -154,6 +170,13 @@ def test_the_tripwire_half_resolves_to_the_one_constant_and_its_gate() -> None:
 
 
 def test_every_recorded_quarantine_is_still_a_strict_xfail() -> None:
+    """Each recorded quarantine is still a strict xfail.
+
+    Since Phase 38 the recorded set is EMPTY, so this iterates nothing; it stays so that a
+    quarantine recorded in a later slot is checked the moment it is recorded. The non-vacuous
+    half is ``test_no_xfail_exists_outside_the_recorded_set``, which now asserts zero xfail
+    sites under ``tests/``.
+    """
     for node_id in _QUARANTINES:
         path, qualname = _site(node_id)
         tree = ast.parse((REPO_ROOT / path).read_text(encoding="utf-8"))
