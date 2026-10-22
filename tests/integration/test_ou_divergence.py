@@ -9,13 +9,17 @@ structural bar (D26-11), the edge-magnitude monotonicity sweep (D26-03), and the
 preview (D26-07/16) are added by Plan 26-03 (the ``trial_registry`` / ``count_parity`` /
 ``ev_preview_not_imported`` selectors live here too).
 
-Load-bearing number anchors (reproduced this session against the DEPLOYED v1.0 OU artifact
+Number anchors (reproduced in Phase 26 against the then-deployed v1.0 OU artifact
 ``ou_20260326_163930`` over 2021-2024 canonical gold):
-  - pooled line_clv +1.1095 on n=1087 with-line games (52 excluded)
+  - pooled line_clv +1.1095 on n=1087 with-line games (52 excluded). The two tests that
+    compared against this anchor (test_deployed_population and
+    test_orchestrator_early_exit_is_skip_aware, quarantined as D30-DEFER-08) were deleted in
+    Phase 38 by owner ruling: they scored a retired model whose anchor today's gold cannot
+    reproduce. The early-exit coverage went with them.
   - model-picks-over share pooled 0.727 with the 2021 sign-flip (18.4% over, line_clv -1.21)
   - pooled residual SD 12.946
 
-Selectors (``-k``): deployed_population, bias_over_share, coverage_counts,
+Selectors (``-k``): bias_over_share, coverage_counts,
 provenance_label_split, no_train_no_write, production_files_untouched, determinism,
 trial_registry, count_parity, edge_magnitude, survivable_subpopulation, ev_preview,
 ev_preview_not_imported.
@@ -54,19 +58,13 @@ from backtest.engine import BacktestEngine
 # Gold presence skip-guard: the integration tests need the Phase-20 rebuilt canonical gold.
 _GOLD_WP_PATH = Path("data/gold/features_wp.parquet")
 
-# Number anchors (reproduced this session; see module docstring).
-ANCHOR_OU_POOLED_LINE_CLV = 1.1095
-ANCHOR_N_WITH_LINE = 1087
+# Number anchors (reproduced in Phase 26; see module docstring).
 ANCHOR_MODEL_OVER_SHARE = 0.727
 ANCHOR_RESID_SD_POOLED = 12.946
 
-# Tolerances: tight for line_clv/over_share, exact for the game count, looser for resid SD.
-_TOL_CLV = 5e-3
+# Tolerances: tight for over_share, looser for resid SD.
 _TOL_OVER_SHARE = 5e-3
 _TOL_RESID_SD = 5e-2
-
-# The expected resolved deployed OU artifact identity (D25-14 retained v1.0).
-DEPLOYED_OU_ARTIFACT = "ou_20260326_163930"
 
 # Production files the diagnosis must NOT edit (the self-judging boundary, T-26-02).
 _PRODUCTION_JUDGE_FILES = (
@@ -108,49 +106,6 @@ def _sha256(path: Path) -> str:
 class TestOuDivergence:
     """Wave-0 anchors + provenance/self-judging/boundary guards for the divergence harness."""
 
-    # -- deployed_population: the harness scores the DEPLOYED OU artifact ------------------
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "QUARANTINED by Plan 30-15 Task 2 (owner ruling D30-OWNER-05); register entry "
-            "D30-DEFER-08; resolved by Plan 30-16. MEASURED on Phase-30 rung-2 gold: pooled "
-            "line_clv moved +1.1095 -> +1.09908061, a drift of 1.0419e-2 against the 5e-3 "
-            "band (about twice the tolerance). The n=1087 with-line population and the "
-            "deployed-artifact provenance assertions still hold; only the CLV anchor fails. "
-            "Cause: the Plan 30-06 rung-2 rebuild (WR-06) moved snapshot_total and the "
-            "opponent-adjusted EPA and weather families the deployed O/U artifact scores on. "
-            "This Phase-26 reproduction still reads data/gold/ live -- Plan 30-03 froze only "
-            "features_ats, never features_ou, so it was never re-scoped onto a fixture. Do NOT "
-            "widen the tolerance and do NOT re-freeze the anchor here."
-        ),
-    )
-    def test_deployed_population(self, gold_and_odds_2021_2024) -> None:
-        """Preamble reports n=1087 with-line, pooled line_clv ~+1.1095 from the deployed artifact.
-
-        The resolved artifact identity is asserted via a STABLE provenance source (the loaded
-        artifact's directory name / artifacts/latest.json), NOT a metadata.json version key --
-        the OU metadata.json has NO version key (Codex LOW, verification-confirmed).
-        """
-        from backtest.ou_divergence import bias_vs_anticipation, integrity_preamble
-
-        preamble = integrity_preamble(odds_df=gold_and_odds_2021_2024["odds"])
-        assert preamble["n_with_line"] == ANCHOR_N_WITH_LINE, (
-            f"with-line population {preamble['n_with_line']} != anchor {ANCHOR_N_WITH_LINE}"
-        )
-        # Stable provenance: the deployed artifact identity, never a metadata version key.
-        assert preamble["deployed_artifact"] == DEPLOYED_OU_ARTIFACT, (
-            f"resolved deployed artifact {preamble['deployed_artifact']!r} != "
-            f"{DEPLOYED_OU_ARTIFACT!r}"
-        )
-
-        bias = bias_vs_anticipation(preds=None, odds=gold_and_odds_2021_2024["odds"])
-        assert bias["n"] == ANCHOR_N_WITH_LINE
-        assert abs(bias["pooled_line_clv"] - ANCHOR_OU_POOLED_LINE_CLV) < _TOL_CLV, (
-            f"pooled line_clv {bias['pooled_line_clv']} drifted from anchor "
-            f"{ANCHOR_OU_POOLED_LINE_CLV}"
-        )
-
     # -- bias_over_share: the reproduced 72.7%-over finding + the 2021 sign-flip ----------
 
     def test_bias_over_share(self, gold_and_odds_2021_2024) -> None:
@@ -172,13 +127,10 @@ class TestOuDivergence:
         self-judging boundary, determinism -- and every one of them passes on today's gold. A
         class-level gate would have skipped all of them as collateral of one stale anchor.
 
-        The sibling anchor immediately above (pooled line_clv +1.1095) is NOT gated here and
-        deliberately so: it already carries its own xfail(strict) quarantine from Plan 30-15
-        under owner ruling D30-OWNER-05, which is a DIFFERENT disposition reached by a
-        DIFFERENT owner decision. Adding a generation gate on top would stack two mechanisms
-        on one assertion and make it unclear which one is holding it. Its quarantine says in
-        its own words not to widen the tolerance and not to re-freeze the anchor; that ruling
-        is left exactly as the owner left it.
+        The sibling pooled line_clv +1.1095 anchor was never gated here: it carried its own
+        quarantine from Plan 30-15 under owner ruling D30-OWNER-05 (D30-DEFER-08), a
+        DIFFERENT disposition reached by a DIFFERENT owner decision, and Phase 38 deleted its
+        two tests by owner ruling.
         """
         from backtest.ou_divergence import bias_vs_anticipation
         from tests.gold_generation import require_gold_generation
@@ -278,13 +230,13 @@ class TestOuDivergence:
 
         # `synthetic_snapshot_ts is True` and `snapshot_ts_distinct == 8` USED TO BE asserted
         # here. Both were pre-ingest measurements: the store then held one fabricated stamp
-        # per season (8 of them), and the detector's `distinct <= 12` rule fired on that
+        # per season (8 of them), and the old detector's `distinct <= 12` rule fired on that
         # cardinality. The 2025 ingest re-derives a stamp PER GAME (D31-37), so the store now
-        # holds 30 distinct stamps that are every bit as fabricated, and the detector reports
-        # False. The distinct COUNT is a property of how many seasons the store covers, not a
-        # safety property, so it is no longer asserted. The safety property -- the detector's
-        # verdict -- is asserted in TestTheSyntheticStampDetectorIsInverted below, where the
-        # inversion is visible rather than silently absent (DEF-31-07, owner ruling C).
+        # holds 30 distinct stamps that are every bit as fabricated. The distinct COUNT is a
+        # property of how many seasons the store covers, not a safety property, so it is no
+        # longer asserted. The safety property -- the detector's verdict, which Phase 38
+        # corrected to judge derivation rather than cardinality (DEF-31-07) -- is asserted in
+        # TestTheSyntheticStampDetectorIsInverted below.
 
     # -- no_train_no_write: source-grep + runtime to_parquet spy ---------------------------
 
@@ -413,58 +365,6 @@ class TestOuDivergence:
                 f"go_bar_evaluation missing per-criterion entry {criterion!r}"
             )
             assert "pass" in go_bar["criteria"][criterion]
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "QUARANTINED by Plan 30-15 Task 2 (owner ruling D30-OWNER-05); register entry "
-            "D30-DEFER-08; resolved by Plan 30-16. Same anchor, same measured drift as "
-            "test_deployed_population: pooled line_clv moved +1.1095 -> +1.09908061, a drift "
-            "of 1.0419e-2 against the 5e-3 band, because the Plan 30-06 rung-2 rebuild moved "
-            "the columns the deployed O/U artifact scores on. The early-exit BEHAVIOUR under "
-            "test -- the skipped_by_owner_early_exit sentinels, mode == 'early_exit', the "
-            "NO_GO resting on interim evidence -- is unaffected; only the embedded CLV anchor "
-            "assertion fails. Plan 30-16 must keep the behavioural assertions and re-ratify "
-            "only the number. Do NOT widen the tolerance and do NOT delete the assertion."
-        ),
-    )
-    def test_orchestrator_early_exit_is_skip_aware(
-        self, gold_and_odds_2021_2024
-    ) -> None:
-        """include_sweep=False returns the skipped sentinel for sweep keys and does NOT raise.
-
-        The early-exit branch (the owner EARLY-EXIT path) computes only integrity + bias +
-        debiased; sweep/trial_registry/survivable/edge_magnitude/ev_preview carry the
-        skipped_by_owner_early_exit sentinel, mode == "early_exit", and go_bar_evaluation is NO_GO
-        resting on the interim bias evidence.
-        """
-        from backtest.ou_divergence import run_ou_divergence_diagnosis
-
-        odds = gold_and_odds_2021_2024["odds"]
-        result = run_ou_divergence_diagnosis(odds=odds, include_sweep=False)
-
-        assert result["mode"] == "early_exit"
-        for skipped_key in (
-            "sweep",
-            "trial_registry",
-            "survivable",
-            "edge_magnitude",
-            "ev_preview",
-        ):
-            assert result[skipped_key].get("status") == "skipped_by_owner_early_exit", (
-                f"{skipped_key} must carry the early-exit sentinel"
-            )
-
-        # The always-on sections still compute on the early-exit path.
-        assert result["integrity"]["n_with_line"] == ANCHOR_N_WITH_LINE
-        assert (
-            abs(result["bias"]["pooled_line_clv"] - ANCHOR_OU_POOLED_LINE_CLV)
-            < _TOL_CLV
-        )
-
-        go_bar = result["go_bar_evaluation"]
-        assert go_bar["recommendation"] == "NO_GO"
-        assert go_bar["rests_on_full_sweep"] is False
 
     def test_orchestrator_determinism_both_modes(self, gold_and_odds_2021_2024) -> None:
         """Two run_ou_divergence_diagnosis() runs are value-identical, for BOTH closeout modes.
@@ -890,32 +790,29 @@ def test_fixture_uses_normalized_odds_loader() -> None:
 
 
 # ---------------------------------------------------------------------------
-# DEF-31-07 -- the synthetic-stamp detector has moved in the UNSAFE direction
-# (owner ruling C, 2026-09-05)
+# DEF-31-07 -- the synthetic-stamp detector, corrected in Phase 38
+# (recorded under owner ruling C, 2026-09-05)
 # ---------------------------------------------------------------------------
 #
-# ``backtest.ou_divergence.integrity_preamble`` decides ``synthetic_snapshot_ts`` with
-#
+# ``backtest.ou_divergence.integrity_preamble`` used to decide ``synthetic_snapshot_ts`` with
 # the conjunction of two conditions: fewer than thirteen distinct stamps, and at most one
 # snapshot per game.
 #
-# That is a CARDINALITY heuristic. It worked while the store held ONE fabricated stamp per
-# season (8 of them) and stops working the moment fabrication becomes finer-grained: D31-37
-# re-derives a stamp PER GAME from the calendar, the store now holds 30 distinct stamps, and
-# the flag reports False for stamps that are every bit as fabricated as the eight it used to
-# catch. A provenance flag that UNDER-reports fabrication has failed in the unsafe direction,
-# and ``OU-DIVERGENCE-DIAGNOSIS.md`` and the EV chain both read it as a declaration.
+# That was a CARDINALITY heuristic. It worked while the store held ONE fabricated stamp per
+# season (8 of them) and stopped working the moment fabrication became finer-grained: D31-37
+# re-derives a stamp PER GAME from the calendar, the store came to hold 30 distinct stamps, and
+# the flag reported False for stamps every bit as fabricated as the eight it used to catch. A
+# provenance flag that UNDER-reports fabrication has failed in the unsafe direction, and
+# ``OU-DIVERGENCE-DIAGNOSIS.md`` and the EV chain both read it as a declaration.
 #
-# THE DETECTOR IS NOT FIXED HERE, AND THE REASON IS NOT DISCRETION. ``backtest/ou_divergence.py``
-# is on this plan's FROZEN list: the owner requires it byte-unchanged, because the Phase-26
-# divergence verdict was measured through it. Ruling C anticipates exactly this and directs that
-# the item be recorded with its reason instead. It is DEF-31-07 in the phase register.
+# Phase 31 could not fix it: ``backtest/ou_divergence.py`` was frozen to protect the Phase-26
+# divergence verdict, measured on a model now retired. Phase 38 transcribed the rule below into
+# ``backtest.ou_divergence.snapshot_ts_is_synthetic`` and the preamble now calls it.
 #
-# WHAT THE CORRECT RULE IS, stated here so the fix is a transcription rather than a re-derivation.
-# Discriminate on DERIVATION, not on cardinality. Every stored stamp is a re-derived freeze
-# instant, and re-derivation leaves a signature that observed capture times do not have: the
-# Eastern wall-clock time of every row is EXACTLY 18:00:00, to the second, across all 2,140 rows
-# and both stored spellings. A genuine book capture lands on arbitrary seconds. So:
+# THE RULE. Discriminate on DERIVATION, not on cardinality. Every stored stamp is a re-derived
+# lock instant, and re-derivation leaves a signature that observed capture times do not have:
+# the Eastern wall-clock time of every row is EXACTLY 18:00:00, to the second. A genuine book
+# capture lands on arbitrary seconds. So:
 #
 # call a store DERIVED when every snapshot_ts, parsed through normalize_snapshot_ts and
 # converted to Eastern, lands on hour eighteen with zero minutes, seconds and microseconds;
@@ -926,18 +823,20 @@ def test_fixture_uses_normalized_odds_loader() -> None:
 # (the failure that produced this entry), and it goes False the moment a genuinely observed
 # capture time is stored -- which is the case the flag exists to distinguish.
 #
-# The two tests below split the claim so neither can hide the other. The first proves the ground
-# truth and is GREEN. The second asserts the detector's verdict on that ground truth and is
-# XFAIL(strict=True): the inversion is therefore NAMED in every terminal summary, and the day
-# the detector is corrected the xfail becomes an unexpected PASS -- a failure -- which forces
-# DEF-31-07 to be closed rather than quietly outlived.
+# The tests below split the claim so none can hide another: the ground truth on the stored
+# table, the detector's verdict on that ground truth, and the rule on planted stores that
+# exercise each side of it. The class name is kept because the SPEC names it.
 
 _STAMP_FREEZE_HOUR_ET = 18
 
 
 @pytest.mark.integration
 class TestTheSyntheticStampDetectorIsInverted:
-    """DEF-31-07: the stored stamps are derived; the flag that should say so reports False."""
+    """DEF-31-07, corrected in Phase 38: the stored stamps are derived, and the flag says so.
+
+    The class keeps the name it was given while the detector was inverted, because the Phase-38
+    SPEC names it. The detector now judges derivation rather than cardinality.
+    """
 
     @staticmethod
     def _stored_stamps() -> pd.Series:
@@ -987,18 +886,6 @@ class TestTheSyntheticStampDetectorIsInverted:
             "the store is wholly derived, is the thing that should change, not that rule."
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEF-31-07 (owner ruling C, 2026-09-05): integrity_preamble decides "
-            "synthetic_snapshot_ts by CARDINALITY (snapshot_ts_distinct <= 12). D31-37 "
-            "re-derives a stamp per game, so the store now holds 30 distinct stamps that are "
-            "every bit as fabricated as the 8 the rule used to catch, and the flag reports "
-            "False -- UNDER-reporting fabrication, which is the unsafe direction. The fix is "
-            "not applied here because backtest/ou_divergence.py is on this plan's FROZEN "
-            "list; the correct derivation-based rule is transcribed in the block above."
-        ),
-    )
     def test_the_detector_reports_that_derivation_as_synthetic(
         self, gold_and_odds_2021_2024
     ) -> None:
@@ -1013,4 +900,47 @@ class TestTheSyntheticStampDetectorIsInverted:
             f"{preamble['snapshots_per_game_max']} per game). The flag is a provenance "
             "DECLARATION that OU-DIVERGENCE-DIAGNOSIS.md and the EV chain read; reporting "
             "False here under-reports fabrication."
+        )
+
+    def test_the_rule_on_planted_stores(self) -> None:
+        """The derivation rule on hand-built stores, one per side of it. Needs no gold.
+
+        The two derived stamps straddle the 2021 change of clocks (DST ended Sunday
+        2021-11-07): 22:00Z on 2021-10-30 is 18:00 EDT and 23:00Z on 2021-11-13 is 18:00 EST.
+        Both sit on the lock instant in ET wall-clock, so the store is derived. Replacing one
+        with an observed 17:42:13 ET capture, or storing a second snapshot for one game, must
+        each turn the verdict False.
+        """
+        from backtest.ou_divergence import snapshot_ts_is_synthetic
+
+        summer_lock = "2021-10-30T22:00:00+00:00"
+        winter_lock = "2021-11-13T23:00:00+00:00"
+        observed = "2021-10-30T21:42:13+00:00"
+
+        def store(rows: list[tuple[str, str]]) -> pd.DataFrame:
+            return pd.DataFrame(rows, columns=["game_id", "snapshot_ts"])
+
+        derived = store(
+            [("2021_W08_AAA@BBB", summer_lock), ("2021_W10_CCC@DDD", winter_lock)]
+        )
+        assert snapshot_ts_is_synthetic(derived) is True, (
+            "two 18:00 ET lock stamps either side of a DST change must read as derived"
+        )
+
+        one_observed = store(
+            [("2021_W08_AAA@BBB", observed), ("2021_W10_CCC@DDD", winter_lock)]
+        )
+        assert snapshot_ts_is_synthetic(one_observed) is False, (
+            "a store holding one observed 17:42:13 ET capture is not wholly derived"
+        )
+
+        two_per_game = store(
+            [("2021_W08_AAA@BBB", summer_lock), ("2021_W08_AAA@BBB", summer_lock)]
+        )
+        assert snapshot_ts_is_synthetic(two_per_game) is False, (
+            "an all-18:00 store holding two snapshots for one game is not single-stamp"
+        )
+
+        assert snapshot_ts_is_synthetic(store([])) is False, (
+            "an empty store has no stamps to call synthetic"
         )
