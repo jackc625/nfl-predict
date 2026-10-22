@@ -169,6 +169,8 @@ additionally require an owner-grade correction to a published readout, because a
 pre-registered confound tell now FIRES and a published finding's sign flips; that correction
 must be made in ONE place and was explicitly not folded into Phase 30.
 
+*Superseded by Phase 38 (2026-10-21): the count above is the Phase-30 reading, kept as dated history. Phase 38 closed every parked test (one fixed, eight deleted by owner ruling) and the suite now carries zero xfails; see the Phase 38 section below.*
+
 **Six deferred registers remain OPEN.** One line each; the detail is in
 `GATED-REFIT-READOUT.md` section 10d.
 
@@ -224,6 +226,8 @@ unchanged; the whole-suite xfailed count is HIGHER than the Phase-30 quarantine 
 Phase 31 added its own constant controls on top of it, which is an addition rather than a
 change to that count. The verdict itself is a measurement, not a repair.
 
+*Superseded by Phase 38 (2026-10-21): the carried-forward quarantine count above is the Phase-31 reading, kept as dated history. The quarantines are now closed and the suite carries zero xfails; the six deferred registers are still OPEN; see the Phase 38 section below.*
+
 **Four items this phase ADDS to the open list, pointed at rather than fixed:**
 
 - **The renamed edge band still applies ONE threshold pair to three incompatible units.**
@@ -265,6 +269,54 @@ owner then accepted -- the gate baseline predating a label correction, and a pro
 -- and a tripwire rewritten to accept the event it fired on stops being a tripwire. Which five,
 and why each one, is in `PROFITABILITY-READOUT.md` section 8. An operator who runs the suite and
 finds five reds should read that section before concluding anything is broken.
+
+## Phase 38 (2026-10-21): the parked tests are closed, and the expected failure set
+
+This section records the current state of the test suite. The Phase-30 and Phase-31 sections
+above keep their own figures as dated history; each of their "still open" statements now carries
+a "Superseded by Phase 38" line instead of being rewritten.
+
+**The suite carries zero xfails.** The parked tests recorded above as open (seven at the Phase-30
+close; nine measured on 2026-10-05, `tests/phase34_state.py` P34_EXPECTED_FAILURE_BASELINE) are
+all closed:
+
+- **One was a real defect, and it is fixed.** The synthetic-stamp detector (DEF-31-07) now judges
+  how a snapshot time was produced -- every stamp at the 18:00 ET lock, one snapshot per game --
+  rather than how many distinct stamps there are, and its test is an ordinary passing test again.
+- **Eight compared against retired models, and the owner ruled them deleted.** Six were the
+  DEF-31-06 ATS residual reproductions and two were the D30-DEFER-08 O/U anchors. Each one
+  checked a figure of a model that has since been retired, so there was nothing left for it to
+  reproduce.
+
+**Three dead-baseline duplicates of the tripwires were deleted** (the two
+`TestTheLiveFrameWouldAbort` checks and `test_frozen_baseline_matches_rescore`). The tripwires
+themselves already carry that disclosure.
+
+**Three real reds were fixed at their cause.** The live-2026 lock test now reads the forward
+ledger and checks real live rows; the odds sign check reads spread prices near a coin flip; and a
+test fixture that produced impossible moneylines now emits only valid American prices. Separately,
+two 2025-ingest merge tests that held every odds row to one key were corrected, with the owner's
+approval, to the per-kind key the production merge enforces (a live decision reading and its
+closing reading share the lock's snapshot time by design).
+
+**The expected failure set is exactly the five deliberate tripwires** in
+`tests/phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS`, unchanged and still red on purpose (see the
+Phase 31 section above). It is judged by `tests/integration/test_phase33_expected_failure_set.py`
+from the JUnit reports and the logs of the recorded run, and the state is recorded in
+`tests/phase34_state.py` P38_EXPECTED_FAILURE_BASELINE.
+
+**The v3.0 close count `6 failed / 3603 passed / 7 skipped / 14 xfailed` was retired on
+2026-10-21** as the current baseline. It counted quarantines that no longer exist and predates
+five phases of tests. The whole-suite baseline recorded at the Phase 38 close replaces it: the
+three test tiers' own summary lines, word for word, plus their sum (the owner's ruling D-28),
+appended at the close to `tests/phase34_state.py` in the slot P38_FULL_SUITE_BASELINE.
+
+**The six deferred registers above remain OPEN.** Phase 38 did not touch D30-DEFER-04, -17, -22,
+-23, -24 or -25, and the five tripwire disclosures are unchanged.
+
+**How the 2026 money verdict is judged** is frozen in `SEASON-VERDICT-PREREGISTRATION.md`. The
+preview of the season's raw figures is `uv run python -m scripts.season_readout`; the one binding
+run happens after the season is graded, as `RUNBOOK.md` describes in its season-close section.
 
 ## Cross-references
 
