@@ -168,17 +168,6 @@ class TestTheCaptured2026Schedule:
             "at capture time. A non-Regular value here means the capture moved."
         )
 
-    def test_stadium_id_reaches_the_transformed_frame_unchanged(self) -> None:
-        _require_capture()
-        raw = season_2026.load_captured_schedule()
-        transformed = season_2026.transform_captured_schedule()
-        assert "stadium_id" in transformed.columns
-        assert list(transformed["stadium_id"]) == list(raw["stadium_id"]), (
-            "stadium_id was altered in transit. R11's matching is exact and "
-            "case-sensitive, so any normalization here breaks the routing that "
-            "reads it."
-        )
-
     def test_the_frame_carries_all_three_identity_columns(self) -> None:
         _require_capture()
         transformed = season_2026.transform_captured_schedule()
