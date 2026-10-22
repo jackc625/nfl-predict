@@ -20,15 +20,42 @@ asserts a set it also defines proves nothing: the two copies drift, the copy in 
 wins, and the record is gone. A test in this module enforces that discipline mechanically
 by scanning its own source for node-id-shaped string literals.
 
-BOTH DIRECTIONS, WITH DIFFERENT MEANINGS
-----------------------------------------
-Set equality is asserted in both directions and each direction gets its own message,
-because they are different events:
+OUTCOMES ARE READ FROM JUNIT XML, AND EVERY STATE IS KEPT (Phase 38, D-15)
+-------------------------------------------------------------------------
+Until Phase 38 this gate parsed the ``FAILED``/``ERROR`` lines of a ``-q`` report and
+counted an ERROR as red. A tripwire that ERRORED therefore passed as "still red", and a
+tripwire that failed its assertion AND errored at teardown showed only the failure. The
+gate now runs each child pytest with ``--junitxml`` and reads OUTCOMES:
 
-* an EXTRA failing id is a REGRESSION this phase introduced;
-* a MISSING failing id is a DISCLOSURE this phase erased.
+* ``junit_key`` turns a node id into the report's ``(classname, name)`` with
+  ``_pytest.junitxml.mangle_test_address``, the function that wrote the report;
+* ``junit_outcomes`` maps every testcase to the SET of states it shows: ``failed``
+  (a ``<failure>`` child), ``error`` (an ``<error>`` child: setup, teardown or
+  collection), ``xfailed`` (``<skipped type="pytest.xfail">``), ``skipped`` (any other
+  ``<skipped>``) or ``passed`` (no child). A call failure plus a teardown error is TWO
+  testcase elements for one node; both states are kept, never collapsed to one;
+* ``expected_outcome_problems`` is the ONE comparison. An empty list is the passing
+  case; each problem names its kind:
+
+  - ``DISCLOSURE ERASED`` -- a tripwire passed, or did not run at all;
+  - ``TRIPWIRE NOT A FAILURE`` -- a tripwire errored, skipped or xfailed instead of
+    failing. Only an assertion failure is the owner-accepted red;
+  - ``TRIPWIRE ALSO ERRORED`` -- a tripwire failed AND errored (for example at teardown,
+    where a COLD-05 per-test production-store guard surfaces). It is its own problem, so
+    an error is never hidden behind a tripwire's expected failure;
+  - ``REGRESSION`` -- a node that is not a tripwire failed or errored (one message per
+    node, even when it did both);
+  - ``QUARANTINE`` -- any node anywhere xfailed. The expected set holds zero quarantines.
 
 A strict subset is a violation, not an improvement. That is the whole claim.
+
+THE SESSION-END SWEEP IS READ BESIDE THE REPORT, NOT FROM IT
+-----------------------------------------------------------
+``tests/conftest.py``'s ``pytest_sessionfinish`` re-hashes every production store at the
+end of a session. It adds no testcase and only flips an exit status that was 0, printing
+a terminal section headed ``SESSION-END FULL CONTENT SWEEP``. A judge that read JUnit
+alone could never see it, so every judged run's OUTPUT is checked for that section with
+``carries_closing_sweep`` as well.
 
 PHASE-33 HAZARDS, PRE-DECLARED HERE BEFORE THE PLANS THAT CREATE THEM RUN
 ------------------------------------------------------------------------
@@ -48,14 +75,14 @@ WHAT THE DEFAULT RUN MEASURES, AND WHAT IT DOES NOT
 ---------------------------------------------------
 The verdict subprocess runs EXACTLY the tripwire node ids -- measured at 10.5 s, against
 528 s for the whole integration tier. That bounded run fully proves the direction that
-matters here (a tripwire that stopped failing) and proves the other direction only within
-its own run.
+matters here (a tripwire that stopped failing, or stopped failing CLEANLY) and proves the
+other direction only within its own run.
 
 The whole-tier form, which would also catch a NEW red elsewhere in the tier, is opt-in
 via ``NFL_PHASE33_FULL_TIER_VERDICT`` for two reasons that are not cost: this module runs
 INSIDE the tier it would measure, so an unguarded tier run re-collects this module and
-spawns a child of a child without end; and the tier-wide reconciliation is Plan 33-18's
-closing three-tier measurement, which owns it properly. The recursion guard is
+spawns a child of a child without end; and the tier-wide reconciliation is the phase
+close's recorded three-tier measurement, which owns it properly. The recursion guard is
 ``NFL_PHASE33_EXPECTED_FAILURE_CHILD``, set on every child environment, and a child that
 sees it steps aside by name.
 
@@ -65,12 +92,14 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import pytest
+from _pytest.junitxml import mangle_test_address
 
 from tests import phase33_state
 
@@ -84,6 +113,12 @@ TIER_ROOTS = ("tests/unit", "tests/integration", "tests/api")
 
 FULL_TIER_ENV = "NFL_PHASE33_FULL_TIER_VERDICT"
 CHILD_ENV = "NFL_PHASE33_EXPECTED_FAILURE_CHILD"
+
+# Mirrors tests/conftest.py's CLOSING_SWEEP_HEADER exactly, as
+# tests/integration/test_data_boundary_guard_arming.py does: conftest is a pytest plugin
+# and is not imported. The closing sweep adds no JUnit testcase and only flips an exit
+# status that was 0, so a JUnit-only judge cannot see it; the run's output is read too.
+CLOSING_SWEEP_HEADER = "SESSION-END FULL CONTENT SWEEP"
 
 NO_PRODUCTION_DATA_SKIP = (
     "the deliberate tripwires cannot be RUN on this checkout: the production data tree "
@@ -106,10 +141,8 @@ FULL_TIER_PENDING_SKIP = (
     "over the tripwire node ids runs by default and is what gates this phase."
 )
 
-# `FAILED tests/integration/x.py::C::t - AssertionError: ...` and the bare form, plus
-# ERROR lines: a tripwire that ERRORS is not a tripwire that went green, and an errored
-# node that is not a tripwire is a regression exactly as a failed one is.
-_OUTCOME_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
+# A JUnit outcome map: (classname, name) -> every state that testcase key showed.
+Outcomes = Mapping[tuple[str, str], frozenset[str]]
 
 
 def tier_of(node_id: str) -> str:
@@ -136,16 +169,105 @@ def tier_of(node_id: str) -> str:
     )
 
 
-def failing_node_ids(report: str) -> set[str]:
-    """Every FAILED or ERROR node id in a pytest ``-q`` report.
+def junit_key(node_id: str) -> tuple[str, str]:
+    """The ``(classname, name)`` a JUnit report files a node id under.
+
+    Built with ``_pytest.junitxml.mangle_test_address``, the function that wrote the
+    report, so the mapping cannot drift from pytest's own (a parametrize id stays on the
+    name). Forward mapping only: a classname cannot tell a module dot from a class dot.
 
     Args:
-        report: Combined stdout and stderr of a pytest run.
+        node_id: A pytest node id; backslash path separators are normalised first.
 
     Returns:
-        The node ids, path separators normalised to forward slashes.
+        The testcase's ``(classname, name)``.
     """
-    return {match.replace("\\", "/") for match in _OUTCOME_RE.findall(report)}
+    names = mangle_test_address(node_id.replace("\\", "/"))
+    return ".".join(names[:-1]), names[-1]
+
+
+def _testcase_state(testcase: ET.Element) -> str:
+    """The one state a single ``<testcase>`` element records."""
+    tags = {child.tag: child.get("type") for child in testcase}
+    if "failure" in tags:
+        return "failed"
+    if "error" in tags:
+        return "error"
+    if "skipped" in tags:
+        return "xfailed" if tags["skipped"] == "pytest.xfail" else "skipped"
+    return "passed"
+
+
+def junit_outcomes(report: Path) -> dict[tuple[str, str], frozenset[str]]:
+    """Every testcase key in a JUnit XML report, with EVERY state it showed.
+
+    A call failure plus a teardown error is written as two testcase elements for one
+    node; the key then holds ``{"failed", "error"}``. No state is ever dropped, because
+    dropping one is exactly how a teardown error hides behind an expected failure.
+
+    Args:
+        report: Path to a pytest ``--junitxml`` report.
+
+    Returns:
+        ``(classname, name)`` -> frozenset of ``failed`` / ``error`` / ``xfailed`` /
+        ``skipped`` / ``passed``.
+    """
+    states: dict[tuple[str, str], set[str]] = {}
+    for testcase in ET.parse(report).getroot().iter("testcase"):
+        key = (testcase.get("classname", ""), testcase.get("name", ""))
+        states.setdefault(key, set()).add(_testcase_state(testcase))
+    return {key: frozenset(found) for key, found in states.items()}
+
+
+def _shown(states: Iterable[str]) -> str:
+    return "[" + ", ".join(sorted(states)) + "]"
+
+
+def expected_outcome_problems(
+    outcomes: Outcomes, expected_node_ids: Iterable[str]
+) -> list[str]:
+    """The ONE comparison: every way an outcome map differs from "exactly these fail".
+
+    Args:
+        outcomes: A JUnit outcome map (see ``junit_outcomes``).
+        expected_node_ids: The node ids that must fail, and fail cleanly.
+
+    Returns:
+        One message per problem, each starting with its kind (``DISCLOSURE ERASED``,
+        ``TRIPWIRE NOT A FAILURE``, ``TRIPWIRE ALSO ERRORED``, ``REGRESSION``,
+        ``QUARANTINE``). An empty list is the passing case.
+    """
+    problems: list[str] = []
+    expected_keys: set[tuple[str, str]] = set()
+    for node_id in expected_node_ids:
+        key = junit_key(node_id)
+        expected_keys.add(key)
+        states = outcomes.get(key)
+        if states is None:
+            problems.append(f"DISCLOSURE ERASED: {node_id} did not run")
+        elif states == {"passed"}:
+            problems.append(f"DISCLOSURE ERASED: {node_id} passed")
+        elif "failed" not in states:
+            problems.append(f"TRIPWIRE NOT A FAILURE: {node_id} {_shown(states)}")
+        elif "error" in states:
+            problems.append(f"TRIPWIRE ALSO ERRORED: {node_id} {_shown(states)}")
+
+    for (classname, name), states in sorted(outcomes.items()):
+        if (classname, name) not in expected_keys and states & {"failed", "error"}:
+            problems.append(f"REGRESSION: {classname}::{name} {_shown(states)}")
+        if "xfailed" in states:
+            problems.append(f"QUARANTINE: {classname}::{name} xfailed")
+    return problems
+
+
+def carries_closing_sweep(text: str) -> bool:
+    """Whether a run's output carries the COLD-05 session-end sweep section.
+
+    The terminal summary writes the header unindented at the start of a line. The same
+    words quoted inside an indented ``E   `` traceback line -- a failing guard test
+    echoing its own child's output -- are not this session's sweep.
+    """
+    return any(line.startswith(CLOSING_SWEEP_HEADER) for line in text.splitlines())
 
 
 def _child_env() -> dict[str, str]:
@@ -156,24 +278,25 @@ def _child_env() -> dict[str, str]:
     return env
 
 
-def _run_pytest(arguments: list[str], timeout: int) -> str:
+def _run_pytest(arguments: list[str], timeout: int, report: Path | None = None) -> str:
     """Run pytest in a subprocess and return its combined output.
 
-    ``-o addopts=`` neutralises this repository's ``addopts = ["-v", ...]``. The
-    repo-wide ``-v`` replaces the parseable short summary with a verbose per-test report,
-    so the ``FAILED <nodeid>`` lines this module reads only appear once it is off. The
-    same override, for the same reason, is used by
-    ``tests/unit/test_phase32_state_guard.py``.
+    ``-o addopts=`` neutralises this repository's ``addopts = ["-v", ...]``, so the
+    child's output is the short ``-q`` form the collectibility check reads. The same
+    override is used by ``tests/unit/test_phase32_state_guard.py``.
 
     Args:
         arguments: Arguments after ``-m pytest``.
         timeout: Seconds before the child is killed.
+        report: Where to write a JUnit XML report. None (the ``--collect-only`` caller)
+            writes no report.
 
     Returns:
         stdout concatenated with stderr.
     """
+    junit = [f"--junitxml={report}"] if report is not None else []
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-o", "addopts=", "-q", *arguments],
+        [sys.executable, "-m", "pytest", "-o", "addopts=", "-q", *junit, *arguments],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -182,6 +305,17 @@ def _run_pytest(arguments: list[str], timeout: int) -> str:
         check=False,
     )
     return result.stdout + result.stderr
+
+
+def _judged_outcomes(
+    report: Path, output: str
+) -> dict[tuple[str, str], frozenset[str]]:
+    """The outcome map of a child run, failing loudly when the child wrote no report."""
+    assert report.is_file(), (
+        f"the child pytest wrote no JUnit report at {report}; it did not run to the "
+        f"end, so nothing can be judged.\n\nFull output:\n{output}"
+    )
+    return junit_outcomes(report)
 
 
 def _require_runnable_tripwires() -> None:
@@ -229,6 +363,163 @@ def test_every_tripwire_resolves_to_a_known_tier() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The comparison and the reader, proven on planted outcomes before they judge anything.
+# ---------------------------------------------------------------------------
+
+# Planted ids sit under a FAKE unit path, so the self-scan for node-id literals stays clean.
+_PLANTED_MODULE = "tests/unit/test_planted_gate.py"
+_PLANTED_TRIPWIRES: tuple[str, ...] = tuple(
+    f"{_PLANTED_MODULE}::TestPlanted::test_tripwire_{number}" for number in range(1, 6)
+)
+_PLANTED_BYSTANDER = f"{_PLANTED_MODULE}::test_bystander"
+
+
+def _kinds(problems: list[str]) -> list[str]:
+    """The kind each problem message starts with, sorted."""
+    return sorted(problem.split(":", 1)[0] for problem in problems)
+
+
+def test_the_comparison_names_each_way_a_set_can_be_wrong() -> None:
+    """SPEC AC 14: each way an outcome map can be wrong gets its own message.
+
+    Planted state sets, not a run: the comparison is proven before it judges anything.
+    """
+    clean = {
+        junit_key(node_id): frozenset({"failed"}) for node_id in _PLANTED_TRIPWIRES
+    }
+    first = junit_key(_PLANTED_TRIPWIRES[0])
+    bystander = junit_key(_PLANTED_BYSTANDER)
+
+    def judged(changes: dict[tuple[str, str], frozenset[str]]) -> list[str]:
+        return expected_outcome_problems({**clean, **changes}, _PLANTED_TRIPWIRES)
+
+    assert expected_outcome_problems(clean, _PLANTED_TRIPWIRES) == []
+    # A sixth node that passed or skipped is not a problem.
+    assert judged({bystander: frozenset({"passed"})}) == []
+    assert judged({bystander: frozenset({"skipped"})}) == []
+
+    # Four failing: one tripwire went green, or never ran.
+    assert _kinds(judged({first: frozenset({"passed"})})) == ["DISCLOSURE ERASED"]
+    without_first = {key: states for key, states in clean.items() if key != first}
+    absent = expected_outcome_problems(without_first, _PLANTED_TRIPWIRES)
+    assert _kinds(absent) == ["DISCLOSURE ERASED"], absent
+    assert "did not run" in absent[0]
+
+    # A sixth red, whether it failed, errored, or both: exactly one REGRESSION.
+    for states in ({"failed"}, {"error"}, {"failed", "error"}):
+        problems = judged({bystander: frozenset(states)})
+        assert _kinds(problems) == ["REGRESSION"], problems
+        assert "test_bystander" in problems[0]
+
+    # Only an assertion failure is the accepted red.
+    for states in ({"error"}, {"skipped"}):
+        problems = judged({first: frozenset(states)})
+        assert _kinds(problems) == ["TRIPWIRE NOT A FAILURE"], problems
+    xfailed_tripwire = judged({first: frozenset({"xfailed"})})
+    assert _kinds(xfailed_tripwire) == ["QUARANTINE", "TRIPWIRE NOT A FAILURE"]
+
+    # A tripwire that failed and also errored never reads as accepted.
+    also_errored = judged({first: frozenset({"failed", "error"})})
+    assert _kinds(also_errored) == ["TRIPWIRE ALSO ERRORED"], also_errored
+
+    # Zero quarantines: an xfail anywhere fails the gate.
+    assert _kinds(judged({bystander: frozenset({"xfailed"})})) == ["QUARANTINE"]
+
+
+_PLANTED_REPORT_MODULE = """
+import pytest
+
+
+@pytest.fixture
+def broken_setup():
+    raise RuntimeError("planted setup error")
+
+
+@pytest.fixture
+def broken_teardown():
+    yield
+    raise RuntimeError("planted teardown error")
+
+
+def test_fails():
+    assert False
+
+
+def test_errors_at_setup(broken_setup):
+    pass
+
+
+def test_skips():
+    pytest.skip("planted skip")
+
+
+@pytest.mark.xfail(reason="planted quarantine", strict=True)
+def test_xfails():
+    assert False
+
+
+def test_passes():
+    pass
+
+
+def test_fails_and_errors_at_teardown(broken_teardown):
+    assert False
+"""
+
+_PLANTED_REPORT_STATES: dict[str, frozenset[str]] = {
+    "test_fails": frozenset({"failed"}),
+    "test_errors_at_setup": frozenset({"error"}),
+    "test_skips": frozenset({"skipped"}),
+    "test_xfails": frozenset({"xfailed"}),
+    "test_passes": frozenset({"passed"}),
+    "test_fails_and_errors_at_teardown": frozenset({"failed", "error"}),
+}
+
+
+def test_the_reader_classifies_a_real_pytest_report(tmp_path: Path) -> None:
+    """A report pytest itself wrote, read back state by state.
+
+    The fails-and-errors node is two testcase elements in the report; the reader keeps
+    both states, and the comparison judges it a problem whether it is a tripwire or not.
+    """
+    if os.environ.get(CHILD_ENV):
+        pytest.skip(CHILD_SESSION_SKIP)
+
+    module = tmp_path / "test_planted_outcomes.py"
+    module.write_text(_PLANTED_REPORT_MODULE, encoding="utf-8")
+    report = tmp_path / "planted.xml"
+    output = _run_pytest(
+        [str(module), f"--rootdir={tmp_path}", "-p", "no:cacheprovider"],
+        timeout=300,
+        report=report,
+    )
+
+    outcomes = _judged_outcomes(report, output)
+    expected = {
+        junit_key(f"{module.name}::{name}"): states
+        for name, states in _PLANTED_REPORT_STATES.items()
+    }
+    assert outcomes == expected, f"{outcomes}\n\nFull output:\n{output}"
+
+    both = f"{module.name}::test_fails_and_errors_at_teardown"
+
+    def problems_naming(problems: list[str]) -> list[str]:
+        return [problem for problem in problems if "test_fails_and_errors" in problem]
+
+    as_tripwire = problems_naming(expected_outcome_problems(outcomes, [both]))
+    assert _kinds(as_tripwire) == ["TRIPWIRE ALSO ERRORED"], as_tripwire
+
+    as_bystander = expected_outcome_problems(outcomes, [])
+    assert _kinds(problems_naming(as_bystander)) == ["REGRESSION"], as_bystander
+    assert _kinds(as_bystander) == [
+        "QUARANTINE",
+        "REGRESSION",
+        "REGRESSION",
+        "REGRESSION",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Half one: resolvability. A renamed tripwire is a hard failure.
 # ---------------------------------------------------------------------------
 
@@ -262,73 +553,66 @@ def test_every_tripwire_node_id_is_still_collectible() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Half two: the verdict. The measured failing set EQUALS the constant.
+# Half two: the verdict. Exactly the tripwires fail, cleanly, and nothing else is red.
 # ---------------------------------------------------------------------------
 
 
-def test_the_measured_failing_set_equals_the_tripwire_constant() -> None:
-    """Both directions, each with its own meaning, over a run of exactly the tripwires.
+def test_the_measured_failing_set_equals_the_tripwire_constant(tmp_path: Path) -> None:
+    """Every outcome problem, over a run of exactly the tripwires, each with its meaning.
 
-    An EXTRA failing id in this run is a regression reached through the tripwires' own
-    modules. A MISSING one is a tripwire that has gone green -- an owner-accepted
-    disclosure erased.
+    A tripwire that passed or did not run is a DISCLOSURE ERASED; one that errored,
+    skipped or xfailed is NOT A FAILURE; one that failed and also errored is its own
+    problem; any other red reached through the tripwires' own modules is a REGRESSION.
+    The child's output must also carry no session-end production store sweep.
     """
     _require_runnable_tripwires()
 
-    expected = set(phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS)
-    output = _run_pytest(sorted(expected), timeout=900)
-    measured = failing_node_ids(output)
+    expected = sorted(phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS)
+    report = tmp_path / "tripwires.xml"
+    output = _run_pytest(expected, timeout=900, report=report)
+    problems = expected_outcome_problems(_judged_outcomes(report, output), expected)
 
-    extra = measured - expected
-    assert not extra, (
-        "REGRESSION: node id(s) failed that are NOT deliberate tripwires. This phase "
-        "introduced a red that nobody accepted:\n"
-        + "\n".join(f"  - {node_id}" for node_id in sorted(extra))
-        + f"\n\nFull report:\n{output}"
+    assert problems == [], (
+        "the tripwire run is not exactly the five deliberate tripwires failing:\n"
+        + "\n".join(f"  - {problem}" for problem in problems)
+        + "\n\nA DISCLOSURE ERASED tripwire encodes an owner-accepted fact from Phase 30 "
+        "or Phase 31; if a rebuild caused it, investigate why the attribution changed "
+        f"and record the finding -- never accept the green as progress.\n\nFull "
+        f"report:\n{output}"
+    )
+    assert not carries_closing_sweep(output), (
+        "the tripwire run's output carries the session-end production store sweep: a "
+        f"production store moved during the run.\n\nFull report:\n{output}"
     )
 
-    missing = expected - measured
-    assert not missing, (
-        "DISCLOSURE ERASED: deliberate tripwire(s) did NOT fail. Each of these encodes "
-        "an owner-accepted fact from Phase 30 or Phase 31, and a green one means the "
-        "record was cleared rather than a defect fixed:\n"
-        + "\n".join(f"  - {node_id}" for node_id in sorted(missing))
-        + "\n\nIf a rebuild in this phase caused it, the correct response is to "
-        "investigate why the attribution changed and to record the finding -- never to "
-        f"accept the green as progress.\n\nFull report:\n{output}"
-    )
 
-    assert measured == expected
-
-
-def test_the_whole_tier_verdict_when_opted_in() -> None:
+def test_the_whole_tier_verdict_when_opted_in(tmp_path: Path) -> None:
     """The stronger form: no red ANYWHERE in a tripwire's tier beyond the constant.
 
     Opt-in, because this module runs inside the tier it measures. See the module
-    docstring: the recursion guard is what makes the child safe, and Plan 33-18's closing
-    three-tier measurement is what owns the tier-wide reconciliation properly.
+    docstring: the recursion guard is what makes the child safe, and the phase close's
+    recorded three-tier measurement is what owns the tier-wide reconciliation properly.
     """
     _require_runnable_tripwires()
     if not os.environ.get(FULL_TIER_ENV):
         pytest.skip(FULL_TIER_PENDING_SKIP)
 
-    expected_by_tier: dict[str, set[str]] = {}
+    expected_by_tier: dict[str, list[str]] = {}
     for node_id in phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS:
-        expected_by_tier.setdefault(tier_of(node_id), set()).add(node_id)
+        expected_by_tier.setdefault(tier_of(node_id), []).append(node_id)
 
     for tier, expected in sorted(expected_by_tier.items()):
-        output = _run_pytest([tier], timeout=3600)
-        measured = failing_node_ids(output)
-
-        extra = measured - expected
-        assert not extra, (
-            f"REGRESSION in {tier}: node id(s) failed that are NOT deliberate "
-            "tripwires:\n" + "\n".join(f"  - {node_id}" for node_id in sorted(extra))
+        report = tmp_path / f"{tier.rsplit('/', 1)[-1]}.xml"
+        output = _run_pytest([tier], timeout=3600, report=report)
+        problems = expected_outcome_problems(_judged_outcomes(report, output), expected)
+        assert problems == [], (
+            f"{tier} is not exactly its deliberate tripwires failing:\n"
+            + "\n".join(f"  - {problem}" for problem in problems)
+            + f"\n\nFull report:\n{output}"
         )
-        missing = expected - measured
-        assert not missing, (
-            f"DISCLOSURE ERASED in {tier}: deliberate tripwire(s) did NOT fail:\n"
-            + "\n".join(f"  - {node_id}" for node_id in sorted(missing))
+        assert not carries_closing_sweep(output), (
+            f"{tier}'s output carries the session-end production store sweep: a "
+            f"production store moved during the run.\n\nFull report:\n{output}"
         )
 
 
