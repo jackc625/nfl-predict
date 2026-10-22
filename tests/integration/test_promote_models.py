@@ -33,7 +33,6 @@ Test-name -> 24-VALIDATION.md command map (one comment per test cites its comman
   test_dry_run_zero_swaps             -> ::test_dry_run_zero_swaps             (ACTV-03)
   test_swap_preserves_blend_key       -> ::test_swap_preserves_blend_key       (ACTV-03)
   test_dry_run_prints_2x2             -> ::test_dry_run_prints_2x2             (D24-11a)
-  test_frozen_baseline_matches_rescore-> ::test_frozen_baseline_matches_rescore (D24-07, gold-gated)
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -766,57 +765,6 @@ def test_dry_run_prints_2x2(
 # ---------------------------------------------------------------------------
 # D24-07: the frozen gate.toml baseline matches a fresh diagnose re-score (gold-gated)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not _GOLD_WP_PATH.exists(),
-    reason=f"Canonical gold not present at {_GOLD_WP_PATH}",
-)
-def test_frozen_baseline_matches_rescore() -> None:
-    """24-VALIDATION: pytest .../test_promote_models.py::test_frozen_baseline_matches_rescore.
-
-    The frozen ``config/gate.toml`` baseline (WP pooled accuracy + headline CLV) matches a
-    fresh ``diagnose.run_diagnosis(run_backtest_half=False)`` production-half re-score of the
-    DEPLOYED incumbent artifacts within tolerance -- proving the frozen judge has not drifted
-    from the deployed artifacts (D24-07 / T-24-19). Post-Phase-25 (D25-11) the deployed WP/ATS
-    incumbents are the activated re-fits and OU is retained v1.0, so this re-scores the re-fit
-    WP and matches the re-frozen baseline; it is NO LONGER a v1.0 re-score. Skips cleanly when
-    canonical gold is absent.
-    """
-    from backtest.diagnose import run_diagnosis
-    from backtest.engine import BacktestEngine
-
-    cfg = deploy_gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
-    wp_pooled = cfg["baseline"]["wp"]["pooled"]
-    frozen_accuracy = wp_pooled["accuracy"]
-    frozen_clv_mean = wp_pooled["mean"]
-
-    # Re-score the deployed incumbent production half on canonical 2021-2024 gold (LOAD +
-    # predict). Post-D25-11 the WP incumbent is the activated re-fit, not v1.0.
-    engine = BacktestEngine()
-    gold: dict[str, pd.DataFrame] = {}
-    for target in ("wp", "ats", "ou"):
-        df = engine._load_features(target)
-        in_holdout = (df["season"] >= 2021) & (df["season"] <= 2024)
-        holdout_df: pd.DataFrame = df.loc[in_holdout].copy()
-        gold[target] = holdout_df
-    odds = engine._load_closing_odds()
-
-    diag = run_diagnosis(gold=gold, odds=odds, run_backtest_half=False)
-    prod_wp = diag["production"]["wp"]
-
-    rescored_accuracy = prod_wp["pooled_accuracy"]
-    rescored_clv_mean = prod_wp["clv_significance_raw"]["mean"]
-
-    assert abs(rescored_accuracy - frozen_accuracy) < _FRESHNESS_TOL, (
-        f"frozen WP accuracy {frozen_accuracy} drifted from a fresh re-score "
-        f"{rescored_accuracy} (baseline no longer matches the deployed artifacts)"
-    )
-    assert abs(rescored_clv_mean - frozen_clv_mean) < _FRESHNESS_TOL, (
-        f"frozen WP pooled CLV mean {frozen_clv_mean} drifted from a fresh re-score "
-        f"{rescored_clv_mean} (baseline no longer matches the deployed artifacts)"
-    )
 
 
 @pytest.mark.integration

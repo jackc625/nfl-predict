@@ -16,9 +16,11 @@ nothing about it.
 So this module calls the REAL functions, in the REAL order the runner calls them --
 ``_load_gold_holdout``, ``_load_drift_reproduction_frame``, ``_score_baseline_clv``,
 ``_drift_tripwire`` -- on the REAL production gold and the REAL deployed artifacts, and asserts
-what reaches the tripwire. It carries the NEGATIVE CONTROL too: passing the LIVE frame must
-still abort, so the module proves the original defect was real rather than only that the new
-path works.
+what reaches the tripwire. It carries a frame-shape NEGATIVE CONTROL too: the LIVE frame still
+carries zero rows for the frozen seasons, so the module proves the original defect was real
+rather than only that the new path works. The two baseline-reproduction checks that once drove
+``_drift_tripwire`` itself on the live and the frozen frame were deleted in Phase 38 as
+duplicates of tripwires 1 and 5, which carry the 47-of-68 divergence disclosure.
 
 WHAT THIS MODULE DELIBERATELY DOES NOT ASSERT
 ----------------------------------------------
@@ -59,11 +61,6 @@ from models import deploy_gate
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _TARGETS = ("wp", "ats", "ou")
-
-#: The one target whose frozen record still reproduces on its own seasons, so the "does not
-#: raise" assertion is about the frame rather than about the preserved 47-of-68 divergence.
-#: See the module docstring for the measurement.
-_REPRODUCING_TARGET = "wp"
 
 _GOLD_PATHS = {
     target: REPO_ROOT / "data" / "gold" / f"features_{target}.parquet"
@@ -203,7 +200,15 @@ class TestTheTwoFramesAreDistinctAndEachCarriesItsOwnSeasons:
 
 
 class TestTheLiveFrameWouldAbort:
-    """The negative control: the pre-fix path really was broken, not merely suspect."""
+    """The negative control: the pre-fix path really was broken, not merely suspect.
+
+    The frame-shape control remains. The two checks that drove ``_drift_tripwire`` on the live
+    frame (expecting a zero-sample-size raise) and on the frozen frame (expecting no raise)
+    were deleted in Phase 38 by owner ruling: both asked whether the frozen gate baseline
+    still reproduces, which duplicates tripwires 1 and 5 in
+    ``tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS``. The 47-of-68 divergence disclosure
+    lives there.
+    """
 
     @pytest.mark.parametrize("target", _TARGETS)
     def test_the_live_frame_carries_ZERO_rows_for_every_frozen_season(
@@ -227,43 +232,6 @@ class TestTheLiveFrameWouldAbort:
             f"({counts}), so the abort this plan fixed would not reproduce. That can only "
             "happen if the live and frozen windows have been collapsed back together."
         )
-
-    def test_passing_the_live_frame_RAISES_naming_a_zero_sample_size(
-        self, real_path_frames: dict[str, dict[str, object]]
-    ) -> None:
-        """The real ``_drift_tripwire``, the real frozen config, the WRONG frame.
-
-        Asserted on WP specifically, and the reason is recorded rather than left implicit:
-        WP is the one target whose frozen record still reproduces within tolerance on its own
-        seasons (see the module docstring), so WP is the only target where the tripwire gets
-        as far as the per-season sample-size check. ATS and O/U abort earlier, on the POOLED
-        MEAN, on BOTH frames -- that is the preserved 47-of-68-field divergence, not this
-        defect, and asserting a zero-sample-size message for them would be asserting something
-        that is not true.
-        """
-        from models import deploy_gate as gate
-        from scripts import promote_models
-
-        cfg = gate.load_gate_config()
-        live_valid = real_path_frames[_REPRODUCING_TARGET]["live_valid"]
-        with pytest.raises(ValueError, match=r"sample size 0"):
-            promote_models._drift_tripwire(_REPRODUCING_TARGET, live_valid, cfg)
-
-    def test_passing_the_frozen_frame_does_NOT_raise(
-        self, real_path_frames: dict[str, dict[str, object]]
-    ) -> None:
-        """The same call, the same config, the RIGHT frame: it passes.
-
-        Paired with the test above, this is what isolates the frame as the cause. Same target,
-        same tripwire, same frozen config -- only the frame differs, and only one of the two
-        raises.
-        """
-        from models import deploy_gate as gate
-        from scripts import promote_models
-
-        cfg = gate.load_gate_config()
-        frozen_valid = real_path_frames[_REPRODUCING_TARGET]["frozen_valid"]
-        promote_models._drift_tripwire(_REPRODUCING_TARGET, frozen_valid, cfg)
 
 
 class TestThePromotionPathWiresTheFramesToTheRightConsumers:
