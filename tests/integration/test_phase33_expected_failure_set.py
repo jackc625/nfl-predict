@@ -86,12 +86,36 @@ close's recorded three-tier measurement, which owns it properly. The recursion g
 ``NFL_PHASE33_EXPECTED_FAILURE_CHILD``, set on every child environment, and a child that
 sees it steps aside by name.
 
+THE RECORDED FULL-SUITE RUN OF THE PHASE 38 CLOSE (D-06, D-15, D-28)
+--------------------------------------------------------------------
+A single-process whole suite is killed for memory on this machine, so one full-suite run
+is one owner-approved window of THREE sequential pytest processes -- the instrument of
+``tests/phase33_state.py``: ``tests/unit``; ``tests/integration``; and ``tests/api``
+together with the root ``tests/test_*.py`` modules. The run step (Plans 38-11 and 38-12)
+writes one directory holding, for each tier ``unit``, ``integration`` and ``api``:
+
+* ``<tier>.collect.txt`` -- the tier first listed with ``--collect-only -q``, at the
+  same HEAD in the same window;
+* ``<tier>.xml`` and ``<tier>.log`` -- the tier then run with
+  ``-q -rfE -p no:cacheprovider --junitxml=<dir>/<tier>.xml``, its output in the log.
+
+``full_run_problems`` judges that directory and runs nothing itself. It requires all
+nine files; requires each listing to close with a clean ``N tests collected`` line, to
+name N node ids, and every one of them to have an outcome in that tier's report
+(``INCOMPLETE``: one testcase per tier does not prove a run complete, and a tier killed
+by its timeout writes no report); refuses any tier log carrying the session-end sweep
+(``BOUNDARY``); and judges the union of the three reports with the same
+``expected_outcome_problems`` the bounded gate uses. The opt-in node
+``test_the_recorded_full_run_report_when_given`` reads the directory from
+``NFL_PHASE38_FULL_RUN_DIR``; no child this module spawns ever inherits it.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -113,6 +137,16 @@ TIER_ROOTS = ("tests/unit", "tests/integration", "tests/api")
 
 FULL_TIER_ENV = "NFL_PHASE33_FULL_TIER_VERDICT"
 CHILD_ENV = "NFL_PHASE33_EXPECTED_FAILURE_CHILD"
+
+# The recorded full-suite run of the Phase 38 close (D-06, D-15, D-28): the directory it
+# wrote, and the three tiers it ran as separate processes, in the instrument's order.
+FULL_RUN_DIR_ENV = "NFL_PHASE38_FULL_RUN_DIR"
+FULL_RUN_TIERS: tuple[str, ...] = ("unit", "integration", "api")
+_FULL_RUN_TIER_SUFFIXES = (".xml", ".log", ".collect.txt")
+
+# `3603 tests collected in 41.2s` / `1 test collected in 0.3s`; a line that also names an
+# error is a listing of a broken collection, not a complete one.
+_COLLECTED_LINE_RE = re.compile(r"^(\d+) tests? collected")
 
 # Mirrors tests/conftest.py's CLOSING_SWEEP_HEADER exactly, as
 # tests/integration/test_data_boundary_guard_arming.py does: conftest is a pytest plugin
@@ -139,6 +173,13 @@ FULL_TIER_PENDING_SKIP = (
     "the entire integration tier, which this module is itself part of, and the tier-wide "
     "reconciliation is Plan 33-18's closing three-tier measurement. The bounded verdict "
     "over the tripwire node ids runs by default and is what gates this phase."
+)
+
+FULL_RUN_PENDING_SKIP = (
+    "the recorded full run of the Phase 38 close is judged by setting "
+    "NFL_PHASE38_FULL_RUN_DIR to the run's directory. The run itself is an "
+    "owner-approved step (D-06): three sequential tier processes that write each tier's "
+    "JUnit report, log and collect listing there. This node only reads those files."
 )
 
 # A JUnit outcome map: (classname, name) -> every state that testcase key showed.
@@ -270,20 +311,115 @@ def carries_closing_sweep(text: str) -> bool:
     return any(line.startswith(CLOSING_SWEEP_HEADER) for line in text.splitlines())
 
 
+def _listing_problems(tier: str, listing: str, outcomes: Outcomes | None) -> list[str]:
+    """Whether a tier's ``--collect-only -q`` listing proves its report is complete.
+
+    Args:
+        tier: The tier name, for the messages.
+        listing: The text of ``<tier>.collect.txt``.
+        outcomes: The tier report's outcome map; None when the report is missing (that
+            is already its own problem, so collected ids are not checked against it).
+
+    Returns:
+        ``INCOMPLETE`` problems; empty when every collected node id has an outcome.
+    """
+    lines = listing.splitlines()
+    counted = [
+        match
+        for line in lines
+        if (match := _COLLECTED_LINE_RE.match(line)) and "error" not in line
+    ]
+    if not counted:
+        return [
+            f"INCOMPLETE: {tier} collect listing has no clean 'N tests collected' line"
+        ]
+
+    listed = [line for line in lines if line.startswith("tests/") and "::" in line]
+    collected = int(counted[-1].group(1))
+    if len(listed) != collected:
+        return [
+            f"INCOMPLETE: {tier} collect listing names {len(listed)} node ids but "
+            f"reports {collected} collected (a listing that names no node id cannot "
+            "prove the report complete)"
+        ]
+    if outcomes is None:
+        return []
+
+    unreported = [node_id for node_id in listed if junit_key(node_id) not in outcomes]
+    if not unreported:
+        return []
+    return [
+        f"INCOMPLETE: {tier} report has no outcome for {len(unreported)} collected node "
+        f"ids: {', '.join(unreported[:5])}"
+    ]
+
+
+def full_run_problems(run_dir: Path, expected_node_ids: Iterable[str]) -> list[str]:
+    """Judge the recorded full-suite run written into *run_dir*; it runs nothing itself.
+
+    For each tier in ``FULL_RUN_TIERS`` it reads ``<tier>.xml`` (the JUnit report),
+    ``<tier>.log`` (the run's output) and ``<tier>.collect.txt`` (the tier's
+    ``--collect-only -q`` listing taken at the same HEAD in the same window), then judges
+    the union of the three outcome maps with ``expected_outcome_problems``. Every problem
+    is returned; the judge never stops at the first.
+
+    Args:
+        run_dir: The run directory.
+        expected_node_ids: The node ids that must fail, and fail cleanly.
+
+    Returns:
+        ``INCOMPLETE`` (a missing file, an empty report, or a collected test with no
+        outcome), ``BOUNDARY`` (a tier log carrying the session-end production store
+        sweep) and every kind ``expected_outcome_problems`` names. Empty is the pass.
+    """
+    problems: list[str] = []
+    union: dict[tuple[str, str], frozenset[str]] = {}
+    for tier in FULL_RUN_TIERS:
+        report, log, listing = (
+            run_dir / f"{tier}{suffix}" for suffix in _FULL_RUN_TIER_SUFFIXES
+        )
+        problems.extend(
+            f"INCOMPLETE: {tier} {path.name} missing"
+            for path in (report, log, listing)
+            if not path.is_file()
+        )
+
+        outcomes = junit_outcomes(report) if report.is_file() else None
+        if outcomes is not None and not outcomes:
+            problems.append(f"INCOMPLETE: {tier} report holds no testcase")
+        if listing.is_file():
+            listing_text = listing.read_text(encoding="utf-8", errors="replace")
+            problems.extend(_listing_problems(tier, listing_text, outcomes))
+        if log.is_file() and carries_closing_sweep(
+            log.read_text(encoding="utf-8", errors="replace")
+        ):
+            problems.append(
+                f"BOUNDARY: {tier} log carries the session-end production store sweep "
+                "-- a production store moved during the run"
+            )
+
+        for key, states in (outcomes or {}).items():
+            union[key] = union.get(key, frozenset()) | states
+
+    problems.extend(expected_outcome_problems(union, expected_node_ids))
+    return problems
+
+
 def _child_env() -> dict[str, str]:
     """The environment for a child pytest session, carrying the recursion guard."""
     env = dict(os.environ)
     env[CHILD_ENV] = "1"
     env.pop(FULL_TIER_ENV, None)
+    env.pop(FULL_RUN_DIR_ENV, None)
     return env
 
 
 def _run_pytest(arguments: list[str], timeout: int, report: Path | None = None) -> str:
     """Run pytest in a subprocess and return its combined output.
 
-    ``-o addopts=`` neutralises this repository's ``addopts = ["-v", ...]``, so the
-    child's output is the short ``-q`` form the collectibility check reads. The same
-    override is used by ``tests/unit/test_phase32_state_guard.py``.
+    ``-o addopts=`` neutralises whatever ``addopts`` this repository sets, so the
+    child's output is always the short ``-q`` form the collectibility check reads. The
+    same override is used by ``tests/unit/test_phase32_state_guard.py``.
 
     Args:
         arguments: Arguments after ``-m pytest``.
@@ -617,6 +753,155 @@ def test_the_whole_tier_verdict_when_opted_in(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The recorded full-suite run of the phase close: three tier reports, judged.
+# ---------------------------------------------------------------------------
+
+
+def test_the_recorded_full_run_report_when_given() -> None:
+    """SPEC AC 15: the recorded run is exactly the five tripwires failing, and complete.
+
+    Opt-in: the run itself is an owner-approved step of the phase close (D-06), and this
+    node only reads the directory that run wrote. An env var that names no directory is
+    a failure, never a skip, so a mistyped path cannot read as "not judged".
+    """
+    named = os.environ.get(FULL_RUN_DIR_ENV)
+    if not named:
+        pytest.skip(FULL_RUN_PENDING_SKIP)
+    run_dir = Path(named)
+    assert run_dir.is_dir(), f"{FULL_RUN_DIR_ENV}={named!r} names no directory"
+
+    problems = full_run_problems(run_dir, phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS)
+    assert problems == [], (
+        f"the recorded full run in {run_dir} is not exactly the five deliberate "
+        "tripwires failing, complete and inside the production store boundary:\n"
+        + "\n".join(f"  - {problem}" for problem in problems)
+    )
+
+
+def _write_planted_tier(
+    run_dir: Path,
+    tier: str,
+    outcomes: dict[str, str],
+    *,
+    listed: list[str] | None = None,
+    log_text: str | None = None,
+) -> None:
+    """Write one tier's report, log and collect listing the way the run step does.
+
+    Args:
+        run_dir: The planted run directory.
+        tier: One of ``FULL_RUN_TIERS``.
+        outcomes: node id -> ``failed`` or ``passed``; each becomes one testcase.
+        listed: The collect listing's node ids; defaults to the report's own.
+        log_text: The tier log; defaults to a plain pytest summary line.
+    """
+    suite = ET.Element("testsuite", name="pytest")
+    for node_id, outcome in outcomes.items():
+        classname, name = junit_key(node_id)
+        testcase = ET.SubElement(suite, "testcase", classname=classname, name=name)
+        if outcome == "failed":
+            ET.SubElement(testcase, "failure", message="planted failure")
+    root = ET.Element("testsuites")
+    root.append(suite)
+    ET.ElementTree(root).write(run_dir / f"{tier}.xml", encoding="utf-8")
+
+    listed = list(outcomes) if listed is None else listed
+    plural = "" if len(listed) == 1 else "s"
+    (run_dir / f"{tier}.collect.txt").write_text(
+        "\n".join(listed) + f"\n\n{len(listed)} test{plural} collected in 0.01s\n",
+        encoding="utf-8",
+    )
+    failed = sum(outcome == "failed" for outcome in outcomes.values())
+    passed = len(outcomes) - failed
+    summary = f"{failed} failed, {passed} passed" if failed else f"{passed} passed"
+    (run_dir / f"{tier}.log").write_text(
+        log_text if log_text is not None else f"{summary} in 0.01s\n", encoding="utf-8"
+    )
+
+
+def _planted_run(run_dir: Path) -> Path:
+    """A CLEAN planted run: the five tripwires fail in integration, one pass per tier."""
+    run_dir.mkdir()
+    tripwires = phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS
+    _write_planted_tier(
+        run_dir,
+        "integration",
+        {
+            **dict.fromkeys(tripwires, "failed"),
+            f"{_PLANTED_MODULE}::test_integration_bystander": "passed",
+        },
+    )
+    _write_planted_tier(run_dir, "unit", {_PLANTED_BYSTANDER: "passed"})
+    _write_planted_tier(
+        run_dir, "api", {"tests/api/test_planted_gate.py::test_api_bystander": "passed"}
+    )
+    return run_dir
+
+
+def test_the_full_run_judge_refuses_a_bad_report(tmp_path: Path) -> None:
+    """The judge passes a clean planted run and names each way a recorded run is bad.
+
+    Every mutation is made on a fresh planted directory, so each proves one kind alone.
+    """
+    tripwires = phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS
+    clean = _planted_run(tmp_path / "clean")
+    assert full_run_problems(clean, tripwires) == []
+
+    # A tier killed before it wrote anything: all three of its files are absent.
+    no_api = _planted_run(tmp_path / "no_api")
+    for suffix in (".xml", ".log", ".collect.txt"):
+        (no_api / f"api{suffix}").unlink()
+    missing = full_run_problems(no_api, tripwires)
+    assert _kinds(missing) == ["INCOMPLETE"] * 3, missing
+    assert all(" api " in problem for problem in missing), missing
+
+    # A truncated report: the listing names a node id the report has no outcome for.
+    truncated = _planted_run(tmp_path / "truncated")
+    truncated_id = f"{_PLANTED_MODULE}::test_truncated_away"
+    _write_planted_tier(
+        truncated,
+        "unit",
+        {_PLANTED_BYSTANDER: "passed"},
+        listed=[_PLANTED_BYSTANDER, truncated_id],
+    )
+    cut_short = full_run_problems(truncated, tripwires)
+    assert _kinds(cut_short) == ["INCOMPLETE"], cut_short
+    assert "test_truncated_away" in cut_short[0]
+
+    # A listing with no clean "N tests collected" line, and one that names no node id
+    # (the tree form a verbose --collect-only prints) cannot prove completeness.
+    for listing in (
+        f"{_PLANTED_BYSTANDER}\n\n1 test collected, 1 error in 0.01s\n",
+        "<Module test_planted_gate.py>\n  <Function test_bystander>\n\n"
+        "1 test collected in 0.01s\n",
+    ):
+        unproven = _planted_run(tmp_path / f"unproven_{len(listing)}")
+        (unproven / "unit.collect.txt").write_text(listing, encoding="utf-8")
+        not_proven = full_run_problems(unproven, tripwires)
+        assert _kinds(not_proven) == ["INCOMPLETE"], not_proven
+
+    # A tier log carrying the session-end sweep: a production store moved.
+    swept = _planted_run(tmp_path / "swept")
+    sweep_log = (
+        f"1 passed in 0.01s\n{CLOSING_SWEEP_HEADER} -- a production store moved\n"
+    )
+    (swept / "unit.log").write_text(sweep_log, encoding="utf-8")
+    boundary = full_run_problems(swept, tripwires)
+    assert _kinds(boundary) == ["BOUNDARY"], boundary
+    # The same words quoted inside a traceback line are not this run's sweep.
+    quoted = _planted_run(tmp_path / "quoted")
+    quoted_log = f"E   AssertionError: {CLOSING_SWEEP_HEADER} seen\n1 passed in 0.01s\n"
+    (quoted / "unit.log").write_text(quoted_log, encoding="utf-8")
+    assert full_run_problems(quoted, tripwires) == []
+
+    # A sixth failing testcase.
+    sixth = _planted_run(tmp_path / "sixth")
+    _write_planted_tier(sixth, "unit", {_PLANTED_BYSTANDER: "failed"})
+    regression = full_run_problems(sixth, tripwires)
+    assert _kinds(regression) == ["REGRESSION"], regression
+
+
+# ---------------------------------------------------------------------------
 # Fail-closed controls on this module's own guards.
 # ---------------------------------------------------------------------------
 
@@ -654,16 +939,22 @@ def test_the_child_session_recursion_guard_actually_fires(
     assert str(excinfo.value) == CHILD_SESSION_SKIP
 
 
-def test_the_child_environment_carries_the_recursion_guard() -> None:
-    """Every child this module spawns is marked, and never inherits the opt-in.
+def test_the_child_environment_carries_the_recursion_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every child this module spawns is marked, and never inherits either opt-in.
 
     A child that inherited ``NFL_PHASE33_FULL_TIER_VERDICT`` would run the whole tier
-    again from inside the whole-tier run. The guard and the opt-out are asserted together
-    because either one alone still recurses.
+    again from inside the whole-tier run; one that inherited ``NFL_PHASE38_FULL_RUN_DIR``
+    would judge a recorded run from inside a child. Both opt-ins are SET here first, so
+    their absence proves the child environment drops them rather than never saw them.
     """
+    monkeypatch.setenv(FULL_TIER_ENV, "1")
+    monkeypatch.setenv(FULL_RUN_DIR_ENV, str(REPO_ROOT))
     env = _child_env()
     assert env[CHILD_ENV] == "1"
     assert FULL_TIER_ENV not in env
+    assert FULL_RUN_DIR_ENV not in env
 
 
 def test_this_gate_re_lists_no_node_id_of_its_own() -> None:
