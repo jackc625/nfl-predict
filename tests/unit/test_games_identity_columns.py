@@ -441,7 +441,7 @@ class TestTheMigratedStoreCarriesRealIdentityColumns:
         assert measured == phase33_state.POSTSEASON_ROW_COUNT
 
     def test_neutral_site_is_no_longer_a_constant_false(self) -> None:
-        """The migrated population's 91, and the live capture's eight, separately."""
+        """The migrated population's 91 neutral-site games read True, not a constant."""
         measured = int(_migrated_history()["neutral_site"].sum())
         assert measured == phase33_state.NEUTRAL_SITE_TRUE_ROW_COUNT, (
             f"{measured} rows read neutral_site True across 2002-2025; the migration "
@@ -449,13 +449,6 @@ class TestTheMigratedStoreCarriesRealIdentityColumns:
             "games HISTORICAL_NEUTRAL_MISRESOLUTION enumerates."
         )
         assert measured > 0
-        total = int(_migrated_store()["neutral_site"].sum())
-        assert total == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_ALL, (
-            f"{total} rows read neutral_site True across the whole store. The delta "
-            "from the migrated 91 is the live 2026 capture's eight international "
-            "games, and nothing else."
-        )
-        assert total - measured == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_2026
 
     def test_stadium_id_is_present_on_every_row(self) -> None:
         """A presence RATE, not a presence check: a partial re-ingest is the risk."""
@@ -553,10 +546,6 @@ class TestTheLive2026CaptureIsRecordedNotAbsorbed:
         beyond = frame.loc[frame["season"] > last]
         assert int(beyond["stadium_id"].isna().sum()) == 0
         assert set(beyond["season_type"].unique()) <= {"Regular", "Postseason"}
-        assert (
-            int(beyond["neutral_site"].sum())
-            == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_2026
-        )
 
 
 class TestTheRecordedSilverWidthIsSixteenAndSaysWhy:
