@@ -10,6 +10,25 @@ the INVERTED convention flags far more rows than under the stored one (so the de
 assumes the convention the column is actually stored in). Only the inequality is asserted: the
 inverted count has been measured as 2,125 and as 2,134 depending on how equal moneylines are
 counted, and a pinned literal would make a correct run fail.
+
+THE PRICE-AWARE RULE (Phase 38, owner rulings D-05 and D-19, 2026-10-21; SPEC amendment 2).
+DraftKings' closing reading of ``2026_W06_NO@NYG`` (written 2026-10-18 16:49:42 UTC, after the
+game's lock, so it never fed a decision or a bet) reads spread -1.5 (NO favoured by 1.5 on
+points) with spread prices home (NYG +1.5) -125 / away (NO -1.5) +105 and moneyline NYG -112 /
+NO -108. Both markets make NYG the slight favourite: the spread's PRICE carries it, not its sign.
+That is genuine price-shaded pick'em pricing, not a data error, so the CHECK was fixed and no
+odds value was changed. ``sign_conflict_mask`` now excuses a sign disagreement only when the
+moneyline favourite is strictly the pricier side of the spread market AND
+``abs(spread) <= PRICE_EXPLAINED_MAX_SPREAD`` (1.5). The owner approved this one narrowing of
+``test_zero_sign_conflicts_remain_on_comparable_rows``; its code is unchanged and the row stays
+inside it, judged consistent, never nulled or exempted. A third control
+(``test_spread_prices_excuse_only_a_near_coin_flip_disagreement``) shows the excuse is narrow:
+equal prices, -100 against +100 (the same price) and a line beyond the bound are still flagged.
+
+``config/odds_corrections.toml`` carries no note of this ruling on purpose (D-22): that record is
+witnessed by commit and digest (``tests/unit/test_odds_correction_ancestry.py``), so even a
+comment there would break its witness. The ruling lives here and in the ``sign_conflict_mask``
+docstring only.
 """
 
 from __future__ import annotations
@@ -59,6 +78,22 @@ def _row(game_id: str, spread: float, ml_home: float, ml_away: float) -> dict:
     }
 
 
+def _priced_row(
+    game_id: str,
+    spread: float,
+    ml_home: float,
+    ml_away: float,
+    spread_ju_home: float,
+    spread_ju_away: float,
+) -> dict:
+    """A ``_row`` that also carries each side's spread price (home side, away side)."""
+    return {
+        **_row(game_id, spread, ml_home, ml_away),
+        "spread_ju_home": spread_ju_home,
+        "spread_ju_away": spread_ju_away,
+    }
+
+
 class TestTheDetector:
     def test_a_planted_conflict_is_flagged(self) -> None:
         frame = pd.DataFrame(
@@ -91,6 +126,22 @@ class TestTheDetector:
     def test_a_missing_price_is_not_decidable(self) -> None:
         frame = pd.DataFrame([_row("no_price", 3.0, math.nan, -140.0)])
         assert not sign_conflict_mask(frame).any()
+
+    def test_spread_prices_excuse_only_a_near_coin_flip_disagreement(self) -> None:
+        # D-05 / D-19: the spread's PRICE may carry the favourite when the line is within
+        # PRICE_EXPLAINED_MAX_SPREAD of a coin flip; equal prices, equivalent prices and a
+        # wider line explain nothing.
+        frame = pd.DataFrame(
+            [
+                _priced_row("no_at_nyg_shape", -1.5, -112.0, -108.0, -125.0, 105.0),
+                _priced_row(
+                    "equal_spread_prices", -1.5, -112.0, -108.0, -110.0, -110.0
+                ),
+                _priced_row("beyond_the_bound", -3.0, -200.0, 170.0, -125.0, 105.0),
+                _priced_row("equivalent_prices", -1.5, -112.0, -108.0, -100.0, 100.0),
+            ]
+        )
+        assert sign_conflict_mask(frame).tolist() == [False, True, True, True]
 
 
 class TestTheOwnedTimelineIsFlippedOnceAtTheReader:

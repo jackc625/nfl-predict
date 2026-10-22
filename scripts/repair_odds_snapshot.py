@@ -59,6 +59,7 @@ import pandas as pd
 
 from data.storage import upsert_silver
 from scripts.ingest_historical_odds import canonical_game_id
+from utils.probability_utils import moneyline_to_probability
 
 ODDS_TABLE = "odds_snapshot"
 TIMELINE_TABLE = "odds_timeline"
@@ -275,16 +276,77 @@ def _comparable(odds: pd.DataFrame) -> pd.Series:
     )
 
 
+# The spread prices may excuse a sign disagreement only on a near coin-flip line: beyond this
+# many points, a moneyline favourite that the spread names as the underdog is a contradiction
+# whatever the prices say (owner ruling D-19, 2026-10-21).
+PRICE_EXPLAINED_MAX_SPREAD: float = 1.5
+
+
+def _implied_probability(odds: pd.DataFrame, column: str) -> pd.Series:
+    """Each row's implied probability for one American-price column; NaN where absent.
+
+    ``moneyline_to_probability`` is a scalar function, so it is applied one present value at a
+    time. A frame without the column (the unit-test frames carry no spread prices) reads as all
+    NaN, which explains nothing.
+    """
+    prices = odds.get(column)
+    if prices is None:
+        return pd.Series(math.nan, index=odds.index, dtype=float)
+    present = prices.dropna()
+    return present.map(moneyline_to_probability).reindex(odds.index).astype(float)
+
+
+def _spread_prices_explain(odds: pd.DataFrame) -> pd.Series:
+    """Rows whose moneyline favourite is strictly the pricier side of the spread market.
+
+    ``spread_ju_home`` / ``spread_ju_away`` are the prices of the HOME / AWAY team's spread
+    outcome (``scripts/ingest_odds.py``). "Pricier" is decided on implied probability, so -100
+    and +100 (both 0.5) are equal. Equal or missing prices explain nothing, and a moneyline that
+    names no favourite (equal prices) explains nothing either.
+    """
+    home_probability = _implied_probability(odds, "spread_ju_home")
+    away_probability = _implied_probability(odds, "spread_ju_away")
+    moneyline_favours_home = odds["ml_home"] < odds["ml_away"]
+    moneyline_favours_away = odds["ml_home"] > odds["ml_away"]
+    return (moneyline_favours_home & (home_probability > away_probability)) | (
+        moneyline_favours_away & (away_probability > home_probability)
+    )
+
+
 def sign_conflict_mask(odds: pd.DataFrame, *, inverted: bool = False) -> pd.Series:
-    """Rows whose spread sign contradicts their own moneyline.
+    """Rows whose spread sign contradicts their own moneyline, unless the spread prices explain it.
 
     The stored convention is "positive spread = home favoured". A home favourite by moneyline
-    has the more negative price, so a conflict is ``spread > 0`` with ``ml_home > ml_away``
-    (spread says home, price says away) or ``spread < 0`` with ``ml_home < ml_away``.
+    has the more negative price, so a sign disagreement is ``spread > 0`` with
+    ``ml_home > ml_away`` (spread says home, price says away) or ``spread < 0`` with
+    ``ml_home < ml_away``.
+
+    THE PRICE-AWARE RULE (owner rulings D-05 and D-19, Phase 38, 2026-10-21). A sign
+    disagreement is a contradiction only when NOT (the spread prices explain it AND
+    ``abs(spread) <= PRICE_EXPLAINED_MAX_SPREAD``). "Explain" means the moneyline favourite is
+    strictly the pricier side of the spread market on implied probability
+    (``utils.probability_utils.moneyline_to_probability``); equal or missing spread prices
+    explain nothing, and a frame without the price columns reads as "not explained". On a line
+    near a coin flip the spread's PRICE, not its sign, can carry the favourite: a -1.5 favourite
+    at plus money is normal pricing (https://www.legalsportsreport.com/how-to-bet/favorites/,
+    https://www.cbssports.com/betting/news/point-spread-betting).
+
+    The row that prompted the ruling is DraftKings' closing reading of ``2026_W06_NO@NYG``,
+    written 2026-10-18 16:49:42 UTC, after the game's lock, so it never fed a decision or a bet:
+    spread -1.5 (NO favoured by 1.5 on points), spread prices home (NYG +1.5) -125 / away
+    (NO -1.5) +105, moneyline NYG -112 / NO -108. Both markets make NYG the slight favourite.
+    The row stays inside this check and is judged consistent; no odds value was changed.
+
+    WHY THE 1.5-POINT BOUND. Without it, price shading alone would excuse about 40 percent of
+    rows under a whole-column sign flip (research Job 1: 1,038 inverted-reading rows excused), so
+    the convention control below could be hidden by prices. Measured at plan time on the live
+    table: stored reading 0 conflicts, inverted reading 2,474 of 2,614 comparable rows.
 
     ``inverted=True`` reads the column the other way. It exists ONLY as the convention control:
     under the wrong reading almost every comparable row is a "conflict", so the stored reading
-    returning far fewer is what proves the detector assumes the right convention.
+    returning far fewer is what proves the detector assumes the right convention. The price
+    excuse applies to it unchanged: it depends only on the moneyline favourite and the two
+    spread prices, not on how the spread sign is read.
     """
     agrees_home = (odds["spread"] > 0) & (odds["ml_home"] < odds["ml_away"])
     agrees_away = (odds["spread"] < 0) & (odds["ml_home"] > odds["ml_away"])
@@ -295,7 +357,10 @@ def sign_conflict_mask(odds: pd.DataFrame, *, inverted: bool = False) -> pd.Seri
         if inverted
         else (contradicts_home | contradicts_away)
     )
-    return _comparable(odds) & conflict
+    price_excused = _spread_prices_explain(odds) & (
+        odds["spread"].abs() <= PRICE_EXPLAINED_MAX_SPREAD
+    )
+    return _comparable(odds) & conflict & ~price_excused
 
 
 # ---------------------------------------------------------------------------
