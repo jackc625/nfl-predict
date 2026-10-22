@@ -63,9 +63,11 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
+import backtest.verdict_test_2026 as rule
 from api.cache import (
     BET_STATUS_LIVE,
     GRADING_STATUS_LOSS,
@@ -73,8 +75,12 @@ from api.cache import (
     GRADING_STATUS_PUSH,
     GRADING_STATUS_WIN,
 )
-from backtest.roi_significance import flat_roi
-from backtest.verdict_test_2026 import VERDICT_TARGETS
+from backtest.profitability_2025 import (
+    TargetMeasurement,
+    assign_verdict_token,
+    benjamini_hochberg_adjusted,
+)
+from backtest.roi_significance import flat_roi, roi_ci_and_p
 from forward_ledger.declarations import VerdictScope, load_verdict_scope
 from forward_ledger.settle import (
     DEFAULT_SILVER_DIR,
@@ -245,7 +251,7 @@ def target_figures(
     never recomputes them, so the preview's and the binding run's figures cannot drift apart.
     """
     figures: list[TargetFigures] = []
-    for target in VERDICT_TARGETS:
+    for target in rule.VERDICT_TARGETS:
         bets = target_bets(counted, target, void_game_ids)
         status = bets["grading_status"]
         graded = bets.loc[status.isin(_GRADED_STATUSES)]
@@ -274,6 +280,116 @@ def void_bets(counted: pd.DataFrame, report: CoverageReport) -> pd.DataFrame:
     not_played = frozenset(game.game_id for game in report.not_played)
     keep = (counted["status"] == BET_STATUS_LIVE) & _on_games(counted, not_played)
     return counted.loc[keep]
+
+
+# ---------------------------------------------------------------------------
+# The binding verdict (Plan 38-09; SPEC R8, D-01..D-04, D-12, D-13)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TargetResult:
+    """One target's pre-registered verdict, built on the preview's figures.
+
+    Every value is UNROUNDED (SPEC AC 25): rounding happens only in the rendered document.
+
+    Attributes:
+        figures: The target's raw figures, from :func:`target_figures` unchanged.
+        raw_p: ``roi_ci_and_p``'s one-sided p-value, or None when it gives none.
+        adjusted_p: The Benjamini-Hochberg adjusted p at m = ``BH_FAMILY_SIZE``, or None.
+        p_absent_reason: ``roi_ci_and_p``'s reason the p-value is absent, when it is.
+        n_blocks: The (season, week) blocks the target's bets span.
+        token: The verdict word ``assign_verdict_token`` gave.
+        meaning: The word's 2026 meaning (``VERDICT_TOKEN_MEANINGS_2026``), never the 2025 reason.
+    """
+
+    figures: TargetFigures
+    raw_p: float | None
+    adjusted_p: float | None
+    p_absent_reason: str | None
+    n_blocks: int
+    token: str
+    meaning: str
+
+
+def measure_targets(
+    counted: pd.DataFrame, void_game_ids: frozenset[str]
+) -> tuple[TargetResult, ...]:
+    """Each target's verdict under the R6 rule, in ``VERDICT_TARGETS`` order.
+
+    Built ON the preview's computation, never beside it: the bets, wins, losses, pushes, units and
+    flat ROI are :func:`target_figures`'s, and the per-bet test frame is :func:`target_bets`'s,
+    reduced to the four columns the statistic reads (no closing-line value is in scope). The raw
+    p-values present are corrected ONCE at m = ``BH_FAMILY_SIZE`` (a target without a p-value
+    keeps its place in the family), and each word comes from ``assign_verdict_token`` on a
+    ``TargetMeasurement`` filled by ``MEASUREMENT_MAPPING_2026``.
+
+    Raises:
+        ValueError: a target has a bet that is not graded. The binding run's ordered refusals make
+            this impossible there; the check keeps the verdict from testing a partial bet frame.
+    """
+    figures = target_figures(counted, void_game_ids)
+    stats: dict[str, dict[str, Any]] = {}
+    for fig in figures:
+        if fig.graded != fig.bets:
+            msg = (
+                f"[{fig.target}] {fig.bets - fig.graded} counted bet(s) are not graded; the "
+                "verdict is never computed over a partial bet frame (D-24)."
+            )
+            raise ValueError(msg)
+        per_bet = target_bets(counted, fig.target, void_game_ids).loc[:, _ROI_COLUMNS]
+        stats[fig.target] = roi_ci_and_p(per_bet)
+
+    present = [
+        fig.target for fig in figures if stats[fig.target]["p_value"] is not None
+    ]
+    adjusted = dict(
+        zip(
+            present,
+            benjamini_hochberg_adjusted(
+                [float(stats[target]["p_value"]) for target in present],
+                m=rule.BH_FAMILY_SIZE,
+            ),
+            strict=True,
+        )
+    )
+
+    results: list[TargetResult] = []
+    for fig in figures:
+        stat = stats[fig.target]
+        measurement = TargetMeasurement(
+            target=fig.target,
+            chain_resolved=fig.counted_rows > 0,
+            control_passed=True,
+            control_bet_count=0,
+            bet_count=fig.bets,
+            flat_roi=fig.flat_roi,
+            adjusted_p=adjusted.get(fig.target),
+            raw_p=stat["p_value"],
+            p_absent_reason=stat["p_value_absent_reason"],
+            n_blocks=int(stat["n_blocks"]),
+            n_push=fig.pushes,
+            n_ungraded=0,
+            fallback_fired=False,
+            fallback_trigger=None,
+        )
+        token, _reason_2025 = assign_verdict_token(
+            measurement,
+            alpha=rule.ALPHA,
+            min_attainable_p=rule.ROI_MIN_ATTAINABLE_P,
+        )
+        results.append(
+            TargetResult(
+                figures=fig,
+                raw_p=measurement.raw_p,
+                adjusted_p=measurement.adjusted_p,
+                p_absent_reason=measurement.p_absent_reason,
+                n_blocks=measurement.n_blocks,
+                token=token,
+                meaning=rule.VERDICT_TOKEN_MEANINGS_2026[token],
+            )
+        )
+    return tuple(results)
 
 
 def build_parser() -> argparse.ArgumentParser:
