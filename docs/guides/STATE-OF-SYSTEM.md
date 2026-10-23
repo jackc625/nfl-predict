@@ -318,6 +318,19 @@ appended at the close to `tests/phase34_state.py` in the slot P38_FULL_SUITE_BAS
 preview of the season's raw figures is `uv run python -m scripts.season_readout`; the one binding
 run happens after the season is graded, as `RUNBOOK.md` describes in its season-close section.
 
+**The recorded whole-suite baseline (2026-10-23).** The recorded run went in three test tiers, one
+after another, at HEAD `f2b5b1a`. Each tier's own summary line, word for word:
+
+- unit: `8219 passed, 5 skipped, 6423 warnings in 817.34s (0:13:37)`
+- integration: `5 failed, 1767 passed, 59 skipped, 622 warnings in 1816.40s (0:30:16)`
+- api: `711 passed, 27 warnings in 299.01s (0:04:59)`
+- sum: `5 failed, 10697 passed, 64 skipped, 7072 warnings`
+
+Per D-28, these three lines and their sum are the recorded baseline. Measured on 2026-10-23:
+exactly the five deliberate tripwires fail, 0 errors, 0 xfailed (the JUnit reports count 10766
+tests, 5 failures, 0 errors, 64 skipped). The full record, with the run directory, commands and
+report digests, is `tests/phase34_state.py` P38_FULL_SUITE_BASELINE.
+
 ## Cross-references
 
 - **`PROFITABILITY-READOUT.md`** -- the v3.0 Phase-31 milestone close: the per-target 2025

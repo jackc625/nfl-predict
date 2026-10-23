@@ -34,6 +34,7 @@ measured when it was written.
   ``P34_W_FIRST_LOCK_UTC``, ``P34_W_FIRST_DECISION_RUN_UTC``.
 * Plan 34-23 Task 1 -- ``P34_FIRST_LIVE_READBACK``.
 * Plan 38-07 Task 3 -- ``P38_EXPECTED_FAILURE_BASELINE``.
+* Plan 38-12 Task 3 -- ``P38_FULL_SUITE_BASELINE``.
 """
 
 from __future__ import annotations
@@ -553,4 +554,98 @@ P38_EXPECTED_FAILURE_BASELINE: dict[str, object] = {
             "Phase 38 close (three tier lines plus their sum, D-28) replaces it"
         ),
     },
+}
+
+# ---------------------------------------------------------------------------
+# Plan 38-12 Task 3 -- the Phase 38 whole-suite baseline, MEASURED 2026-10-23
+# (ET, read via PowerShell Get-Date) on HEAD
+# f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d (equal to the run directory's
+# head.txt before and after the run, and again at recording time).
+#
+# Run directory (outside the repository, never committed):
+#     C:/Users/jackc/Code/p38-scratch/run2-f2b5b1ab2375-20261023-1409
+# It holds head.txt and, per tier, <tier>.collect.txt, <tier>.xml and
+# <tier>.log.
+#
+# The run was made as three SEQUENTIAL tier processes, not one `pytest tests`
+# process, because a single-process whole suite is killed for memory on this
+# machine -- the instrument of tests/phase33_state.py PRE_PHASE_TIER_LINES /
+# PRE_PHASE_FAILURE_SET. It was ONE background Bash call from the repository
+# root with NFL_PHASE38_FULL_RUN_DIR and NFL_PHASE33_FULL_TIER_VERDICT unset,
+# the six commands in "commands" below joined by `;` (each tier's exit code and
+# a UTC timestamp were appended to exits.txt / tier_end_utc.txt after it).
+# Exit codes: unit 0, integration 1, api 0. No tier was killed.
+#
+# Judged by the opt-in node
+# tests/integration/test_phase33_expected_failure_set.py::
+# test_the_recorded_full_run_report_when_given with NFL_PHASE38_FULL_RUN_DIR
+# set to the run directory: "1 passed, 27 warnings in 4.98s" -- across the
+# union of the three tier reports the failing node ids are exactly
+# tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS, nothing errors, nothing
+# xfails, and every collected test has an outcome.
+#
+# This slot is the D-28 recording form (SPEC amendment 4, owner ruling
+# 2026-10-21): the three tier lines verbatim plus their sum and the JUnit
+# counts, which replaces the retired v3.0 close count recorded in
+# P38_EXPECTED_FAILURE_BASELINE["retired_count_baseline"].
+# ---------------------------------------------------------------------------
+
+P38_FULL_SUITE_BASELINE: dict[str, object] = {
+    "measured_on": "2026-10-23",
+    "head": "f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d",
+    "run_dir": "C:/Users/jackc/Code/p38-scratch/run2-f2b5b1ab2375-20261023-1409",
+    "commands": (
+        'uv run python -m pytest tests/unit --collect-only -q -p no:cacheprovider > "$R/unit.collect.txt" 2>&1',
+        'timeout 3600 uv run python -m pytest tests/unit -q -rfE -p no:cacheprovider --junitxml="$R/unit.xml" > "$R/unit.log" 2>&1',
+        'uv run python -m pytest tests/integration --collect-only -q -p no:cacheprovider > "$R/integration.collect.txt" 2>&1',
+        'timeout 3600 uv run python -m pytest tests/integration -q -rfE -p no:cacheprovider --junitxml="$R/integration.xml" > "$R/integration.log" 2>&1',
+        'uv run python -m pytest tests/api tests/test_*.py --collect-only -q -p no:cacheprovider > "$R/api.collect.txt" 2>&1',
+        'timeout 3600 uv run python -m pytest tests/api tests/test_*.py -q -rfE -p no:cacheprovider --junitxml="$R/api.xml" > "$R/api.log" 2>&1',
+    ),
+    "tier_lines": {
+        "unit": "8219 passed, 5 skipped, 6423 warnings in 817.34s (0:13:37)",
+        "integration": "5 failed, 1767 passed, 59 skipped, 622 warnings in 1816.40s (0:30:16)",
+        "api": "711 passed, 27 warnings in 299.01s (0:04:59)",
+    },
+    "summed_line": "5 failed, 10697 passed, 64 skipped, 7072 warnings",
+    "junit": {
+        "unit": {"tests": 8224, "failures": 0, "errors": 0, "skipped": 5},
+        "integration": {"tests": 1831, "failures": 5, "errors": 0, "skipped": 59},
+        "api": {"tests": 711, "failures": 0, "errors": 0, "skipped": 0},
+        "union": {
+            "tests": 10766,
+            "failures": 5,
+            "errors": 0,
+            "skipped": 64,
+            "xfailed": 0,
+        },
+    },
+    "report_sha256": {
+        "unit": "b7c10bb6769d55d68e45dd32002322f53ce65549e6acf096f926c4f5029616d1",
+        "integration": "013b91c4f9905ece233790b0024b95e96d566d9e78087576e6b71c0bca3d5a0b",
+        "api": "f947de0e506544fac56cc50fb230a0b58325bc1cd71be07271b8b45069179784",
+    },
+    "collected": {"unit": 8224, "integration": 1831, "api": 711},
+    "failing_node_ids_source": "tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS",
+    "started_et": "2026-10-23 14:10:17",
+    "finished_et": "2026-10-23 14:59:57",
+    "discovery_run_tier_lines": {
+        "unit": "15 failed, 8206 passed, 5 skipped, 6423 warnings in 838.16s (0:13:58)",
+        "integration": "6 failed, 1765 passed, 59 skipped, 622 warnings in 1804.66s (0:30:04)",
+        "api": "711 passed, 27 warnings in 314.07s (0:05:14)",
+    },
+    "note": (
+        "In the commands, $R is the run directory above. pytest's summary line omits "
+        "categories whose count is zero, so the JUnit counts are the proof of 0 errors and "
+        "0 xfailed (xfailed is counted from testcases skipped with type pytest.xfail). No "
+        "tier log carried the COLD-05 session-end sweep section. By the owner's ruling "
+        "D-28 (SPEC amendment 4, 2026-10-21) this baseline is the three tier lines plus "
+        "their sum, not one pytest summary line: exactly the five deliberate tripwires "
+        "fail, 0 errors, 0 xfailed. The run was started at 14:10 ET, outside the plan's "
+        "Mon-Fri 08:00-13:00 ET start window, on the owner's explicit 'Start now "
+        "(Recommended)' (about 14:09 ET); no scheduled writer ran before the 17:00 ET "
+        "daily run and no kickoff fell before Sun 2026-10-25 09:30 ET. The discovery run "
+        "(run 1, 2026-10-21, Plan 38-11) is kept for the record only; its lines are not "
+        "the baseline."
+    ),
 }
