@@ -105,8 +105,11 @@ writes one directory holding, for each tier ``unit``, ``integration`` and ``api`
 nine files; requires each listing to close with a clean ``N tests collected`` line, to
 name N node ids, and every one of them to have an outcome in that tier's report
 (``INCOMPLETE``: one testcase per tier does not prove a run complete, and a tier killed
-by its timeout writes no report); refuses any tier log carrying the session-end sweep
-(``BOUNDARY``); and judges the union of the three reports with the same
+by its timeout writes no report); requires ``exits.txt`` (``<tier> <exit code>`` per
+line, as the run step appends it) to show unit and api at 0 and integration at 0 or 1;
+refuses any tier log carrying the session-end sweep, or not ending on pytest's closing
+summary line -- a sweep that raised leaves a clean report and a log ending on its
+traceback (``BOUNDARY``); and judges the union of the three reports with the same
 ``expected_outcome_problems`` the bounded gate uses. The opt-in node
 ``test_the_recorded_full_run_report_when_given`` reads the directory from
 ``NFL_PHASE38_FULL_RUN_DIR``; no child this module spawns ever inherits it.
@@ -155,6 +158,25 @@ _COLLECTED_LINE_RE = re.compile(r"^(\d+) tests? collected")
 # and is not imported. The closing sweep adds no JUnit testcase and only flips an exit
 # status that was 0, so a JUnit-only judge cannot see it; the run's output is read too.
 CLOSING_SWEEP_HEADER = "SESSION-END FULL CONTENT SWEEP"
+
+# pytest's closing stats line, e.g. `5 failed, 1767 passed, 59 skipped, 622 warnings in
+# 1816.40s (0:30:16)`. The terminal reporter writes it LAST, after every other
+# `pytest_sessionfinish` hook has returned -- the conftest's closing sweep included. A
+# sweep that raised (a locked or mid-replace store refuses by name) leaves a log that
+# ends on its traceback instead, so a log that does not end on this line is a session
+# whose sweep never completed.
+_SUMMARY_LINE_RE = re.compile(
+    r"^=*\s*\d+ (failed|passed|skipped|errors?|xfailed|xpassed)\b.* in \d"
+)
+
+# What the run step appends to `exits.txt` after each tier: `<tier> <exit code>`. Only
+# the tier holding the tripwires may exit 1; an internal error or interrupt is no run.
+FULL_RUN_EXITS_FILE = "exits.txt"
+_ALLOWED_TIER_EXITS: dict[str, frozenset[int]] = {
+    "unit": frozenset({0}),
+    "integration": frozenset({0, 1}),
+    "api": frozenset({0}),
+}
 
 NO_PRODUCTION_DATA_SKIP = (
     "the deliberate tripwires cannot be RUN on this checkout: the production data tree "
@@ -350,6 +372,40 @@ def carries_closing_sweep(text: str) -> bool:
     return any(line.startswith(CLOSING_SWEEP_HEADER) for line in text.splitlines())
 
 
+def session_completed(text: str) -> bool:
+    """Whether a run's output ends on pytest's closing stats line, with no INTERNALERROR.
+
+    That line is written only after the conftest's session-end sweep returned, so it is
+    the positive proof that the sweep ran to the end and compared the stores.
+    """
+    lines = [line for line in text.splitlines() if line.strip()]
+    return (
+        bool(lines)
+        and _SUMMARY_LINE_RE.match(lines[-1]) is not None
+        and not any(line.startswith("INTERNALERROR") for line in lines)
+    )
+
+
+def _exit_problems(exits: Path) -> list[str]:
+    """Whether ``exits.txt`` shows every tier ending with an exit code a run may have."""
+    if not exits.is_file():
+        return [f"INCOMPLETE: {exits.name} missing"]
+    recorded: dict[str, str] = {}
+    for line in exits.read_text(encoding="utf-8", errors="replace").splitlines():
+        tier, _, code = line.strip().partition(" ")
+        if tier:
+            recorded[tier] = code.strip()
+    problems: list[str] = []
+    for tier, allowed in _ALLOWED_TIER_EXITS.items():
+        code = recorded.get(tier)
+        if code is None or not code.isdigit() or int(code) not in allowed:
+            problems.append(
+                f"INCOMPLETE: {tier} exit code {code!r} in {exits.name}, not one of "
+                f"{sorted(allowed)}"
+            )
+    return problems
+
+
 def _listing_problems(tier: str, listing: str, outcomes: Outcomes | None) -> list[str]:
     """Whether a tier's ``--collect-only -q`` listing proves its report is complete.
 
@@ -407,9 +463,11 @@ def full_run_problems(run_dir: Path, expected_node_ids: Iterable[str]) -> list[s
         expected_node_ids: The node ids that must fail, and fail cleanly.
 
     Returns:
-        ``INCOMPLETE`` (a missing file, an empty report, or a collected test with no
-        outcome), ``BOUNDARY`` (a tier log carrying the session-end production store
-        sweep) and every kind ``expected_outcome_problems`` names. Empty is the pass.
+        ``INCOMPLETE`` (a missing file, an empty report, a collected test with no
+        outcome, or a tier exit code in ``exits.txt`` no complete run has), ``BOUNDARY``
+        (a tier log carrying the session-end production store sweep, or one that does
+        not end on pytest's closing summary line, so the sweep never completed) and
+        every kind ``expected_outcome_problems`` names. Empty is the pass.
     """
     problems: list[str] = []
     union: dict[tuple[str, str], frozenset[str]] = {}
@@ -429,17 +487,24 @@ def full_run_problems(run_dir: Path, expected_node_ids: Iterable[str]) -> list[s
         if listing.is_file():
             listing_text = listing.read_text(encoding="utf-8", errors="replace")
             problems.extend(_listing_problems(tier, listing_text, outcomes))
-        if log.is_file() and carries_closing_sweep(
-            log.read_text(encoding="utf-8", errors="replace")
-        ):
+        log_text = (
+            log.read_text(encoding="utf-8", errors="replace") if log.is_file() else None
+        )
+        if log_text is not None and carries_closing_sweep(log_text):
             problems.append(
                 f"BOUNDARY: {tier} log carries the session-end production store sweep "
                 "-- a production store moved during the run"
+            )
+        if log_text is not None and not session_completed(log_text):
+            problems.append(
+                f"BOUNDARY: {tier} log does not end on pytest's closing summary line -- "
+                "the session-end sweep did not complete, so the stores were not compared"
             )
 
         for key, states in (outcomes or {}).items():
             union[key] = union.get(key, frozenset()) | states
 
+    problems.extend(_exit_problems(run_dir / FULL_RUN_EXITS_FILE))
     problems.extend(expected_outcome_problems(union, expected_node_ids))
     return problems
 
@@ -775,6 +840,11 @@ def test_the_measured_failing_set_equals_the_tripwire_constant(tmp_path: Path) -
         "the tripwire run's output carries the session-end production store sweep: a "
         f"production store moved during the run.\n\nFull report:\n{output}"
     )
+    assert session_completed(output), (
+        "the tripwire run's output does not end on pytest's closing summary line: the "
+        "session-end sweep did not complete, so the production stores were never "
+        f"compared.\n\nFull report:\n{output}"
+    )
 
 
 def test_the_whole_tier_verdict_when_opted_in(tmp_path: Path) -> None:
@@ -804,6 +874,10 @@ def test_the_whole_tier_verdict_when_opted_in(tmp_path: Path) -> None:
         assert not carries_closing_sweep(output), (
             f"{tier}'s output carries the session-end production store sweep: a "
             f"production store moved during the run.\n\nFull report:\n{output}"
+        )
+        assert session_completed(output), (
+            f"{tier}'s output does not end on pytest's closing summary line: the "
+            f"session-end sweep did not complete.\n\nFull report:\n{output}"
         )
 
 
@@ -924,6 +998,9 @@ def _planted_run(run_dir: Path) -> Path:
     _write_planted_tier(
         run_dir, "api", {"tests/api/test_planted_gate.py::test_api_bystander": "passed"}
     )
+    (run_dir / FULL_RUN_EXITS_FILE).write_text(
+        "unit 0\nintegration 1\napi 0\n", encoding="utf-8"
+    )
     return run_dir
 
 
@@ -972,7 +1049,7 @@ def test_the_full_run_judge_refuses_a_bad_report(tmp_path: Path) -> None:
     # A tier log carrying the session-end sweep: a production store moved.
     swept = _planted_run(tmp_path / "swept")
     sweep_log = (
-        f"1 passed in 0.01s\n{CLOSING_SWEEP_HEADER} -- a production store moved\n"
+        f"{CLOSING_SWEEP_HEADER} -- a production store moved\n1 passed in 0.01s\n"
     )
     (swept / "unit.log").write_text(sweep_log, encoding="utf-8")
     boundary = full_run_problems(swept, tripwires)
@@ -982,6 +1059,35 @@ def test_the_full_run_judge_refuses_a_bad_report(tmp_path: Path) -> None:
     quoted_log = f"E   AssertionError: {CLOSING_SWEEP_HEADER} seen\n1 passed in 0.01s\n"
     (quoted / "unit.log").write_text(quoted_log, encoding="utf-8")
     assert full_run_problems(quoted, tripwires) == []
+
+    # A session-end sweep that raised: the report is complete and clean, but the log
+    # ends on the traceback, not on pytest's closing summary line.
+    crashed_sweep = _planted_run(tmp_path / "crashed_sweep")
+    (crashed_sweep / "unit.log").write_text(
+        "Traceback (most recent call last):\n"
+        '  File "tests/conftest.py", line 1, in pytest_sessionfinish\n'
+        "RuntimeError: planted locked store\n",
+        encoding="utf-8",
+    )
+    not_compared = full_run_problems(crashed_sweep, tripwires)
+    assert _kinds(not_compared) == ["BOUNDARY"], not_compared
+    assert "did not complete" in not_compared[0]
+    internal = _planted_run(tmp_path / "internal")
+    (internal / "api.log").write_text(
+        "INTERNALERROR> planted\n1 passed in 0.01s\n", encoding="utf-8"
+    )
+    assert _kinds(full_run_problems(internal, tripwires)) == ["BOUNDARY"]
+
+    # exits.txt is required, and only the tripwire tier may exit 1.
+    no_exits = _planted_run(tmp_path / "no_exits")
+    (no_exits / FULL_RUN_EXITS_FILE).unlink()
+    assert _kinds(full_run_problems(no_exits, tripwires)) == ["INCOMPLETE"]
+    bad_exit = _planted_run(tmp_path / "bad_exit")
+    (bad_exit / FULL_RUN_EXITS_FILE).write_text(
+        "unit 3\nintegration 1\napi 0\n", encoding="utf-8"
+    )
+    bad = full_run_problems(bad_exit, tripwires)
+    assert _kinds(bad) == ["INCOMPLETE"] and " unit " in bad[0], bad
 
     # A sixth failing testcase.
     sixth = _planted_run(tmp_path / "sixth")
