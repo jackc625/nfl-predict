@@ -58,7 +58,9 @@ naming the first one unmet:
    score existed, so its missing silver score is a store contradiction, never a void game);
 3. the schedule holds no played week-22 game;
 4. the binding record ``<repo root>/docs/records/SEASON-2026-READOUT.md`` exists, or that path
-   appears anywhere in git history (``git log --all``);
+   appears anywhere in git history (``git log --all``). The record is one-shot only once it is
+   COMMITTED: before that, deleting or moving it leaves no trace, so the RUNBOOK commits it alone
+   the moment it is written;
 5. the R6 lock commit (the commit that added ``backtest/verdict_test_2026.py``) cannot be found,
    or cannot be proven: the repository is a shallow clone (its boundary commit reads as adding
    every file), or the oldest commit adding the rule is not the witnessed lock

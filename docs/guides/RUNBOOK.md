@@ -1439,8 +1439,10 @@ never let the run void a settled result.
 **Already done -- do not run it again.**
 
 4. The record already exists, or its path appears anywhere in git history. The binding run has
-   already happened. Never delete or move the document to run it again: the history check refuses
-   that too, and a second run would be a second look at the same season.
+   already happened. Never delete or move the document to run it again: once it is committed, the
+   history check refuses that too, and a second run would be a second look at the same season.
+   Until it is committed nothing records that it existed, which is why "Committing it" below
+   commits it alone, at once.
 
 **Repository integrity -- stop and investigate, never work around it.** These mean the rule or the
 repository is not what was frozen. Do not edit, re-commit or re-clone anything to make one go away;
@@ -1489,8 +1491,16 @@ document.
 
 ### Committing it
 
-The new record must be registered in the same commit that adds it, or the readout-label test fails
-on the next run:
+The record is one-shot only once it is in git history. Between the write and its commit, deleting
+or moving the file leaves no trace and the next binding run would write a fresh one, so commit it
+FIRST, alone, before anything else:
+
+```powershell
+git add docs/records/SEASON-2026-READOUT.md
+git commit -m "docs: the 2026 season-close readout (binding)"
+```
+
+Then register it in a second commit straight away; until that lands the readout-label test fails:
 
 1. Add `SEASON-2026-READOUT.md` to `NO_PREFIX_NUMBERS_REASONS` in
    `tests/unit/test_old_rule_labels.py`, with a one-sentence reason (a 2026 forward result under the
@@ -1502,8 +1512,8 @@ on the next run:
    uv run python -m pytest tests/unit/test_old_rule_labels.py tests/unit/test_phase33_no_zero_failures_claim.py -q -p no:cacheprovider
    ```
 
-4. Stage the three files by name (`docs/records/SEASON-2026-READOUT.md`,
-   `tests/unit/test_old_rule_labels.py`, `tests/doc_locations.py`), commit, and push the normal way.
+4. Stage the two files by name (`tests/unit/test_old_rule_labels.py`, `tests/doc_locations.py`),
+   commit, and push both commits the normal way.
 
 ---
 
