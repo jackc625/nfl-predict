@@ -663,6 +663,45 @@ def test_every_row_of_a_not_played_game_leaves_the_figures(
     )
 
 
+@pytest.mark.usefixtures("isolated_git_env")
+def test_after_an_honest_invalidation_the_lock_section_reports_the_applied_rule(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """WR-A04: the applied rule was frozen at the INVALIDATES commit, so its instant and the
+    weeks graded by then are reported beside the original lock's."""
+    argv = binding_fixture(tmp_path)
+    repo = tmp_path / "repo"
+    lock_sha = git(repo, "rev-parse", "HEAD").strip()
+    with (repo / RULE_FILES[1]).open("a", encoding="utf-8") as handle:
+        handle.write("\n# corrected\n")
+    frozen_at = "2027-02-16T12:00:00+00:00"  # after week 22 was graded
+    message = f"correct the rule\n\nThis commit INVALIDATES the pre-registration at {lock_sha}."
+    git(
+        repo,
+        "commit",
+        "-q",
+        "-am",
+        message,
+        env={"GIT_AUTHOR_DATE": frozen_at, "GIT_COMMITTER_DATE": frozen_at},
+    )
+    frozen_sha, frozen_iso = git(repo, "log", "-1", "--format=%H %cI").split()
+
+    code, lines = _run(argv, capsys, repo)
+
+    assert code == 0, lines
+    document = (repo / BINDING_RECORD_PATH).read_text("ascii")
+    assert f"- Lock commit: {lock_sha}\n" in document
+    assert "- Weeks with a counted bet graded at or before the lock: 5, 6\n" in document
+    assert (
+        f"- The applied rule was frozen at: {frozen_sha}, committed at {frozen_iso}\n"
+        in document
+    )
+    assert (
+        "- Weeks with a counted bet graded at or before the applied rule was frozen: "
+        "5, 6, 22\n" in document
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 3: binding refuses until the season is graded, refuses an edited rule, and runs once
 # ---------------------------------------------------------------------------

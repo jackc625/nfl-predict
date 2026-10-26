@@ -509,12 +509,15 @@ class RuleLock:
         sha: The oldest commit that added ``backtest/verdict_test_2026.py`` (the lock commit).
         committed_at: Its committer date, ISO 8601 with offset (``%cI``).
         last_touch_sha: The newest commit touching either R6 file; the lock itself unless an
-            honest later commit named the lock INVALIDATED.
+            honest later commit named the lock INVALIDATED. The rule the run applies was frozen
+            there.
+        last_touch_committed_at: That commit's committer date (``%cI``).
     """
 
     sha: str
     committed_at: str
     last_touch_sha: str
+    last_touch_committed_at: str
 
 
 class GitCheckError(Exception):
@@ -571,8 +574,16 @@ def lock_commit(repo_root: Path) -> RuleLock:
         raise RuleLockMissingError(msg)
     # git lists newest first, so the last line is the oldest commit that added the module.
     sha, committed_at = added.splitlines()[-1].split("\t")
-    last_touch = _git(repo_root, "log", "-1", "--format=%H", "--", *RULE_PATHS).strip()
-    return RuleLock(sha=sha, committed_at=committed_at, last_touch_sha=last_touch)
+    last_touch = _git(
+        repo_root, "log", "-1", "--format=%H%x09%cI", "--", *RULE_PATHS
+    ).strip()
+    last_touch_sha, last_touch_committed_at = last_touch.split("	")
+    return RuleLock(
+        sha=sha,
+        committed_at=committed_at,
+        last_touch_sha=last_touch_sha,
+        last_touch_committed_at=last_touch_committed_at,
+    )
 
 
 def unwitnessed_lock_problem(repo_root: Path, lock: RuleLock) -> str | None:
@@ -942,9 +953,20 @@ def _verdict_section(results: Sequence[TargetResult]) -> list[str]:
     return lines
 
 
-def _lock_section(lock: RuleLock, graded_weeks: Sequence[int]) -> list[str]:
-    """Section 4: the R6 lock commit, its time and the weeks already graded then."""
-    weeks = ", ".join(str(week) for week in graded_weeks) or "none"
+def _weeks(weeks: Sequence[int]) -> str:
+    return ", ".join(str(week) for week in weeks) or "none"
+
+
+def _lock_section(
+    lock: RuleLock, graded_weeks: Sequence[int], frozen_weeks: Sequence[int]
+) -> list[str]:
+    """Section 4: the R6 lock commit, its time and the weeks already graded then.
+
+    After an honest INVALIDATES commit the rule applied was frozen at that later commit, so its
+    instant and the weeks graded by then are reported too: what was visible when the APPLIED
+    rule was frozen is the fact this section exists to disclose.
+    """
+    weeks = _weeks(graded_weeks)
     lines = [
         "## 4. The rule's lock",
         "",
@@ -957,6 +979,12 @@ def _lock_section(lock: RuleLock, graded_weeks: Sequence[int]) -> list[str]:
             f"- A later commit touches the rule and names this lock INVALIDATED: "
             f"{lock.last_touch_sha}"
         )
+        lines += [
+            f"- The applied rule was frozen at: {lock.last_touch_sha}, committed at "
+            f"{lock.last_touch_committed_at}",
+            "- Weeks with a counted bet graded at or before the applied rule was frozen: "
+            f"{_weeks(frozen_weeks)}",
+        ]
     return lines
 
 
@@ -1000,6 +1028,7 @@ def render_document(
     results: Sequence[TargetResult],
     lock: RuleLock,
     graded_weeks: Sequence[int],
+    frozen_weeks: Sequence[int],
     refit_text: str,
     ledger: tuple[str, int],
     evidence: Sequence[EvidenceFile],
@@ -1011,7 +1040,7 @@ def render_document(
         _coverage_section(report, void),
         _scope_section(scope),
         _verdict_section(results),
-        _lock_section(lock, graded_weeks),
+        _lock_section(lock, graded_weeks, frozen_weeks),
         _refit_section_lines(refit_text),
         _read_section(ledger, evidence, silver_dir),
     ]
@@ -1213,6 +1242,7 @@ def _binding_run(
         results=results,
         lock=lock,
         graded_weeks=weeks_graded_at(counted, lock.committed_at),
+        frozen_weeks=weeks_graded_at(counted, lock.last_touch_committed_at),
         refit_text=refit_text,
         ledger=ledger_head(entries),
         evidence=evidence,
