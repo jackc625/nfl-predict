@@ -771,7 +771,25 @@ def apply_corrections(
 
     Under the locked ruling a nulled value is set to NaN and its row KEPT. ``drop_unresolvable``
     exists only for the ``amend-drop-row`` amendment, which removes the row instead.
+
+    Raises:
+        ValueError: a corrected game holds more than one row. A ``Correction`` is keyed on
+            ``game_id`` alone, so on such a game (a consensus row beside another sportsbook's
+            row, or a decision and a closing twin) it would land on whichever row came last, not
+            on the row it was resolved from, and leave the real conflict in place. Such a game
+            refuses by name.
     """
+    corrections = list(corrections)
+    rows_per_game = odds["game_id"].value_counts()
+    ambiguous = sorted(
+        {c.game_id for c in corrections if rows_per_game.get(c.game_id, 0) > 1}
+    )
+    if ambiguous:
+        msg = (
+            f"game(s) {ambiguous} hold more than one odds row: this repair keys corrections on "
+            "game_id only and would write whichever row came last; resolve them by hand."
+        )
+        raise ValueError(msg)
     repaired = odds.copy()
     position = {
         gid: idx for idx, gid in zip(repaired.index, repaired["game_id"], strict=True)

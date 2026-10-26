@@ -48,6 +48,7 @@ from scripts.repair_odds_snapshot import (
     STRAY_DUPLICATE_AFTER_CANONICAL_ID,
     STRAY_SAME_KEY_DIFFERENT_VALUE,
     ArchiveQuote,
+    apply_corrections,
     classify_stray_rows,
     insert_if_absent,
     latest_pre_kickoff_timeline,
@@ -166,6 +167,22 @@ class TestAPerBookConflictRefuses:
             resolve_sign_conflicts(frame, {}, {})
         assert "draftkings" in str(refused.value)
         assert "fanduel" not in str(refused.value)
+
+    def test_a_consensus_conflict_on_a_game_with_another_row_is_refused(self) -> None:
+        # PR #2 review: the consensus row conflicts while DraftKings' row of the same game
+        # agrees and comes last. A game_id-keyed correction would land on DraftKings' row and
+        # leave the consensus conflict in place, so applying it refuses and changes nothing.
+        conflicting = _row("2026_W09_AAA@BBB", 3.0, 150.0, -170.0)
+        agreeing = {
+            **_row("2026_W09_AAA@BBB", -3.0, 150.0, -170.0),
+            "sportsbook": "draftkings",
+        }
+        frame = pd.DataFrame([conflicting, agreeing])
+        corrections = resolve_sign_conflicts(frame, {}, {})
+        assert corrections, "the consensus conflict must reach apply_corrections"
+        with pytest.raises(ValueError, match="more than one odds row") as refused:
+            apply_corrections(frame, corrections)
+        assert "2026_W09_AAA@BBB" in str(refused.value)
 
 
 class TestTheOwnedTimelineIsFlippedOnceAtTheReader:
