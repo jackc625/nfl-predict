@@ -44,6 +44,7 @@ from backtest.verdict_test_2026 import (
     VERDICT_TARGETS,
     VERDICT_TOKENS,
 )
+from forward_ledger.anchor import write_anchor_commit
 from forward_ledger.declarations import load_verdict_scope
 from forward_ledger.settle import DEFAULT_SILVER_DIR, SILVER_GAMES_FILENAME
 from forward_ledger.shadow import SHADOW_PIN
@@ -380,6 +381,12 @@ def synthetic_repo(root: Path) -> Path:
     return repo
 
 
+def anchor_ledger(repo: Path, ledger_dir: Path) -> None:
+    """Publish *ledger_dir*'s current head on *repo*'s ``ledger-anchor`` branch, as a sync does."""
+    head, count = ledger_head(read_entries(ledger_dir))
+    write_anchor_commit(repo, head, count)
+
+
 def binding_fixture(
     root: Path,
     *,
@@ -391,7 +398,7 @@ def binding_fixture(
 
     By default: the complete ledger (every bet graded, one suppressed row, one shadow twin), a
     schedule holding every game scored (plus one missed game), a run log, empty skip records and
-    a synthetic repository holding the R6 lock commit.
+    a synthetic repository holding the R6 lock commit and the ledger's published anchor.
     """
     ledger_dir, silver_dir = root / "ledger", root / "silver"
     silver_dir.mkdir(parents=True)
@@ -408,6 +415,7 @@ def binding_fixture(
     _jsonl(run_log, [no_games])
     _jsonl(skip_records, [])
     repo = synthetic_repo(root)
+    anchor_ledger(repo, ledger_dir)
     return [
         "--binding",
         "--repo-root",
@@ -636,6 +644,9 @@ def test_binding_refuses_on_todays_real_ledger(
         if not path.exists():
             pytest.skip(f"the real store {path.as_posix()} is absent on this machine")
     repo = synthetic_repo(tmp_path)
+    anchor_ledger(
+        repo, stores["--ledger-dir"]
+    )  # the anchor is only READ from the real ledger
     before = hashlib.sha256(ledger_file.read_bytes()).hexdigest()
     argv = ["--binding", "--repo-root", str(repo)]
     for name, path in stores.items():
@@ -648,6 +659,33 @@ def test_binding_refuses_on_todays_real_ledger(
         or "in-scope game(s) lack a final score" in line
     ), line
     assert hashlib.sha256(ledger_file.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_an_absent_a_stale_or_an_unanchored_ledger(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Refusal 0 (CR-A01): an absent or shortened ledger still verifies as a chain, so the
+    season-end run must refuse it rather than spend its one shot on it."""
+    # An absent ledger at season end: every other condition holds.
+    absent = binding_fixture(tmp_path / "absent")
+    ledger_path(_arg(absent, "--ledger-dir")).unlink()
+    line = _assert_refuses(absent, capsys, tmp_path / "absent")
+    assert "the ledger holds no entry" in line
+
+    # A stale backup: one entry shorter than the published anchor.
+    stale = binding_fixture(tmp_path / "stale")
+    ledger_file = ledger_path(_arg(stale, "--ledger-dir"))
+    kept = ledger_file.read_bytes().splitlines(keepends=True)[:-1]
+    ledger_file.write_bytes(b"".join(kept))
+    line = _assert_refuses(stale, capsys, tmp_path / "stale")
+    assert "the ledger does not extend its published anchor" in line
+
+    # No anchor at all while the ledger holds entries.
+    unanchored = binding_fixture(tmp_path / "unanchored")
+    git(_arg(unanchored, "--repo-root"), "update-ref", "-d", "refs/heads/ledger-anchor")
+    line = _assert_refuses(unanchored, capsys, tmp_path / "unanchored")
+    assert "holds no ledger-anchor commit" in line
 
 
 @pytest.mark.usefixtures("isolated_git_env")

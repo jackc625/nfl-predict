@@ -1399,9 +1399,17 @@ under the repository root. On success it prints `BINDING_WRITTEN= <path>` and on
 
 ### If it refuses
 
-Before computing or writing anything it checks eight conditions, in the order below, and stops at
-the first one that is not met. It then prints `BINDING_REFUSED= <sentence>` naming that condition
-and exits 3. Nothing is written. What to do depends on which one it names.
+Before computing or writing anything it checks nine conditions, numbered 0 to 8, in the order
+below, and stops at the first one that is not met. It then prints `BINDING_REFUSED= <sentence>`
+naming that condition and exits 3. Nothing is written. What to do depends on which one it names.
+
+**Restore the ledger first.**
+
+0. The ledger holds no entry, the repository has no `ledger-anchor` commit, or the ledger does
+   not extend that anchored head. An absent, emptied or stale-backup ledger still passes the chain
+   check, so this is what stops the one run being spent on it. Never run the binding run while
+   `ledger/` is moved aside (step 2 of "Restore the ledger from the private backup" above): finish
+   the restore, confirm `uv run python -m scripts.verify_ledger` passes, then run it again.
 
 **Wait for the next 17:00 ET daily run, then try again.** These clear on their own once the daily
 run has graded the bets and recorded the scores:

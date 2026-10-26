@@ -48,6 +48,9 @@ Run ONCE, after the Super Bowl is graded. It reads the same stores, checks every
 IN THIS ORDER before anything is computed or written, and prints ``BINDING_REFUSED= <sentence>``
 naming the first one unmet:
 
+0. the ledger holds no entry, the repository holds no ``ledger-anchor`` commit, or the ledger does
+   not extend that anchored head (``forward_ledger.store.assert_extends_anchor``, the check the
+   daily run's settle pass applies): an absent, emptied or stale-backup ledger is never judged;
 1. a counted bet (status live) of a played game is not graded (suppressed rows and void bets never
    block);
 2. an in-scope game that is not "not played" lacks a final score;
@@ -62,7 +65,8 @@ naming the first one unmet:
    longer holds its pinned number;
 8. the re-fit comparison (``scripts.compare_refit_arms``) cannot run (exit other than 0).
 
-What each refusal means: (1)-(3) clear by waiting for the next 17:00 ET daily run to grade the
+What each refusal means: (0) needs the ledger restored from the private backup (RUNBOOK); (1)-(3)
+clear by waiting for the next 17:00 ET daily run to grade the
 bets and record the scores; (4) means the binding run already happened and will never run again;
 (5)-(7), and any failed git command, are repository-integrity refusals -- stop and investigate,
 never work around them; (8) needs the store the comparison names fixed.
@@ -70,7 +74,9 @@ never work around them; (8) needs the store the comparison names fixed.
 When every condition holds it computes each target's verdict (:func:`measure_targets`), embeds the
 comparison's stdout byte for byte, and writes the one document atomically (sibling ``.tmp`` then
 replace, ASCII, LF line endings) to ``<repo root>/docs/records/SEASON-2026-READOUT.md`` -- the path
-is DERIVED from ``--repo-root`` and never chosen (there is no option naming another path). It then
+is DERIVED from ``--repo-root`` and never chosen (there is no option naming another path). In
+binding mode a relative store path (every default is one) resolves against the repository root,
+never against the working directory the command happens to run from. It then
 prints ``BINDING_WRITTEN= <path>`` and one ``VERDICT_<TARGET>= <word>`` line per target. No run
 ledger is kept (D-09): the output is deterministic (fixed bootstrap seed; nothing writes the ledger
 after the Super Bowl).
@@ -122,6 +128,7 @@ from backtest.profitability_2025 import (
 )
 from backtest.roi_significance import flat_roi, roi_ci_and_p
 from backtest.weekly_bet_list import _replace_atomically
+from forward_ledger.anchor import AnchorFormatError, read_local_anchor
 from forward_ledger.declarations import VerdictScope, load_verdict_scope
 from forward_ledger.settle import (
     DEFAULT_SILVER_DIR,
@@ -131,11 +138,15 @@ from forward_ledger.settle import (
 )
 from forward_ledger.store import (
     LEDGER_DIR,
+    LedgerChainBrokenError,
+    LedgerEntry,
     LedgerFormatError,
+    assert_extends_anchor,
     ledger_head,
     read_entries,
     verify_chain,
 )
+from forward_ledger.transport import GitCommandError
 from forward_ledger.verdict import verdict_rows
 from pipeline.skip_log import SKIP_RECORD_PATH, SkipRecordCorrupt, parse_skip_records
 from scripts import compare_refit_arms
@@ -587,6 +598,35 @@ def _first_five(names: Sequence[str]) -> str:
     """Up to five names, comma-separated, with how many more there are."""
     shown = ", ".join(names[:5])
     return shown if len(names) <= 5 else f"{shown} (and {len(names) - 5} more)"
+
+
+def ledger_refusal(entries: Sequence[LedgerEntry], repo_root: Path) -> str | None:
+    """Refusal (0): the ledger read is the published one, as a plain sentence, or None.
+
+    A chain that verifies proves no entry was edited, not that none was cut off: an absent store
+    reads as ``[]`` and a stale backup is a shorter prefix, and both verify. So the ledger must
+    hold an entry and extend the repository's ``ledger-anchor`` head, checked by
+    ``assert_extends_anchor``, the same check the daily run's settle pass applies.
+    """
+    if not entries:
+        return (
+            "the ledger holds no entry; the binding run never judges an absent or emptied "
+            "ledger. Restore it from the private backup (RUNBOOK) and run it again."
+        )
+    try:
+        anchored = read_local_anchor(repo_root)
+    except (AnchorFormatError, GitCommandError) as error:
+        return f"a git check failed, so the run refuses (fail closed): {error}"
+    if anchored is None:
+        return (
+            f"{Path(repo_root).as_posix()} holds no ledger-anchor commit while the ledger holds "
+            f"{len(entries)} entries, so the ledger cannot be checked against its published head."
+        )
+    try:
+        assert_extends_anchor(entries, anchored)
+    except LedgerChainBrokenError as error:
+        return f"the ledger does not extend its published anchor: {error}"
+    return None
 
 
 def binding_refusal(
@@ -1056,7 +1096,7 @@ def figure_lines(counted: pd.DataFrame, report: CoverageReport) -> list[str]:
 def _binding_run(
     args: argparse.Namespace,
     *,
-    ledger: tuple[str, int],
+    entries: Sequence[LedgerEntry],
     evidence: Sequence[EvidenceFile],
     counted: pd.DataFrame,
     schedule: pd.DataFrame,
@@ -1066,6 +1106,10 @@ def _binding_run(
 ) -> int:
     """The one binding run: refuse (exit 3) or write the document (exit 0)."""
     repo_root = Path(args.repo_root)
+    unpublished = ledger_refusal(entries, repo_root)
+    if unpublished is not None:
+        print(f"BINDING_REFUSED= {unpublished}")
+        return 3
     # Run at most once: the refusal's last check and the document read the same capture.
     comparison = functools.cache(
         lambda: refit_section(args.ledger_dir, args.silver_dir)
@@ -1096,7 +1140,7 @@ def _binding_run(
         lock=lock,
         graded_weeks=weeks_graded_at(counted, lock.committed_at),
         refit_text=refit_text,
-        ledger=ledger,
+        ledger=ledger_head(entries),
         evidence=evidence,
         silver_dir=Path(args.silver_dir),
         written_at=datetime.now(UTC),
@@ -1113,6 +1157,10 @@ def _binding_run(
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     args = build_parser().parse_args(argv)
+    if args.binding:
+        for store in ("ledger_dir", "silver_dir", "run_log", "skip_records"):
+            path = Path(getattr(args, store))
+            setattr(args, store, path if path.is_absolute() else args.repo_root / path)
     try:
         entries = read_entries(args.ledger_dir)
     except LedgerFormatError as error:
@@ -1141,7 +1189,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.binding:
         return _binding_run(
             args,
-            ledger=ledger_head(entries),
+            entries=entries,
             evidence=evidence,
             counted=counted,
             schedule=schedule,
