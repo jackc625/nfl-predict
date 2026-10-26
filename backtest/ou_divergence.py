@@ -38,7 +38,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -89,6 +89,7 @@ __all__ = [
     "odds_information_time",
     "order_by_book_preference",
     "run_ou_divergence_diagnosis",
+    "snapshot_ts_is_synthetic",
     "throwaway_ev_preview",
 ]
 
@@ -443,6 +444,35 @@ def _ou_clv_valid(preds: pd.DataFrame, odds: pd.DataFrame) -> pd.DataFrame:
     return clv[clv["has_closing_odds"]].copy()
 
 
+def snapshot_ts_is_synthetic(raw: pd.DataFrame) -> bool:
+    """True when *raw*'s snapshot stamps are DERIVED, one per game (DEF-31-07).
+
+    DEF-31-07, fixed in Phase 38. The preamble used to decide this by CARDINALITY (few distinct
+    stamps, one per game), which stopped working once D31-37 re-derived a stamp PER GAME: the
+    store came to hold dozens of distinct stamps every bit as fabricated, and the flag reported
+    False -- under-reporting fabrication, the unsafe direction. This module was frozen only to
+    protect the Phase-26 verdict, which was measured on a model now retired.
+
+    The rule judges DERIVATION by the one recorded observation time. Every writer here stamps
+    ``snapshot_ts`` with the game's lock whether a line was observed or derived (a live capture's
+    snapshot time IS its lock, :func:`odds_information_time`), so the stamp itself cannot tell
+    the two apart: real 2026 book captures sit on 18:00:00 ET too. Only ``created_at`` records an
+    observation (owner ruling 2026-09-22, Option B). A store is derived when no row carries one,
+    and its stamps are synthetic when it is derived AND holds at most one snapshot per game. An
+    empty store is not synthetic: it has no stamps to judge.
+
+    Args:
+        raw: Rows carrying ``game_id``, ``snapshot_ts`` and ``created_at`` (the stored columns).
+
+    Returns:
+        Whether the stamps are a derived single-stamp-per-game fabrication.
+    """
+    if raw.empty:
+        return False
+    observed = odds_information_time(raw).notna()
+    return (not observed.any()) and int(raw.groupby("game_id").size().max()) <= 1
+
+
 def _resolve_deployed_ou_artifact() -> str:
     """Resolve the deployed OU artifact identity via a STABLE provenance source.
 
@@ -469,9 +499,10 @@ def integrity_preamble(odds_df: pd.DataFrame | None = None) -> dict[str, Any]:
         (raising an actionable ValueError naming offending rows otherwise) -- this pulls the
         OUM-06 provenance spirit forward one phase (D26-04(i)).
       - ``synthetic_snapshot_ts`` (bool): the disclosed fabricated single-stamp TIMESTAMP reality.
-        True iff the snapshot_ts has a small distinct count AND each game has exactly one snapshot
-        (freeze == closing). This is a data-reality DISCLOSURE, not a tampering risk -- a SEPARATE
-        concept from mock-odds contamination (D26-04(ii)).
+        True iff no row records an observation time (``created_at``) AND each game has at most
+        one snapshot (freeze == closing), per ``snapshot_ts_is_synthetic`` (DEF-31-07: the rule
+        judges derivation, not the count of distinct stamps). This is a data-reality DISCLOSURE,
+        not a tampering risk -- a SEPARATE concept from mock-odds contamination (D26-04(ii)).
 
     Also characterizes the 52 closing-snapshot-missing excluded games for selection bias
     (D26-04(iii)) and reports coverage/exclusion counts (D26-04(iv)).
@@ -501,7 +532,10 @@ def integrity_preamble(odds_df: pd.DataFrame | None = None) -> dict[str, Any]:
     # The harness's own frozen window only: live captures (2026 on, every real book, several
     # per game) are not this study's data and never reach its LOCKED allowlist (33-18).
     raw_season = raw["game_id"].astype(str).str[:4].astype(int)
-    raw = raw[raw_season.between(HOLDOUT_FIRST_SEASON, HOLDOUT_LAST_SEASON)]
+    raw = cast(
+        "pd.DataFrame",
+        raw[raw_season.between(HOLDOUT_FIRST_SEASON, HOLDOUT_LAST_SEASON)],
+    )
     sportsbooks = set(raw["sportsbook"].dropna().unique())
     bad_books = sportsbooks - _ALLOWED_SPORTSBOOKS
     live_rows = raw[raw["is_live"]] if "is_live" in raw.columns else raw.iloc[0:0]
@@ -524,10 +558,10 @@ def integrity_preamble(odds_df: pd.DataFrame | None = None) -> dict[str, Any]:
     # -- (ii) TIMESTAMP DISCLOSURE: the synthetic single-snapshot reality (freeze == closing) --
     snapshot_ts_distinct = int(raw["snapshot_ts"].astype(str).nunique())
     snapshots_per_game_max = int(raw.groupby("game_id").size().max())
-    # Synthetic iff few distinct stamps AND exactly one line per game (a fabricated single stamp).
-    synthetic_snapshot_ts = bool(
-        snapshot_ts_distinct <= 12 and snapshots_per_game_max == 1
-    )
+    # Synthetic iff no row records an observation time AND one line per game
+    # (DEF-31-07: derivation, not cardinality). `raw` stays the frozen 2021-2024 window; on the
+    # whole table the 2026 live captures (several per game) would make it False.
+    synthetic_snapshot_ts = snapshot_ts_is_synthetic(raw)
 
     # -- Deployed-artifact identity (stable provenance source, not a metadata version key) --
     deployed_artifact = _resolve_deployed_ou_artifact()

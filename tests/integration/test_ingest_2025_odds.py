@@ -6,10 +6,12 @@ in this phase, and every measurement here is either read-only or confined to ``t
 
 What it pins:
 
-* **The ATS residual bias does not drift.** Plan 31-02 Task 2 re-derived the bias from the
-  DEPLOYED artifact and APPENDED the result to ``tests/phase31_state.py``. This module asserts
-  the live re-score still equals those constants to 17 significant digits, so a later
-  disagreement is a FAILURE rather than a silently different number in a later run.
+* **The ATS residual re-score measures the serving model.** Plan 31-02 Task 2 re-derived the
+  bias from the then-deployed artifact and APPENDED the result to ``tests/phase31_state.py``.
+  The six comparisons of the live re-score against those constants were deleted in Phase 38
+  by owner ruling: they compared against the Phase-31 constants of the retired
+  ``ats_20260605_220128``, which today's gold cannot score. The constants stay as a record in
+  ``tests/phase31_state.py``.
 * **The completeness gate (SPEC R2).** Zero 2025 rows, or fewer than 285 games carrying a
   total, is a HARD STOP before gold is touched.
 * **The no-extra-rows gate (DEFECT-3).** The synthetic ``2025_W01_TEST@HOME`` fixture sitting
@@ -36,20 +38,12 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from tests.phase31_state import (
-    ATS_RESIDUAL_BY_SEASON,
-    ATS_RESIDUAL_FIELDS,
-    ATS_RESIDUAL_POOLED,
-    ATS_RESIDUAL_POOLED_PROVENANCE,
-)
+from tests.phase31_state import ATS_RESIDUAL_POOLED_PROVENANCE
 
 _GOLD_ATS = Path("data/gold/features_ats.parquet")
 _GOLD_OU = Path("data/gold/features_ou.parquet")
 _SILVER_ODDS = Path("data/silver/odds_snapshot.parquet")
 _ARTIFACTS_MANIFEST = Path("artifacts/latest.json")
-
-# The ONE explicit specifier every Phase-31 float is compared through.
-_FMT = "{:.17g}"
 
 # The synthetic fixture row DEFECT-3 names. Identified here so its removal is a NAMED
 # pre-ingest step rather than an accident of downstream join semantics.
@@ -120,49 +114,22 @@ def ats_bias_block() -> dict:
     return block
 
 
-DRIFT_XFAIL_REASON = (
-    "DEF-31-06 (owner ruling B, 2026-09-05): the live re-score no longer reproduces the "
-    "RATIFIED ATS residual constants. Two separately-attributable causes -- an nflverse "
-    "upstream re-release that moved sixteen gold columns before this plan wrote anything, "
-    "and the ratified clause-5 LAR -> LA key normalization reaching the 2021-2024 slice at "
-    "the ruling-A full rebuild, which corrected 68 games that had carried a fabricated zero "
-    "market line. The owner ruled this a DISCLOSURE item, not a tampering one: the frozen "
-    "constants ARE the rule, backtest/ev_chain_constants.py reads them, and the verdict is "
-    "computed with the ratified numbers. What was lost is their RE-DERIVABILITY. The "
-    "assertions below are PRESERVED INTACT and strict=True, so the drift stays measurable "
-    "in the terminal summary and a return to the ratified values fails loudly instead of "
-    "passing unnoticed. Both value sets are recorded in "
-    "tests/phase31_state.ATS_RESIDUAL_LIVE_UPSTREAM_ONLY and "
-    "ATS_RESIDUAL_LIVE_AFTER_FULL_REBUILD. SINCE THE PLAN 33.2-25 SWAP the live re-score "
-    "scores the SERVING model ats_20260923_172148, not the retired ats_20260605_220128 the "
-    "ratified constants belong to -- and current gold can no longer score the retired model "
-    "at all (D33.2-03 removed two of its 25 features) -- so these comparisons can never "
-    "pass again; they stay strict so the record cannot silently change."
-)
-
-
 class TestTheAppendedATSResidualConstantsStillHold:
-    """The live re-score must equal the constants Plan 31-02 appended, to 17 significant digits.
+    """The live ATS residual re-score, measured on the model actually serving.
 
-    The pre-registration Plan 31-05 freezes binds to these numbers. If the deployed artifact,
-    the gold matrix or the residual contract moves, this test is where that shows up -- as a
-    failure naming both figures, not as a quietly different number in a later run.
+    The pre-registration Plan 31-05 froze binds to the constants Plan 31-02 appended to
+    ``tests/phase31_state.py``. Those constants were measured on ``ats_20260605_220128``.
 
-    XFAIL SINCE 2026-09-05, UNDER THE OWNER'S RULING B (register entry DEF-31-06). Four of
-    these cases are EXPECTED failures today and are marked ``xfail(strict=True)`` -- never
-    ``skip``, never a widened tolerance, and with every assertion left byte-for-byte as it
-    was. The distinction matters: a skipped case asserts nothing, and a tolerance chosen
-    after seeing the drift is exactly the post-hoc threshold selection this phase forbids
-    everywhere else. An xfail still RUNS the comparison, still reports both figures, and
-    ``strict=True`` means the day gold returns to the ratified numbers this turns into an
-    unexpected PASS -- a failure -- forcing DEF-31-06 to be closed rather than forgotten.
+    THE SIX COMPARISONS AGAINST THOSE CONSTANTS WERE DELETED IN PHASE 38, BY OWNER RULING
+    (register entry DEF-31-06). From 2026-09-05 they were parked as strict xfails, because
+    the live re-score no longer reproduced the ratified numbers. The Plan 33.2-25 swap then
+    retired ``ats_20260605_220128``, and today's gold cannot score it at all (D33.2-03
+    removed two of its 25 features), so the comparisons could never measure anything again.
+    The constants themselves stay, unedited, as a record in ``tests/phase31_state.py``.
 
-    ``test_the_scored_artifact_is_the_one_the_constants_name`` was NOT marked: the artifact
-    identity did not drift and had to keep passing. The Plan 33.2-25 swap then retired that
-    artifact, and the 33.2 review (batch 3) re-pointed the two unmarked cases at the SERVING
-    model -- they used to error in fixture setup, because the Phase-31 direction guard raised
-    on a model it was never a claim about. The marked cases below still compare the ratified
-    Phase-31 constants and stay strict xfails, now across two models rather than one.
+    The two cases kept here assert what is still checkable: the re-score is attributable to
+    the SERVING model, and the Phase-31 direction claim is not imposed on a model it was
+    never a claim about.
     """
 
     def test_the_scored_artifact_is_the_serving_model_not_the_one_the_constants_name(
@@ -234,54 +201,6 @@ class TestTheAppendedATSResidualConstantsStillHold:
             "a numeric tolerance appeared in the ATS bias measurement. Choosing a magnitude "
             "threshold after seeing the measured values is the post-hoc threshold selection "
             "this phase forbids everywhere else (T-31-08c)."
-        )
-
-    @pytest.mark.xfail(strict=True, reason=DRIFT_XFAIL_REASON)
-    @pytest.mark.parametrize("season", sorted(ATS_RESIDUAL_BY_SEASON))
-    def test_each_per_season_figure_matches(
-        self, ats_bias_block: dict, season: int
-    ) -> None:
-        live = ats_bias_block["by_season"][str(season)]
-        for field, appended in zip(
-            ATS_RESIDUAL_FIELDS, ATS_RESIDUAL_BY_SEASON[season], strict=True
-        ):
-            expected = str(appended) if field == "n" else _FMT.format(float(appended))
-            assert str(live[field]) == expected, (
-                f"season {season} field '{field}' drifted: live {live[field]} vs the "
-                f"value {expected} appended by Plan 31-02 Task 2. Every per-season mean is "
-                "carried into the pre-registration verbatim, including the NEGATIVE 2022 "
-                "season, so a drift here changes what the pre-registration states."
-            )
-
-    @pytest.mark.xfail(strict=True, reason=DRIFT_XFAIL_REASON)
-    def test_the_pooled_figure_matches(self, ats_bias_block: dict) -> None:
-        live = ats_bias_block["pooled"]
-        for field, appended in zip(
-            ATS_RESIDUAL_FIELDS, ATS_RESIDUAL_POOLED, strict=True
-        ):
-            expected = str(appended) if field == "n" else _FMT.format(float(appended))
-            assert str(live[field]) == expected, (
-                f"pooled field '{field}' drifted: live {live[field]} vs the value "
-                f"{expected} appended by Plan 31-02 Task 2."
-            )
-
-    @pytest.mark.xfail(strict=True, reason=DRIFT_XFAIL_REASON)
-    def test_the_negative_mean_season_set_is_still_exactly_2022(
-        self, ats_bias_block: dict
-    ) -> None:
-        """SPLIT OUT of the case above on 2026-09-05, assertion carried over verbatim.
-
-        This is the sixth drift failure, and it is the one the ruling's own table did not
-        list -- because it did not exist yet. It appeared at the ruling-A full rebuild: the
-        clause-5 correction moved the live 2022 mean from -0.03170638 to +0.04653887, so
-        ``seasons_with_negative_mean`` went from ``[2022]`` to ``[]``. The ratified 2022
-        figure is negative and the pre-registration's prose says so in as many words, so this
-        is a statement of record that the live data no longer supports -- exactly the kind of
-        thing DEF-31-06 obliges PROFITABILITY-READOUT.md to disclose.
-        """
-        assert ats_bias_block["seasons_with_negative_mean"] == [2022], (
-            "the set of negative-mean seasons moved. 2022 being negative is ON THE RECORD by "
-            "design; if that changes, the pre-registration's per-season table changes with it."
         )
 
 
@@ -916,6 +835,8 @@ class TestTheAdditiveJuiceColumns:
         """The clause-2 proof: juice is ADDED and the four stored line values are preserved."""
         _require_silver_odds()
         _require_gold_ou()
+        from backtest.ev_chain_constants import ODDS_SPORTSBOOK_LABEL
+        from data.schemas import LIVE_ODDS_CAPTURE_KEY
         from scripts.ingest_historical_odds import (
             JUICE_COLUMNS,
             PROTECTED_LINE_COLUMNS,
@@ -927,12 +848,23 @@ class TestTheAdditiveJuiceColumns:
         sandbox_odds = _sandbox_silver_copy(tmp_path)
 
         before = pd.read_parquet(sandbox_odds)
+        # Each row kind is compared under its own key, the per-kind rule the production merge
+        # enforces (assert_odds_table_keys, review 937258c; owner ruling 2026-10-21). The rows
+        # this ingest writes are unique on (game_id, sportsbook). Live 2026 captures are not: a
+        # decision reading and a closing reading of one game and book share the lock's
+        # snapshot_ts and are told apart by created_at (LIVE_ODDS_CAPTURE_KEY), so they are
+        # checked separately below.
+        before_historical = before["sportsbook"].astype(str) == ODDS_SPORTSBOOK_LABEL
         # Compare on CANONICAL keys: the merge re-keys the stored LAR rows to LA first, so a
         # raw-key comparison would report every Rams row as vanished when it was only renamed.
-        before_keyed = before.assign(
-            game_id=before["game_id"].astype(str).map(canonical_game_id),
-            sportsbook=before["sportsbook"].astype(str),
-        ).set_index(["game_id", "sportsbook"])
+        before_keyed = (
+            before.loc[before_historical]
+            .assign(
+                game_id=lambda f: f["game_id"].astype(str).map(canonical_game_id),
+                sportsbook=lambda f: f["sportsbook"].astype(str),
+            )
+            .set_index(["game_id", "sportsbook"])
+        )
 
         incoming = transform_nfl_odds_to_standard_format(_load_live_schedule(2024))
         report = write_odds_additively(
@@ -942,15 +874,34 @@ class TestTheAdditiveJuiceColumns:
         )
 
         after = pd.read_parquet(sandbox_odds)
-        after_keyed = after.assign(
-            game_id=after["game_id"].astype(str),
-            sportsbook=after["sportsbook"].astype(str),
-        ).set_index(["game_id", "sportsbook"])
+        after_historical = after["sportsbook"].astype(str) == ODDS_SPORTSBOOK_LABEL
+        after_keyed = (
+            after.loc[after_historical]
+            .assign(
+                game_id=lambda f: f["game_id"].astype(str),
+                sportsbook=lambda f: f["sportsbook"].astype(str),
+            )
+            .set_index(["game_id", "sportsbook"])
+        )
 
         survived = before_keyed.index.intersection(after_keyed.index)
         assert len(survived) == len(before_keyed), (
             f"{len(before_keyed)} stored rows went in and only {len(survived)} keys came out. "
             "The merge is additive; it never drops a stored row."
+        )
+
+        # Every live capture comes out of the merge present and unchanged, on the key that
+        # identifies it. The 2024 merge never touches a 2026 game, so any difference here is a
+        # stored observation lost or rewritten.
+        live_key = list(LIVE_ODDS_CAPTURE_KEY)
+        before_live = before.loc[~before_historical].set_index(live_key).sort_index()
+        after_live = after.loc[~after_historical].set_index(live_key).sort_index()
+        assert len(before_live) > 0, (
+            "the sandbox holds no live capture rows, so the live half of this proof would pass "
+            "for free."
+        )
+        pd.testing.assert_frame_equal(
+            before_live, after_live, obj="stored live capture rows across the merge"
         )
 
         for column in PROTECTED_LINE_COLUMNS:
@@ -1668,7 +1619,7 @@ class TestTheWritePathInvariants:
         _require_gold_ou()
         from scripts.audit_odds_preingest import sha256_file
         from scripts.ingest_historical_odds import (
-            assert_one_row_per_key,
+            assert_odds_table_keys,
             canonical_game_id,
             transform_nfl_odds_to_standard_format,
             write_odds_additively,
@@ -1713,8 +1664,12 @@ class TestTheWritePathInvariants:
         after = pd.read_parquet(sandbox_odds)
         after_ids = after["game_id"].astype(str)
 
-        # Clause 6: one row per (game_id, sportsbook, snapshot_ts), on what is on DISK.
-        assert_one_row_per_key(after, stage="post-merge sandbox")
+        # Clause 6, on what is on DISK, each row kind under its own key -- the per-kind rule the
+        # production merge enforces (review 937258c; owner ruling 2026-10-21): the rows this
+        # ingest writes on (game_id, sportsbook, snapshot_ts), live 2026 captures on
+        # LIVE_ODDS_CAPTURE_KEY, because a decision reading and a closing reading of one game
+        # and book share the lock's snapshot_ts and differ only in created_at.
+        assert_odds_table_keys(after, stage="post-merge sandbox")
 
         # Clause 5: the non-canonical spelling appears ZERO times in the destination.
         assert int(after_ids.str.contains("LAR").sum()) == 0, (

@@ -462,3 +462,21 @@ class TestPhase35Notifications:
         )
         missing = [token for token in required if token not in section]
         assert not missing, f"RUNBOOK.md Notifications section is missing: {missing}"
+
+
+class TestPhase38SeasonClose:
+    """Plan 38-10 (D-10): the February 2027 binding run is written down in the RUNBOOK.
+
+    The binding run happens once, months after Phase 38 closes, so its procedure must live in the
+    repository rather than in anyone's memory.
+    """
+
+    def test_the_season_close_section_names_the_binding_command(self):
+        """The section heading and the exact binding command are present."""
+        content = _read_runbook_md()
+        assert "## Season close (February 2027): the binding readout" in content, (
+            "RUNBOOK.md has no season-close section for the February 2027 binding run"
+        )
+        assert "uv run python -m scripts.season_readout --binding" in content, (
+            "RUNBOOK.md does not name the binding command"
+        )

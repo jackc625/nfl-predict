@@ -5,13 +5,14 @@ WHAT THIS MODULE PROVES
 Phase 33 exists because a GREEN RUN once served imputed Elo. A zero exit code is therefore not
 the evidence; the numbers are. This module follows one live week from
 ``data/silver/elo_game_snapshots.parquet`` through the three gold matrices to the published
-prediction files and the stored forward bet rows, and asserts VALUES:
+prediction files and the forward ledger, and asserts VALUES:
 
 * every Elo cell gold carries for a 2026 game of week ``LIVE_ACCEPTANCE_WEEK`` onward equals,
   within ``LIVE_ACCEPTANCE_TOLERANCE``, the value an INDEPENDENT recomputation derives from the
   snapshot table alone;
-* every 2026 forward bet row was decided at or before its own game's lock, and its
-  ``freeze_ts`` IS that lock;
+* every 2026 forward row of the forward ledger (``ledger/forward_2026.jsonl``, read through its
+  chain check, both arms) was decided at or before its own game's lock, and its ``freeze_ts``
+  IS that lock;
 * every 2026 prediction row carries its game's lock as ``information_cutoff_utc`` and was
   captured and computed at or before it.
 
@@ -77,6 +78,12 @@ import pandas as pd
 import pytest
 
 from api.cache import PROVENANCE_FORWARD
+from forward_ledger.store import (
+    LEDGER_DIR,
+    entries_to_frame,
+    read_entries,
+    verify_chain,
+)
 from tests.phase33_state import (
     LIVE_ACCEPTANCE_CHECKED_GAME_IDS,
     LIVE_ACCEPTANCE_DERIVED_ELO_COLUMNS,
@@ -96,7 +103,6 @@ GOLD_PATHS: dict[str, Path] = {
 }
 SNAPSHOT_PATH = REPO_ROOT / "data" / "silver" / "elo_game_snapshots.parquet"
 GAMES_PATH = REPO_ROOT / "data" / "silver" / "games.parquet"
-BET_LIST_PATH = REPO_ROOT / "outputs" / "bet_list" / "bet_list.parquet"
 PREDICTIONS_DIR = REPO_ROOT / "outputs" / "predictions"
 
 NO_LIVE_2026_GOLD_SKIP = (
@@ -484,12 +490,28 @@ def test_a_legitimately_zero_z_score_passes() -> None:
 def test_every_live_forward_row_was_decided_at_or_before_its_lock(
     season_locks: pd.Series,
 ) -> None:
-    bets = pd.read_parquet(BET_LIST_PATH)
+    """Every 2026 forward row of the ledger, both arms, was decided at or before its lock.
+
+    The rows are read from the forward ledger (read-only, chain-verified first), the store
+    every 2026 forward row lives in. Shadow-arm twins carry the same stamps as their live
+    rows, so checking both arms is the stricter reading; at least one live-arm row must be
+    present, or the check would be vacuous for the arm that bets.
+    """
+    entries = read_entries(REPO_ROOT / LEDGER_DIR)
+    chain = verify_chain(entries)
+    assert chain.ok, (
+        f"the forward ledger's chain does not verify at seq {chain.first_broken_seq}: "
+        f"{chain.reason}"
+    )
+    bets = entries_to_frame(entries)
     forward = bets.loc[
         (bets["provenance"] == PROVENANCE_FORWARD)
         & (bets["season"] == LIVE_ACCEPTANCE_SEASON)
     ]
     assert len(forward) > 0, "no live forward row to check"
+    assert bool((forward["arm"] == "live").any()), (
+        "no forward row of the live arm to check"
+    )
     nulls = forward.loc[forward["decided_at_utc"].isna(), ["game_id", "target"]]
     assert nulls.empty, f"forward rows with no decided_at_utc: {nulls.values.tolist()}"
     late = [

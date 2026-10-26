@@ -1357,6 +1357,184 @@ wrong bypass value instead of none; it must be refused the same way.
 
 ---
 
+## Season close (February 2027): the binding readout
+
+Added 2026-10-21 (Phase 38), after the old-rule addendum at the end of this file was written; it is
+an operating procedure, not a result. **Verification basis:** verified on fixtures by
+`tests/unit/test_season_readout_binding.py`; the real binding run happens once, in February 2027.
+
+### What it is
+
+The one binding run of the 2026 money verdict. How the verdict is judged -- the bets that count,
+the test, the significance level, the correction over the three targets and the verdict words -- was
+frozen before the rest of the season's results existed, in `SEASON-VERDICT-PREREGISTRATION.md` and
+`backtest/verdict_test_2026.py`. The binding run applies that frozen rule to the whole graded
+season and writes one document, `docs/records/SEASON-2026-READOUT.md`. It runs once. There is no
+second attempt.
+
+### When to run it
+
+After the Super Bowl (Sunday 2027-02-14) has been graded by the Monday 2027-02-15 17:00 ET daily
+run. Run it on **Tuesday 2027-02-16**.
+
+On any day before that, use the preview instead. It shows the season's raw figures only (counts,
+units and flat ROI, labelled "season to date -- not the verdict"), never a p-value or a verdict
+word, and it writes nothing:
+
+```powershell
+uv run python -m scripts.season_readout
+```
+
+### The command
+
+From the repository root, in PowerShell, first run the two witness tests by file. They check that
+the frozen rule, the frozen verdict scope and the functions they name are still exactly what was
+committed and witnessed, which the binding run's own checks do not cover in full. Both must pass;
+a failure there is a repository-integrity problem (see "If it refuses" below), never something to
+work around:
+
+```powershell
+uv run python -m pytest tests/unit/test_phase38_preregistration_ancestry.py tests/unit/test_phase34_preregistration_ancestry.py -q -p no:cacheprovider
+```
+
+Then run the binding run:
+
+```powershell
+uv run python -m scripts.season_readout --binding
+```
+
+It takes no output-path option: the document always lands at `docs/records/SEASON-2026-READOUT.md`
+under the repository root. On success it prints `BINDING_WRITTEN= <path>` and one
+`VERDICT_<TARGET>= <word>` line per target, and exits 0.
+
+### If it refuses
+
+Before computing or writing anything it checks nine conditions, numbered 0 to 8, in the order
+below, and stops at the first one that is not met. It then prints `BINDING_REFUSED= <sentence>`
+naming that condition and exits 3. Nothing is written. What to do depends on which one it names.
+
+**Restore the ledger first.**
+
+0. The ledger holds no entry, the repository has no `ledger-anchor` commit, or the ledger does
+   not extend that anchored head. An absent, emptied or stale-backup ledger still passes the chain
+   check, so this is what stops the one run being spent on it. Never run the binding run while
+   `ledger/` is moved aside (step 2 of "Restore the ledger from the private backup" above): finish
+   the restore, confirm `uv run python -m scripts.verify_ledger` passes, then run it again.
+
+**Wait for the next 17:00 ET daily run, then try again.** These clear on their own once the daily
+run has graded the bets and recorded the scores:
+
+1. A counted bet of a played game is still ungraded.
+2. An in-scope game lacks a final score.
+3. No played week-22 game is in the schedule yet (the Super Bowl result has not reached it).
+
+Waiting clears refusal 1 only while the season is still running. The daily run refreshes and
+settles the finished season only until the Super Bowl score is in silver; after that every daily
+run is an offseason no-op. If the settle pass failed on that last day (it never fails the daily
+run), the Super Bowl bets stay ungraded for good and refusal 1 never clears by waiting. If refusal
+1 is still there on Tue 2027-02-16 or later:
+
+1. Read the `settle` events at the end of `logs/ledger_runs.jsonl`; one with `"ok": false` names
+   the error. Fix what it names first.
+2. With both scheduled tasks disabled (step 1 of "Restore the ledger from the private backup"
+   above), run the same settle pass the daily run calls, by hand:
+
+   ```powershell
+   uv run python -c "from datetime import UTC, datetime; from pathlib import Path; from forward_ledger.runner import settle_ledger; print(settle_ledger(now=datetime.now(UTC), repo_dir=Path()))"
+   ```
+
+3. Publish and check it: `uv run python -m scripts.sync_ledger`, then
+   `uv run python -m scripts.verify_ledger`. Re-enable the tasks, then run the binding run again.
+
+Waiting only ever clears refusal 2 for a week-22 game. Once the Super Bowl is scored, an unscored
+game of an earlier week is not waited for: the run infers it was never played and voids its bets
+(each listed by name in the document's void-bets list). Refusal 2 also has a second form that does
+NOT clear by waiting: "game(s) inferred not played carry a graded counted bet". A graded bet means
+the game's final score existed and silver has since lost it (an ingest gap or an upstream
+revision). Find out why and restore the score in `data/silver/games.parquet` before trying again;
+never let the run void a settled result.
+
+**Already done -- do not run it again.**
+
+4. The record already exists, or its path appears anywhere in git history. The binding run has
+   already happened. Never delete or move the document to run it again: once it is committed, the
+   history check refuses that too, and a second run would be a second look at the same season.
+   Until it is committed nothing records that it existed, which is why "Committing it" below
+   commits it alone, at once.
+
+**Repository integrity -- stop and investigate, never work around it.** These mean the rule or the
+repository is not what was frozen. Do not edit, re-commit or re-clone anything to make one go away;
+find out what happened first and take it to the owner:
+
+5. The R6 lock commit (the commit that added `backtest/verdict_test_2026.py`) cannot be found or
+   proven: the clone is shallow, or the commit history names is not the witnessed lock `922b010`
+   (committed before the 2026-10-28 deadline, touching exactly the two rule files), for example
+   after rewritten or squashed history. Run it from a full clone of the real repository.
+6. A commit after the lock edited `SEASON-VERDICT-PREREGISTRATION.md` or
+   `backtest/verdict_test_2026.py` without naming the lock as INVALIDATED, or one of those two
+   files has an uncommitted change.
+7. A frozen value (alpha 0.05, bootstrap B 2000, seed 2704, family size 3, the minimum attainable
+   p 1/2001, or the five verdict words in their order) no longer equals its pin.
+
+   The same applies to any refusal that names a failed git or path check ("a git check failed, so
+   the run refuses"): the run fails closed rather than guess.
+
+**Fix the named store first, then try again.**
+
+8. The re-fit comparison (`scripts.compare_refit_arms`) could not run. The refusal quotes its exit
+   code and its first output line; fix what that names.
+
+   Exit 2 (not 3) means a store could not be read at all: `LEDGER_UNREADABLE=` (the ledger, or its
+   chain does not verify -- see "Restore the ledger from the private backup" above) or
+   `STORE_UNREADABLE=` (the silver schedule, the run log or the skip records). Fix the named store
+   and run it again.
+
+### Reading the result
+
+Each target gets one verdict word, printed with its 2026 meaning (the meanings are fixed in
+`backtest/verdict_test_2026.py`, `VERDICT_TOKEN_MEANINGS_2026`):
+
+- `PROFITABLE_CLEAN` -- at least one counted bet, flat ROI over the season strictly above 0, and
+  the one-sided ROI p-value after the correction over the three targets strictly below alpha.
+- `UNPROFITABLE_CLEAN` -- at least one counted bet and a flat ROI of 0 or less. A measured result,
+  not a failure to measure.
+- `INCONCLUSIVE_CLEAN` -- a positive flat ROI that cannot be told apart from zero. Never called
+  profitable.
+- `UNDISCHARGEABLE_NO_BETS` -- the target was priced but none of its counted rows is a bet.
+- `UNDISCHARGEABLE_NO_CHAIN` -- the target was never priced inside the verdict scope.
+
+The document also reports coverage: per week, the games scheduled, decided, bet and missed, and the
+season's total of missed games. Closing-line value is not part of the verdict and is not in the
+document.
+
+### Committing it
+
+The record is one-shot only once it is in git history. Between the write and its commit, deleting
+or moving the file leaves no trace and the next binding run would write a fresh one, so commit it
+FIRST, alone, before anything else:
+
+```powershell
+git add docs/records/SEASON-2026-READOUT.md
+git commit -m "docs: the 2026 season-close readout (binding)"
+```
+
+Then register it in a second commit straight away; until that lands the readout-label test fails:
+
+1. Add `SEASON-2026-READOUT.md` to `NO_PREFIX_NUMBERS_REASONS` in
+   `tests/unit/test_old_rule_labels.py`, with a one-sentence reason (a 2026 forward result under the
+   day-before lock, so the old-rule addendum does not describe it).
+2. Add `SEASON-2026-READOUT.md` to `RECORDS` in `tests/doc_locations.py`.
+3. Run the label tests:
+
+   ```powershell
+   uv run python -m pytest tests/unit/test_old_rule_labels.py tests/unit/test_phase33_no_zero_failures_claim.py -q -p no:cacheprovider
+   ```
+
+4. Stage the two files by name (`tests/unit/test_old_rule_labels.py`, `tests/doc_locations.py`),
+   commit, and push both commits the normal way.
+
+---
+
 ## Cross-references
 
 - **`PIPELINE.md`** -- the canonical 8-stage run sequence (ingest -> features -> train ->
@@ -1392,6 +1570,8 @@ wrong bypass value instead of none; it must be refused the same way.
   them can tell an expected red from a regression.
 - **`STATE-OF-SYSTEM.md`** -- the consolidated state-of-the-system registry: what is
   trustworthy now, what was fixed this milestone, and the single list of deferred items.
+- **`SEASON-VERDICT-PREREGISTRATION.md`** -- the frozen rule for the 2026 money verdict, which
+  the "Season close (February 2027)" section above runs once after the season is graded.
 - **`deployment/README.md`** -- the Windows Task Scheduler setup for the Friday automation
   (registering / re-pointing the `NFL_Predict_Pipeline` task). The "Run automation" operation
   links it for scheduling.

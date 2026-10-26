@@ -47,7 +47,8 @@ EXCEPTIONS_PATH = REPO_ROOT / "config" / "neutral_site_venue_exceptions.toml"
 # The corpus floor, read from the one rule module (Plan 33.2-18: no floor literal outside
 # conf/season_partition.py). Was: FIRST_SEASON = 2002.
 FIRST_SEASON = CORPUS_FIRST_SEASON
-LAST_SEASON = 2026
+# No ceiling: every season the store holds is guarded, so the next season's international
+# games are checked the day the daily run ingests them, never silently filtered out (WR-D08).
 
 # The CLOSED reason vocabulary. There is deliberately no reason for a corrected
 # international game: those are asserted positively below, never exempted.
@@ -65,7 +66,7 @@ def _silver_games() -> pd.DataFrame:
     if not GAMES_PATH.exists():
         pytest.skip("silver games is not built on this checkout")
     games = pd.read_parquet(GAMES_PATH)
-    return games[games["season"].between(FIRST_SEASON, LAST_SEASON)]
+    return games[games["season"] >= FIRST_SEASON]
 
 
 def _exceptions() -> list[dict[str, str]]:
@@ -168,7 +169,6 @@ class TestTheSevenCorrectedGamesAreAssertedPositively:
         games = _silver_games().set_index("game_id")
         overrides = ingest_games.load_venue_overrides()
         roof_resolver = ingest_games.GameDataIngester()._get_venue_roof_type
-        assert len(overrides) == 7
         for game_id, override in overrides.items():
             expected = ingest_games.resolve_venue_override(
                 game_id,

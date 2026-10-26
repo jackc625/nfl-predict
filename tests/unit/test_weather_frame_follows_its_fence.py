@@ -59,6 +59,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: The game the armed gate caught, and the fact that makes it a leak rather than a gap.
 THE_POST_LOCK_CAPTURE = "2026_W02_DET@BUF"
 
+#: The post-game reading the pre-fence builder wrote into silver ``weather_features`` for
+#: that game, as the armed gate refused it on 2026-09-22 (``temp_f`` 66.6, ``wind_mph``
+#: 3.3, ``weather_coverage`` 1.0; the silver ``weather`` capture it came from is still
+#: stored). The daily build has since rebuilt the row with the fenced builder, so live
+#: silver no longer carries it; the fence and gate tests below put it back on a COPY so
+#: they keep a real contradiction to bite on (owner ruling 2026-10-21, Phase 38).
+THE_RECORDED_POST_LOCK_READING: dict[str, float] = {
+    "temp_f": 66.6,
+    "wind_mph": 3.3,
+    "weather_coverage": 1.0,
+}
+
 
 @pytest.fixture(scope="module")
 def silver() -> dict[str, pd.DataFrame]:
@@ -70,6 +82,21 @@ def silver() -> dict[str, pd.DataFrame]:
         "weather_features": load_dataframe("weather_features", "silver", "parquet"),
         "weather": load_dataframe("weather", "silver", "parquet"),
     }
+
+
+def _with_the_recorded_post_lock_reading(frame: pd.DataFrame) -> pd.DataFrame:
+    """A COPY of *frame* carrying the recorded post-lock reading on its game again.
+
+    Raises:
+        Skipped: when the frame has no row for the game (nothing to put it back on).
+    """
+    hit = frame["game_id"] == THE_POST_LOCK_CAPTURE
+    if not hit.any():
+        pytest.skip(f"{THE_POST_LOCK_CAPTURE} has no silver weather_features row")
+    planted = frame.copy()
+    for column, value in THE_RECORDED_POST_LOCK_READING.items():
+        planted.loc[hit, column] = value
+    return planted
 
 
 class TestTheDefectIsRealAndIsStillThereInSilver:
@@ -95,15 +122,36 @@ class TestTheDefectIsRealAndIsStillThereInSilver:
             "it. Re-measure: the defect this module fixes was an UNDATABLE capture."
         )
 
-    def test_the_raw_feature_frame_still_carries_its_measurement(
+
+class TestLiveSilverAgreesWithItsFence:
+    """The live frame holds no contradiction: the post-lock reading never came back."""
+
+    def test_live_silver_agrees_with_its_fence(
         self, silver: dict[str, pd.DataFrame]
     ) -> None:
-        """The fix is at the BUILDER, so silver is unchanged and still contradicts."""
+        """Live silver ``weather_features`` holds 0 rows that contradict their fence.
+
+        The daily build rebuilds every played game with the fenced builder, so the
+        post-lock reading this module was written about is no longer in silver. It must
+        never come back: the fence finds nothing to rewrite in the live frame.
+        """
         frame = silver["weather_features"]
-        row = frame[frame["game_id"] == THE_POST_LOCK_CAPTURE]
-        if row.empty:
-            pytest.skip(f"{THE_POST_LOCK_CAPTURE} has no silver weather_features row")
-        assert pd.notna(row.iloc[0]["temp_f"])
+        fenced = WeatherFeaturesCalculator().enforce_fence_on_feature_frame(
+            frame, silver["games"]
+        )
+        contradicting = [
+            str(game_id)
+            for game_id, changed in zip(
+                frame["game_id"],
+                (frame.astype(str) != fenced.astype(str)).any(axis=1),
+                strict=True,
+            )
+            if changed
+        ]
+        assert contradicting == [], (
+            f"live silver weather_features carries {contradicting}, row(s) whose "
+            "measurement survived a fence they failed"
+        )
 
 
 class TestTheFenceIsAppliedToTheFeatureFrame:
@@ -111,7 +159,7 @@ class TestTheFenceIsAppliedToTheFeatureFrame:
         self, silver: dict[str, pd.DataFrame]
     ) -> None:
         calc = WeatherFeaturesCalculator()
-        before = silver["weather_features"]
+        before = _with_the_recorded_post_lock_reading(silver["weather_features"])
         after = calc.enforce_fence_on_feature_frame(before, silver["games"])
         moved = [
             str(game_id)
@@ -131,9 +179,8 @@ class TestTheFenceIsAppliedToTheFeatureFrame:
         self, silver: dict[str, pd.DataFrame]
     ) -> None:
         calc = WeatherFeaturesCalculator()
-        after = calc.enforce_fence_on_feature_frame(
-            silver["weather_features"], silver["games"]
-        )
+        planted = _with_the_recorded_post_lock_reading(silver["weather_features"])
+        after = calc.enforce_fence_on_feature_frame(planted, silver["games"])
         row = after[after["game_id"] == THE_POST_LOCK_CAPTURE].iloc[0]
         for column, declared in WEATHER_NO_INFORMATION_SIGNATURE.items():
             if column not in after.columns:
@@ -171,7 +218,7 @@ class TestTheFenceIsAppliedToTheFeatureFrame:
 
 
 class TestTheGateNowAcceptsTheFencedFrame:
-    """End to end: the frame and its provenance agree, so the gate passes."""
+    """End to end, on the planted copy: refused unfenced, accepted once fenced."""
 
     def test_the_information_time_gate_accepts_the_fenced_weather_source(
         self, silver: dict[str, pd.DataFrame]
@@ -184,7 +231,8 @@ class TestTheGateNowAcceptsTheFencedFrame:
 
         calc = WeatherFeaturesCalculator()
         games = silver["games"]
-        frame = calc.enforce_fence_on_feature_frame(silver["weather_features"], games)
+        planted = _with_the_recorded_post_lock_reading(silver["weather_features"])
+        frame = calc.enforce_fence_on_feature_frame(planted, games)
         scoped = games[games["game_id"].isin(frame["game_id"])]
         state = InformationTimeGate().check(
             "weather",
@@ -209,7 +257,7 @@ class TestTheGateNowAcceptsTheFencedFrame:
 
         calc = WeatherFeaturesCalculator()
         games = silver["games"]
-        frame = silver["weather_features"]
+        frame = _with_the_recorded_post_lock_reading(silver["weather_features"])
         scoped = games[games["game_id"].isin(frame["game_id"])]
         with pytest.raises(UndatedSourceError) as exc:
             InformationTimeGate().check(

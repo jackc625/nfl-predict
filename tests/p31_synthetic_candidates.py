@@ -114,8 +114,14 @@ def build_synthetic_candidates(
 
 
 def _american(probability: float, *, favoured: bool) -> float:
-    """A vigged American price for ``probability``, quoted as a favourite or an underdog."""
+    """A vigged American price for ``probability``, quoted as a favourite or an underdog.
+
+    It emits only valid American prices: ``utils.probability_utils.moneyline_to_probability``
+    refuses a value strictly between -100 and +100 (commit d446bcd), and the 0.98-vigged
+    underdog of a near coin flip used to land there, which raised
+    ``99 is not an American moneyline``; the underdog price is floored at +100.
+    """
     probability = float(min(max(probability, 0.05), 0.95))
     if favoured:
         return -100.0 * probability / (1.0 - probability) * 1.02
-    return 100.0 * (1.0 - probability) / probability * 0.98
+    return max(100.0, 100.0 * (1.0 - probability) / probability * 0.98)

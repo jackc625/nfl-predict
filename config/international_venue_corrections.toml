@@ -1,5 +1,6 @@
-# The seven 2025 games played outside the United States, which the nflverse schedule feed
-# records at the US home team's own stadium (Plan 33.2-09, SPEC R8 venue half).
+# Games played outside the United States which the nflverse schedule feed records at the
+# US home team's own stadium: the seven 2025 games (Plan 33.2-09, SPEC R8 venue half)
+# and one 2026 game, appended in Phase 38 (see the note above its entry).
 #
 # READ BY TWO CONSUMERS THROUGH ONE FUNCTION (scripts.ingest_games.resolve_venue_override):
 #   * scripts/ingest_games.py applies it to every ingested row, so the next ingest of 2025
@@ -98,3 +99,22 @@ country = "Spain"
 source_url = "https://www.nfl.com/news/miami-dolphins-announced-as-designated-team-for-2025-nfl-madrid-game"
 source_date = "2025-01-17"
 corroboration_url = "https://en.wikipedia.org/w/index.php?title=NFL_International_Series&oldid=1375744239"
+
+# 2026 (Phase 38, discovery run 1, 2026-10-21). The feed has sent this game with stadium_id
+# JAX00 (Jacksonville) since its first 2026 capture, while its own `stadium` name read
+# "Tottenham Hotspur Stadium" and its kickoff 09:30 ET. Its `location` read "Home" until
+# game day (2026-10-11), when it flipped to "Neutral"; silver then held a neutral-site game
+# at Jacksonville's usual stadium, the shape this record exists to correct. The Jaguars
+# were the designated home team. `corroboration_url` is the game report (Jaguars 19-17,
+# Tottenham Hotspur Stadium, 2026-10-11).
+
+[[correction]]
+game_id = "2026_W05_PHI@JAX"
+old_stadium_id = "JAX00"
+new_stadium_id = "LON02"
+venue_name = "Tottenham Hotspur Stadium"
+city = "London"
+country = "United Kingdom"
+source_url = "https://www.jaguars.com/news/official-jaguars-2026-london-matchups-revealed"
+source_date = "2026-05-13"
+corroboration_url = "https://www.news4jax.com/sports/2026/10/11/cam-littles-57-yard-fg-gives-jaguars-19-17-win-over-eagles-in-wild-finish-in-london/"

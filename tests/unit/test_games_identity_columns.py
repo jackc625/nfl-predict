@@ -136,28 +136,29 @@ class TestTheCaptured2026Schedule:
     """The derivations against the real feed, not against a constructed row."""
 
     def test_exactly_eight_rows_are_neutral(self) -> None:
+        """The captured feed calls eight games Neutral; the ingest stores nine (WR-D05).
+
+        The recorded eight is a fact of the FEED's ``location``: it sent 2026_W05_PHI@JAX,
+        played at Tottenham, as a Jacksonville home game. A game with a recorded venue
+        correction was played abroad, so the transform stores it neutral whatever the feed's
+        location says. The stored set is the whole international slate, by name.
+        """
         _require_capture()
+        raw = season_2026.load_captured_schedule()
         transformed = season_2026.transform_captured_schedule()
-        assert (
-            int(transformed["neutral_site"].sum())
-            == phase33_state.NEUTRAL_SITE_GAME_COUNT_2026
-        ), (
-            f"{int(transformed['neutral_site'].sum())} rows read neutral_site True, "
-            f"expected {phase33_state.NEUTRAL_SITE_GAME_COUNT_2026}. Before this plan "
-            "the answer was 0 for all 272 rows."
+        feed_neutral = int((raw["location"] == "Neutral").sum())
+        assert feed_neutral == phase33_state.NEUTRAL_SITE_GAME_COUNT_2026, (
+            f"the captured feed calls {feed_neutral} rows Neutral, expected "
+            f"{phase33_state.NEUTRAL_SITE_GAME_COUNT_2026}. Before this plan the stored "
+            "answer was 0 for all 272 rows."
         )
+        stored = set(transformed.loc[transformed["neutral_site"], "game_id"])
+        assert stored == INTERNATIONAL_2026, sorted(stored ^ INTERNATIONAL_2026)
 
     def test_the_eight_are_the_recorded_international_games(self) -> None:
         _require_capture()
         raw = season_2026.load_captured_schedule()
-        transformed = season_2026.transform_captured_schedule()
-        codes = [
-            code
-            for code, neutral in zip(
-                raw["stadium_id"], transformed["neutral_site"], strict=True
-            )
-            if neutral
-        ]
+        codes = raw.loc[raw["location"] == "Neutral", "stadium_id"].tolist()
         assert codes == list(phase33_state.INTERNATIONAL_STADIUM_IDS)
 
     def test_all_272_captured_rows_are_regular_season(self) -> None:
@@ -166,17 +167,6 @@ class TestTheCaptured2026Schedule:
         assert set(transformed["season_type"]) == {"Regular"}, (
             "the capture is 272 REG rows over weeks 1-18; weeks 19-22 are unseeded "
             "at capture time. A non-Regular value here means the capture moved."
-        )
-
-    def test_stadium_id_reaches_the_transformed_frame_unchanged(self) -> None:
-        _require_capture()
-        raw = season_2026.load_captured_schedule()
-        transformed = season_2026.transform_captured_schedule()
-        assert "stadium_id" in transformed.columns
-        assert list(transformed["stadium_id"]) == list(raw["stadium_id"]), (
-            "stadium_id was altered in transit. R11's matching is exact and "
-            "case-sensitive, so any normalization here breaks the routing that "
-            "reads it."
         )
 
     def test_the_frame_carries_all_three_identity_columns(self) -> None:
@@ -325,6 +315,21 @@ SILVER_GAMES_PATH = Path("data") / "silver" / "games.parquet"
 
 PRIMARY_KEY_COLUMNS = ("game_id", "season", "week", "home_team", "away_team")
 
+# Source: NFL Football Operations, "2026 International Games slate" (date, matchup, venue checked).
+INTERNATIONAL_2026: frozenset[str] = frozenset(
+    {
+        "2026_W01_SF@LA",  # Melbourne Cricket Ground
+        "2026_W03_BAL@DAL",  # Maracana
+        "2026_W04_IND@WAS",  # Tottenham Hotspur Stadium
+        "2026_W05_PHI@JAX",  # Tottenham Hotspur Stadium
+        "2026_W06_HOU@JAX",  # Wembley Stadium
+        "2026_W07_PIT@NO",  # Stade de France
+        "2026_W09_CIN@ATL",  # Santiago Bernabeu
+        "2026_W10_NE@DET",  # FC Bayern Munich (Allianz Arena)
+        "2026_W11_MIN@SF",  # Estadio Banorte, Mexico City
+    }
+)
+
 
 def _migrated_store() -> pd.DataFrame:
     """The live migrated silver frame, or a pinned skip naming which case applies."""
@@ -441,7 +446,7 @@ class TestTheMigratedStoreCarriesRealIdentityColumns:
         assert measured == phase33_state.POSTSEASON_ROW_COUNT
 
     def test_neutral_site_is_no_longer_a_constant_false(self) -> None:
-        """The migrated population's 91, and the live capture's eight, separately."""
+        """The migrated population's 91 neutral-site games read True, not a constant."""
         measured = int(_migrated_history()["neutral_site"].sum())
         assert measured == phase33_state.NEUTRAL_SITE_TRUE_ROW_COUNT, (
             f"{measured} rows read neutral_site True across 2002-2025; the migration "
@@ -449,13 +454,20 @@ class TestTheMigratedStoreCarriesRealIdentityColumns:
             "games HISTORICAL_NEUTRAL_MISRESOLUTION enumerates."
         )
         assert measured > 0
-        total = int(_migrated_store()["neutral_site"].sum())
-        assert total == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_ALL, (
-            f"{total} rows read neutral_site True across the whole store. The delta "
-            "from the migrated 91 is the live 2026 capture's eight international "
-            "games, and nothing else."
+
+    def test_the_2026_neutral_site_games_are_exactly_the_international_slate(
+        self,
+    ) -> None:
+        """The 2026 accounting guard, by name (WR-D04): not a count, which a swap would pass."""
+        frame = _migrated_store()
+        season = frame.loc[frame["season"] == 2026]
+        flagged = set(season.loc[season["neutral_site"].astype(bool), "game_id"])
+        assert flagged == INTERNATIONAL_2026, (
+            f"2026 games flagged neutral in silver but not on the slate: "
+            f"{sorted(flagged - INTERNATIONAL_2026)}; on the slate but not flagged neutral: "
+            f"{sorted(INTERNATIONAL_2026 - flagged)}. A slate game read as a home game gets "
+            "full home-field advantage in gold."
         )
-        assert total - measured == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_2026
 
     def test_stadium_id_is_present_on_every_row(self) -> None:
         """A presence RATE, not a presence check: a partial re-ingest is the risk."""
@@ -553,10 +565,6 @@ class TestTheLive2026CaptureIsRecordedNotAbsorbed:
         beyond = frame.loc[frame["season"] > last]
         assert int(beyond["stadium_id"].isna().sum()) == 0
         assert set(beyond["season_type"].unique()) <= {"Regular", "Postseason"}
-        assert (
-            int(beyond["neutral_site"].sum())
-            == phase33_state.P332_20_NEUTRAL_SITE_TRUE_ROWS_2026
-        )
 
 
 class TestTheRecordedSilverWidthIsSixteenAndSaysWhy:
@@ -805,6 +813,25 @@ class TestAMovedGameLeavesNoGhostRow:
             "only the id the schedule no longer lists is removed; other seasons and the "
             "games the schedule still lists are untouched"
         )
+
+    def test_the_ingest_hands_upsert_silver_one_datetime_unit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """WR-D06: the writer, not the store, is pinned to nanoseconds.
+
+        A bare ``datetime.now(UTC)`` broadcasts as ``[us, UTC]``. On an incremental upsert
+        ``_align_aware_datetime_columns`` would silently convert it to the stored unit, so a
+        store scan stays green; only the replace-all path would write it. The frame is read
+        here as the ingest hands it over, before any alignment can mask a regression.
+        """
+        frame = self._run(monkeypatch, self._stored())["frame"]
+        aware = {
+            column: dtype.unit
+            for column, dtype in frame.dtypes.items()
+            if isinstance(dtype, pd.DatetimeTZDtype)
+        }
+        assert {"kickoff_et", "created_at"} <= set(aware), aware
+        assert set(aware.values()) == {"ns"}, aware
 
     def test_a_scored_game_missing_from_the_schedule_is_refused_by_name(
         self, monkeypatch: pytest.MonkeyPatch

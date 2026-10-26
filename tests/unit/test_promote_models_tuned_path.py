@@ -37,7 +37,10 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import re
 import shutil
+import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -911,29 +914,163 @@ def test_step1_argv_carries_the_exclusion_provenance(tmp_path: Path) -> None:
     assert argv[argv.index("--exclude-groups") + 1] == "injury"
 
 
-def test_train_target_records_the_exclusion_in_the_artifact_metadata() -> None:
-    """The recorded exclusion must reach ``trainer.metadata``, not just the run log."""
-    from models.train import train_target
-
-    source = inspect.getsource(train_target)
-    assert 'trainer.metadata["exclude_groups"]' in source
-    assert 'trainer.metadata["exclude_groups_provenance"]' in source
-
-    signature = inspect.signature(train_target)
-    assert "exclude_groups" in signature.parameters
-    assert "exclude_groups_provenance" in signature.parameters
+_SERVING_TARGETS = ("wp", "ats", "ou")
 
 
-def test_models_train_main_passes_both_through_to_train_target() -> None:
-    """The wiring, not just the capability: main() must hand both values over."""
-    from models import train as train_mod
+def assert_serving_stamp(artifacts_root: Path, verdict_path: Path) -> None:
+    """Assert the serving models' WRITTEN metadata carries the ratified exclusion (SPEC R2, F-1).
 
-    source = inspect.getsource(train_mod.main)
-    assert "exclude_groups=exclude_groups" in source
-    assert "exclude_groups_provenance=exclude_groups_provenance" in source, (
-        "models.train.main() does not thread the provenance into train_target, so the "
-        "artifact would record the exclusion without saying whether it was ratified."
+    The written file is the evidence, not the source text: a scan of ``models.train`` proves
+    only that the stamping code exists, never what the save path actually wrote for the models
+    ``latest.json`` serves. For each of wp, ats and ou this reads that artifact's
+    ``metadata.json`` and requires ``exclude_groups`` to name exactly the verdict's
+    ``excluded_groups`` (same set, order ignored) and ``exclude_groups_provenance`` to be
+    ``"verdict"``. Every file and key is checked for existence BEFORE it is read, so a gap
+    fails as an AssertionError naming it. This check never skips.
+    """
+    assert verdict_path.is_file(), f"{verdict_path} is missing; there is no verdict"
+    verdict_doc = tomllib.loads(verdict_path.read_text(encoding="utf-8"))
+    assert "excluded_groups" in verdict_doc, f"{verdict_path} has no 'excluded_groups'"
+    verdict_groups = set(verdict_doc["excluded_groups"])
+
+    latest_path = artifacts_root / "latest.json"
+    assert latest_path.is_file(), (
+        f"{latest_path} is missing; the serving artifacts cannot be named"
     )
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+
+    for target in _SERVING_TARGETS:
+        assert target in latest, f"{latest_path} names no {target!r} artifact"
+        metadata_path = artifacts_root / latest[target] / "metadata.json"
+        assert metadata_path.is_file(), (
+            f"{metadata_path} is missing for the serving {target} artifact"
+        )
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        for key in ("exclude_groups", "exclude_groups_provenance"):
+            assert key in metadata, f"{metadata_path} has no {key!r} key"
+        stamped = set(metadata["exclude_groups"])
+        assert stamped == verdict_groups, (
+            f"{metadata_path} stamps exclude_groups {sorted(stamped)}, but {verdict_path} "
+            f"excludes {sorted(verdict_groups)}"
+        )
+        provenance = metadata["exclude_groups_provenance"]
+        assert provenance == "verdict", (
+            f"{metadata_path} stamps exclude_groups_provenance {provenance!r}, "
+            "expected 'verdict'"
+        )
+
+
+def test_the_serving_models_carry_the_ratified_exclusion() -> None:
+    """The models ``latest.json`` serves today were written with the ratified exclusion.
+
+    Read at run time, so it follows every swap (a Phase 37 re-fit writes the same two keys in
+    refit/training.py). An absent ``artifacts/`` tree FAILS this test; it never skips.
+    """
+    assert_serving_stamp(
+        REPO_ROOT / "artifacts", REPO_ROOT / "config" / "group_gate_verdict.toml"
+    )
+
+
+_PLANTED_GROUPS = ["injury", "situational", "snap"]
+
+
+def _planted_metadata_path(artifacts: Path, target: str) -> Path:
+    """The metadata.json of one planted serving artifact."""
+    return artifacts / f"{target}_20260101_000000" / "metadata.json"
+
+
+def _plant_serving_tree(root: Path) -> tuple[Path, Path]:
+    """Write a well-formed serving tree and verdict under ``root``; return both paths."""
+    ids = {target: f"{target}_20260101_000000" for target in _SERVING_TARGETS}
+    artifacts = _write_artifacts_tree(
+        root / "artifacts",
+        {**ids, "blend": "blend_20260101_000000"},
+        {
+            version: {
+                "target": target,
+                "exclude_groups": list(_PLANTED_GROUPS),
+                "exclude_groups_provenance": "verdict",
+            }
+            for target, version in ids.items()
+        },
+    )
+    verdict = root / "group_gate_verdict.toml"
+    verdict.write_text(
+        f"excluded_groups = {json.dumps(_PLANTED_GROUPS)}\n", encoding="utf-8"
+    )
+    return artifacts, verdict
+
+
+def _edit_planted_metadata(
+    artifacts: Path, target: str, edit: Callable[[dict[str, Any]], object]
+) -> None:
+    """Rewrite one planted metadata.json through ``edit``."""
+    path = _planted_metadata_path(artifacts, target)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    edit(payload)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_the_serving_stamp_check_fails_closed(tmp_path: Path) -> None:
+    """Every gap SPEC AC 4 names raises AssertionError; a reordered equal set still passes."""
+    artifacts, verdict = _plant_serving_tree(tmp_path / "well_formed")
+    assert_serving_stamp(artifacts, verdict)
+
+    artifacts, verdict = _plant_serving_tree(tmp_path / "reordered")
+    _edit_planted_metadata(
+        artifacts,
+        "wp",
+        lambda m: m.update(exclude_groups=["snap", "injury", "situational"]),
+    )
+    assert_serving_stamp(artifacts, verdict)
+
+    damages: dict[str, tuple[Callable[[Path], object], str]] = {
+        "latest_missing": (
+            lambda a: (a / "latest.json").unlink(),
+            "latest.json is missing",
+        ),
+        "metadata_missing": (
+            lambda a: _planted_metadata_path(a, "ats").unlink(),
+            "metadata.json is missing",
+        ),
+        "groups_key_missing": (
+            lambda a: _edit_planted_metadata(
+                a, "ou", lambda m: m.pop("exclude_groups")
+            ),
+            "has no 'exclude_groups' key",
+        ),
+        "provenance_key_missing": (
+            lambda a: _edit_planted_metadata(
+                a, "wp", lambda m: m.pop("exclude_groups_provenance")
+            ),
+            "has no 'exclude_groups_provenance' key",
+        ),
+        "provenance_not_verdict": (
+            lambda a: _edit_planted_metadata(
+                a, "ats", lambda m: m.update(exclude_groups_provenance="default")
+            ),
+            "exclude_groups_provenance 'default'",
+        ),
+        "one_name_short": (
+            lambda a: _edit_planted_metadata(
+                a, "ou", lambda m: m.update(exclude_groups=["injury", "situational"])
+            ),
+            "stamps exclude_groups [",
+        ),
+        "one_name_extra": (
+            lambda a: _edit_planted_metadata(
+                a,
+                "wp",
+                lambda m: m.update(exclude_groups=[*_PLANTED_GROUPS, "line_movement"]),
+            ),
+            "stamps exclude_groups [",
+        ),
+    }
+    for name, (damage, message) in damages.items():
+        artifacts, verdict = _plant_serving_tree(tmp_path / name)
+        damage(artifacts)
+        with pytest.raises(AssertionError, match=re.escape(message)):
+            assert_serving_stamp(artifacts, verdict)
 
 
 # ---------------------------------------------------------------------------

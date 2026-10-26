@@ -1961,7 +1961,7 @@ def promote_corpus_to_silver(base_path: Any = None) -> dict[str, Any]:
     combined = combined.drop_duplicates(subset=["game_id"], keep="last")
 
     validated = promote_weather_bronze_to_silver(combined)
-    validated["created_at"] = datetime.now(UTC)
+    validated["created_at"] = pd.Timestamp(datetime.now(UTC)).as_unit("ns")
 
     # NEVER REPLACE A ROW THIS CORPUS DID NOT WRITE (review WR-21). Silver `weather` history
     # is now the archived day-before forecast bulletin (`historical_forecast`), and the live

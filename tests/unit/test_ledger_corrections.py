@@ -37,7 +37,7 @@ from forward_ledger.store import (
     read_entries,
     verify_chain,
 )
-from tests.unit.test_forward_ledger_store import key_of
+from tests.unit.test_forward_ledger_store import key_of, make_row
 from tests.unit.test_ledger_settle import STRATEGIES, ats_row, games_frame
 
 GRADED_AT = datetime(2026, 10, 19, 21, 0, tzinfo=UTC)
@@ -321,6 +321,46 @@ def test_pending_and_suppressed_rows_ignored(tmp_path: Path) -> None:
     assert all(
         payload["corrected_grading_status"] == "loss" for payload in result.payloads
     )
+
+
+def test_a_score_revised_into_or_out_of_a_tie_regrades_a_moneyline_bet(
+    tmp_path: Path,
+) -> None:
+    away_wp = make_row(
+        target="wp",
+        bet_side="away",
+        selected_odds=120.0,
+        stake_units=1.0,
+        game_id=GAME,
+        week=6,
+    )
+
+    # INTO a tie: a home win (24-17) graded the away moneyline bet a loss; the restated 24-24
+    # returns the stake (D-21).
+    into = tmp_path / "into"
+    settled_ledger(into, [away_wp], margin=7.0)
+    assert (read_entries(into)[0].grading or {})["grading_status"] == "loss"
+
+    result = run(into, manifest(EVENT_1), corrected(0.0, GAME))
+
+    assert len(result.payloads) == 1
+    payload = result.payloads[0]
+    assert payload["corrected_grading_status"] == "push"
+    assert payload["corrected_outcome"] is None
+    assert payload["corrected_payout_flat"] == 0.0
+    assert payload["corrected_realized_units"] == 0.0
+
+    # OUT OF a tie: the 24-24 graded the bet a push; the restated away win (27-24) wins it.
+    out = tmp_path / "out"
+    settled_ledger(out, [away_wp], margin=0.0)
+    assert (read_entries(out)[0].grading or {})["grading_status"] == "push"
+
+    result = run(out, manifest(EVENT_1), corrected(-3.0, GAME))
+
+    assert len(result.payloads) == 1
+    payload = result.payloads[0]
+    assert payload["corrected_grading_status"] == "win"
+    assert payload["prior_grading_status"] == "push"
 
 
 def test_correction_keys_include_arm(tmp_path: Path) -> None:

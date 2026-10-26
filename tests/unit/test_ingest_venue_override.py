@@ -140,6 +140,25 @@ SEVEN_2025_GAMES: tuple[dict[str, str], ...] = (
     },
 )
 
+# The 2026 London game (f2b5b1a), stated the same way: its feed values as the captured feed
+# sends them (bronze 2026-10-24: location Neutral, the JAX home stadium id, the London stadium
+# name) and the triple the ingest must write. Stated here, never read back from the record, so
+# a record entry pointing at the wrong venue -- LON00 Wembley, where 2026_W06_HOU@JAX is played
+# -- still fails (WR-D03).
+LONDON_2026: dict[str, str] = {
+    "game_id": "2026_W05_PHI@JAX",
+    "week": "5",
+    "gameday": "2026-10-11",
+    "away": "PHI",
+    "home": "JAX",
+    "feed_stadium_id": "JAX00",
+    "feed_stadium": "Tottenham Hotspur Stadium",
+    "feed_roof": "outdoors",
+    "stadium_id": "LON02",
+    "venue": "Tottenham Hotspur Stadium",
+    "venue_roof": "outdoor",
+}
+
 THIRD_ID = "ATL97"
 
 
@@ -214,14 +233,15 @@ class TestTheCorrectionRecordIsWhatTheIngestReads:
     def test_the_record_holds_one_cited_entry_per_game(self) -> None:
         record = tomllib.loads(RECORD_PATH.read_text(encoding="utf-8"))
         entries = record["correction"]
-        assert sorted(e["game_id"] for e in entries) == sorted(_expected_triples())
         for entry in entries:
             assert entry["source_url"].startswith("https://"), entry["game_id"]
             assert entry["source_date"], entry["game_id"]
+        # The record's games are exactly the independently stated ones, by name (WR-D03).
+        stated = {game["game_id"] for game in (*SEVEN_2025_GAMES, LONDON_2026)}
+        assert {entry["game_id"] for entry in entries} == stated
 
     def test_the_loader_returns_an_immutable_mapping_keyed_on_game_id(self) -> None:
         overrides = ingest_games.load_venue_overrides()
-        assert sorted(overrides) == sorted(_expected_triples())
         with pytest.raises(TypeError):
             overrides["2025_W01_KC@LAC"] = None  # type: ignore[index]
 
@@ -231,7 +251,99 @@ class TestTheCorrectionRecordIsWhatTheIngestReads:
         )
 
 
+class TestAnUnrecordedInternationalVenueIsRefused:
+    """WR-D05: the shape that hid 2026_W05_PHI@JAX for five weeks is refused at the ingest."""
+
+    def test_a_feed_naming_an_abroad_venue_under_a_home_id_is_refused_by_name(
+        self,
+    ) -> None:
+        # An UNRECORDED game whose feed names Wembley but carries the home team's id.
+        feed = _frame(
+            [
+                _feed_row(
+                    season=2026,
+                    week=8,
+                    gameday="2026-10-25",
+                    away="CLE",
+                    home="NYJ",
+                    location="Home",
+                    stadium_id="NYC01",
+                    stadium="Wembley Stadium",
+                    roof="outdoors",
+                )
+            ]
+        )
+        with pytest.raises(
+            ingest_games.UnrecordedInternationalVenueError, match="2026_W08_CLE@NYJ"
+        ):
+            ingest_games.GameDataIngester().transform_schedule_data(feed)
+
+    def test_a_feed_naming_the_venue_under_its_own_id_passes(self) -> None:
+        feed = _frame(
+            [
+                _feed_row(
+                    season=2026,
+                    week=6,
+                    gameday="2026-10-18",
+                    away="HOU",
+                    home="JAX",
+                    location="Neutral",
+                    stadium_id="LON00",
+                    stadium="Wembley Stadium",
+                    roof="outdoors",
+                )
+            ]
+        )
+        out = ingest_games.GameDataIngester().transform_schedule_data(feed)
+        assert _triples(out)["2026_W06_HOU@JAX"][0] == "LON00"
+
+    def test_a_recorded_game_is_neutral_whatever_the_feed_location_says(self) -> None:
+        # A record entry can land before the feed flips location to "Neutral": the game was
+        # still played abroad, so it is never stored as a home game.
+        game = LONDON_2026
+        feed = _frame(
+            [
+                _feed_row(
+                    season=2026,
+                    week=int(game["week"]),
+                    gameday=game["gameday"],
+                    away=game["away"],
+                    home=game["home"],
+                    location="Home",
+                    stadium_id=game["feed_stadium_id"],
+                    stadium=game["feed_stadium"],
+                    roof=game["feed_roof"],
+                )
+            ]
+        )
+        out = ingest_games.GameDataIngester().transform_schedule_data(feed)
+        assert out["neutral_site"].tolist() == [True]
+        assert _triples(out)[game["game_id"]][0] == game["stadium_id"]
+
+
 class TestTheSevenGamesAreCorrectedAtIngest:
+    def test_the_2026_london_feed_row_comes_out_at_tottenham(self) -> None:
+        game = LONDON_2026
+        feed = _frame(
+            [
+                _feed_row(
+                    season=2026,
+                    week=int(game["week"]),
+                    gameday=game["gameday"],
+                    away=game["away"],
+                    home=game["home"],
+                    location="Neutral",
+                    stadium_id=game["feed_stadium_id"],
+                    stadium=game["feed_stadium"],
+                    roof=game["feed_roof"],
+                )
+            ]
+        )
+        out = ingest_games.GameDataIngester().transform_schedule_data(feed)
+        assert _triples(out) == {
+            game["game_id"]: (game["stadium_id"], game["venue"], game["venue_roof"])
+        }
+
     def test_each_feed_row_comes_out_at_the_venue_it_was_played_at(self) -> None:
         ingester = ingest_games.GameDataIngester()
         out = ingester.transform_schedule_data(_seven_feed_rows(carry="feed"))

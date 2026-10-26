@@ -22,12 +22,14 @@ import pytest
 from backtest.selector_strategies import default_strategies
 from backtest.weekly_bet_list import grade_row
 from forward_ledger.settle import (
+    game_is_tied,
     grading_updates,
     load_silver_games,
     realized_values_from_scores,
     regrade_row,
 )
 from forward_ledger.store import append_rows, apply_updates, read_entries
+from forward_ledger.verify import settled_result_check
 from tests.unit.test_forward_ledger_store import graded, key_of, make_row
 
 GRADED_AT = datetime(2026, 10, 19, 21, 0, tzinfo=UTC)
@@ -218,7 +220,9 @@ def test_regrade_row_reads_a_settled_row_without_touching_it() -> None:
     }
     snapshot = copy.deepcopy(settled)
 
-    values = regrade_row(settled, STRATEGIES["ats"], -10.0, graded_at=GRADED_AT)
+    values = regrade_row(
+        settled, STRATEGIES["ats"], -10.0, graded_at=GRADED_AT, tied=False
+    )
 
     reset = {
         **snapshot,
@@ -236,6 +240,111 @@ def test_regrade_row_reads_a_settled_row_without_touching_it() -> None:
     assert values["grading_status"] == "loss"
     assert values["clv"] == 0.25
     assert settled == snapshot
+
+
+AWAY_TIE_GAME = "2026_W06_DAL@PHI"
+HOME_TIE_GAME = "2026_W06_CHI@GB"
+
+
+def tied_ledger(
+    ledger_dir: Path,
+) -> tuple[list[dict[str, Any]], pd.DataFrame, dict[tuple[Any, ...], dict[str, Any]]]:
+    """Two tied games holding one live WP row each (away and home backed) and one ATS row.
+
+    LEDGER_ROW_KEY lets one game hold one live WP row, so the two moneyline sides sit on two
+    different tied games. Returns ``(rows, games, the grading updates the settle pass proposes)``.
+    """
+    away_wp = make_row(
+        game_id=AWAY_TIE_GAME,
+        target="wp",
+        bet_side="away",
+        selected_odds=120.0,
+        stake_units=1.0,
+    )
+    home_wp = make_row(
+        game_id=HOME_TIE_GAME,
+        target="wp",
+        bet_side="home",
+        selected_odds=-140.0,
+        stake_units=1.0,
+    )
+    ats_control = ats_row(AWAY_TIE_GAME)
+    rows = [away_wp, home_wp, ats_control]
+    append_rows(ledger_dir, rows)
+    games = games_frame((AWAY_TIE_GAME, 6, 20.0, 20.0), (HOME_TIE_GAME, 6, 13.0, 13.0))
+    updates = grading_updates(
+        read_entries(ledger_dir),
+        STRATEGIES,
+        realized_values_from_scores(games),
+        GRADED_AT,
+    )
+    return rows, games, updates
+
+
+def test_a_tied_game_grades_a_moneyline_bet_as_a_push(tmp_path: Path) -> None:
+    (away_wp, home_wp, ats_control), games, updates = tied_ledger(tmp_path)
+
+    # Whichever side it backed, a moneyline bet on a tied game returns the stake (D-21).
+    for row in (away_wp, home_wp):
+        update = updates[key_of(row)]
+        assert update["grading_status"] == "push"
+        assert update["outcome"] is None
+        assert update["payout_flat"] == 0.0
+        assert update["realized_units"] == 0.0
+
+    # The ATS control on the same tied game is graded exactly as before: margin 0 against -3.0.
+    ats_entry = read_entries(tmp_path)[2]
+    stored = {**ats_entry.immutable, **(ats_entry.grading or {})}
+    outcome = STRATEGIES["ats"].grade(
+        {"bet_side": "home_cover", "slipped_line": -3.0, "_actual_total": 0.0}
+    )
+    expected = grade_row(stored, outcome, graded_at=GRADED_AT)
+    assert updates[key_of(ats_control)] == {
+        **{name: expected[name] for name in _GRADING_SIX},
+        "graded_at": GRADED_AT_TEXT,
+    }
+
+    # The WP label the frozen re-fit comparison reads is untouched: a tie still scores 0.
+    realized = realized_values_from_scores(games)
+    assert realized["wp"][AWAY_TIE_GAME] == 0.0
+    assert realized["wp"][HOME_TIE_GAME] == 0.0
+
+
+def test_every_grade_path_agrees_on_a_tied_moneyline_bet(tmp_path: Path) -> None:
+    (away_wp, home_wp, _), games, updates = tied_ledger(tmp_path)
+    apply_updates(tmp_path, grading_updates=updates)
+
+    entries = read_entries(tmp_path)
+    statuses = {
+        key_of(entry.immutable): (entry.grading or {})["grading_status"]
+        for entry in entries
+    }
+    assert statuses[key_of(away_wp)] == "push"
+    assert statuses[key_of(home_wp)] == "push"
+
+    # The verify CLI's settled-result check re-grades the tie exactly as the settle pass graded it.
+    checked, mismatches = settled_result_check(entries, games, STRATEGIES)
+    assert checked == 3
+    assert mismatches == []
+
+
+def test_a_missing_margin_refuses_instead_of_grading_by_the_old_rule(
+    tmp_path: Path,
+) -> None:
+    """WR-B02: a mapping with the WP label but no margin never reads as "not a tie"."""
+    (away_wp, _home_wp, _ats), games, _updates = tied_ledger(tmp_path)
+    realized = realized_values_from_scores(games)
+    assert game_is_tied(realized, AWAY_TIE_GAME) is True
+
+    per_target = {"wp": {AWAY_TIE_GAME: 0.0}}
+    with pytest.raises(KeyError, match="no realized home margin"):
+        game_is_tied(per_target, AWAY_TIE_GAME)
+    with pytest.raises(KeyError, match="no realized home margin"):
+        game_is_tied({"wp": {}, "ats": {}}, AWAY_TIE_GAME)
+    # The settle pass refuses the malformed mapping rather than booking the away bet a win.
+    with pytest.raises(KeyError, match="no realized home margin"):
+        grading_updates(read_entries(tmp_path), STRATEGIES, per_target, GRADED_AT)
+    assert away_wp["target"] == "wp"
 
 
 def test_load_silver_games_reads_the_store(tmp_path: Path) -> None:

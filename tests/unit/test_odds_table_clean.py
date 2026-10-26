@@ -10,6 +10,25 @@ the INVERTED convention flags far more rows than under the stored one (so the de
 assumes the convention the column is actually stored in). Only the inequality is asserted: the
 inverted count has been measured as 2,125 and as 2,134 depending on how equal moneylines are
 counted, and a pinned literal would make a correct run fail.
+
+THE PRICE-AWARE RULE (Phase 38, owner rulings D-05 and D-19, 2026-10-21; SPEC amendment 2).
+DraftKings' closing reading of ``2026_W06_NO@NYG`` (written 2026-10-18 16:49:42 UTC, after the
+game's lock, so it never fed a decision or a bet) reads spread -1.5 (NO favoured by 1.5 on
+points) with spread prices home (NYG +1.5) -125 / away (NO -1.5) +105 and moneyline NYG -112 /
+NO -108. Both markets make NYG the slight favourite: the spread's PRICE carries it, not its sign.
+That is genuine price-shaded pick'em pricing, not a data error, so the CHECK was fixed and no
+odds value was changed. ``sign_conflict_mask`` now excuses a sign disagreement only when the
+moneyline favourite is strictly the pricier side of the spread market AND
+``abs(spread) <= PRICE_EXPLAINED_MAX_SPREAD`` (1.5). The owner approved this one narrowing of
+``test_zero_sign_conflicts_remain_on_comparable_rows``; its code is unchanged and the row stays
+inside it, judged consistent, never nulled or exempted. A third control
+(``test_spread_prices_excuse_only_a_near_coin_flip_disagreement``) shows the excuse is narrow:
+equal prices, -100 against +100 (the same price) and a line beyond the bound are still flagged.
+
+``config/odds_corrections.toml`` carries no note of this ruling on purpose (D-22): that record is
+witnessed by commit and digest (``tests/unit/test_odds_correction_ancestry.py``), so even a
+comment there would break its witness. The ruling lives here and in the ``sign_conflict_mask``
+docstring only.
 """
 
 from __future__ import annotations
@@ -29,6 +48,7 @@ from scripts.repair_odds_snapshot import (
     STRAY_DUPLICATE_AFTER_CANONICAL_ID,
     STRAY_SAME_KEY_DIFFERENT_VALUE,
     ArchiveQuote,
+    apply_corrections,
     classify_stray_rows,
     insert_if_absent,
     latest_pre_kickoff_timeline,
@@ -56,6 +76,22 @@ def _row(game_id: str, spread: float, ml_home: float, ml_away: float) -> dict:
         "total": 44.0,
         "ml_home": ml_home,
         "ml_away": ml_away,
+    }
+
+
+def _priced_row(
+    game_id: str,
+    spread: float,
+    ml_home: float,
+    ml_away: float,
+    spread_ju_home: float,
+    spread_ju_away: float,
+) -> dict:
+    """A ``_row`` that also carries each side's spread price (home side, away side)."""
+    return {
+        **_row(game_id, spread, ml_home, ml_away),
+        "spread_ju_home": spread_ju_home,
+        "spread_ju_away": spread_ju_away,
     }
 
 
@@ -91,6 +127,62 @@ class TestTheDetector:
     def test_a_missing_price_is_not_decidable(self) -> None:
         frame = pd.DataFrame([_row("no_price", 3.0, math.nan, -140.0)])
         assert not sign_conflict_mask(frame).any()
+
+    def test_spread_prices_excuse_only_a_near_coin_flip_disagreement(self) -> None:
+        # D-05 / D-19: the spread's PRICE may carry the favourite when the line is within
+        # PRICE_EXPLAINED_MAX_SPREAD of a coin flip AND the moneyline is near even; equal
+        # prices, equivalent prices, a wider line and a clear moneyline favourite explain
+        # nothing. The last row is a flipped spread sign whose prices sit with their true
+        # sides (true line home -1.5 at -115, moneyline home -130): it must be flagged (WR-D01).
+        frame = pd.DataFrame(
+            [
+                _priced_row("no_at_nyg_shape", -1.5, -112.0, -108.0, -125.0, 105.0),
+                _priced_row(
+                    "equal_spread_prices", -1.5, -112.0, -108.0, -110.0, -110.0
+                ),
+                _priced_row("beyond_the_bound", -3.0, -200.0, 170.0, -125.0, 105.0),
+                _priced_row("equivalent_prices", -1.5, -112.0, -108.0, -100.0, 100.0),
+                _priced_row("flipped_sign", -1.5, -130.0, 110.0, -115.0, -105.0),
+            ]
+        )
+        assert sign_conflict_mask(frame).tolist() == [False, True, True, True, True]
+
+
+class TestAPerBookConflictRefuses:
+    def test_a_per_book_conflict_is_refused_by_name(self) -> None:
+        # WR-D02: DraftKings' row conflicts while FanDuel's row of the same game agrees. A
+        # game_id-keyed correction would land on the wrong book, so the repair refuses.
+        conflicting = {
+            **_row("2026_W06_AAA@BBB", 3.0, 120.0, -140.0),
+            "sportsbook": "draftkings",
+            "created_at": pd.Timestamp("2026-10-18T16:49:42Z"),
+        }
+        agreeing = {
+            **_row("2026_W06_AAA@BBB", -3.0, 120.0, -140.0),
+            "sportsbook": "fanduel",
+            "created_at": pd.Timestamp("2026-10-18T16:49:42Z"),
+        }
+        frame = pd.DataFrame([agreeing, conflicting])
+        with pytest.raises(ValueError, match="per-book sign conflict") as refused:
+            resolve_sign_conflicts(frame, {}, {})
+        assert "draftkings" in str(refused.value)
+        assert "fanduel" not in str(refused.value)
+
+    def test_a_consensus_conflict_on_a_game_with_another_row_is_refused(self) -> None:
+        # PR #2 review: the consensus row conflicts while DraftKings' row of the same game
+        # agrees and comes last. A game_id-keyed correction would land on DraftKings' row and
+        # leave the consensus conflict in place, so applying it refuses and changes nothing.
+        conflicting = _row("2026_W09_AAA@BBB", 3.0, 150.0, -170.0)
+        agreeing = {
+            **_row("2026_W09_AAA@BBB", -3.0, 150.0, -170.0),
+            "sportsbook": "draftkings",
+        }
+        frame = pd.DataFrame([conflicting, agreeing])
+        corrections = resolve_sign_conflicts(frame, {}, {})
+        assert corrections, "the consensus conflict must reach apply_corrections"
+        with pytest.raises(ValueError, match="more than one odds row") as refused:
+            apply_corrections(frame, corrections)
+        assert "2026_W09_AAA@BBB" in str(refused.value)
 
 
 class TestTheOwnedTimelineIsFlippedOnceAtTheReader:

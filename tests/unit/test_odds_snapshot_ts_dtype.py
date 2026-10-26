@@ -213,13 +213,25 @@ class TestARecordedNullVerdictSurvivesAMerge:
         assert float(result.iloc[0]["spread"]) == -3.5
 
     def test_the_live_store_still_carries_its_recorded_nulls(self) -> None:
-        """The production table agrees with the record it was repaired against."""
-        frame = _stored().set_index(["game_id", "sportsbook"])
+        """The production table agrees with the record it was repaired against.
+
+        Each recorded game's consensus row is selected directly. ``(game_id,
+        sportsbook)`` is not unique in the live store -- a bookmaker's decision and
+        closing captures of one game are twin rows by ruling -- so a scalar lookup on
+        that pair returns a Series. A recorded game with no consensus row fails: the
+        verdict cannot be shown to survive on a row that is gone.
+        """
+        stored = _stored()
         for game_id, column in sorted(recorded_nulled_cells()):
-            key = (game_id, "consensus")
-            if key not in frame.index:
-                continue
-            assert pd.isna(frame.loc[key, column]), (
-                f"{game_id}.{column} is {frame.loc[key, column]!r} in silver, but "
+            rows = stored[
+                (stored["game_id"] == game_id) & (stored["sportsbook"] == "consensus")
+            ]
+            assert not rows.empty, (
+                f"{game_id} has no consensus row in silver, so its recorded decided "
+                f"unknown {column} cannot be checked; the row config/odds_corrections.toml "
+                "was repaired against is missing"
+            )
+            assert rows[column].isna().all(), (
+                f"{game_id}.{column} is {rows[column].tolist()!r} in silver, but "
                 "config/odds_corrections.toml records it as a decided unknown"
             )

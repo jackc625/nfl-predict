@@ -182,6 +182,14 @@ class TestRealGold:
     Deliberately narrower than the synthetic grid -- one padding size per target -- so
     the suite pays a few seconds rather than a few minutes for the live confirmation.
     The synthetic grid carries the breadth.
+
+    The window is ``TemporalSplitConfig.default()``'s training window, 2002-2022 since
+    D33.2-14 (the census above was taken on 2018-2019). On today's gold that window holds
+    no column that never varies, so the test does not require gold to carry dead columns
+    of its own: the 25 constant columns it adds ARE the dead weight. The padding
+    assertion keeps its bite without them -- measured 2026-10-21 (Phase 38), with the
+    pre-filter removed the same padding moved 13 of ATS's 25 and 10 of O/U's 25 selected
+    features. The count of gold's own dead columns stays in the failure message.
     """
 
     @pytest.mark.parametrize(
@@ -205,10 +213,6 @@ class TestRealGold:
         X, y = split.train_data, split.train_targets
 
         dead = int((X.nunique(dropna=False) <= 1).sum())
-        assert dead > 0, (
-            "this test is only meaningful while gold still carries dead columns; if "
-            "that changed, re-derive the census rather than deleting the assertion"
-        )
 
         baseline = _select(trainer_cls, X, y, cap)
         padded = _select(trainer_cls, _pad(X, 25, 0.0), y, cap)

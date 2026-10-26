@@ -33,6 +33,10 @@ measured when it was written.
 * Plan 34-22 Task 3 -- ``P34_PREREGISTRATION_WITNESS``, ``P34_W``,
   ``P34_W_FIRST_LOCK_UTC``, ``P34_W_FIRST_DECISION_RUN_UTC``.
 * Plan 34-23 Task 1 -- ``P34_FIRST_LIVE_READBACK``.
+* Plan 38-07 Task 3 -- ``P38_EXPECTED_FAILURE_BASELINE``.
+* Plan 38-12 Task 3 -- ``P38_FULL_SUITE_BASELINE``.
+* Phase 38 code review fix CR-C01 -- ``P38_TRIPWIRE4_CRASH_CORRECTION``.
+* Phase 38 code review fix WR-C05 -- ``P38_RECORDED_SKIPS``.
 """
 
 from __future__ import annotations
@@ -438,4 +442,371 @@ P34_FIRST_LIVE_READBACK: dict[str, object] = {
     "replay_week_w": {"REPLAY_PASS": 6, "REPLAY_NOT_REPLAYABLE": 0, "REPLAY_FAIL": 0},
     "rows_by_week": ((2026, 3, 42), (2026, 4, 45), (2026, 5, 6)),
     "null_stamp_rows_by_week": ((2026, 3, 42), (2026, 4, 45), (2026, 5, 0)),
+}
+
+# ---------------------------------------------------------------------------
+# Plan 38-07 Task 3 -- the expected failure set after Phase 38 cleared the
+# quarantines, MEASURED 2026-10-21 (ET, read via PowerShell Get-Date, 20:24) on
+# HEAD 60e3e3fd83c59be165f9ae25a20b2a1154af2294.
+#
+# This slot SUPERSEDES P34_EXPECTED_FAILURE_BASELINE for the gate in
+# tests/integration/test_phase34_expected_failure_set.py; that slot is left
+# byte-unchanged as the record of what was measured on 2026-10-05.
+#
+# What changed since then: Plan 38-07 Task 2 FIXED the one real defect among
+# the nine quarantines (DEF-31-07, the synthetic-stamp detector), and Tasks 1-2
+# DELETED the other eight by owner ruling (six DEF-31-06 comparisons and two
+# D30-DEFER-08 anchors, all of them reproductions of retired models that
+# today's gold cannot score). Task 1 also deleted three dead-baseline
+# duplicates of tripwires 1 and 5 (SPEC R4).
+#
+# The three runs, each with its pytest summary line verbatim:
+#
+# 1. The five ids of tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS, passed
+#    on the command line:
+#        "5 failed, 29 warnings in 10.98s"  -- all five FAILED, as they must.
+#
+# 2. uv run python -m pytest tests/integration/test_ingest_2025_odds.py
+#        tests/integration/test_ou_divergence.py -q -p no:cacheprovider -rxX
+#        "2 failed, 90 passed, 1 skipped, 47 warnings in 59.79s"
+#    Zero xfails. The two failures are NOT quarantines and NOT caused by this
+#    plan: both copy the production silver odds store into tmp_path, and that
+#    store now holds 99 duplicated (game_id, sportsbook, snapshot_ts) keys,
+#    all in 2026 live captures (for example 2026_W05_BUF@LA, a second reading
+#    per book whose market_last_update falls after the game's lock). They are
+#    recorded below under `unrelated_reds_measured` with that cause, and are
+#    left for the owner; no test was skipped, marked or loosened for them.
+#
+# 3. The four data-dependent node ids of P34_EXPECTED_FAILURE_BASELINE:
+#        "4 passed, 27 warnings in 5.59s"
+#    All four measured PASSED, recorded as measured.
+# ---------------------------------------------------------------------------
+
+P38_EXPECTED_FAILURE_BASELINE: dict[str, object] = {
+    "measured_on": "2026-10-21",
+    "head": "60e3e3fd83c59be165f9ae25a20b2a1154af2294",
+    "plan": "38-07",
+    "tripwires": {
+        "source": "tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS",
+        "measured_failed": 5,
+    },
+    "xfail_quarantines": (),
+    "closed_quarantines": {
+        "fixed": (
+            "tests/integration/test_ou_divergence.py::TestTheSyntheticStampDetectorIsInverted::test_the_detector_reports_that_derivation_as_synthetic",
+        ),
+        "deleted_by_owner_ruling": (
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_each_per_season_figure_matches[2021]",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_each_per_season_figure_matches[2022]",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_each_per_season_figure_matches[2023]",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_each_per_season_figure_matches[2024]",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_the_pooled_figure_matches",
+            "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_the_negative_mean_season_set_is_still_exactly_2022",
+            "tests/integration/test_ou_divergence.py::TestOuDivergence::test_deployed_population",
+            "tests/integration/test_ou_divergence.py::TestOuDivergence::test_orchestrator_early_exit_is_skip_aware",
+        ),
+    },
+    "data_dependent_reds": (
+        (
+            "tests/api/test_health_endpoint.py::TestHealthDegraded::test_health_stale_pipeline_log",
+            "passed",
+        ),
+        (
+            "tests/integration/test_activation_parity.py::test_part_a_cache_predictions_equal_backtest_csv",
+            "passed",
+        ),
+        (
+            "tests/integration/test_bet_list_completeness.py::TestTheStoredReplayRowsAreNeverBackfilled::test_the_stored_artifact_is_all_replay_and_carries_no_observation_time",
+            "passed",
+        ),
+        (
+            "tests/integration/test_bet_list_completeness.py::TestTheStoredReplayRowsAreNeverBackfilled::test_reading_through_the_shim_does_not_write_the_column_back",
+            "passed",
+        ),
+    ),
+    "unrelated_reds_measured": (
+        (
+            "tests/integration/test_ingest_2025_odds.py::TestTheAdditiveJuiceColumns::test_the_stored_lines_are_byte_unchanged_by_a_merge_into_a_temporary_copy",
+            "failed",
+        ),
+        (
+            "tests/integration/test_ingest_2025_odds.py::TestTheWritePathInvariants::test_a_merge_into_a_temporary_copy_holds_every_invariant",
+            "failed",
+        ),
+    ),
+    "unrelated_reds_cause": (
+        "the production silver odds store holds 99 duplicated (game_id, sportsbook, "
+        "snapshot_ts) keys, all 2026 live captures (e.g. 2026_W05_BUF@LA: a second "
+        "reading per book with market_last_update after the lock); both tests merge into a "
+        "tmp_path copy of that store. Not caused by Plan 38-07; left for the owner."
+    ),
+    "deleted_dead_baseline_duplicates": (
+        "tests/integration/test_drift_tripwire_sees_frozen_seasons.py::TestTheLiveFrameWouldAbort::test_passing_the_live_frame_RAISES_naming_a_zero_sample_size",
+        "tests/integration/test_drift_tripwire_sees_frozen_seasons.py::TestTheLiveFrameWouldAbort::test_passing_the_frozen_frame_does_NOT_raise",
+        "tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore",
+    ),
+    "retired_count_baseline": {
+        "line": "6 failed / 3603 passed / 7 skipped / 14 xfailed",
+        "source": "tests.phase32_state.V30_CLOSE_BASELINE",
+        "retired_on": "2026-10-21",
+        "reason": (
+            "the v3.0 close count counted quarantines that no longer exist and predates "
+            "five phases of tests; the gate now asserts an enumerated set -- exactly the "
+            "five tripwires and zero xfails -- and the whole-suite baseline recorded at the "
+            "Phase 38 close (three tier lines plus their sum, D-28) replaces it"
+        ),
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Plan 38-12 Task 3 -- the Phase 38 whole-suite baseline, MEASURED 2026-10-23
+# (ET, read via PowerShell Get-Date) on HEAD
+# f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d (equal to the run directory's
+# head.txt before and after the run, and again at recording time).
+#
+# Run directory (outside the repository, never committed):
+#     C:/Users/jackc/Code/p38-scratch/run2-f2b5b1ab2375-20261023-1409
+# It holds head.txt and, per tier, <tier>.collect.txt, <tier>.xml and
+# <tier>.log.
+#
+# The run was made as three SEQUENTIAL tier processes, not one `pytest tests`
+# process, because a single-process whole suite is killed for memory on this
+# machine -- the instrument of tests/phase33_state.py PRE_PHASE_TIER_LINES /
+# PRE_PHASE_FAILURE_SET. It was ONE background Bash call from the repository
+# root with NFL_PHASE38_FULL_RUN_DIR and NFL_PHASE33_FULL_TIER_VERDICT unset,
+# the six commands in "commands" below joined by `;` (each tier's exit code and
+# a UTC timestamp were appended to exits.txt / tier_end_utc.txt after it).
+# Exit codes: unit 0, integration 1, api 0. No tier was killed.
+#
+# Judged by the opt-in node
+# tests/integration/test_phase33_expected_failure_set.py::
+# test_the_recorded_full_run_report_when_given with NFL_PHASE38_FULL_RUN_DIR
+# set to the run directory: "1 passed, 27 warnings in 4.98s" -- across the
+# union of the three tier reports the failing node ids are exactly
+# tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS, nothing errors, nothing
+# xfails, and every collected test has an outcome.
+#
+# This slot is the D-28 recording form (SPEC amendment 4, owner ruling
+# 2026-10-21): the three tier lines verbatim plus their sum and the JUnit
+# counts, which replaces the retired v3.0 close count recorded in
+# P38_EXPECTED_FAILURE_BASELINE["retired_count_baseline"].
+# ---------------------------------------------------------------------------
+
+P38_FULL_SUITE_BASELINE: dict[str, object] = {
+    "measured_on": "2026-10-23",
+    "head": "f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d",
+    "run_dir": "C:/Users/jackc/Code/p38-scratch/run2-f2b5b1ab2375-20261023-1409",
+    "commands": (
+        'uv run python -m pytest tests/unit --collect-only -q -p no:cacheprovider > "$R/unit.collect.txt" 2>&1',
+        'timeout 3600 uv run python -m pytest tests/unit -q -rfE -p no:cacheprovider --junitxml="$R/unit.xml" > "$R/unit.log" 2>&1',
+        'uv run python -m pytest tests/integration --collect-only -q -p no:cacheprovider > "$R/integration.collect.txt" 2>&1',
+        'timeout 3600 uv run python -m pytest tests/integration -q -rfE -p no:cacheprovider --junitxml="$R/integration.xml" > "$R/integration.log" 2>&1',
+        'uv run python -m pytest tests/api tests/test_*.py --collect-only -q -p no:cacheprovider > "$R/api.collect.txt" 2>&1',
+        'timeout 3600 uv run python -m pytest tests/api tests/test_*.py -q -rfE -p no:cacheprovider --junitxml="$R/api.xml" > "$R/api.log" 2>&1',
+    ),
+    "tier_lines": {
+        "unit": "8219 passed, 5 skipped, 6423 warnings in 817.34s (0:13:37)",
+        "integration": "5 failed, 1767 passed, 59 skipped, 622 warnings in 1816.40s (0:30:16)",
+        "api": "711 passed, 27 warnings in 299.01s (0:04:59)",
+    },
+    "summed_line": "5 failed, 10697 passed, 64 skipped, 7072 warnings",
+    "junit": {
+        "unit": {"tests": 8224, "failures": 0, "errors": 0, "skipped": 5},
+        "integration": {"tests": 1831, "failures": 5, "errors": 0, "skipped": 59},
+        "api": {"tests": 711, "failures": 0, "errors": 0, "skipped": 0},
+        "union": {
+            "tests": 10766,
+            "failures": 5,
+            "errors": 0,
+            "skipped": 64,
+            "xfailed": 0,
+        },
+    },
+    "report_sha256": {
+        "unit": "b7c10bb6769d55d68e45dd32002322f53ce65549e6acf096f926c4f5029616d1",
+        "integration": "013b91c4f9905ece233790b0024b95e96d566d9e78087576e6b71c0bca3d5a0b",
+        "api": "f947de0e506544fac56cc50fb230a0b58325bc1cd71be07271b8b45069179784",
+    },
+    "collected": {"unit": 8224, "integration": 1831, "api": 711},
+    "failing_node_ids_source": "tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS",
+    "started_et": "2026-10-23 14:10:17",
+    "finished_et": "2026-10-23 14:59:57",
+    "discovery_run_tier_lines": {
+        "unit": "15 failed, 8206 passed, 5 skipped, 6423 warnings in 838.16s (0:13:58)",
+        "integration": "6 failed, 1765 passed, 59 skipped, 622 warnings in 1804.66s (0:30:04)",
+        "api": "711 passed, 27 warnings in 314.07s (0:05:14)",
+    },
+    "note": (
+        "In the commands, $R is the run directory above. pytest's summary line omits "
+        "categories whose count is zero, so the JUnit counts are the proof of 0 errors and "
+        "0 xfailed (xfailed is counted from testcases skipped with type pytest.xfail). No "
+        "tier log carried the COLD-05 session-end sweep section. By the owner's ruling "
+        "D-28 (SPEC amendment 4, 2026-10-21) this baseline is the three tier lines plus "
+        "their sum, not one pytest summary line: exactly the five deliberate tripwires "
+        "fail, 0 errors, 0 xfailed. The run was started at 14:10 ET, outside the plan's "
+        "Mon-Fri 08:00-13:00 ET start window, on the owner's explicit 'Start now "
+        "(Recommended)' (about 14:09 ET); no scheduled writer ran before the 17:00 ET "
+        "daily run and no kickoff fell before Sun 2026-10-25 09:30 ET. The discovery run "
+        "(run 1, 2026-10-21, Plan 38-11) is kept for the record only; its lines are not "
+        "the baseline."
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Phase 38 code review fix CR-C01 -- a CORRECTION to P38_FULL_SUITE_BASELINE,
+# MEASURED 2026-10-25 (ET, read via PowerShell) on HEAD
+# cd6514c4c4f9219fac7a48c510d1b2e8773a3b48 plus the CR-C01 edits committed with
+# this slot (owner ruling 2026-10-23, "Repair it, keep it red").
+#
+# WHAT IT CORRECTS. P38_FULL_SUITE_BASELINE (and the 38-11 discovery run before
+# it) recorded "exactly the five deliberate tripwires fail". In run 2 only four
+# of them failed on their own check. Tripwire 4 -- index 3 of
+# tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS -- CRASHED with the JUnit
+# failure message "KeyError: 'away_def_rolling_avg_drive_start_yardline'"
+# before it reached its assertion: commit fc1a5dd (33.2-14, 2026-09-21) dropped
+# the *_def_rolling_avg_drive_start_yardline columns from gold, and the test
+# indexed every pinned column. The gate counted any <failure> as the accepted
+# red, so the crash passed as a disclosure. The old slot stays as the record of
+# what was claimed; this slot is the record of what was true.
+#
+# THE FIX. The gate and the recorded-run judge now accept a tripwire's red only
+# when its failure message is an assertion ("assert ..." or "AssertionError:
+# ..."); any other message is "crashed". Tripwire 4 counts a pinned column that
+# is missing from gold as moved and names it, so it reaches its check. It stays
+# RED; nothing was loosened.
+#
+# THE RUN AFTER THE FIX. Exactly the five ids of
+# tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS, and nothing else:
+#     uv run python -m pytest <the five ids> -q -rfE -p no:cacheprovider
+#         --junitxml=C:/Users/jackc/Code/p38-scratch/tripwires-after-crc01/tripwires.xml
+#     "5 failed, 29 warnings in 12.81s"
+# Every one of the five now fails on an assertion; "after_fix_failures" below
+# quotes the start of each failure message, in the constant's order. No third
+# full-suite run was made.
+#
+# RUN 2 IS STILL JUDGED. The opt-in node test_the_recorded_full_run_report_when_given
+# accepts, for the run directory whose head.txt equals "run_head" below, exactly
+# the one problem "TRIPWIRE NOT A FAILURE: <tripwire 4> [crashed]" and nothing
+# else; it fails if that problem is absent too.
+# ---------------------------------------------------------------------------
+
+P38_TRIPWIRE4_CRASH_CORRECTION: dict[str, object] = {
+    "measured_on": "2026-10-25",
+    "corrects": "P38_FULL_SUITE_BASELINE",
+    "run_head": "f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d",
+    "run_dir": "C:/Users/jackc/Code/p38-scratch/run2-f2b5b1ab2375-20261023-1409",
+    "tripwire_index": 3,
+    "run_state": "crashed",
+    "run_failure_message": "KeyError: 'away_def_rolling_avg_drive_start_yardline'",
+    "after_fix_head": "cd6514c4c4f9219fac7a48c510d1b2e8773a3b48 plus the CR-C01 edits",
+    "after_fix_line": "5 failed, 29 warnings in 12.81s",
+    "after_fix_report_sha256": (
+        "5356cb61b101911a21dd0098c0959879a5d082683d9c893854cf1e890220a456"
+    ),
+    "after_fix_failures": (
+        "AssertionError: the REGENERATED gate baseline block is not byte-identical to "
+        "the block committed in config/gate.toml.",
+        "AssertionError: the FULL rebuild moved 11 non-clock column-slot(s) in the "
+        "PROTECTED 2021-2024 window.",
+        "AssertionError: features_ats's 2021-2024 slice gained 9 columns (weather_coverage "
+        "and eight *_coverage columns) and lost 16 (target_ats among them).",
+        "AssertionError: features_ats: 188 of its 2021-2024 columns moved, 16 of them no "
+        "longer in gold at all (away_def_rolling_avg_drive_start_yardline among them), "
+        "against an expected set of exactly ['feature_timestamp'].",
+        "AssertionError: frozen baseline.wp.pooled.mean = -0.03800034 does not match a "
+        "fresh re-score 0.01483587975541558 (tol 0.005).",
+    ),
+    "reason_drift_note": (
+        "Tripwire 3's reason has also drifted from the Phase-33 record (which said the "
+        "slice gained weather_coverage and lost none); it still fails on its assertion, "
+        "and the drift is recorded here rather than re-anchored."
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Phase 38 code review fix WR-C05 -- the SKIP SET of the recorded run 2, read
+# 2026-10-25 (ET, read via PowerShell) from the three JUnit reports of the run
+# directory recorded in P38_FULL_SUITE_BASELINE (head
+# f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d), whose sha256 digests that slot
+# already pins.
+#
+# P38_FULL_SUITE_BASELINE recorded only the skip COUNT (64). A count can be made
+# to agree: a red turned into a skip, with another skip fixed, still reads 64.
+# This slot names every skipped testcase -- every <skipped> that is not type
+# pytest.xfail -- as JUnit "classname::name", the form the judge reports in.
+# The reasons are in the pinned reports. The opt-in judge
+# test_the_recorded_full_run_report_when_given reports "NEW SKIP: <key>" for
+# any skip outside this set.
+# ---------------------------------------------------------------------------
+
+P38_RECORDED_SKIPS: dict[str, object] = {
+    "read_on": "2026-10-25",
+    "run_head": "f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d",
+    "count": 64,
+    "skipped": (
+        "tests.unit.test_group_verdict_remeasured.TestTheAntiRotGuard::test_the_harness_returns_the_ruling_the_document_records",
+        "tests.unit.test_phase33_state_arithmetic::test_the_post_phase_collected_count_closes_against_the_per_plan_sum",
+        "tests.unit.test_phase37_preregistration_ancestry::test_the_first_refit_descends_from_the_record",
+        "tests.unit.test_sealed_probe_log.TestThisPlanDoesNotCreateTheCommittedLog::test_plan_32_05_did_not_create_it",
+        "tests.unit.test_suppression_freshness.TestRejectionTaxonomy::test_every_reason_has_a_ui_spec_label",
+        "tests.integration.test_diag_diagnosis.TestDiagDiagnosis::test_backtest_numbers_match_audit_report",
+        "tests.integration.test_gold_rebuild_attribution.TestPhase331StalenessGameIdsWereMeasuredBeforeTheRebuild::test_every_recorded_id_is_in_gold_and_absent_from_both_silver_tables",
+        "tests.integration.test_gold_write_scope.TestTheIdentityMigrationMovesNoGoldColumn::test_a_full_history_sandbox_build_is_194_195_194_and_carries_no_identity_column",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_group_1_qb_features",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_group_2_pbp_derived",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_group_3_opponent_adjusted",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_group_4_contextual",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_all_features_clv_not_degraded",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_feature_count_within_budget",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_new_features_present_in_gold",
+        "tests.integration.test_no_precoverage_constants.TestTheScanSeesTheGold::test_before_rung8_the_scan_reports_unflagged_blocks",
+        "tests.integration.test_ou_divergence.TestOuDivergence::test_bias_over_share",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_moved_rows_are_2025_and_in_the_derived_columns[features_wp]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_moved_rows_are_2025_and_in_the_derived_columns[features_ats]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_moved_rows_are_2025_and_in_the_derived_columns[features_ou]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_every_corrected_game_moved[features_wp]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_every_corrected_game_moved[features_ats]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_every_corrected_game_moved[features_ou]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_wp]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_ats]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_ou]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_moved_rows_are_on_or_after_the_floor_in_the_derived_columns[features_wp]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_moved_rows_are_on_or_after_the_floor_in_the_derived_columns[features_ats]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_moved_rows_are_on_or_after_the_floor_in_the_derived_columns[features_ou]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_the_neutralised_game_moved[features_wp]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_the_neutralised_game_moved[features_ats]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_the_neutralised_game_moved[features_ou]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_same_season_rows_before_the_game_did_not_move[features_wp]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_same_season_rows_before_the_game_did_not_move[features_ats]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_same_season_rows_before_the_game_did_not_move[features_ou]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_wp]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_ats]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_ou]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_the_same_games_and_only_the_two_columns_left[features_wp]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_the_same_games_and_only_the_two_columns_left[features_ats]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_the_same_games_and_only_the_two_columns_left[features_ou]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_no_non_weather_column_moved_on_any_row[features_wp]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_no_non_weather_column_moved_on_any_row[features_ats]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_no_non_weather_column_moved_on_any_row[features_ou]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_only_surface_mismatch_moved_on_or_after_the_floor[features_wp]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_only_surface_mismatch_moved_on_or_after_the_floor[features_ats]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_only_surface_mismatch_moved_on_or_after_the_floor[features_ou]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_every_reclassified_game_through_2025_moved[features_wp]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_every_reclassified_game_through_2025_moved[features_ats]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_every_reclassified_game_through_2025_moved[features_ou]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_only_rest_columns_moved_on_or_after_the_floor[features_wp]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_only_rest_columns_moved_on_or_after_the_floor[features_ats]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_only_rest_columns_moved_on_or_after_the_floor[features_ou]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_every_game_whose_rest_count_moves_moved[features_wp]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_every_game_whose_rest_count_moves_moved[features_ats]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_every_game_whose_rest_count_moves_moved[features_ou]",
+        "tests.integration.test_p332_step4b_attribution.TestTheRowRule::test_the_redecided_games_now_weather_apply_and_the_flag_did_not_move[features_wp]",
+        "tests.integration.test_p332_step4b_attribution.TestTheRowRule::test_the_redecided_games_now_weather_apply_and_the_flag_did_not_move[features_ats]",
+        "tests.integration.test_p332_step4b_attribution.TestTheRowRule::test_the_redecided_games_now_weather_apply_and_the_flag_did_not_move[features_ou]",
+        "tests.integration.test_phase33_expected_failure_set::test_the_whole_tier_verdict_when_opted_in",
+        "tests.integration.test_phase33_expected_failure_set::test_the_recorded_full_run_report_when_given",
+        "tests.integration.test_postlock_moves_neutralised.TestGoldCarriesThePreMoveFacts::test_the_post_lock_game_moved_in_exactly_its_changed_fact_columns[features_wp]",
+        "tests.integration.test_postlock_moves_neutralised.TestGoldCarriesThePreMoveFacts::test_the_post_lock_game_moved_in_exactly_its_changed_fact_columns[features_ats]",
+        "tests.integration.test_postlock_moves_neutralised.TestGoldCarriesThePreMoveFacts::test_the_post_lock_game_moved_in_exactly_its_changed_fact_columns[features_ou]",
+    ),
 }

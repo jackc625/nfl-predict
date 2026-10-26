@@ -61,6 +61,7 @@ __all__ = [
     "SKIP_RECORD_PATH",
     "SkipRecordCorrupt",
     "append_skip_record",
+    "parse_skip_records",
     "read_skip_records",
     "skip_records_for_run_date",
 ]
@@ -213,9 +214,27 @@ def read_skip_records(path: Path | str | None = None) -> list[dict[str, Any]]:
         )
         raise SkipRecordCorrupt(msg) from exc
 
+    return parse_skip_records(text, source=resolved)
+
+
+def parse_skip_records(text: str, *, source: Path | str) -> list[dict[str, Any]]:
+    """Validate the text of a skip record and return its records, in append order.
+
+    The line rule of :func:`read_skip_records`, for a caller that has already read the file's
+    bytes itself (the season readout hashes and parses one read, so the digest it prints and the
+    records it counts can never come from two different versions of the file).
+
+    Args:
+        text: The whole file, decoded.
+        source: The file the text came from, named in every refusal.
+
+    Raises:
+        SkipRecordCorrupt: when a line is blank, will not decode, decodes to something other than
+            a mapping, or lacks a required key.
+    """
     records: list[dict[str, Any]] = []
     for number, line in enumerate(text.splitlines(), start=1):
-        where = f"the skip record at {resolved}, line {number}"
+        where = f"the skip record at {source}, line {number}"
         if not line.strip():
             msg = (
                 f"{where} is BLANK. append_skip_record never writes one, so this is an anomaly "

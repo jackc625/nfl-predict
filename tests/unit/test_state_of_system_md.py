@@ -300,3 +300,49 @@ class TestPhase31Reconciled:
         assert "PROFITABILITY-READOUT.md` section 8" in content, (
             "STATE-OF-SYSTEM.md does not point at the section explaining the five red tests"
         )
+
+
+class TestPhase38Reconciled:
+    """Phase 38 (38-10): the registry states the current suite state and retires the v3.0 count.
+
+    The Phase-30 and Phase-31 pins above now guard dated history: "7 xfailed" and "Nothing above
+    is closed by Phase 31" were true when written and stay in the file unedited. The Phase 38
+    relabels mark those two "still open" statements as superseded in place, by an added line after
+    each paragraph, so neither reads as the current state.
+    """
+
+    def test_the_phase_38_section_states_the_current_state(self):
+        """Zero xfails, the five tripwires as the expected set, and the retired v3.0 count."""
+        content = _read_state_of_system_md()
+        required = (
+            "## Phase 38",
+            "zero xfails",
+            "exactly the five deliberate tripwires",
+            "6 failed / 3603 passed / 7 skipped / 14 xfailed",
+            "retired on",
+        )
+        missing = [marker for marker in required if marker not in content]
+        assert not missing, (
+            f"STATE-OF-SYSTEM.md's Phase 38 section is missing: {missing}"
+        )
+
+    def test_both_old_still_open_statements_are_relabelled_as_superseded(self):
+        """Each dated "still open" paragraph is followed by its added Superseded line."""
+        content = _read_state_of_system_md()
+        marker = "Superseded by Phase 38"
+        spans = (
+            (
+                "**Seven quarantined reproductions remain OPEN.**",
+                "**Six deferred registers remain OPEN.**",
+            ),
+            (
+                "**Nothing above is closed by Phase 31.**",
+                "**Four items this phase ADDS",
+            ),
+        )
+        for start, end in spans:
+            section = content[content.index(start) : content.index(end)]
+            assert marker in section, (
+                f"STATE-OF-SYSTEM.md's paragraph opening {start!r} carries no "
+                f"{marker!r} line, so it still reads as the current state"
+            )

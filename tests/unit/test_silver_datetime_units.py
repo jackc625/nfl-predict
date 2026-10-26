@@ -30,12 +30,11 @@ than naming ``weather`` alone -- a rule that only covers the table that broke is
 that waits for the next one. It also asserts the invariant WITHIN a table, which is the
 form the defect actually took: one column disagreeing with its own siblings.
 
-It does NOT assert that every silver datetime is tz-AWARE. ``games.parquet`` carries
-``kickoff_et`` and ``created_at`` at ``datetime64[us, UTC]`` today -- aware, but at the
-other unit -- and aligning it is a separate declared write on a table nothing in this
-plan touched. That is recorded as a known divergence below and asserted as such, so the
-gap is a stated fact rather than a silent exemption: if `games` is ever aligned, this
-test fails and the record is updated deliberately.
+It does NOT assert that every silver datetime is tz-AWARE. ``games.parquet`` was the one
+recorded divergence (``kickoff_et`` and ``created_at`` at ``datetime64[us, UTC]``); Phase
+38 fixed its writer to stamp ``created_at`` at the target unit and aligned the stored
+table with the declared write under a digest bracket on 2026-10-21, so the record of
+known divergences is now empty and every silver table is held to the one unit.
 
 FOUR CONTROLS
 -------------
@@ -64,10 +63,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SILVER = REPO_ROOT / "data" / "silver"
 
 #: Tables whose tz-aware datetime columns are NOT yet at the target unit, recorded rather
-#: than exempted. ``games`` carries kickoff_et and created_at at ``datetime64[us, UTC]``;
-#: aligning it is a declared write on a table Plan 33.2-20 did not touch, and doing it
-#: unbracketed inside a test would be a production write nobody declared.
-KNOWN_UNALIGNED_TABLES: tuple[str, ...] = ("games",)
+#: than exempted. Empty since 2026-10-21 (owner ruling, Phase 38): ``games``, the one
+#: entry, was aligned by the declared write and its writer fixed, so every silver table is
+#: covered by ``test_every_tz_aware_column_is_at_the_one_unit``.
+KNOWN_UNALIGNED_TABLES: tuple[str, ...] = ()
 
 
 def _silver_tables() -> list[Path]:

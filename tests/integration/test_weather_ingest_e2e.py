@@ -337,3 +337,11 @@ class TestAScheduledUnplayed2026WeekIsPopulated:
         # And it is what landed in the sandbox silver table, not merely what was returned.
         stored = pd.read_parquet(root / "silver" / "weather.parquet")
         assert set(stored["game_id"]) == set(games["game_id"])
+        # WR-D07: a FIRST write takes the writer's units as they are, with no alignment to a
+        # stored table, so created_at must already be [ns] like its sibling columns.
+        units = {
+            column: dtype.unit
+            for column, dtype in stored.dtypes.items()
+            if isinstance(dtype, pd.DatetimeTZDtype)
+        }
+        assert "created_at" in units and set(units.values()) == {"ns"}, units
