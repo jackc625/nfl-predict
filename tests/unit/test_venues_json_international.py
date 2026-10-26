@@ -803,11 +803,14 @@ class TestEverySilverGameResolvesToAVenue:
     def _silver_games():
         import pandas as pd
 
+        from conf.season_partition import CORPUS_FIRST_SEASON
+
         path = REPO_ROOT / "data" / "silver" / "games.parquet"
         if not path.exists():
             pytest.skip("silver games is not built on this checkout")
         games = pd.read_parquet(path, columns=["game_id", "season", "stadium_id"])
-        return games[games["season"].between(2002, 2026)]
+        # No ceiling: a later season's stadium ids are checked as soon as they are stored.
+        return games[games["season"] >= CORPUS_FIRST_SEASON]
 
     def test_every_stored_stadium_id_resolves(self) -> None:
         games = self._silver_games()
