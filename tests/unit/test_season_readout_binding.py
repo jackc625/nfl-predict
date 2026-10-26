@@ -60,6 +60,7 @@ from forward_ledger.verdict import verdict_rows
 from pipeline.skip_log import SKIP_RECORD_PATH
 from refit.records import DATES_FILENAME, refit_dir
 from scripts import compare_refit_arms, season_readout
+from tests import phase38_state
 from tests.unit.test_forward_ledger_store import graded, key_of, make_row
 
 # The real repository: only READ here (the R6 record files are copied into synthetic repos).
@@ -437,12 +438,32 @@ def _arg(argv: Sequence[str], name: str) -> Path:
     return Path(argv[list(argv).index(name) + 1])
 
 
+def _fixture_lock(repo: Path) -> str:
+    """*repo*'s own lock commit, the witness's stand-in there; the real witness when it has none."""
+    try:
+        added = git(
+            repo, "log", "--diff-filter=A", "--format=%H", "--", RULE_FILES[1]
+        ).split()
+    except (OSError, subprocess.CalledProcessError):
+        added = []
+    return added[-1] if added else season_readout.WITNESSED_LOCK_SHA
+
+
 def _run(
-    argv: list[str], capsys: pytest.CaptureFixture[str], repo: Path
+    argv: list[str],
+    capsys: pytest.CaptureFixture[str],
+    repo: Path,
+    witness: str | None = None,
 ) -> tuple[int, list[str]]:
-    """Run the CLI with *repo* standing in for the executing checkout (``REPO_ROOT``)."""
+    """Run the CLI with *repo* standing in for the executing checkout (``REPO_ROOT``).
+
+    The witnessed lock is *repo*'s own lock commit unless *witness* names another.
+    """
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(season_readout, "REPO_ROOT", repo)
+        patch.setattr(
+            season_readout, "WITNESSED_LOCK_SHA", witness or _fixture_lock(repo)
+        )
         code = season_readout.main(argv)
     return code, capsys.readouterr().out.splitlines()
 
@@ -625,12 +646,15 @@ def _refusal(lines: list[str]) -> str:
 
 
 def _assert_refuses(
-    argv: list[str], capsys: pytest.CaptureFixture[str], root: Path
+    argv: list[str],
+    capsys: pytest.CaptureFixture[str],
+    root: Path,
+    witness: str | None = None,
 ) -> str:
     """Run binding on *argv* against ``root / "repo"``: exit 3, one refusal line, and nothing
     new or changed under *root*."""
     before = _tree(root)
-    code, lines = _run(argv, capsys, root / "repo")
+    code, lines = _run(argv, capsys, root / "repo", witness)
     assert code == 3, lines
     assert _tree(root) == before
     assert not (root / "repo" / BINDING_RECORD_PATH).exists()
@@ -817,6 +841,78 @@ def test_binding_refuses_when_the_rule_moved(
     assert (
         line == f"{REFUSED}the frozen value ALPHA is pinned at 0.05 but now holds 0.1."
     )
+
+
+def test_the_witnessed_lock_is_the_recorded_witness() -> None:
+    """The CLI's copy of the lock sha is the Plan 38-03 witness, and the real lock proves out."""
+    witness = phase38_state.P38_PREREGISTRATION_WITNESS
+    assert {witness[name]["commit"] for name in RULE_FILES} == {
+        season_readout.WITNESSED_LOCK_SHA
+    }
+    lock = season_readout.lock_commit(REAL_REPO_ROOT)
+    assert lock.sha == season_readout.WITNESSED_LOCK_SHA
+    assert lock.committed_at == phase38_state.P38_PREREGISTRATION_COMMITTED_AT
+    assert season_readout.unwitnessed_lock_problem(REAL_REPO_ROOT, lock) is None
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_a_lock_it_cannot_prove(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refusal 5 (CR-A02): a shallow clone, or a history whose "lock" is not the witnessed
+    commit, refuses instead of writing the record under a wrong lock."""
+    # A shallow clone: its boundary commit reads as adding every file.
+    argv = binding_fixture(tmp_path / "origin")
+    origin = tmp_path / "origin" / "repo"
+    (origin / "notes.txt").write_text("a later commit\n", encoding="utf-8")
+    git(origin, "add", "notes.txt")
+    git(origin, "commit", "-q", "-m", "a later commit")
+    clone = tmp_path / "shallow" / "repo"
+    git(tmp_path, "clone", "-q", "--depth", "1", origin.as_uri(), str(clone))
+    assert git(clone, "rev-parse", "--is-shallow-repository").strip() == "true"
+    anchor_ledger(clone, _arg(argv, "--ledger-dir"))
+    line = _assert_refuses(argv, capsys, tmp_path / "shallow", _fixture_lock(origin))
+    assert "the R6 lock commit cannot be found" in line and "shallow clone" in line
+
+    # Rewritten history: the oldest commit adding the rule is not the witnessed one.
+    line = _assert_refuses(argv, capsys, tmp_path / "origin", "f" * 40)
+    assert "the R6 lock commit cannot be proven" in line
+    assert "not the witnessed lock" in line
+
+    # A "lock" committed after the deadline, or touching a third file, is not the lock either.
+    late = synthetic_repo(tmp_path / "late")
+    (late / "extra.txt").write_text("not part of the record\n", encoding="utf-8")
+    git(late, "add", "extra.txt")
+    after_deadline = "2026-10-29T12:00:00+00:00"
+    git(
+        late,
+        "commit",
+        "-q",
+        "--amend",
+        "--no-edit",
+        env={"GIT_AUTHOR_DATE": after_deadline, "GIT_COMMITTER_DATE": after_deadline},
+    )
+    lock = season_readout.lock_commit(late)
+    monkeypatch.setattr(season_readout, "WITNESSED_LOCK_SHA", lock.sha)
+    problem = season_readout.unwitnessed_lock_problem(late, lock)
+    assert problem is not None and "not before the pre-registration deadline" in problem
+    git(
+        late,
+        "commit",
+        "-q",
+        "--amend",
+        "--no-edit",
+        env={
+            "GIT_AUTHOR_DATE": LOCK_COMMITTED_AT,
+            "GIT_COMMITTER_DATE": LOCK_COMMITTED_AT,
+        },
+    )
+    lock = season_readout.lock_commit(late)
+    monkeypatch.setattr(season_readout, "WITNESSED_LOCK_SHA", lock.sha)
+    problem = season_readout.unwitnessed_lock_problem(late, lock)
+    assert problem is not None and "not exactly the two R6 files" in problem
 
 
 @pytest.mark.usefixtures("isolated_git_env")

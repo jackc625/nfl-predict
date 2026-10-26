@@ -1428,8 +1428,10 @@ run has graded the bets and recorded the scores:
 repository is not what was frozen. Do not edit, re-commit or re-clone anything to make one go away;
 find out what happened first and take it to the owner:
 
-5. The R6 lock commit (the commit that added `backtest/verdict_test_2026.py`) cannot be found, for
-   example in a shallow clone or after rewritten history.
+5. The R6 lock commit (the commit that added `backtest/verdict_test_2026.py`) cannot be found or
+   proven: the clone is shallow, or the commit history names is not the witnessed lock `922b010`
+   (committed before the 2026-10-28 deadline, touching exactly the two rule files), for example
+   after rewritten or squashed history. Run it from a full clone of the real repository.
 6. A commit after the lock edited `SEASON-VERDICT-PREREGISTRATION.md` or
    `backtest/verdict_test_2026.py` without naming the lock as INVALIDATED, or one of those two
    files has an uncommitted change.

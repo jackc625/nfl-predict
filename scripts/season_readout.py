@@ -57,7 +57,11 @@ naming the first one unmet:
 3. the schedule holds no played week-22 game;
 4. the binding record ``<repo root>/docs/records/SEASON-2026-READOUT.md`` exists, or that path
    appears anywhere in git history (``git log --all``);
-5. the R6 lock commit (the commit that added ``backtest/verdict_test_2026.py``) cannot be found;
+5. the R6 lock commit (the commit that added ``backtest/verdict_test_2026.py``) cannot be found,
+   or cannot be proven: the repository is a shallow clone (its boundary commit reads as adding
+   every file), or the oldest commit adding the rule is not the witnessed lock
+   (:data:`WITNESSED_LOCK_SHA`), was not committed before ``PREREGISTRATION_DEADLINE_UTC``, or does
+   not touch exactly the two R6 files (rewritten or squashed history);
 6. a commit after the lock touches ``SEASON-VERDICT-PREREGISTRATION.md`` or
    ``backtest/verdict_test_2026.py`` without naming the lock sha as INVALIDATED, or either file
    has an uncommitted change;
@@ -182,6 +186,12 @@ BINDING_COMMAND: str = "uv run python -m scripts.season_readout --binding"
 # The two files of the R6 record (one pre-registration in two files), repository-relative.
 RULE_MODULE_PATH: str = "backtest/verdict_test_2026.py"
 RULE_PATHS: tuple[str, ...] = ("SEASON-VERDICT-PREREGISTRATION.md", RULE_MODULE_PATH)
+
+# The R6 lock commit as witnessed after it was pushed: the commit of both files in
+# tests/phase38_state.py P38_PREREGISTRATION_WITNESS (Plan 38-03), asserted equal there by
+# tests/unit/test_season_readout_binding.py. Copied, not imported: a CLI never imports a test
+# module. A lock git finds that is not this commit is a lock that cannot be proven (refusal 5).
+WITNESSED_LOCK_SHA: str = "922b010b70d973a21945c15ca88067dae4149ad5"
 
 # Pins the binding run CHECKS (refusal 7), never values it computes with: the computation reads
 # backtest.verdict_test_2026, whose alpha, bootstrap B and seed are imported by identity from
@@ -523,9 +533,16 @@ def lock_commit(repo_root: Path) -> RuleLock:
     """The R6 lock commit, its committer date and the last commit touching either R6 file.
 
     Raises:
-        RuleLockMissingError: no commit added the record module.
+        RuleLockMissingError: no commit added the record module, or the repository is a shallow
+            clone, where the boundary commit reads as adding every file.
         GitCheckError: a git call failed (never a default answer).
     """
+    if _git(repo_root, "rev-parse", "--is-shallow-repository").strip() == "true":
+        msg = (
+            f"{Path(repo_root).as_posix()} is a shallow clone, so the oldest commit adding "
+            f"{RULE_MODULE_PATH} cannot be proven"
+        )
+        raise RuleLockMissingError(msg)
     added = _git(
         repo_root,
         "log",
@@ -541,6 +558,37 @@ def lock_commit(repo_root: Path) -> RuleLock:
     sha, committed_at = added.splitlines()[-1].split("\t")
     last_touch = _git(repo_root, "log", "-1", "--format=%H", "--", *RULE_PATHS).strip()
     return RuleLock(sha=sha, committed_at=committed_at, last_touch_sha=last_touch)
+
+
+def unwitnessed_lock_problem(repo_root: Path, lock: RuleLock) -> str | None:
+    """Why *lock* is not the lock that was witnessed, or None when it is.
+
+    ``git log --diff-filter=A`` names whatever commit history now says added the rule, so a
+    rewritten or squashed history that re-adds it would hand back a different, later "lock".
+    The lock must be the witnessed commit, committed before the pre-registration deadline, and
+    touch exactly the two R6 files.
+
+    Raises:
+        GitCheckError: a git call failed.
+    """
+    if lock.sha != WITNESSED_LOCK_SHA:
+        return (
+            f"the oldest commit adding {RULE_MODULE_PATH} is {lock.sha}, not the witnessed lock "
+            f"{WITNESSED_LOCK_SHA}"
+        )
+    committed = datetime.fromisoformat(lock.committed_at)
+    if committed >= datetime.fromisoformat(rule.PREREGISTRATION_DEADLINE_UTC):
+        return (
+            f"the lock commit {lock.sha} was committed at {lock.committed_at}, not before the "
+            f"pre-registration deadline {rule.PREREGISTRATION_DEADLINE_UTC}"
+        )
+    touched = set(_git(repo_root, "show", "--name-only", "--format=", lock.sha).split())
+    if touched != set(RULE_PATHS):
+        return (
+            f"the lock commit {lock.sha} touches {sorted(touched)}, not exactly the two R6 "
+            f"files {sorted(RULE_PATHS)}"
+        )
+    return None
 
 
 def quiet_rule_edits(repo_root: Path, lock_sha: str) -> list[tuple[str, str]]:
@@ -707,13 +755,16 @@ def binding_refusal(
             "run happened, and deleting or moving the record never reopens it."
         )
 
-    # (5) The R6 lock commit must be in this repository.
+    # (5) The R6 lock commit must be in this repository, and be the witnessed one.
     try:
         lock = lock_commit(repo_root)
+        unwitnessed = unwitnessed_lock_problem(repo_root, lock)
     except GitCheckError as error:
         return f"a git check failed, so the run refuses (fail closed): {error}"
     except RuleLockMissingError as error:
         return f"the R6 lock commit cannot be found: {error}."
+    if unwitnessed is not None:
+        return f"the R6 lock commit cannot be proven: {unwitnessed}."
 
     # (6) No quiet edit and no uncommitted change to either R6 file.
     try:
