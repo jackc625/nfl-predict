@@ -595,6 +595,10 @@ class TestEvery2021To2024ValueIsByteIdentical:
         The companion to the exclusion above. If a genuine data column moved in 2021-2024
         alongside the clock, this fails and NAMES it -- so the exclusion can never widen
         into a tolerance by accident.
+
+        A pinned column that is no longer in gold at all has moved too: its value is gone.
+        It is counted as moved and named, so the test reaches its check instead of
+        crashing on the missing key (owner ruling 2026-10-23, CR-C01).
         """
         _require_live_gold()
         from scripts.resync_games_duckdb import slice_digests
@@ -602,14 +606,15 @@ class TestEvery2021To2024ValueIsByteIdentical:
         after = slice_digests()
 
         for matrix, expected in SLICE_DIGESTS_2021_2024.items():
+            actual = after[matrix]
             moved = {
-                column
-                for column in expected
-                if after[matrix][column] != expected[column]
+                column for column in expected if actual.get(column) != expected[column]
             }
+            removed = sorted(set(expected) - set(actual))
             assert moved == set(BUILD_CLOCK_COLUMNS), (
                 f"{matrix}: the 2021-2024 columns that moved across the re-sync are "
-                f"{sorted(moved)}. They must be EXACTLY the per-build clock "
+                f"{sorted(moved)}, of which {len(removed)} are no longer in gold at all: "
+                f"{removed}. They must be EXACTLY the per-build clock "
                 f"{sorted(BUILD_CLOCK_COLUMNS)} and nothing else. A clock that did NOT "
                 "move would mean this gold was never rebuilt; any other column moving "
                 "means the WR-06 fix is incomplete and the phase is BLOCKED (SPEC R2)."

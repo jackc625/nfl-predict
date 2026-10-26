@@ -312,7 +312,8 @@ three test tiers' own summary lines, word for word, plus their sum (the owner's 
 appended at the close to `tests/phase34_state.py` in the slot P38_FULL_SUITE_BASELINE.
 
 **The six deferred registers above remain OPEN.** Phase 38 did not touch D30-DEFER-04, -17, -22,
--23, -24 or -25, and the five tripwire disclosures are unchanged.
+-23, -24 or -25. The five tripwires are still red, but not all of them for their recorded reasons
+(see the correction at the end of this section).
 
 **How the 2026 money verdict is judged** is frozen in `SEASON-VERDICT-PREREGISTRATION.md`. The
 preview of the season's raw figures is `uv run python -m scripts.season_readout`; the one binding
@@ -330,6 +331,18 @@ Per D-28, these three lines and their sum are the recorded baseline. Measured on
 exactly the five deliberate tripwires fail, 0 errors, 0 xfailed (the JUnit reports count 10766
 tests, 5 failures, 0 errors, 64 skipped). The full record, with the run directory, commands and
 report digests, is `tests/phase34_state.py` P38_FULL_SUITE_BASELINE.
+
+**Correction (2026-10-25): in that run, one of the five crashed instead of failing.** Tripwire 4
+(`test_the_moved_set_is_exactly_the_build_clock`) never reached its check. It crashed with
+`KeyError: 'away_def_rolling_avg_drive_start_yardline'`, because a September gold rebuild (commit
+`fc1a5dd`) had dropped columns the test looked up, and the gate counted any failure as the
+accepted red. So "exactly the five deliberate tripwires fail" was true only as a count. The gate
+and the recorded-run judge now accept a tripwire's red only when it is an assertion failure on its
+own check. Tripwire 4 now counts a pinned column that is missing from gold as moved, and names it,
+so it fails on its check and stays red. A run of the five tripwires alone after that fix showed
+all five failing on their assertions. Tripwire 3 also now fails for a wider reason than its Phase
+33 record: its slice gained 9 columns and lost 16. The record is `tests/phase34_state.py`
+P38_TRIPWIRE4_CRASH_CORRECTION.
 
 ## Cross-references
 

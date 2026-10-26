@@ -30,7 +30,9 @@ gate now runs each child pytest with ``--junitxml`` and reads OUTCOMES:
 * ``junit_key`` turns a node id into the report's ``(classname, name)`` with
   ``_pytest.junitxml.mangle_test_address``, the function that wrote the report;
 * ``junit_outcomes`` maps every testcase to the SET of states it shows: ``failed``
-  (a ``<failure>`` child), ``error`` (an ``<error>`` child: setup, teardown or
+  (a ``<failure>`` child whose message is an assertion), ``crashed`` (a ``<failure>``
+  child whose message is any other exception, such as ``KeyError``: the test never
+  reached its check), ``error`` (an ``<error>`` child: setup, teardown or
   collection), ``xfailed`` (``<skipped type="pytest.xfail">``), ``skipped`` (any other
   ``<skipped>``) or ``passed`` (no child). A call failure plus a teardown error is TWO
   testcase elements for one node; both states are kept, never collapsed to one;
@@ -38,13 +40,13 @@ gate now runs each child pytest with ``--junitxml`` and reads OUTCOMES:
   case; each problem names its kind:
 
   - ``DISCLOSURE ERASED`` -- a tripwire passed, or did not run at all;
-  - ``TRIPWIRE NOT A FAILURE`` -- a tripwire errored, skipped or xfailed instead of
-    failing. Only an assertion failure is the owner-accepted red;
+  - ``TRIPWIRE NOT A FAILURE`` -- a tripwire crashed, errored, skipped or xfailed
+    instead of failing. Only an assertion failure is the owner-accepted red;
   - ``TRIPWIRE ALSO ERRORED`` -- a tripwire failed AND errored (for example at teardown,
     where a COLD-05 per-test production-store guard surfaces). It is its own problem, so
     an error is never hidden behind a tripwire's expected failure;
-  - ``REGRESSION`` -- a node that is not a tripwire failed or errored (one message per
-    node, even when it did both);
+  - ``REGRESSION`` -- a node that is not a tripwire failed, crashed or errored (one
+    message per node, even when it did more than one);
   - ``QUARANTINE`` -- any node anywhere xfailed. The expected set holds zero quarantines.
 
 A strict subset is a violation, not an improvement. That is the whole claim.
@@ -125,7 +127,7 @@ from pathlib import Path
 import pytest
 from _pytest.junitxml import mangle_test_address
 
-from tests import phase33_state
+from tests import phase33_state, phase34_state
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PRODUCTION_DATA_TREE = REPO_ROOT / "data"
@@ -181,6 +183,13 @@ FULL_RUN_PENDING_SKIP = (
     "owner-approved step (D-06): three sequential tier processes that write each tier's "
     "JUnit report, log and collect listing there. This node only reads those files."
 )
+
+# How pytest's JUnit writer starts the message of an assertion failure (see
+# ``_testcase_state``); any other call-phase failure message names a crash.
+_ASSERTION_PREFIXES = ("AssertionError", "assert ")
+
+# The states that make a node red: a non-tripwire showing any of them is a REGRESSION.
+_RED_STATES = frozenset({"failed", "crashed", "error"})
 
 # A JUnit outcome map: (classname, name) -> every state that testcase key showed.
 Outcomes = Mapping[tuple[str, str], frozenset[str]]
@@ -248,10 +257,19 @@ def junit_key(node_id: str) -> tuple[str, str]:
 
 
 def _testcase_state(testcase: ET.Element) -> str:
-    """The one state a single ``<testcase>`` element records."""
-    tags = {child.tag: child.get("type") for child in testcase}
-    if "failure" in tags:
-        return "failed"
+    """The one state a single ``<testcase>`` element records.
+
+    pytest writes a ``<failure>`` for EVERY exception raised in the call phase, so its
+    message decides which it was. An assertion is written ``assert ...`` (a rewritten
+    bare assert) or ``AssertionError: ...`` (one with a message, or raised directly);
+    anything else -- ``KeyError: ...``, ``FileNotFoundError: ...`` -- is a crash before
+    the test reached its check, and is ``crashed``, never ``failed``.
+    """
+    children = {child.tag: child for child in testcase}
+    if "failure" in children:
+        message = children["failure"].get("message", "")
+        return "failed" if message.startswith(_ASSERTION_PREFIXES) else "crashed"
+    tags = {tag: child.get("type") for tag, child in children.items()}
     if "error" in tags:
         return "error"
     if "skipped" in tags:
@@ -296,7 +314,8 @@ def expected_outcome_problems(
     Returns:
         One message per problem, each starting with its kind (``DISCLOSURE ERASED``,
         ``TRIPWIRE NOT A FAILURE``, ``TRIPWIRE ALSO ERRORED``, ``REGRESSION``,
-        ``QUARANTINE``). An empty list is the passing case.
+        ``QUARANTINE``). An empty list is the passing case. A tripwire that only
+        ``crashed`` is NOT A FAILURE: it never reached the check its disclosure is.
     """
     problems: list[str] = []
     expected_keys: set[tuple[str, str]] = set()
@@ -314,7 +333,7 @@ def expected_outcome_problems(
             problems.append(f"TRIPWIRE ALSO ERRORED: {node_id} {_shown(states)}")
 
     for (classname, name), states in sorted(outcomes.items()):
-        if (classname, name) not in expected_keys and states & {"failed", "error"}:
+        if (classname, name) not in expected_keys and states & _RED_STATES:
             problems.append(f"REGRESSION: {classname}::{name} {_shown(states)}")
         if "xfailed" in states:
             problems.append(f"QUARANTINE: {classname}::{name} xfailed")
@@ -561,14 +580,14 @@ def test_the_comparison_names_each_way_a_set_can_be_wrong() -> None:
     assert _kinds(absent) == ["DISCLOSURE ERASED"], absent
     assert "did not run" in absent[0]
 
-    # A sixth red, whether it failed, errored, or both: exactly one REGRESSION.
-    for states in ({"failed"}, {"error"}, {"failed", "error"}):
+    # A sixth red, whether it failed, crashed, errored, or both: exactly one REGRESSION.
+    for states in ({"failed"}, {"crashed"}, {"error"}, {"failed", "error"}):
         problems = judged({bystander: frozenset(states)})
         assert _kinds(problems) == ["REGRESSION"], problems
         assert "test_bystander" in problems[0]
 
-    # Only an assertion failure is the accepted red.
-    for states in ({"error"}, {"skipped"}):
+    # Only an assertion failure is the accepted red; a crash never reached the check.
+    for states in ({"crashed"}, {"error"}, {"skipped"}):
         problems = judged({first: frozenset(states)})
         assert _kinds(problems) == ["TRIPWIRE NOT A FAILURE"], problems
     xfailed_tripwire = judged({first: frozenset({"xfailed"})})
@@ -601,6 +620,14 @@ def test_fails():
     assert False
 
 
+def test_fails_with_a_message():
+    assert False, "planted check"
+
+
+def test_crashes():
+    {}["k"]
+
+
 def test_errors_at_setup(broken_setup):
     pass
 
@@ -624,6 +651,8 @@ def test_fails_and_errors_at_teardown(broken_teardown):
 
 _PLANTED_REPORT_STATES: dict[str, frozenset[str]] = {
     "test_fails": frozenset({"failed"}),
+    "test_fails_with_a_message": frozenset({"failed"}),
+    "test_crashes": frozenset({"crashed"}),
     "test_errors_at_setup": frozenset({"error"}),
     "test_skips": frozenset({"skipped"}),
     "test_xfails": frozenset({"xfailed"}),
@@ -667,12 +696,17 @@ def test_the_reader_classifies_a_real_pytest_report(tmp_path: Path) -> None:
 
     as_bystander = expected_outcome_problems(outcomes, [])
     assert _kinds(problems_naming(as_bystander)) == ["REGRESSION"], as_bystander
-    assert _kinds(as_bystander) == [
-        "QUARANTINE",
-        "REGRESSION",
-        "REGRESSION",
-        "REGRESSION",
-    ]
+    assert _kinds(as_bystander) == ["QUARANTINE"] + ["REGRESSION"] * 5, as_bystander
+
+    # The crash, judged as a tripwire, is never the accepted red.
+    crash = f"{module.name}::test_crashes"
+    crash_key = junit_key(crash)
+    as_crashed_tripwire = expected_outcome_problems(
+        {crash_key: outcomes[crash_key]}, [crash]
+    )
+    assert _kinds(as_crashed_tripwire) == ["TRIPWIRE NOT A FAILURE"], (
+        as_crashed_tripwire
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -778,6 +812,30 @@ def test_the_whole_tier_verdict_when_opted_in(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def recorded_crash_problems(run_dir: Path) -> list[str]:
+    """The one problem a correction slot accepts for the run it names, else none.
+
+    ``tests.phase34_state.P38_TRIPWIRE4_CRASH_CORRECTION`` records that run 2's
+    tripwire 4 crashed instead of failing on its check. It applies only to the run
+    directory whose ``head.txt`` is the head the slot records, never to live HEAD.
+
+    Args:
+        run_dir: The recorded run directory.
+
+    Returns:
+        ``["TRIPWIRE NOT A FAILURE: <tripwire> [crashed]"]`` for that run; empty otherwise.
+    """
+    correction = phase34_state.P38_TRIPWIRE4_CRASH_CORRECTION
+    head = run_dir / "head.txt"
+    recorded_head = head.read_text(encoding="utf-8").strip() if head.is_file() else None
+    if recorded_head != correction["run_head"]:
+        return []
+    index = correction["tripwire_index"]
+    assert isinstance(index, int), correction
+    node_id = phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS[index]
+    return [f"TRIPWIRE NOT A FAILURE: {node_id} [{correction['run_state']}]"]
+
+
 def test_the_recorded_full_run_report_when_given() -> None:
     """SPEC AC 15: the recorded run is exactly the five tripwires failing, and complete.
 
@@ -792,10 +850,17 @@ def test_the_recorded_full_run_report_when_given() -> None:
     assert run_dir.is_dir(), f"{FULL_RUN_DIR_ENV}={named!r} names no directory"
 
     problems = full_run_problems(run_dir, phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS)
-    assert problems == [], (
+    accepted = recorded_crash_problems(run_dir)
+    missing = [problem for problem in accepted if problem not in problems]
+    assert not missing, (
+        f"the correction slot records a crash for the run in {run_dir} that the judge no "
+        f"longer finds: {missing}. The slot describes another run, or this one changed."
+    )
+    unaccepted = [problem for problem in problems if problem not in accepted]
+    assert unaccepted == [], (
         f"the recorded full run in {run_dir} is not exactly the five deliberate "
         "tripwires failing, complete and inside the production store boundary:\n"
-        + "\n".join(f"  - {problem}" for problem in problems)
+        + "\n".join(f"  - {problem}" for problem in unaccepted)
     )
 
 
@@ -812,7 +877,8 @@ def _write_planted_tier(
     Args:
         run_dir: The planted run directory.
         tier: One of ``FULL_RUN_TIERS``.
-        outcomes: node id -> ``failed`` or ``passed``; each becomes one testcase.
+        outcomes: node id -> ``failed``, ``crashed`` or ``passed``; each becomes one
+            testcase, a failure written with the message pytest writes for that kind.
         listed: The collect listing's node ids; defaults to the report's own.
         log_text: The tier log; defaults to a plain pytest summary line.
     """
@@ -821,7 +887,9 @@ def _write_planted_tier(
         classname, name = junit_key(node_id)
         testcase = ET.SubElement(suite, "testcase", classname=classname, name=name)
         if outcome == "failed":
-            ET.SubElement(testcase, "failure", message="planted failure")
+            ET.SubElement(testcase, "failure", message="AssertionError: planted check")
+        elif outcome == "crashed":
+            ET.SubElement(testcase, "failure", message="KeyError: 'planted'")
     root = ET.Element("testsuites")
     root.append(suite)
     ET.ElementTree(root).write(run_dir / f"{tier}.xml", encoding="utf-8")
@@ -832,7 +900,7 @@ def _write_planted_tier(
         "\n".join(listed) + f"\n\n{len(listed)} test{plural} collected in 0.01s\n",
         encoding="utf-8",
     )
-    failed = sum(outcome == "failed" for outcome in outcomes.values())
+    failed = sum(outcome != "passed" for outcome in outcomes.values())
     passed = len(outcomes) - failed
     summary = f"{failed} failed, {passed} passed" if failed else f"{passed} passed"
     (run_dir / f"{tier}.log").write_text(
@@ -920,6 +988,20 @@ def test_the_full_run_judge_refuses_a_bad_report(tmp_path: Path) -> None:
     _write_planted_tier(sixth, "unit", {_PLANTED_BYSTANDER: "failed"})
     regression = full_run_problems(sixth, tripwires)
     assert _kinds(regression) == ["REGRESSION"], regression
+
+    # A tripwire that crashed before its check is not the accepted red.
+    crashed = _planted_run(tmp_path / "crashed")
+    _write_planted_tier(
+        crashed,
+        "integration",
+        {
+            **dict.fromkeys(tripwires, "failed"),
+            tripwires[0]: "crashed",
+            f"{_PLANTED_MODULE}::test_integration_bystander": "passed",
+        },
+    )
+    not_a_failure = full_run_problems(crashed, tripwires)
+    assert _kinds(not_a_failure) == ["TRIPWIRE NOT A FAILURE"], not_a_failure
 
 
 # Parametrize ids pytest writes with an escape: a newline (`\n`), a non-ASCII character

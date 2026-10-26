@@ -35,6 +35,7 @@ measured when it was written.
 * Plan 34-23 Task 1 -- ``P34_FIRST_LIVE_READBACK``.
 * Plan 38-07 Task 3 -- ``P38_EXPECTED_FAILURE_BASELINE``.
 * Plan 38-12 Task 3 -- ``P38_FULL_SUITE_BASELINE``.
+* Phase 38 code review fix CR-C01 -- ``P38_TRIPWIRE4_CRASH_CORRECTION``.
 """
 
 from __future__ import annotations
@@ -647,5 +648,76 @@ P38_FULL_SUITE_BASELINE: dict[str, object] = {
         "daily run and no kickoff fell before Sun 2026-10-25 09:30 ET. The discovery run "
         "(run 1, 2026-10-21, Plan 38-11) is kept for the record only; its lines are not "
         "the baseline."
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Phase 38 code review fix CR-C01 -- a CORRECTION to P38_FULL_SUITE_BASELINE,
+# MEASURED 2026-10-25 (ET, read via PowerShell) on HEAD
+# cd6514c4c4f9219fac7a48c510d1b2e8773a3b48 plus the CR-C01 edits committed with
+# this slot (owner ruling 2026-10-23, "Repair it, keep it red").
+#
+# WHAT IT CORRECTS. P38_FULL_SUITE_BASELINE (and the 38-11 discovery run before
+# it) recorded "exactly the five deliberate tripwires fail". In run 2 only four
+# of them failed on their own check. Tripwire 4 -- index 3 of
+# tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS -- CRASHED with the JUnit
+# failure message "KeyError: 'away_def_rolling_avg_drive_start_yardline'"
+# before it reached its assertion: commit fc1a5dd (33.2-14, 2026-09-21) dropped
+# the *_def_rolling_avg_drive_start_yardline columns from gold, and the test
+# indexed every pinned column. The gate counted any <failure> as the accepted
+# red, so the crash passed as a disclosure. The old slot stays as the record of
+# what was claimed; this slot is the record of what was true.
+#
+# THE FIX. The gate and the recorded-run judge now accept a tripwire's red only
+# when its failure message is an assertion ("assert ..." or "AssertionError:
+# ..."); any other message is "crashed". Tripwire 4 counts a pinned column that
+# is missing from gold as moved and names it, so it reaches its check. It stays
+# RED; nothing was loosened.
+#
+# THE RUN AFTER THE FIX. Exactly the five ids of
+# tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS, and nothing else:
+#     uv run python -m pytest <the five ids> -q -rfE -p no:cacheprovider
+#         --junitxml=C:/Users/jackc/Code/p38-scratch/tripwires-after-crc01/tripwires.xml
+#     "5 failed, 29 warnings in 12.81s"
+# Every one of the five now fails on an assertion; "after_fix_failures" below
+# quotes the start of each failure message, in the constant's order. No third
+# full-suite run was made.
+#
+# RUN 2 IS STILL JUDGED. The opt-in node test_the_recorded_full_run_report_when_given
+# accepts, for the run directory whose head.txt equals "run_head" below, exactly
+# the one problem "TRIPWIRE NOT A FAILURE: <tripwire 4> [crashed]" and nothing
+# else; it fails if that problem is absent too.
+# ---------------------------------------------------------------------------
+
+P38_TRIPWIRE4_CRASH_CORRECTION: dict[str, object] = {
+    "measured_on": "2026-10-25",
+    "corrects": "P38_FULL_SUITE_BASELINE",
+    "run_head": "f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d",
+    "run_dir": "C:/Users/jackc/Code/p38-scratch/run2-f2b5b1ab2375-20261023-1409",
+    "tripwire_index": 3,
+    "run_state": "crashed",
+    "run_failure_message": "KeyError: 'away_def_rolling_avg_drive_start_yardline'",
+    "after_fix_head": "cd6514c4c4f9219fac7a48c510d1b2e8773a3b48 plus the CR-C01 edits",
+    "after_fix_line": "5 failed, 29 warnings in 12.81s",
+    "after_fix_report_sha256": (
+        "5356cb61b101911a21dd0098c0959879a5d082683d9c893854cf1e890220a456"
+    ),
+    "after_fix_failures": (
+        "AssertionError: the REGENERATED gate baseline block is not byte-identical to "
+        "the block committed in config/gate.toml.",
+        "AssertionError: the FULL rebuild moved 11 non-clock column-slot(s) in the "
+        "PROTECTED 2021-2024 window.",
+        "AssertionError: features_ats's 2021-2024 slice gained 9 columns (weather_coverage "
+        "and eight *_coverage columns) and lost 16 (target_ats among them).",
+        "AssertionError: features_ats: 188 of its 2021-2024 columns moved, 16 of them no "
+        "longer in gold at all (away_def_rolling_avg_drive_start_yardline among them), "
+        "against an expected set of exactly ['feature_timestamp'].",
+        "AssertionError: frozen baseline.wp.pooled.mean = -0.03800034 does not match a "
+        "fresh re-score 0.01483587975541558 (tol 0.005).",
+    ),
+    "reason_drift_note": (
+        "Tripwire 3's reason has also drifted from the Phase-33 record (which said the "
+        "slice gained weather_coverage and lost none); it still fails on its assertion, "
+        "and the drift is recorded here rather than re-anchored."
     ),
 }
