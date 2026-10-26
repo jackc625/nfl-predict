@@ -1052,6 +1052,74 @@ def test_binding_refuses_reordered_verdict_words(
 
 
 @pytest.mark.usefixtures("isolated_git_env")
+def test_binding_fails_closed_on_every_git_branch(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WR-A09: no rule in the repository refuses at 5, a directory that is not a repository
+    refuses at 0, and a git failure at refusal 4, 5 or 6 refuses rather than guessing."""
+    argv = binding_fixture(tmp_path / "base")
+    ledger_dir = _arg(argv, "--ledger-dir")
+
+    # A repository holding the anchor but no commit that added the rule.
+    no_rule = tmp_path / "no_rule" / "repo"
+    no_rule.mkdir(parents=True)
+    git(no_rule, "init", "-q", "-b", "main")
+    git(no_rule, "config", "user.email", "binding@example.invalid")
+    git(no_rule, "config", "user.name", "Binding Fixture")
+    (no_rule / "README.md").write_text("no rule here\n", encoding="utf-8")
+    git(no_rule, "add", "README.md")
+    git(no_rule, "commit", "-q", "-m", "no rule")
+    anchor_ledger(no_rule, ledger_dir)
+    line = _assert_refuses(argv, capsys, tmp_path / "no_rule")
+    assert line.startswith(
+        f"{REFUSED}the R6 lock commit cannot be found: no commit in "
+    )
+
+    # A directory that is not a git repository: the first git read fails, closed.
+    (tmp_path / "plain" / "repo").mkdir(parents=True)
+    line = _assert_refuses(argv, capsys, tmp_path / "plain")
+    assert "a git check failed, so the run refuses (fail closed)" in line
+
+    # A git failure inside refusal 4 (history), 5 (shallow check) and 6 (status).
+    real_git = season_readout._git
+    for failing in ("--all", "--is-shallow-repository", "status"):
+
+        def flaky(repo_root: Path, *args: str, _failing: str = failing) -> str:
+            if _failing in args:
+                raise season_readout.GitCheckError(f"planted failure of {_failing}")
+            return real_git(repo_root, *args)
+
+        monkeypatch.setattr(season_readout, "_git", flaky)
+        line = _assert_refuses(argv, capsys, tmp_path / "base")
+        assert line == (
+            f"{REFUSED}a git check failed, so the run refuses (fail closed): planted "
+            f"failure of {failing}"
+        ), line
+    monkeypatch.setattr(season_readout, "_git", real_git)
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_an_unscored_week_22_game_beside_a_scored_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """WR-A09, refusal 2 alone: a week-22 game is never inferred not played (no later week),
+    so an unscored one refuses even while another week-22 game is scored."""
+    unscored = "2026_W22_BUF@SF"
+    argv = binding_fixture(
+        tmp_path, games=[*complete_games(), schedule_game(unscored, scored=False)]
+    )
+
+    line = _assert_refuses(argv, capsys, tmp_path)
+
+    assert line == (
+        f"{REFUSED}1 in-scope game(s) lack a final score: {unscored}. "
+        "Wait for the next 17:00 ET daily run to record the scores."
+    )
+
+
+@pytest.mark.usefixtures("isolated_git_env")
 def test_binding_refuses_when_the_comparison_cannot_run(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
