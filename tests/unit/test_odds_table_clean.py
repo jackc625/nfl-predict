@@ -129,8 +129,10 @@ class TestTheDetector:
 
     def test_spread_prices_excuse_only_a_near_coin_flip_disagreement(self) -> None:
         # D-05 / D-19: the spread's PRICE may carry the favourite when the line is within
-        # PRICE_EXPLAINED_MAX_SPREAD of a coin flip; equal prices, equivalent prices and a
-        # wider line explain nothing.
+        # PRICE_EXPLAINED_MAX_SPREAD of a coin flip AND the moneyline is near even; equal
+        # prices, equivalent prices, a wider line and a clear moneyline favourite explain
+        # nothing. The last row is a flipped spread sign whose prices sit with their true
+        # sides (true line home -1.5 at -115, moneyline home -130): it must be flagged (WR-D01).
         frame = pd.DataFrame(
             [
                 _priced_row("no_at_nyg_shape", -1.5, -112.0, -108.0, -125.0, 105.0),
@@ -139,9 +141,10 @@ class TestTheDetector:
                 ),
                 _priced_row("beyond_the_bound", -3.0, -200.0, 170.0, -125.0, 105.0),
                 _priced_row("equivalent_prices", -1.5, -112.0, -108.0, -100.0, 100.0),
+                _priced_row("flipped_sign", -1.5, -130.0, 110.0, -115.0, -105.0),
             ]
         )
-        assert sign_conflict_mask(frame).tolist() == [False, True, True, True]
+        assert sign_conflict_mask(frame).tolist() == [False, True, True, True, True]
 
 
 class TestTheOwnedTimelineIsFlippedOnceAtTheReader:

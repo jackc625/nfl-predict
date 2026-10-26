@@ -281,6 +281,12 @@ def _comparable(odds: pd.DataFrame) -> pd.Series:
 # whatever the prices say (owner ruling D-19, 2026-10-21).
 PRICE_EXPLAINED_MAX_SPREAD: float = 1.5
 
+# ... and only when the moneyline itself is near even: its no-vig favourite probability is at
+# most this. A price-shaded pick'em has both markets near a coin flip; a stored spread whose
+# SIGN is wrong while its prices sit with their true sides does not -- its moneyline names a
+# clear favourite (owner ruling 2026-10-23, WR-D01, tightening D-19).
+PRICE_EXPLAINED_MAX_FAVOURITE_P: float = 0.51
+
 
 def _implied_probability(odds: pd.DataFrame, column: str) -> pd.Series:
     """Each row's implied probability for one American-price column; NaN where absent.
@@ -313,6 +319,14 @@ def _spread_prices_explain(odds: pd.DataFrame) -> pd.Series:
     )
 
 
+def _moneyline_near_even(odds: pd.DataFrame) -> pd.Series:
+    """Rows whose moneyline's no-vig favourite probability is at most the near-even bound."""
+    home = _implied_probability(odds, "ml_home")
+    away = _implied_probability(odds, "ml_away")
+    favourite = pd.concat([home, away], axis=1).max(axis=1) / (home + away)
+    return favourite <= PRICE_EXPLAINED_MAX_FAVOURITE_P
+
+
 def sign_conflict_mask(odds: pd.DataFrame, *, inverted: bool = False) -> pd.Series:
     """Rows whose spread sign contradicts their own moneyline, unless the spread prices explain it.
 
@@ -321,9 +335,11 @@ def sign_conflict_mask(odds: pd.DataFrame, *, inverted: bool = False) -> pd.Seri
     ``ml_home > ml_away`` (spread says home, price says away) or ``spread < 0`` with
     ``ml_home < ml_away``.
 
-    THE PRICE-AWARE RULE (owner rulings D-05 and D-19, Phase 38, 2026-10-21). A sign
-    disagreement is a contradiction only when NOT (the spread prices explain it AND
-    ``abs(spread) <= PRICE_EXPLAINED_MAX_SPREAD``). "Explain" means the moneyline favourite is
+    THE PRICE-AWARE RULE (owner rulings D-05 and D-19, Phase 38, 2026-10-21, tightened
+    2026-10-23). A sign disagreement is a contradiction only when NOT (the spread prices explain
+    it AND ``abs(spread) <= PRICE_EXPLAINED_MAX_SPREAD`` AND the moneyline's no-vig favourite
+    probability is at most ``PRICE_EXPLAINED_MAX_FAVOURITE_P``). "Explain" means the moneyline
+    favourite is
     strictly the pricier side of the spread market on implied probability
     (``utils.probability_utils.moneyline_to_probability``); equal or missing spread prices
     explain nothing, and a frame without the price columns reads as "not explained". On a line
@@ -335,7 +351,17 @@ def sign_conflict_mask(odds: pd.DataFrame, *, inverted: bool = False) -> pd.Seri
     written 2026-10-18 16:49:42 UTC, after the game's lock, so it never fed a decision or a bet:
     spread -1.5 (NO favoured by 1.5 on points), spread prices home (NYG +1.5) -125 / away
     (NO -1.5) +105, moneyline NYG -112 / NO -108. Both markets make NYG the slight favourite.
-    The row stays inside this check and is judged consistent; no odds value was changed.
+    The row stays inside this check and is judged consistent; no odds value was changed. Its
+    no-vig moneyline favourite is 0.504, inside the near-even bound.
+
+    WHY THE NEAR-EVEN MONEYLINE (WR-D01). The spread-price pattern alone cannot tell genuine
+    price shading from a flipped spread sign: a true home -1.5 at -115 with moneyline home -130,
+    stored with its sign flipped, also shows "the moneyline favourite is the pricier spread
+    side". Flipping the sign of every agreeing comparable row with ``abs(spread) <= 1.5`` on the
+    live table, the price excuse alone hides close to half of those errors; the near-even
+    moneyline bound catches most of the rest, and NO@NYG still clears. What it cannot catch is
+    a flip on a row whose moneyline is itself within the bound, where nothing in the row names
+    a favourite.
 
     WHY THE 1.5-POINT BOUND. Without it, price shading alone would excuse about 40 percent of
     rows under a whole-column sign flip (research Job 1: 1,038 inverted-reading rows excused), so
@@ -357,8 +383,10 @@ def sign_conflict_mask(odds: pd.DataFrame, *, inverted: bool = False) -> pd.Seri
         if inverted
         else (contradicts_home | contradicts_away)
     )
-    price_excused = _spread_prices_explain(odds) & (
-        odds["spread"].abs() <= PRICE_EXPLAINED_MAX_SPREAD
+    price_excused = (
+        _spread_prices_explain(odds)
+        & (odds["spread"].abs() <= PRICE_EXPLAINED_MAX_SPREAD)
+        & _moneyline_near_even(odds)
     )
     return _comparable(odds) & conflict & ~price_excused
 
