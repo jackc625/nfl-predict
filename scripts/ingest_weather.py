@@ -1389,7 +1389,7 @@ class WeatherDataIngester:
 
         validated_df = validate_bronze_to_silver(weather_df, WeatherSchema)
         validated_df = validated_df.drop_duplicates(subset=["game_id"], keep="first")
-        validated_df["created_at"] = datetime.now(UTC)
+        validated_df["created_at"] = pd.Timestamp(datetime.now(UTC)).as_unit("ns")
 
         assert_complete_forecast_coverage(requested_game_ids, validated_df)
 
