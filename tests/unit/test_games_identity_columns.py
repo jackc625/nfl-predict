@@ -314,6 +314,21 @@ SILVER_GAMES_PATH = Path("data") / "silver" / "games.parquet"
 
 PRIMARY_KEY_COLUMNS = ("game_id", "season", "week", "home_team", "away_team")
 
+# Source: NFL Football Operations, "2026 International Games slate" (date, matchup, venue checked).
+INTERNATIONAL_2026: frozenset[str] = frozenset(
+    {
+        "2026_W01_SF@LA",  # Melbourne Cricket Ground
+        "2026_W03_BAL@DAL",  # Maracana
+        "2026_W04_IND@WAS",  # Tottenham Hotspur Stadium
+        "2026_W05_PHI@JAX",  # Tottenham Hotspur Stadium
+        "2026_W06_HOU@JAX",  # Wembley Stadium
+        "2026_W07_PIT@NO",  # Stade de France
+        "2026_W09_CIN@ATL",  # Santiago Bernabeu
+        "2026_W10_NE@DET",  # FC Bayern Munich (Allianz Arena)
+        "2026_W11_MIN@SF",  # Estadio Banorte, Mexico City
+    }
+)
+
 
 def _migrated_store() -> pd.DataFrame:
     """The live migrated silver frame, or a pinned skip naming which case applies."""
@@ -438,6 +453,20 @@ class TestTheMigratedStoreCarriesRealIdentityColumns:
             "games HISTORICAL_NEUTRAL_MISRESOLUTION enumerates."
         )
         assert measured > 0
+
+    def test_the_2026_neutral_site_games_are_exactly_the_international_slate(
+        self,
+    ) -> None:
+        """The 2026 accounting guard, by name (WR-D04): not a count, which a swap would pass."""
+        frame = _migrated_store()
+        season = frame.loc[frame["season"] == 2026]
+        flagged = set(season.loc[season["neutral_site"].astype(bool), "game_id"])
+        assert flagged == INTERNATIONAL_2026, (
+            f"2026 games flagged neutral in silver but not on the slate: "
+            f"{sorted(flagged - INTERNATIONAL_2026)}; on the slate but not flagged neutral: "
+            f"{sorted(INTERNATIONAL_2026 - flagged)}. A slate game read as a home game gets "
+            "full home-field advantage in gold."
+        )
 
     def test_stadium_id_is_present_on_every_row(self) -> None:
         """A presence RATE, not a presence check: a partial re-ingest is the risk."""
