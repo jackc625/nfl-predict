@@ -147,6 +147,27 @@ class TestTheDetector:
         assert sign_conflict_mask(frame).tolist() == [False, True, True, True, True]
 
 
+class TestAPerBookConflictRefuses:
+    def test_a_per_book_conflict_is_refused_by_name(self) -> None:
+        # WR-D02: DraftKings' row conflicts while FanDuel's row of the same game agrees. A
+        # game_id-keyed correction would land on the wrong book, so the repair refuses.
+        conflicting = {
+            **_row("2026_W06_AAA@BBB", 3.0, 120.0, -140.0),
+            "sportsbook": "draftkings",
+            "created_at": pd.Timestamp("2026-10-18T16:49:42Z"),
+        }
+        agreeing = {
+            **_row("2026_W06_AAA@BBB", -3.0, 120.0, -140.0),
+            "sportsbook": "fanduel",
+            "created_at": pd.Timestamp("2026-10-18T16:49:42Z"),
+        }
+        frame = pd.DataFrame([agreeing, conflicting])
+        with pytest.raises(ValueError, match="per-book sign conflict") as refused:
+            resolve_sign_conflicts(frame, {}, {})
+        assert "draftkings" in str(refused.value)
+        assert "fanduel" not in str(refused.value)
+
+
 class TestTheOwnedTimelineIsFlippedOnceAtTheReader:
     def test_the_reader_flips_the_sign(self) -> None:
         raw = pd.DataFrame(

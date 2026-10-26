@@ -281,6 +281,9 @@ def _comparable(odds: pd.DataFrame) -> pd.Series:
 # whatever the prices say (owner ruling D-19, 2026-10-21).
 PRICE_EXPLAINED_MAX_SPREAD: float = 1.5
 
+# The one reading per game this repair can correct: its corrections are keyed on game_id.
+CONSENSUS_SPORTSBOOK: str = "consensus"
+
 # ... and only when the moneyline itself is near even: its no-vig favourite probability is at
 # most this. A price-shaded pick'em has both markets near a coin flip; a stored spread whose
 # SIGN is wrong while its prices sit with their true sides does not -- its moneyline names a
@@ -677,10 +680,32 @@ def resolve_sign_conflicts(
     timeline_latest: dict[str, tuple[float, pd.Timestamp]],
     archive: dict[str, ArchiveQuote] | None = None,
 ) -> list[Correction]:
-    """One ``Correction`` per value changed or nulled to end every detected sign conflict."""
+    """One ``Correction`` per value changed or nulled to end every detected sign conflict.
+
+    Raises:
+        ValueError: a conflict sits on a row that is not the consensus reading. A
+            ``Correction``, the record and :func:`apply_corrections` are keyed on ``game_id``
+            alone, and the live table holds one row per sportsbook (plus decision and closing
+            twins), so a per-book conflict would be "corrected" on another book's row, and its
+            resolution evidence -- the consensus timeline and the archive -- is not evidence for
+            one book's quote. Until corrections are keyed per book, such a conflict refuses by
+            name.
+    """
     archive = PUBLIC_ARCHIVE_QUOTES if archive is None else archive
+    conflicts = odds.loc[sign_conflict_mask(odds)]
+    per_book = conflicts.loc[conflicts["sportsbook"] != CONSENSUS_SPORTSBOOK]
+    if not per_book.empty:
+        columns = [
+            c for c in ("game_id", "sportsbook", "created_at") if c in per_book.columns
+        ]
+        named = per_book.loc[:, columns].to_dict("records")
+        msg = (
+            f"per-book sign conflict(s) {named}: this repair keys corrections on game_id "
+            "only and would write another sportsbook's row; resolve them by hand."
+        )
+        raise ValueError(msg)
     corrections: list[Correction] = []
-    for _, row in odds[sign_conflict_mask(odds)].iterrows():
+    for _, row in conflicts.iterrows():
         corrections.extend(_resolve_one_conflict(row, timeline_latest, archive))
     return corrections
 
