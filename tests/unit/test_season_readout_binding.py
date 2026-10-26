@@ -745,21 +745,37 @@ def _assert_refuses(
 def test_binding_refuses_on_todays_real_ledger(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """SPEC AC 27, 28: today's real ledger refuses, and its bytes do not move."""
+    """SPEC AC 27, 28: the real ledger refuses, and its bytes do not move.
+
+    It is judged against a COPY of the real schedule whose week-22 scores are blanked (WR-A08).
+    Today the season is unfinished, so refusal 1 or 2 fires. Once the real Super Bowl is graded
+    the copy's week-22 game still lacks a score, and the last week is never inferred "not
+    played", so refusal 2 still fires (probed on the complete fixture). Judged against the real
+    schedule, the test would turn red on the day the binding run is due.
+    """
     ledger_file = REAL_REPO_ROOT / ledger_path(LEDGER_DIR)
+    real_schedule = REAL_REPO_ROOT / DEFAULT_SILVER_DIR / SILVER_GAMES_FILENAME
+    for path in (ledger_file, real_schedule):
+        if not path.exists():
+            pytest.skip(f"the real store {path.as_posix()} is absent on this machine")
+    silver_copy = tmp_path / "silver"
+    silver_copy.mkdir()
+    schedule = pd.read_parquet(real_schedule)
+    scope = load_verdict_scope()
+    final_week = (schedule["season"] == scope.season) & (
+        schedule["week"] == scope.end_week
+    )
+    schedule.loc[final_week, ["home_score", "away_score"]] = None
+    schedule.to_parquet(silver_copy / SILVER_GAMES_FILENAME)
     stores = {
         "--ledger-dir": REAL_REPO_ROOT / LEDGER_DIR,
-        "--silver-dir": REAL_REPO_ROOT / DEFAULT_SILVER_DIR,
+        "--silver-dir": silver_copy,
         "--run-log": REAL_REPO_ROOT / season_readout.DEFAULT_RUN_LOG,
         "--skip-records": REAL_REPO_ROOT / SKIP_RECORD_PATH,
     }
-    for path in (ledger_file, stores["--silver-dir"] / SILVER_GAMES_FILENAME):
-        if not path.exists():
-            pytest.skip(f"the real store {path.as_posix()} is absent on this machine")
     repo = synthetic_repo(tmp_path)
-    anchor_ledger(
-        repo, stores["--ledger-dir"]
-    )  # the anchor is only READ from the real ledger
+    # The anchor is only READ from the real ledger.
+    anchor_ledger(repo, stores["--ledger-dir"])
     before = hashlib.sha256(ledger_file.read_bytes()).hexdigest()
     argv = ["--binding"]
     for name, path in stores.items():
