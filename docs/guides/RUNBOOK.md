@@ -1428,6 +1428,24 @@ run has graded the bets and recorded the scores:
 2. An in-scope game lacks a final score.
 3. No played week-22 game is in the schedule yet (the Super Bowl result has not reached it).
 
+Waiting clears refusal 1 only while the season is still running. The daily run refreshes and
+settles the finished season only until the Super Bowl score is in silver; after that every daily
+run is an offseason no-op. If the settle pass failed on that last day (it never fails the daily
+run), the Super Bowl bets stay ungraded for good and refusal 1 never clears by waiting. If refusal
+1 is still there on Tue 2027-02-16 or later:
+
+1. Read the `settle` events at the end of `logs/ledger_runs.jsonl`; one with `"ok": false` names
+   the error. Fix what it names first.
+2. With both scheduled tasks disabled (step 1 of "Restore the ledger from the private backup"
+   above), run the same settle pass the daily run calls, by hand:
+
+   ```powershell
+   uv run python -c "from datetime import UTC, datetime; from pathlib import Path; from forward_ledger.runner import settle_ledger; print(settle_ledger(now=datetime.now(UTC), repo_dir=Path()))"
+   ```
+
+3. Publish and check it: `uv run python -m scripts.sync_ledger`, then
+   `uv run python -m scripts.verify_ledger`. Re-enable the tasks, then run the binding run again.
+
 Waiting only ever clears refusal 2 for a week-22 game. Once the Super Bowl is scored, an unscored
 game of an earlier week is not waited for: the run infers it was never played and voids its bets
 (each listed by name in the document's void-bets list). Refusal 2 also has a second form that does
