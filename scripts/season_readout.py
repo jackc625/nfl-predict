@@ -74,9 +74,11 @@ never work around them; (8) needs the store the comparison names fixed.
 When every condition holds it computes each target's verdict (:func:`measure_targets`), embeds the
 comparison's stdout byte for byte, and writes the one document atomically (sibling ``.tmp`` then
 replace, ASCII, LF line endings) to ``<repo root>/docs/records/SEASON-2026-READOUT.md`` -- the path
-is DERIVED from ``--repo-root`` and never chosen (there is no option naming another path). In
-binding mode a relative store path (every default is one) resolves against the repository root,
-never against the working directory the command happens to run from. It then
+is DERIVED from :data:`REPO_ROOT` and never chosen (there is no option naming another path or
+another repository). ``REPO_ROOT`` is the checkout this file was imported from, so the history, the
+uncommitted changes and the one-shot record the run checks belong to the same tree whose rule and
+verdict code it executes. In binding mode a relative store path (every default is one) resolves
+against that root, never against the working directory the command happens to run from. It then
 prints ``BINDING_WRITTEN= <path>`` and one ``VERDICT_<TARGET>= <word>`` line per target. No run
 ledger is kept (D-09): the output is deterministic (fixed bootstrap seed; nothing writes the ledger
 after the Super Bowl).
@@ -170,7 +172,8 @@ from utils.game_lock import MissingKickoffError
 
 PREVIEW_LABEL: str = "season to date -- not the verdict"
 
-# The repository this file lives in: the binding run's default --repo-root.
+# The repository this file lives in, and the only one the binding run checks and writes into:
+# the checked tree is always the executing tree (tests point it at a synthetic repository).
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
 # The binding command a reader re-runs; named in the document's first sentence.
@@ -988,15 +991,6 @@ def build_parser() -> argparse.ArgumentParser:
             f"then writes <repo root>/{rule.BINDING_RECORD_PATH}"
         ),
     )
-    parser.add_argument(
-        "--repo-root",
-        type=Path,
-        default=REPO_ROOT,
-        help=(
-            "The repository whose history the binding run checks and under which it writes "
-            f"its record (default: {REPO_ROOT.as_posix()})"
-        ),
-    )
     return parser
 
 
@@ -1105,7 +1099,7 @@ def _binding_run(
     scope: VerdictScope,
 ) -> int:
     """The one binding run: refuse (exit 3) or write the document (exit 0)."""
-    repo_root = Path(args.repo_root)
+    repo_root = REPO_ROOT
     unpublished = ledger_refusal(entries, repo_root)
     if unpublished is not None:
         print(f"BINDING_REFUSED= {unpublished}")
@@ -1160,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.binding:
         for store in ("ledger_dir", "silver_dir", "run_log", "skip_records"):
             path = Path(getattr(args, store))
-            setattr(args, store, path if path.is_absolute() else args.repo_root / path)
+            setattr(args, store, path if path.is_absolute() else REPO_ROOT / path)
     try:
         entries = read_entries(args.ledger_dir)
     except LedgerFormatError as error:

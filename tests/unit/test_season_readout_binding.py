@@ -396,6 +396,9 @@ def binding_fixture(
 ) -> list[str]:
     """Write a complete binding fixture under *root*; return the binding argv that reads it.
 
+    The synthetic repository is ``root / "repo"``; :func:`_run` makes it the run's
+    ``REPO_ROOT``, the stand-in for the executing checkout (there is no repository option).
+
     By default: the complete ledger (every bet graded, one suppressed row, one shadow twin), a
     schedule holding every game scored (plus one missed game), a run log, empty skip records and
     a synthetic repository holding the R6 lock commit and the ledger's published anchor.
@@ -418,8 +421,6 @@ def binding_fixture(
     anchor_ledger(repo, ledger_dir)
     return [
         "--binding",
-        "--repo-root",
-        str(repo),
         "--ledger-dir",
         str(ledger_dir),
         "--silver-dir",
@@ -436,8 +437,13 @@ def _arg(argv: Sequence[str], name: str) -> Path:
     return Path(argv[list(argv).index(name) + 1])
 
 
-def _run(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, list[str]]:
-    code = season_readout.main(argv)
+def _run(
+    argv: list[str], capsys: pytest.CaptureFixture[str], repo: Path
+) -> tuple[int, list[str]]:
+    """Run the CLI with *repo* standing in for the executing checkout (``REPO_ROOT``)."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(season_readout, "REPO_ROOT", repo)
+        code = season_readout.main(argv)
     return code, capsys.readouterr().out.splitlines()
 
 
@@ -470,10 +476,10 @@ def test_a_binding_run_writes_the_document_in_order(
 ) -> None:
     """SPEC AC 23, 24, 25: six sections in order, figures equal an independent recomputation."""
     argv = binding_fixture(tmp_path)
-    repo = _arg(argv, "--repo-root")
+    repo = tmp_path / "repo"
     ledger_dir, silver_dir = _arg(argv, "--ledger-dir"), _arg(argv, "--silver-dir")
 
-    code, lines = _run(argv, capsys)
+    code, lines = _run(argv, capsys, repo)
 
     assert code == 0, lines
     record = repo / BINDING_RECORD_PATH
@@ -570,19 +576,21 @@ def test_a_void_bet_leaves_the_test(
     """D-20: a bet on a game never played is listed by name, in no figure, and never blocks."""
     void_game = "2026_W06_NYJ@BUF"  # unscored while week 22 is scored: not played
     base = binding_fixture(tmp_path / "base")
-    code, _ = _run(base, capsys)
+    code, _ = _run(base, capsys, tmp_path / "base" / "repo")
     assert code == 0
-    base_document = (_arg(base, "--repo-root") / BINDING_RECORD_PATH).read_text("ascii")
+    base_document = (tmp_path / "base" / "repo" / BINDING_RECORD_PATH).read_text(
+        "ascii"
+    )
 
     argv = binding_fixture(
         tmp_path / "void",
         rows=[*complete_rows(), ledger_row(void_game, "wp")],
         games=[*complete_games(), schedule_game(void_game, scored=False)],
     )
-    code, lines = _run(argv, capsys)
+    code, lines = _run(argv, capsys, tmp_path / "void" / "repo")
 
     assert code == 0, lines
-    document = (_arg(argv, "--repo-root") / BINDING_RECORD_PATH).read_text("ascii")
+    document = (tmp_path / "void" / "repo" / BINDING_RECORD_PATH).read_text("ascii")
     void_section = document.split("Void bets (D-20")[1].split("## 2.")[0]
     assert f"- {void_game} wp\n" in void_section
     assert (
@@ -619,12 +627,13 @@ def _refusal(lines: list[str]) -> str:
 def _assert_refuses(
     argv: list[str], capsys: pytest.CaptureFixture[str], root: Path
 ) -> str:
-    """Run binding on *argv*: exit 3, one refusal line, and nothing new or changed under *root*."""
+    """Run binding on *argv* against ``root / "repo"``: exit 3, one refusal line, and nothing
+    new or changed under *root*."""
     before = _tree(root)
-    code, lines = _run(argv, capsys)
+    code, lines = _run(argv, capsys, root / "repo")
     assert code == 3, lines
     assert _tree(root) == before
-    assert not (_arg(argv, "--repo-root") / BINDING_RECORD_PATH).exists()
+    assert not (root / "repo" / BINDING_RECORD_PATH).exists()
     return _refusal(lines)
 
 
@@ -648,7 +657,7 @@ def test_binding_refuses_on_todays_real_ledger(
         repo, stores["--ledger-dir"]
     )  # the anchor is only READ from the real ledger
     before = hashlib.sha256(ledger_file.read_bytes()).hexdigest()
-    argv = ["--binding", "--repo-root", str(repo)]
+    argv = ["--binding"]
     for name, path in stores.items():
         argv += [name, str(path)]
 
@@ -683,7 +692,9 @@ def test_binding_refuses_an_absent_a_stale_or_an_unanchored_ledger(
 
     # No anchor at all while the ledger holds entries.
     unanchored = binding_fixture(tmp_path / "unanchored")
-    git(_arg(unanchored, "--repo-root"), "update-ref", "-d", "refs/heads/ledger-anchor")
+    git(
+        tmp_path / "unanchored" / "repo", "update-ref", "-d", "refs/heads/ledger-anchor"
+    )
     line = _assert_refuses(unanchored, capsys, tmp_path / "unanchored")
     assert "holds no ledger-anchor commit" in line
 
@@ -732,14 +743,14 @@ def test_a_second_binding_run_refuses_even_after_the_record_is_deleted(
     """D-09: once written, never again -- not while the record exists, not after it is deleted,
     and not at a path the caller chooses (there is no such option)."""
     argv = binding_fixture(tmp_path)
-    repo = _arg(argv, "--repo-root")
+    repo = tmp_path / "repo"
     record = repo / BINDING_RECORD_PATH
-    code, _ = _run(argv, capsys)
+    code, _ = _run(argv, capsys, repo)
     assert code == 0 and record.exists()
 
     # The record exists: refused, and nothing anywhere under tmp_path changes.
     before = _tree(tmp_path)
-    code, lines = _run(argv, capsys)
+    code, lines = _run(argv, capsys, repo)
     assert code == 3
     assert "already exists; the binding run happened" in _refusal(lines)
     assert _tree(tmp_path) == before
@@ -751,10 +762,13 @@ def test_a_second_binding_run_refuses_even_after_the_record_is_deleted(
     line = _assert_refuses(argv, capsys, tmp_path)
     assert f"{BINDING_RECORD_PATH} appears in git history" in line
 
-    # A second run cannot be pointed at a fresh path: the option does not exist.
+    # A second run cannot be pointed at a fresh path, or at a clone lacking the record: neither
+    # option exists, so the checked repository is always the executing one (WR-A01).
     with pytest.raises(SystemExit):
         season_readout.main([*argv, "--record-path", str(tmp_path / "elsewhere.md")])
     assert not (tmp_path / "elsewhere.md").exists()
+    with pytest.raises(SystemExit):
+        season_readout.main([*argv, "--repo-root", str(tmp_path / "another_clone")])
 
 
 @pytest.mark.usefixtures("isolated_git_env")
@@ -769,7 +783,7 @@ def test_binding_refuses_when_the_rule_moved(
 
     # (a) A later commit edits the record without naming the lock INVALIDATED.
     committed = binding_fixture(tmp_path / "committed")
-    repo = _arg(committed, "--repo-root")
+    repo = tmp_path / "committed" / "repo"
     with (repo / module).open("a", encoding="utf-8") as handle:
         handle.write(quiet_edit)
     git(repo, "commit", "-q", "-am", "tidy the rule")
@@ -780,7 +794,7 @@ def test_binding_refuses_when_the_rule_moved(
 
     # (a) The same edit left uncommitted.
     uncommitted = binding_fixture(tmp_path / "uncommitted")
-    repo = _arg(uncommitted, "--repo-root")
+    repo = tmp_path / "uncommitted" / "repo"
     with (repo / module).open("a", encoding="utf-8") as handle:
         handle.write(quiet_edit)
     line = _assert_refuses(uncommitted, capsys, tmp_path / "uncommitted")
