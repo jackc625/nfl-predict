@@ -136,28 +136,29 @@ class TestTheCaptured2026Schedule:
     """The derivations against the real feed, not against a constructed row."""
 
     def test_exactly_eight_rows_are_neutral(self) -> None:
+        """The captured feed calls eight games Neutral; the ingest stores nine (WR-D05).
+
+        The recorded eight is a fact of the FEED's ``location``: it sent 2026_W05_PHI@JAX,
+        played at Tottenham, as a Jacksonville home game. A game with a recorded venue
+        correction was played abroad, so the transform stores it neutral whatever the feed's
+        location says. The stored set is the whole international slate, by name.
+        """
         _require_capture()
+        raw = season_2026.load_captured_schedule()
         transformed = season_2026.transform_captured_schedule()
-        assert (
-            int(transformed["neutral_site"].sum())
-            == phase33_state.NEUTRAL_SITE_GAME_COUNT_2026
-        ), (
-            f"{int(transformed['neutral_site'].sum())} rows read neutral_site True, "
-            f"expected {phase33_state.NEUTRAL_SITE_GAME_COUNT_2026}. Before this plan "
-            "the answer was 0 for all 272 rows."
+        feed_neutral = int((raw["location"] == "Neutral").sum())
+        assert feed_neutral == phase33_state.NEUTRAL_SITE_GAME_COUNT_2026, (
+            f"the captured feed calls {feed_neutral} rows Neutral, expected "
+            f"{phase33_state.NEUTRAL_SITE_GAME_COUNT_2026}. Before this plan the stored "
+            "answer was 0 for all 272 rows."
         )
+        stored = set(transformed.loc[transformed["neutral_site"], "game_id"])
+        assert stored == INTERNATIONAL_2026, sorted(stored ^ INTERNATIONAL_2026)
 
     def test_the_eight_are_the_recorded_international_games(self) -> None:
         _require_capture()
         raw = season_2026.load_captured_schedule()
-        transformed = season_2026.transform_captured_schedule()
-        codes = [
-            code
-            for code, neutral in zip(
-                raw["stadium_id"], transformed["neutral_site"], strict=True
-            )
-            if neutral
-        ]
+        codes = raw.loc[raw["location"] == "Neutral", "stadium_id"].tolist()
         assert codes == list(phase33_state.INTERNATIONAL_STADIUM_IDS)
 
     def test_all_272_captured_rows_are_regular_season(self) -> None:

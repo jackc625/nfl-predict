@@ -198,6 +198,18 @@ class VenueOverrideDriftError(ValueError):
     """
 
 
+class UnrecordedInternationalVenueError(ValueError):
+    """The feed names a venue outside the US but carries another stadium's id, unrecorded.
+
+    The shape that hid ``2026_W05_PHI@JAX`` for five weeks: the feed sent the US home team's
+    ``stadium_id`` (and, until game day, ``location`` "Home") while its own ``stadium`` string
+    named Tottenham Hotspur Stadium. Copied verbatim, that is a London game stored at
+    Jacksonville with full home-field advantage. It is refused by name until a cited
+    ``[[correction]]`` is recorded, and re-raised past the broad skip handler in
+    ``transform_schedule_data`` on the same reasoning as ``VenueOverrideDriftError``.
+    """
+
+
 @dataclass(frozen=True)
 class VenueOverride:
     """One cited correction: the game, the feed's wrong venue, and the real one."""
@@ -276,6 +288,46 @@ def _load_venue_overrides_from(path_text: str) -> Mapping[str, VenueOverride]:
             )
         overrides[override.game_id] = override
     return MappingProxyType(overrides)
+
+
+@functools.cache
+def _international_venue_ids_by_name() -> Mapping[str, str]:
+    """``venue_name -> stadium_id`` for every venue outside the USA in ``data/venues.json``."""
+    return MappingProxyType(
+        {
+            str(venue["venue_name"]): stadium_id
+            for stadium_id, venue in _venue_records_by_stadium_id().items()
+            if venue.get("country") != "USA"
+        }
+    )
+
+
+def refuse_unrecorded_international_venue(
+    game_id: str,
+    upstream_stadium_id: Any,
+    upstream_stadium: Any,
+    overrides: Mapping[str, VenueOverride],
+) -> None:
+    """Refuse a feed row naming a venue outside the US under another stadium's id.
+
+    Exact name equality only, against ``data/venues.json``'s non-US ``venue_name`` values; a
+    game with a recorded correction is exempt (its venue is decided by the record).
+
+    Raises:
+        UnrecordedInternationalVenueError: the feed's ``stadium`` is a non-US venue's name and
+            its ``stadium_id`` is not that venue's id.
+    """
+    if game_id in overrides or upstream_stadium is None:
+        return
+    named_id = _international_venue_ids_by_name().get(str(upstream_stadium))
+    if named_id is not None and upstream_stadium_id != named_id:
+        raise UnrecordedInternationalVenueError(
+            f"game {game_id!r}: the feed names the venue {upstream_stadium!r} "
+            f"({named_id} in data/venues.json) but carries stadium_id "
+            f"{upstream_stadium_id!r}. A game played outside the US would be stored at "
+            "another stadium; record a cited correction in "
+            "config/international_venue_corrections.toml rather than ingest it as sent."
+        )
 
 
 def load_venue_overrides(
@@ -820,6 +872,15 @@ class GameDataIngester:
 
                 game_id = self._create_game_id(row)
 
+                # The defect class behind 2026_W05_PHI@JAX: the feed's own stadium name says
+                # abroad while its id says the home team's stadium. Refused until recorded.
+                refuse_unrecorded_international_venue(
+                    game_id,
+                    row.get("stadium_id"),
+                    row.get("stadium"),
+                    self._venue_overrides,
+                )
+
                 # ONE decision for all three venue columns, AFTER the game id exists
                 # and BEFORE anything is derived from the venue: a recorded 2025
                 # international game gets the venue it was played at, every other
@@ -865,7 +926,12 @@ class GameDataIngester:
                     # Both of these used to be row.get(<absent key>, <default>), so
                     # the default fired on every row ever ingested.
                     "season_type": _derive_season_type(row),
-                    "neutral_site": _derive_neutral_site(row),
+                    # A recorded correction IS a game played outside the US, so it is
+                    # neutral whatever the feed's location says yet (WR-D05): a record
+                    # entry added before the feed flips location must not store a London
+                    # game as a home game. Every other game: the feed's location, as before.
+                    "neutral_site": _derive_neutral_site(row)
+                    or game_id in self._venue_overrides,
                     # Carried through UNCHANGED: no normalization and no casefolding,
                     # because R11's stadium_id matching is exact and case-sensitive.
                     # The only exception is a game with a cited, committed correction
@@ -884,7 +950,7 @@ class GameDataIngester:
                 # an ingest, and the whole point of raising instead of defaulting is
                 # that somebody sees it.
                 raise
-            except VenueOverrideDriftError:
+            except (VenueOverrideDriftError, UnrecordedInternationalVenueError):
                 # SAME REASONING AS THE IdentityColumnError ARM ABOVE. The broad handler
                 # below SKIPS the row with a warning, which would turn "the feed moved
                 # underneath a recorded venue correction" into "this 2025 game silently

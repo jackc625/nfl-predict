@@ -312,15 +312,21 @@ def test_the_production_transform_carries_the_neutral_site_fact() -> None:
     assert (raw["location"] == "Neutral").sum() == (
         phase33_state.NEUTRAL_SITE_GAME_COUNT_2026
     )
-    assert int(transformed["neutral_site"].sum()) == (
+    feed_neutral = (raw["location"] == "Neutral").to_numpy()
+    stored_neutral = transformed["neutral_site"].to_numpy(dtype=bool)
+    assert int((stored_neutral & feed_neutral).sum()) == (
         phase33_state.NEUTRAL_SITE_GAME_COUNT_2026
     ), (
         "the transform reports "
-        f"{int(transformed['neutral_site'].sum())} neutral-site games, not "
-        f"{phase33_state.NEUTRAL_SITE_GAME_COUNT_2026}. Zero here is the ORIGINAL "
+        f"{int((stored_neutral & feed_neutral).sum())} of the feed's neutral-site games, "
+        f"not {phase33_state.NEUTRAL_SITE_GAME_COUNT_2026}. Zero here is the ORIGINAL "
         'defect returning: `row.get("neutral_site", False)` against a feed that '
         "has no such column."
     )
+    # One more is stored neutral: the London game the feed sent as a Jacksonville home game,
+    # neutral by its recorded venue correction (WR-D05).
+    forced = set(transformed.loc[stored_neutral & ~feed_neutral, "game_id"])
+    assert forced == {"2026_W05_PHI@JAX"}, sorted(forced)
 
 
 def test_the_three_plan_33_06_identity_columns_reach_the_transformed_frame() -> None:

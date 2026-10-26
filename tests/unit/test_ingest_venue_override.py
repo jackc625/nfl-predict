@@ -251,6 +251,76 @@ class TestTheCorrectionRecordIsWhatTheIngestReads:
         )
 
 
+class TestAnUnrecordedInternationalVenueIsRefused:
+    """WR-D05: the shape that hid 2026_W05_PHI@JAX for five weeks is refused at the ingest."""
+
+    def test_a_feed_naming_an_abroad_venue_under_a_home_id_is_refused_by_name(
+        self,
+    ) -> None:
+        # An UNRECORDED game whose feed names Wembley but carries the home team's id.
+        feed = _frame(
+            [
+                _feed_row(
+                    season=2026,
+                    week=8,
+                    gameday="2026-10-25",
+                    away="CLE",
+                    home="NYJ",
+                    location="Home",
+                    stadium_id="NYC01",
+                    stadium="Wembley Stadium",
+                    roof="outdoors",
+                )
+            ]
+        )
+        with pytest.raises(
+            ingest_games.UnrecordedInternationalVenueError, match="2026_W08_CLE@NYJ"
+        ):
+            ingest_games.GameDataIngester().transform_schedule_data(feed)
+
+    def test_a_feed_naming_the_venue_under_its_own_id_passes(self) -> None:
+        feed = _frame(
+            [
+                _feed_row(
+                    season=2026,
+                    week=6,
+                    gameday="2026-10-18",
+                    away="HOU",
+                    home="JAX",
+                    location="Neutral",
+                    stadium_id="LON00",
+                    stadium="Wembley Stadium",
+                    roof="outdoors",
+                )
+            ]
+        )
+        out = ingest_games.GameDataIngester().transform_schedule_data(feed)
+        assert _triples(out)["2026_W06_HOU@JAX"][0] == "LON00"
+
+    def test_a_recorded_game_is_neutral_whatever_the_feed_location_says(self) -> None:
+        # A record entry can land before the feed flips location to "Neutral": the game was
+        # still played abroad, so it is never stored as a home game.
+        game = LONDON_2026
+        feed = _frame(
+            [
+                _feed_row(
+                    season=2026,
+                    week=int(game["week"]),
+                    gameday=game["gameday"],
+                    away=game["away"],
+                    home=game["home"],
+                    location="Home",
+                    stadium_id=game["feed_stadium_id"],
+                    stadium=game["feed_stadium"],
+                    roof=game["feed_roof"],
+                )
+            ]
+        )
+        out = ingest_games.GameDataIngester().transform_schedule_data(feed)
+        assert out["neutral_site"].tolist() == [True]
+        assert _triples(out)[game["game_id"]][0] == game["stadium_id"]
+
+
 class TestTheSevenGamesAreCorrectedAtIngest:
     def test_the_2026_london_feed_row_comes_out_at_tottenham(self) -> None:
         game = LONDON_2026

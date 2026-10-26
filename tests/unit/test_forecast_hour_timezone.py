@@ -138,8 +138,14 @@ def _venue_records() -> dict[str, dict[str, Any]]:
 
 
 def _neutral_games_by_stadium() -> dict[str, dict[str, Any]]:
+    """The eight games the captured feed calls Neutral, transformed, keyed by stadium.
+
+    Selected by the feed's ``location``: the transform also stores 2026_W05_PHI@JAX neutral,
+    by its recorded venue correction (WR-D05), and it shares LON02 with 2026_W04_IND@WAS.
+    """
+    raw = season_2026.load_captured_schedule()
     frame = season_2026.transform_captured_schedule()
-    neutral = frame[frame["neutral_site"]]
+    neutral = frame[(raw["location"] == "Neutral").to_numpy()]
     return {str(row["stadium_id"]): row.to_dict() for _, row in neutral.iterrows()}
 
 
