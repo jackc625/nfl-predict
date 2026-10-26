@@ -67,8 +67,8 @@ naming the first one unmet:
 6. a commit after the lock touches ``SEASON-VERDICT-PREREGISTRATION.md`` or
    ``backtest/verdict_test_2026.py`` without naming the lock sha as INVALIDATED, or either file
    has an uncommitted change;
-7. a frozen value (``FROZEN_VALUE_PINS``: alpha, the bootstrap B and seed, the family size) no
-   longer holds its pinned number;
+7. a frozen value (``FROZEN_VALUE_PINS``: alpha, the bootstrap B and seed, the family size, the
+   minimum attainable p and the verdict words in their order) no longer holds its pinned value;
 8. the re-fit comparison (``scripts.compare_refit_arms``) cannot run (exit other than 0).
 
 What each refusal means: (0) needs the ledger restored from the private backup (RUNBOOK); (1)-(3)
@@ -199,11 +199,24 @@ WITNESSED_LOCK_SHA: str = "922b010b70d973a21945c15ca88067dae4149ad5"
 # backtest.verdict_test_2026, whose alpha, bootstrap B and seed are imported by identity from
 # upstream modules an edit could move without touching either R6 file.
 # tests/unit/test_phase38_preregistration_ancestry.py (Plan 38-03) pins the same values.
-FROZEN_VALUE_PINS: dict[str, float | int] = {
+#
+# VERDICT_TOKENS is pinned in ORDER: VERDICT_TOKEN_MEANINGS_2026 is built by zip() over it, so a
+# reorder upstream would attach every 2026 meaning to the wrong word. ROI_MIN_ATTAINABLE_P goes
+# straight into assign_verdict_token. The frozen scope module and the verdict functions are
+# checked by the two ancestry test files the RUNBOOK runs before the binding run.
+FROZEN_VALUE_PINS: dict[str, object] = {
     "ALPHA": 0.05,
     "BOOTSTRAP_B": 2000,
     "BOOTSTRAP_SEED": 2704,
     "BH_FAMILY_SIZE": 3,
+    "ROI_MIN_ATTAINABLE_P": 1.0 / 2001,
+    "VERDICT_TOKENS": (
+        "PROFITABLE_CLEAN",
+        "UNPROFITABLE_CLEAN",
+        "INCONCLUSIVE_CLEAN",
+        "UNDISCHARGEABLE_NO_BETS",
+        "UNDISCHARGEABLE_NO_CHAIN",
+    ),
 }
 
 # The daily run's record of every run, written by scripts/daily_lock_pipeline.py

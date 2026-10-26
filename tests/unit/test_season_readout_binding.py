@@ -1018,6 +1018,24 @@ def test_binding_refuses_a_lock_it_cannot_prove(
 
 
 @pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_reordered_verdict_words(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WR-A05: the 2026 meanings are zipped onto VERDICT_TOKENS by position, so a reorder
+    upstream would print every meaning beside the wrong word; refusal 7 names it."""
+    argv = binding_fixture(tmp_path)
+    monkeypatch.setattr(
+        backtest.verdict_test_2026, "VERDICT_TOKENS", tuple(reversed(VERDICT_TOKENS))
+    )
+
+    line = _assert_refuses(argv, capsys, tmp_path)
+
+    assert line.startswith(f"{REFUSED}the frozen value VERDICT_TOKENS is pinned at ")
+
+
+@pytest.mark.usefixtures("isolated_git_env")
 def test_binding_refuses_when_the_comparison_cannot_run(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

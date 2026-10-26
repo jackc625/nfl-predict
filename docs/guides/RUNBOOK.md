@@ -1387,7 +1387,17 @@ uv run python -m scripts.season_readout
 
 ### The command
 
-From the repository root, in PowerShell:
+From the repository root, in PowerShell, first run the two witness tests by file. They check that
+the frozen rule, the frozen verdict scope and the functions they name are still exactly what was
+committed and witnessed, which the binding run's own checks do not cover in full. Both must pass;
+a failure there is a repository-integrity problem (see "If it refuses" below), never something to
+work around:
+
+```powershell
+uv run python -m pytest tests/unit/test_phase38_preregistration_ancestry.py tests/unit/test_phase34_preregistration_ancestry.py -q -p no:cacheprovider
+```
+
+Then run the binding run:
 
 ```powershell
 uv run python -m scripts.season_readout --binding
@@ -1443,8 +1453,8 @@ find out what happened first and take it to the owner:
 6. A commit after the lock edited `SEASON-VERDICT-PREREGISTRATION.md` or
    `backtest/verdict_test_2026.py` without naming the lock as INVALIDATED, or one of those two
    files has an uncommitted change.
-7. A frozen value (alpha 0.05, bootstrap B 2000, seed 2704, family size 3) no longer equals its
-   pin.
+7. A frozen value (alpha 0.05, bootstrap B 2000, seed 2704, family size 3, the minimum attainable
+   p 1/2001, or the five verdict words in their order) no longer equals its pin.
 
    The same applies to any refusal that names a failed git or path check ("a git check failed, so
    the run refuses"): the run fails closed rather than guess.
