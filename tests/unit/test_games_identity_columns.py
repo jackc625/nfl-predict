@@ -814,6 +814,25 @@ class TestAMovedGameLeavesNoGhostRow:
             "games the schedule still lists are untouched"
         )
 
+    def test_the_ingest_hands_upsert_silver_one_datetime_unit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """WR-D06: the writer, not the store, is pinned to nanoseconds.
+
+        A bare ``datetime.now(UTC)`` broadcasts as ``[us, UTC]``. On an incremental upsert
+        ``_align_aware_datetime_columns`` would silently convert it to the stored unit, so a
+        store scan stays green; only the replace-all path would write it. The frame is read
+        here as the ingest hands it over, before any alignment can mask a regression.
+        """
+        frame = self._run(monkeypatch, self._stored())["frame"]
+        aware = {
+            column: dtype.unit
+            for column, dtype in frame.dtypes.items()
+            if isinstance(dtype, pd.DatetimeTZDtype)
+        }
+        assert {"kickoff_et", "created_at"} <= set(aware), aware
+        assert set(aware.values()) == {"ns"}, aware
+
     def test_a_scored_game_missing_from_the_schedule_is_refused_by_name(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
