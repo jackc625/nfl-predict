@@ -102,8 +102,10 @@ writes one directory holding, for each tier ``unit``, ``integration`` and ``api`
   ``-q -rfE -p no:cacheprovider --junitxml=<dir>/<tier>.xml``, its output in the log.
 
 ``full_run_problems`` judges that directory and runs nothing itself. It requires all
-nine files; requires each listing to close with a clean ``N tests collected`` line, to
-name N node ids, and every one of them to have an outcome in that tier's report
+nine files and ``head.txt``; requires each listing to close with a clean ``N tests
+collected`` line, to name N node ids, all under its own tier's root, and every one of
+them to have an outcome in that tier's report; given the slot that records the run, it
+also requires ``head.txt`` and each listing's size to equal the slot's
 (``INCOMPLETE``: one testcase per tier does not prove a run complete, and a tier killed
 by its timeout writes no report); requires ``exits.txt`` (``<tier> <exit code>`` per
 line, as the run step appends it) to show unit and api at 0 and integration at 0 or 1;
@@ -148,6 +150,16 @@ CHILD_ENV = "NFL_PHASE33_EXPECTED_FAILURE_CHILD"
 FULL_RUN_DIR_ENV = "NFL_PHASE38_FULL_RUN_DIR"
 FULL_RUN_TIERS: tuple[str, ...] = ("unit", "integration", "api")
 _FULL_RUN_TIER_SUFFIXES = (".xml", ".log", ".collect.txt")
+FULL_RUN_HEAD_FILE = "head.txt"
+
+# The node ids each recorded tier may list: the instrument's three processes run
+# tests/unit, tests/integration, and tests/api with the root tests/test_*.py modules. A
+# listing outside its own root is a run over some other part of the suite.
+_FULL_RUN_TIER_ID_RE: dict[str, re.Pattern[str]] = {
+    "unit": re.compile(r"^tests/unit/"),
+    "integration": re.compile(r"^tests/integration/"),
+    "api": re.compile(r"^tests/(api/|test_[^/]*\.py::)"),
+}
 
 # `3603 tests collected in 41.2s` / `1 test collected in 0.3s`; a line that also names an
 # error is a listing of a broken collection, not a complete one.
@@ -386,6 +398,25 @@ def session_completed(text: str) -> bool:
     )
 
 
+def _head_problems(head: Path, recorded: Mapping[str, object] | None) -> list[str]:
+    """Whether ``head.txt`` exists and names the head the recording slot holds.
+
+    The comparison is with the slot, never with live HEAD: HEAD moves with every
+    commit made after the run, and the run is a record of one commit.
+    """
+    if not head.is_file():
+        return [f"INCOMPLETE: {head.name} missing"]
+    if recorded is None:
+        return []
+    found = head.read_text(encoding="utf-8", errors="replace").strip()
+    if found != recorded.get("head"):
+        return [
+            f"INCOMPLETE: {head.name} names {found!r}, not the recorded head "
+            f"{recorded.get('head')!r}"
+        ]
+    return []
+
+
 def _exit_problems(exits: Path) -> list[str]:
     """Whether ``exits.txt`` shows every tier ending with an exit code a run may have."""
     if not exits.is_file():
@@ -406,14 +437,22 @@ def _exit_problems(exits: Path) -> list[str]:
     return problems
 
 
-def _listing_problems(tier: str, listing: str, outcomes: Outcomes | None) -> list[str]:
+def _listing_problems(
+    tier: str,
+    listing: str,
+    outcomes: Outcomes | None,
+    recorded_collected: int | None = None,
+) -> list[str]:
     """Whether a tier's ``--collect-only -q`` listing proves its report is complete.
 
     Args:
-        tier: The tier name, for the messages.
+        tier: The tier name, for the messages; a ``FULL_RUN_TIERS`` name also holds
+            every listed id to that tier's root.
         listing: The text of ``<tier>.collect.txt``.
         outcomes: The tier report's outcome map; None when the report is missing (that
             is already its own problem, so collected ids are not checked against it).
+        recorded_collected: The collected count a recorded slot holds for this tier;
+            None checks no size.
 
     Returns:
         ``INCOMPLETE`` problems; empty when every collected node id has an outcome.
@@ -437,6 +476,18 @@ def _listing_problems(tier: str, listing: str, outcomes: Outcomes | None) -> lis
             f"reports {collected} collected (a listing that names no node id cannot "
             "prove the report complete)"
         ]
+    root = _FULL_RUN_TIER_ID_RE.get(tier)
+    outside = [node_id for node_id in listed if root and not root.match(node_id)]
+    if outside:
+        return [
+            f"INCOMPLETE: {tier} collect listing names {len(outside)} node ids outside "
+            f"its tier root: {', '.join(outside[:5])}"
+        ]
+    if recorded_collected is not None and collected != recorded_collected:
+        return [
+            f"INCOMPLETE: {tier} collect listing reports {collected} collected, not the "
+            f"{recorded_collected} the recorded slot holds"
+        ]
     if outcomes is None:
         return []
 
@@ -449,7 +500,11 @@ def _listing_problems(tier: str, listing: str, outcomes: Outcomes | None) -> lis
     ]
 
 
-def full_run_problems(run_dir: Path, expected_node_ids: Iterable[str]) -> list[str]:
+def full_run_problems(
+    run_dir: Path,
+    expected_node_ids: Iterable[str],
+    recorded: Mapping[str, object] | None = None,
+) -> list[str]:
     """Judge the recorded full-suite run written into *run_dir*; it runs nothing itself.
 
     For each tier in ``FULL_RUN_TIERS`` it reads ``<tier>.xml`` (the JUnit report),
@@ -461,6 +516,9 @@ def full_run_problems(run_dir: Path, expected_node_ids: Iterable[str]) -> list[s
     Args:
         run_dir: The run directory.
         expected_node_ids: The node ids that must fail, and fail cleanly.
+        recorded: The slot that records this run (``head`` and per-tier
+            ``collected``); ``head.txt`` and each listing's size must equal it. None
+            checks only that ``head.txt`` exists.
 
     Returns:
         ``INCOMPLETE`` (a missing file, an empty report, a collected test with no
@@ -469,7 +527,9 @@ def full_run_problems(run_dir: Path, expected_node_ids: Iterable[str]) -> list[s
         not end on pytest's closing summary line, so the sweep never completed) and
         every kind ``expected_outcome_problems`` names. Empty is the pass.
     """
-    problems: list[str] = []
+    problems = _head_problems(run_dir / FULL_RUN_HEAD_FILE, recorded)
+    recorded_collected = recorded.get("collected", {}) if recorded else {}
+    assert isinstance(recorded_collected, Mapping), recorded
     union: dict[tuple[str, str], frozenset[str]] = {}
     for tier in FULL_RUN_TIERS:
         report, log, listing = (
@@ -486,7 +546,11 @@ def full_run_problems(run_dir: Path, expected_node_ids: Iterable[str]) -> list[s
             problems.append(f"INCOMPLETE: {tier} report holds no testcase")
         if listing.is_file():
             listing_text = listing.read_text(encoding="utf-8", errors="replace")
-            problems.extend(_listing_problems(tier, listing_text, outcomes))
+            problems.extend(
+                _listing_problems(
+                    tier, listing_text, outcomes, recorded_collected.get(tier)
+                )
+            )
         log_text = (
             log.read_text(encoding="utf-8", errors="replace") if log.is_file() else None
         )
@@ -612,6 +676,9 @@ _PLANTED_TRIPWIRES: tuple[str, ...] = tuple(
     f"{_PLANTED_MODULE}::TestPlanted::test_tripwire_{number}" for number in range(1, 6)
 )
 _PLANTED_BYSTANDER = f"{_PLANTED_MODULE}::test_bystander"
+# Concatenated, so the self-scan for node-id literals stays clean.
+_PLANTED_INTEGRATION_MODULE = "tests/integration" + "/test_planted_gate.py"
+_PLANTED_HEAD = "0" * 40
 
 
 def _kinds(problems: list[str]) -> list[str]:
@@ -916,6 +983,11 @@ def test_the_recorded_full_run_report_when_given() -> None:
     Opt-in: the run itself is an owner-approved step of the phase close (D-06), and this
     node only reads the directory that run wrote. An env var that names no directory is
     a failure, never a skip, so a mistyped path cannot read as "not judged".
+
+    The run is judged against the slot that records it,
+    ``tests.phase34_state.P38_FULL_SUITE_BASELINE``: its ``head.txt`` and each tier's
+    collected count must equal the slot's. A later recorded run is judged once its own
+    slot is appended and named here.
     """
     named = os.environ.get(FULL_RUN_DIR_ENV)
     if not named:
@@ -923,7 +995,11 @@ def test_the_recorded_full_run_report_when_given() -> None:
     run_dir = Path(named)
     assert run_dir.is_dir(), f"{FULL_RUN_DIR_ENV}={named!r} names no directory"
 
-    problems = full_run_problems(run_dir, phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS)
+    problems = full_run_problems(
+        run_dir,
+        phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS,
+        recorded=phase34_state.P38_FULL_SUITE_BASELINE,
+    )
     accepted = recorded_crash_problems(run_dir)
     missing = [problem for problem in accepted if problem not in problems]
     assert not missing, (
@@ -991,7 +1067,7 @@ def _planted_run(run_dir: Path) -> Path:
         "integration",
         {
             **dict.fromkeys(tripwires, "failed"),
-            f"{_PLANTED_MODULE}::test_integration_bystander": "passed",
+            f"{_PLANTED_INTEGRATION_MODULE}::test_integration_bystander": "passed",
         },
     )
     _write_planted_tier(run_dir, "unit", {_PLANTED_BYSTANDER: "passed"})
@@ -1001,6 +1077,7 @@ def _planted_run(run_dir: Path) -> Path:
     (run_dir / FULL_RUN_EXITS_FILE).write_text(
         "unit 0\nintegration 1\napi 0\n", encoding="utf-8"
     )
+    (run_dir / FULL_RUN_HEAD_FILE).write_text(_PLANTED_HEAD + "\n", encoding="utf-8")
     return run_dir
 
 
@@ -1089,6 +1166,31 @@ def test_the_full_run_judge_refuses_a_bad_report(tmp_path: Path) -> None:
     bad = full_run_problems(bad_exit, tripwires)
     assert _kinds(bad) == ["INCOMPLETE"] and " unit " in bad[0], bad
 
+    # A run over part of the suite: a tier listing a node outside its own root, a run
+    # without head.txt, and one whose head or size is not the recorded run's.
+    misplaced = _planted_run(tmp_path / "misplaced")
+    _write_planted_tier(
+        misplaced,
+        "integration",
+        {
+            **dict.fromkeys(tripwires, "failed"),
+            f"{_PLANTED_MODULE}::test_integration_bystander": "passed",
+        },
+    )
+    outside = full_run_problems(misplaced, tripwires)
+    assert _kinds(outside) == ["INCOMPLETE"] and "outside" in outside[0], outside
+    headless = _planted_run(tmp_path / "headless")
+    (headless / FULL_RUN_HEAD_FILE).unlink()
+    assert _kinds(full_run_problems(headless, tripwires)) == ["INCOMPLETE"]
+    collected = {"unit": 1, "integration": len(tripwires) + 1, "api": 1}
+    recorded = {"head": _PLANTED_HEAD, "collected": collected}
+    assert full_run_problems(clean, tripwires, recorded=recorded) == []
+    other_head = full_run_problems(clean, tripwires, recorded={**recorded, "head": "1"})
+    assert _kinds(other_head) == ["INCOMPLETE"], other_head
+    smaller = {**recorded, "collected": {**collected, "unit": 2}}
+    subset = full_run_problems(clean, tripwires, recorded=smaller)
+    assert _kinds(subset) == ["INCOMPLETE"] and " unit " in subset[0], subset
+
     # A sixth failing testcase.
     sixth = _planted_run(tmp_path / "sixth")
     _write_planted_tier(sixth, "unit", {_PLANTED_BYSTANDER: "failed"})
@@ -1103,7 +1205,7 @@ def test_the_full_run_judge_refuses_a_bad_report(tmp_path: Path) -> None:
         {
             **dict.fromkeys(tripwires, "failed"),
             tripwires[0]: "crashed",
-            f"{_PLANTED_MODULE}::test_integration_bystander": "passed",
+            f"{_PLANTED_INTEGRATION_MODULE}::test_integration_bystander": "passed",
         },
     )
     not_a_failure = full_run_problems(crashed, tripwires)
