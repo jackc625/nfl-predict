@@ -281,8 +281,10 @@ close; nine measured on 2026-10-05, `tests/phase34_state.py` P34_EXPECTED_FAILUR
 all closed:
 
 - **One was a real defect, and it is fixed.** The synthetic-stamp detector (DEF-31-07) now judges
-  how a snapshot time was produced -- every stamp at the 18:00 ET lock, one snapshot per game --
-  rather than how many distinct stamps there are, and its test is an ordinary passing test again.
+  how a snapshot time was produced -- no row records an observation time (`created_at`), one
+  snapshot per game -- rather than how many distinct stamps there are, and its test is an ordinary
+  passing test again. (Corrected 2026-10-25: it first read the 18:00 ET stamp, which real 2026
+  captures carry too.)
 - **Eight compared against retired models, and the owner ruled them deleted.** Six were the
   DEF-31-06 ATS residual reproductions and two were the D30-DEFER-08 O/U anchors. Each one
   checked a figure of a model that has since been retired, so there was nothing left for it to

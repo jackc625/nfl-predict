@@ -809,19 +809,20 @@ def test_fixture_uses_normalized_odds_loader() -> None:
 # divergence verdict, measured on a model now retired. Phase 38 transcribed the rule below into
 # ``backtest.ou_divergence.snapshot_ts_is_synthetic`` and the preamble now calls it.
 #
-# THE RULE. Discriminate on DERIVATION, not on cardinality. Every stored stamp is a re-derived
-# lock instant, and re-derivation leaves a signature that observed capture times do not have:
-# the Eastern wall-clock time of every row is EXACTLY 18:00:00, to the second. A genuine book
-# capture lands on arbitrary seconds. So:
+# THE RULE. Discriminate on DERIVATION, not on cardinality, and read derivation from the one
+# recorded observation time. The stamp cannot carry it: every writer here sets snapshot_ts to
+# the game's 18:00 ET lock whether the line was observed or derived (the 2026 live captures
+# from DraftKings, FanDuel and the rest sit on 18:00:00 ET exactly, like the re-derived
+# 2021-2024 rows). What separates them is created_at, the instant a response was observed:
+# recorded on every 2026 capture, null on every 2021-2024 row (owner ruling 2026-09-22,
+# Option B: only a recorded created_at is an observation). So:
 #
-# call a store DERIVED when every snapshot_ts, parsed through normalize_snapshot_ts and
-# converted to Eastern, lands on hour eighteen with zero minutes, seconds and microseconds;
-# then report the stamps synthetic when the store is derived AND holds at most one snapshot
-# per game.
+# call a store DERIVED when no row records a created_at; then report the stamps synthetic when
+# the store is derived AND holds at most one snapshot per game.
 #
-# This is strictly better than the count rule on both sides: it stays True as the store grows
-# (the failure that produced this entry), and it goes False the moment a genuinely observed
-# capture time is stored -- which is the case the flag exists to distinguish.
+# It stays True as the store grows (the failure that produced this entry), and it goes False
+# the moment a row with a recorded observation time is judged -- which is the case the flag
+# exists to distinguish.
 #
 # The tests below split the claim so none can hide another: the ground truth on the stored
 # table, the detector's verdict on that ground truth, and the rule on planted stores that
@@ -839,8 +840,8 @@ class TestTheSyntheticStampDetectorIsInverted:
     """
 
     @staticmethod
-    def _stored_stamps() -> pd.Series:
-        """Every stored snapshot_ts, from the SAME path constant the detector reads."""
+    def _stored_odds() -> pd.DataFrame:
+        """The stored odds table, from the SAME path constant the detector reads."""
         from backtest.ou_divergence import _RAW_SILVER_ODDS_PATH
 
         path = Path(str(_RAW_SILVER_ODDS_PATH))
@@ -849,41 +850,44 @@ class TestTheSyntheticStampDetectorIsInverted:
                 "live silver odds not present at data/silver/odds_snapshot.parquet -- "
                 "data/ is gitignored runtime state."
             )
-        return pd.read_parquet(path)["snapshot_ts"]
+        return pd.read_parquet(path, columns=["game_id", "snapshot_ts", "created_at"])
 
     def test_every_stored_stamp_is_DERIVED_rather_than_OBSERVED(self) -> None:
-        """The ground truth the flag is supposed to report. GREEN, and it must stay green.
+        """The ground truth the flag is supposed to report, on the window it judges. GREEN.
 
-        Parsed through the project's one snapshot parse path and converted to Eastern, every
-        stored stamp sits on the 18:00:00 freeze instant exactly. That is a signature of
-        re-derivation from the calendar; an observed book capture would carry arbitrary
-        seconds. Both stored spellings are covered, so the claim holds across the legacy
-        per-season rows and the 2025 per-game ones alike.
+        In the 2021-2024 window the preamble judges, no stored row records an observation time
+        (``created_at`` null): every line there was re-derived. The negative control is the
+        2026 live captures, which are observed and record ``created_at`` on every row -- while
+        their ``snapshot_ts`` sits on the same 18:00 ET lock, which is why the stamp is not the
+        evidence.
         """
-        from scripts.ingest_historical_odds import normalize_snapshot_ts
+        from backtest.ou_divergence import HOLDOUT_FIRST_SEASON, HOLDOUT_LAST_SEASON
 
-        stamps = self._stored_stamps()
-        assert len(stamps) > 0, (
-            "the stored odds table is empty, so this control would prove nothing."
+        stored = self._stored_odds()
+        season = stored["game_id"].astype(str).str[:4].astype(int)
+        recorded_at = pd.Series(stored["created_at"])
+        in_window = season.between(HOLDOUT_FIRST_SEASON, HOLDOUT_LAST_SEASON)
+        assert in_window.any(), (
+            "the stored odds table holds no 2021-2024 row, so this control would prove nothing."
+        )
+        recorded = sorted(
+            set(stored.loc[in_window & recorded_at.notna(), "game_id"].astype(str))
+        )
+        assert not recorded, (
+            f"stored {HOLDOUT_FIRST_SEASON}-{HOLDOUT_LAST_SEASON} rows of {len(recorded)} "
+            f"game(s) record an observation time (created_at), e.g. {recorded[:5]}. Those "
+            "lines were observed, not derived, and the preamble's synthetic_snapshot_ts would "
+            "rightly read False; re-measure rather than adjusting this expectation."
         )
 
-        eastern = stamps.astype(str).map(normalize_snapshot_ts)
-        eastern = pd.to_datetime(pd.Series(list(eastern)), utc=True).dt.tz_convert(
-            "America/New_York"
-        )
-        off_freeze = eastern[
-            (eastern.dt.hour != _STAMP_FREEZE_HOUR_ET)
-            | (eastern.dt.minute != 0)
-            | (eastern.dt.second != 0)
-            | (eastern.dt.microsecond != 0)
-        ]
-        assert off_freeze.empty, (
-            f"{len(off_freeze)} of {len(stamps)} stored stamps do NOT sit on the "
-            f"{_STAMP_FREEZE_HOUR_ET}:00:00 ET freeze instant, e.g. "
-            f"{sorted(off_freeze.astype(str).unique())[:5]}. If a genuinely OBSERVED capture "
-            "time has entered the store, the derivation-based rule DEF-31-07 proposes would "
-            "correctly report synthetic_snapshot_ts False -- and this control, which asserts "
-            "the store is wholly derived, is the thing that should change, not that rule."
+        live = season == 2026
+        if not live.any():
+            pytest.skip(
+                "no 2026 live capture is stored yet, so the negative control is absent"
+            )
+        assert bool(recorded_at.loc[live].notna().all()), (
+            "a stored 2026 live capture carries no created_at: the negative control no longer "
+            "separates an observed line from a derived one"
         )
 
     def test_the_detector_reports_that_derivation_as_synthetic(
@@ -905,40 +909,53 @@ class TestTheSyntheticStampDetectorIsInverted:
     def test_the_rule_on_planted_stores(self) -> None:
         """The derivation rule on hand-built stores, one per side of it. Needs no gold.
 
-        The two derived stamps straddle the 2021 change of clocks (DST ended Sunday
-        2021-11-07): 22:00Z on 2021-10-30 is 18:00 EDT and 23:00Z on 2021-11-13 is 18:00 EST.
-        Both sit on the lock instant in ET wall-clock, so the store is derived. Replacing one
-        with an observed 17:42:13 ET capture, or storing a second snapshot for one game, must
-        each turn the verdict False.
+        Every planted stamp sits on an 18:00 ET lock (22:00Z in summer, 23:00Z in winter), as
+        every writer here stores it. A store with no recorded ``created_at`` is derived; giving
+        one row the observation time a live capture records, or storing a second snapshot for
+        one game, must each turn the verdict False.
         """
         from backtest.ou_divergence import snapshot_ts_is_synthetic
 
         summer_lock = "2021-10-30T22:00:00+00:00"
         winter_lock = "2021-11-13T23:00:00+00:00"
-        observed = "2021-10-30T21:42:13+00:00"
+        observed_at = pd.Timestamp("2021-10-29T21:42:13+00:00")
 
-        def store(rows: list[tuple[str, str]]) -> pd.DataFrame:
-            return pd.DataFrame(rows, columns=["game_id", "snapshot_ts"])
+        def store(rows: list[tuple[str, str, object]]) -> pd.DataFrame:
+            frame = pd.DataFrame(
+                rows, columns=pd.Index(["game_id", "snapshot_ts", "created_at"])
+            )
+            frame["created_at"] = pd.to_datetime(frame["created_at"], utc=True)
+            return frame
 
         derived = store(
-            [("2021_W08_AAA@BBB", summer_lock), ("2021_W10_CCC@DDD", winter_lock)]
+            [
+                ("2021_W08_AAA@BBB", summer_lock, None),
+                ("2021_W10_CCC@DDD", winter_lock, None),
+            ]
         )
         assert snapshot_ts_is_synthetic(derived) is True, (
-            "two 18:00 ET lock stamps either side of a DST change must read as derived"
+            "a store whose rows record no observation time must read as derived"
         )
 
         one_observed = store(
-            [("2021_W08_AAA@BBB", observed), ("2021_W10_CCC@DDD", winter_lock)]
+            [
+                ("2021_W08_AAA@BBB", summer_lock, observed_at),
+                ("2021_W10_CCC@DDD", winter_lock, None),
+            ]
         )
         assert snapshot_ts_is_synthetic(one_observed) is False, (
-            "a store holding one observed 17:42:13 ET capture is not wholly derived"
+            "a store holding one row with a recorded created_at is not wholly derived, even "
+            "though its snapshot_ts sits on the lock like every other row"
         )
 
         two_per_game = store(
-            [("2021_W08_AAA@BBB", summer_lock), ("2021_W08_AAA@BBB", summer_lock)]
+            [
+                ("2021_W08_AAA@BBB", summer_lock, None),
+                ("2021_W08_AAA@BBB", summer_lock, None),
+            ]
         )
         assert snapshot_ts_is_synthetic(two_per_game) is False, (
-            "an all-18:00 store holding two snapshots for one game is not single-stamp"
+            "a derived store holding two snapshots for one game is not single-stamp"
         )
 
         assert snapshot_ts_is_synthetic(store([])) is False, (
