@@ -622,6 +622,47 @@ def test_a_void_bet_leaves_the_test(
     assert _table_row(document, "wp")[1] == str(len(BET_GAMES))
 
 
+@pytest.mark.usefixtures("isolated_git_env")
+def test_every_row_of_a_not_played_game_leaves_the_figures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """WR-A02: a not-played game's rows leave every figure whether or not a target bet there.
+
+    On G a WP bet sits beside an ATS suppressed row; on H the ATS suppressed row is alone.
+    Both games are not played, so neither ATS row counts.
+    """
+    with_bet, alone = "2026_W06_NYJ@BUF", "2026_W06_CAR@ATL"
+    rows = [
+        *complete_rows(),
+        ledger_row(with_bet, "wp"),
+        ledger_row(with_bet, "ats", status="suppressed"),
+        ledger_row(alone, "ats", status="suppressed"),
+    ]
+    games = [
+        *complete_games(),
+        schedule_game(with_bet, scored=False),
+        schedule_game(alone, scored=False),
+    ]
+    argv = binding_fixture(tmp_path, rows=rows, games=games)
+    preview = [arg for arg in argv if arg != "--binding"]
+
+    code, lines = _run(preview, capsys, tmp_path / "repo")
+
+    assert code == 0, lines
+    assert (
+        f"NOT_PLAYED= {alone} week=6 reason=inferred: no final score while week 22 is scored"
+        in lines
+    )
+    figures = {line.split()[1]: line for line in lines if line.startswith("FIGURES= ")}
+    assert (
+        f"counted_rows={len(BET_GAMES)} bets={len(BET_GAMES)} " in figures["target=ats"]
+    )
+    assert (
+        f"counted_rows={len(BET_GAMES) + 1} bets={len(BET_GAMES)} "
+        in figures["target=wp"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 3: binding refuses until the season is graded, refuses an edited rule, and runs once
 # ---------------------------------------------------------------------------

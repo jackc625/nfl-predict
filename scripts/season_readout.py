@@ -362,11 +362,24 @@ def target_figures(
     return tuple(figures)
 
 
+def not_played_game_ids(report: CoverageReport) -> frozenset[str]:
+    """Every game inferred not played (D-26): the void games every figure leaves out.
+
+    The set of GAMES, never the games some target happened to bet on, so whether a target's
+    rows on a not-played game count never depends on what another target did there.
+    """
+    return frozenset(game.game_id for game in report.not_played)
+
+
 def void_bets(counted: pd.DataFrame, report: CoverageReport) -> pd.DataFrame:
-    """The counted bets on not-played games (D-20: void), in the counted frame's order."""
+    """The counted bets on not-played games (D-20: void), in the counted frame's order.
+
+    For listing the void bets by name only; the figures leave out every row of every game in
+    :func:`not_played_game_ids`.
+    """
     if counted.empty or not report.not_played:
         return pd.DataFrame(columns=pd.Index(BET_COLUMNS))
-    not_played = frozenset(game.game_id for game in report.not_played)
+    not_played = not_played_game_ids(report)
     keep = (counted["status"] == BET_STATUS_LIVE) & _on_games(counted, not_played)
     return counted.loc[keep]
 
@@ -1128,7 +1141,7 @@ def figure_lines(counted: pd.DataFrame, report: CoverageReport) -> list[str]:
     ]
     if not lines:
         lines.append("VOID_BETS= none")
-    void_game_ids = frozenset(str(game_id) for game_id in void["game_id"])
+    void_game_ids = not_played_game_ids(report)
     lines.extend(
         f"FIGURES= target={fig.target} counted_rows={fig.counted_rows} bets={fig.bets} "
         f"graded={fig.graded} wins={fig.wins} losses={fig.losses} pushes={fig.pushes} "
@@ -1174,8 +1187,7 @@ def _binding_run(
 
     _code, refit_text = comparison()
     void = void_bets(counted, report)
-    void_game_ids = frozenset(str(game_id) for game_id in void["game_id"])
-    results = measure_targets(counted, void_game_ids)
+    results = measure_targets(counted, not_played_game_ids(report))
     lock = lock_commit(repo_root)
     text = render_document(
         report=report,
