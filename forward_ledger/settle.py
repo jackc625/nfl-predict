@@ -130,11 +130,25 @@ def game_is_tied(realized: Mapping[str, Mapping[str, float]], game_id: str) -> b
 
     The tie is read from the ATS margin, never from the WP label, precisely so that
     :func:`realized_values_from_scores` -- and the WP label the frozen re-fit comparison reads
-    (``refit/comparison.py``) -- stays byte-identical (D-21). A game with no recorded margin, or a
-    mapping with no ``"ats"`` entry at all, is not a tie.
+    (``refit/comparison.py``) -- stays byte-identical (D-21).
+
+    Every caller asks only after it has found a realized value for the row's game, and
+    :func:`realized_values_from_scores` fills the margin from the same played-game mask as every
+    other target. So a missing margin means a malformed mapping (for example a per-target
+    ``{"wp": ...}``), and it REFUSES: answering "not a tie" would grade a tied moneyline bet by the
+    strict-binary rule D-21 replaced, booking a push as a full-price win.
+
+    Raises:
+        KeyError: *realized* holds no ``"ats"`` margin for *game_id*.
     """
-    margin = realized.get("ats", {}).get(game_id)
-    return margin is not None and float(margin) == 0.0
+    margins = realized.get("ats")
+    if margins is None or game_id not in margins:
+        msg = (
+            f"no realized home margin for {game_id!r}; a bet on a played game cannot be graded "
+            "without knowing whether it ended tied (D-21)"
+        )
+        raise KeyError(msg)
+    return float(margins[game_id]) == 0.0
 
 
 def live_strategies(

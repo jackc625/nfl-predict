@@ -22,6 +22,7 @@ import pytest
 from backtest.selector_strategies import default_strategies
 from backtest.weekly_bet_list import grade_row
 from forward_ledger.settle import (
+    game_is_tied,
     grading_updates,
     load_silver_games,
     realized_values_from_scores,
@@ -325,6 +326,25 @@ def test_every_grade_path_agrees_on_a_tied_moneyline_bet(tmp_path: Path) -> None
     checked, mismatches = settled_result_check(entries, games, STRATEGIES)
     assert checked == 3
     assert mismatches == []
+
+
+def test_a_missing_margin_refuses_instead_of_grading_by_the_old_rule(
+    tmp_path: Path,
+) -> None:
+    """WR-B02: a mapping with the WP label but no margin never reads as "not a tie"."""
+    (away_wp, _home_wp, _ats), games, _updates = tied_ledger(tmp_path)
+    realized = realized_values_from_scores(games)
+    assert game_is_tied(realized, AWAY_TIE_GAME) is True
+
+    per_target = {"wp": {AWAY_TIE_GAME: 0.0}}
+    with pytest.raises(KeyError, match="no realized home margin"):
+        game_is_tied(per_target, AWAY_TIE_GAME)
+    with pytest.raises(KeyError, match="no realized home margin"):
+        game_is_tied({"wp": {}, "ats": {}}, AWAY_TIE_GAME)
+    # The settle pass refuses the malformed mapping rather than booking the away bet a win.
+    with pytest.raises(KeyError, match="no realized home margin"):
+        grading_updates(read_entries(tmp_path), STRATEGIES, per_target, GRADED_AT)
+    assert away_wp["target"] == "wp"
 
 
 def test_load_silver_games_reads_the_store(tmp_path: Path) -> None:
