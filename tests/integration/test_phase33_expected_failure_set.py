@@ -504,6 +504,7 @@ def full_run_problems(
     run_dir: Path,
     expected_node_ids: Iterable[str],
     recorded: Mapping[str, object] | None = None,
+    expected_skips: Iterable[str] | None = None,
 ) -> list[str]:
     """Judge the recorded full-suite run written into *run_dir*; it runs nothing itself.
 
@@ -519,13 +520,17 @@ def full_run_problems(
         recorded: The slot that records this run (``head`` and per-tier
             ``collected``); ``head.txt`` and each listing's size must equal it. None
             checks only that ``head.txt`` exists.
+        expected_skips: The skipped testcases the recorded run holds, as
+            ``classname::name``; a skip outside them is a ``NEW SKIP`` (a red turned
+            into a skip passes every other check). None compares no skip set.
 
     Returns:
         ``INCOMPLETE`` (a missing file, an empty report, a collected test with no
         outcome, or a tier exit code in ``exits.txt`` no complete run has), ``BOUNDARY``
         (a tier log carrying the session-end production store sweep, or one that does
-        not end on pytest's closing summary line, so the sweep never completed) and
-        every kind ``expected_outcome_problems`` names. Empty is the pass.
+        not end on pytest's closing summary line, so the sweep never completed),
+        ``NEW SKIP`` and every kind ``expected_outcome_problems`` names. Empty is the
+        pass.
     """
     problems = _head_problems(run_dir / FULL_RUN_HEAD_FILE, recorded)
     recorded_collected = recorded.get("collected", {}) if recorded else {}
@@ -570,6 +575,13 @@ def full_run_problems(
 
     problems.extend(_exit_problems(run_dir / FULL_RUN_EXITS_FILE))
     problems.extend(expected_outcome_problems(union, expected_node_ids))
+    if expected_skips is not None:
+        allowed = set(expected_skips)
+        problems.extend(
+            f"NEW SKIP: {classname}::{name}"
+            for (classname, name), states in sorted(union.items())
+            if "skipped" in states and f"{classname}::{name}" not in allowed
+        )
     return problems
 
 
@@ -953,6 +965,15 @@ def test_the_whole_tier_verdict_when_opted_in(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _recorded_skips() -> tuple[str, ...]:
+    """The recorded run's skip set, ``tests.phase34_state.P38_RECORDED_SKIPS``."""
+    skips = phase34_state.P38_RECORDED_SKIPS
+    assert skips["run_head"] == phase34_state.P38_FULL_SUITE_BASELINE["head"], skips
+    skipped = skips["skipped"]
+    assert isinstance(skipped, tuple) and len(skipped) == skips["count"], skips
+    return skipped
+
+
 def recorded_crash_problems(run_dir: Path) -> list[str]:
     """The one problem a correction slot accepts for the run it names, else none.
 
@@ -986,7 +1007,8 @@ def test_the_recorded_full_run_report_when_given() -> None:
 
     The run is judged against the slot that records it,
     ``tests.phase34_state.P38_FULL_SUITE_BASELINE``: its ``head.txt`` and each tier's
-    collected count must equal the slot's. A later recorded run is judged once its own
+    collected count must equal the slot's, and every skip must be one that
+    ``tests.phase34_state.P38_RECORDED_SKIPS`` names. A later recorded run is judged once its own
     slot is appended and named here.
     """
     named = os.environ.get(FULL_RUN_DIR_ENV)
@@ -999,6 +1021,7 @@ def test_the_recorded_full_run_report_when_given() -> None:
         run_dir,
         phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS,
         recorded=phase34_state.P38_FULL_SUITE_BASELINE,
+        expected_skips=_recorded_skips(),
     )
     accepted = recorded_crash_problems(run_dir)
     missing = [problem for problem in accepted if problem not in problems]
@@ -1027,8 +1050,9 @@ def _write_planted_tier(
     Args:
         run_dir: The planted run directory.
         tier: One of ``FULL_RUN_TIERS``.
-        outcomes: node id -> ``failed``, ``crashed`` or ``passed``; each becomes one
-            testcase, a failure written with the message pytest writes for that kind.
+        outcomes: node id -> ``failed``, ``crashed``, ``skipped`` or ``passed``; each
+            becomes one testcase, a failure written with the message pytest writes
+            for that kind.
         listed: The collect listing's node ids; defaults to the report's own.
         log_text: The tier log; defaults to a plain pytest summary line.
     """
@@ -1040,6 +1064,8 @@ def _write_planted_tier(
             ET.SubElement(testcase, "failure", message="AssertionError: planted check")
         elif outcome == "crashed":
             ET.SubElement(testcase, "failure", message="KeyError: 'planted'")
+        elif outcome == "skipped":
+            ET.SubElement(testcase, "skipped", type="pytest.skip", message="planted")
     root = ET.Element("testsuites")
     root.append(suite)
     ET.ElementTree(root).write(run_dir / f"{tier}.xml", encoding="utf-8")
@@ -1050,7 +1076,7 @@ def _write_planted_tier(
         "\n".join(listed) + f"\n\n{len(listed)} test{plural} collected in 0.01s\n",
         encoding="utf-8",
     )
-    failed = sum(outcome != "passed" for outcome in outcomes.values())
+    failed = sum(outcome in ("failed", "crashed") for outcome in outcomes.values())
     passed = len(outcomes) - failed
     summary = f"{failed} failed, {passed} passed" if failed else f"{passed} passed"
     (run_dir / f"{tier}.log").write_text(
@@ -1190,6 +1216,18 @@ def test_the_full_run_judge_refuses_a_bad_report(tmp_path: Path) -> None:
     smaller = {**recorded, "collected": {**collected, "unit": 2}}
     subset = full_run_problems(clean, tripwires, recorded=smaller)
     assert _kinds(subset) == ["INCOMPLETE"] and " unit " in subset[0], subset
+
+    # A skip the recorded run does not hold: a red turned into a skip is named.
+    skipping = _planted_run(tmp_path / "skipping")
+    _write_planted_tier(skipping, "unit", {_PLANTED_BYSTANDER: "skipped"})
+    assert full_run_problems(skipping, tripwires) == []
+    classname, name = junit_key(_PLANTED_BYSTANDER)
+    known = full_run_problems(
+        skipping, tripwires, expected_skips=[f"{classname}::{name}"]
+    )
+    assert known == [], known
+    new_skip = full_run_problems(skipping, tripwires, expected_skips=())
+    assert _kinds(new_skip) == ["NEW SKIP"] and name in new_skip[0], new_skip
 
     # A sixth failing testcase.
     sixth = _planted_run(tmp_path / "sixth")

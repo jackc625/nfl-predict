@@ -36,6 +36,7 @@ measured when it was written.
 * Plan 38-07 Task 3 -- ``P38_EXPECTED_FAILURE_BASELINE``.
 * Plan 38-12 Task 3 -- ``P38_FULL_SUITE_BASELINE``.
 * Phase 38 code review fix CR-C01 -- ``P38_TRIPWIRE4_CRASH_CORRECTION``.
+* Phase 38 code review fix WR-C05 -- ``P38_RECORDED_SKIPS``.
 """
 
 from __future__ import annotations
@@ -719,5 +720,93 @@ P38_TRIPWIRE4_CRASH_CORRECTION: dict[str, object] = {
         "Tripwire 3's reason has also drifted from the Phase-33 record (which said the "
         "slice gained weather_coverage and lost none); it still fails on its assertion, "
         "and the drift is recorded here rather than re-anchored."
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Phase 38 code review fix WR-C05 -- the SKIP SET of the recorded run 2, read
+# 2026-10-25 (ET, read via PowerShell) from the three JUnit reports of the run
+# directory recorded in P38_FULL_SUITE_BASELINE (head
+# f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d), whose sha256 digests that slot
+# already pins.
+#
+# P38_FULL_SUITE_BASELINE recorded only the skip COUNT (64). A count can be made
+# to agree: a red turned into a skip, with another skip fixed, still reads 64.
+# This slot names every skipped testcase -- every <skipped> that is not type
+# pytest.xfail -- as JUnit "classname::name", the form the judge reports in.
+# The reasons are in the pinned reports. The opt-in judge
+# test_the_recorded_full_run_report_when_given reports "NEW SKIP: <key>" for
+# any skip outside this set.
+# ---------------------------------------------------------------------------
+
+P38_RECORDED_SKIPS: dict[str, object] = {
+    "read_on": "2026-10-25",
+    "run_head": "f2b5b1ab2375dd3eca7eba88cfbd67e9a7c3b56d",
+    "count": 64,
+    "skipped": (
+        "tests.unit.test_group_verdict_remeasured.TestTheAntiRotGuard::test_the_harness_returns_the_ruling_the_document_records",
+        "tests.unit.test_phase33_state_arithmetic::test_the_post_phase_collected_count_closes_against_the_per_plan_sum",
+        "tests.unit.test_phase37_preregistration_ancestry::test_the_first_refit_descends_from_the_record",
+        "tests.unit.test_sealed_probe_log.TestThisPlanDoesNotCreateTheCommittedLog::test_plan_32_05_did_not_create_it",
+        "tests.unit.test_suppression_freshness.TestRejectionTaxonomy::test_every_reason_has_a_ui_spec_label",
+        "tests.integration.test_diag_diagnosis.TestDiagDiagnosis::test_backtest_numbers_match_audit_report",
+        "tests.integration.test_gold_rebuild_attribution.TestPhase331StalenessGameIdsWereMeasuredBeforeTheRebuild::test_every_recorded_id_is_in_gold_and_absent_from_both_silver_tables",
+        "tests.integration.test_gold_write_scope.TestTheIdentityMigrationMovesNoGoldColumn::test_a_full_history_sandbox_build_is_194_195_194_and_carries_no_identity_column",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_group_1_qb_features",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_group_2_pbp_derived",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_group_3_opponent_adjusted",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_group_4_contextual",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_all_features_clv_not_degraded",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_feature_count_within_budget",
+        "tests.integration.test_lift_validation.TestLiftValidation::test_new_features_present_in_gold",
+        "tests.integration.test_no_precoverage_constants.TestTheScanSeesTheGold::test_before_rung8_the_scan_reports_unflagged_blocks",
+        "tests.integration.test_ou_divergence.TestOuDivergence::test_bias_over_share",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_moved_rows_are_2025_and_in_the_derived_columns[features_wp]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_moved_rows_are_2025_and_in_the_derived_columns[features_ats]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_moved_rows_are_2025_and_in_the_derived_columns[features_ou]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_every_corrected_game_moved[features_wp]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_every_corrected_game_moved[features_ats]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_every_corrected_game_moved[features_ou]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_wp]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_ats]",
+        "tests.integration.test_p332_rung2_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_ou]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_moved_rows_are_on_or_after_the_floor_in_the_derived_columns[features_wp]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_moved_rows_are_on_or_after_the_floor_in_the_derived_columns[features_ats]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_moved_rows_are_on_or_after_the_floor_in_the_derived_columns[features_ou]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_the_neutralised_game_moved[features_wp]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_the_neutralised_game_moved[features_ats]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_the_neutralised_game_moved[features_ou]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_same_season_rows_before_the_game_did_not_move[features_wp]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_same_season_rows_before_the_game_did_not_move[features_ats]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_same_season_rows_before_the_game_did_not_move[features_ou]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_wp]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_ats]",
+        "tests.integration.test_p332_rung3_attribution.TestTheRowRule::test_off_game_moves_are_only_in_rescaled_columns[features_ou]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_the_same_games_and_only_the_two_columns_left[features_wp]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_the_same_games_and_only_the_two_columns_left[features_ats]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_the_same_games_and_only_the_two_columns_left[features_ou]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_no_non_weather_column_moved_on_any_row[features_wp]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_no_non_weather_column_moved_on_any_row[features_ats]",
+        "tests.integration.test_p332_rung4_attribution.TestTheRowRule::test_no_non_weather_column_moved_on_any_row[features_ou]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_only_surface_mismatch_moved_on_or_after_the_floor[features_wp]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_only_surface_mismatch_moved_on_or_after_the_floor[features_ats]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_only_surface_mismatch_moved_on_or_after_the_floor[features_ou]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_every_reclassified_game_through_2025_moved[features_wp]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_every_reclassified_game_through_2025_moved[features_ats]",
+        "tests.integration.test_p332_step3b_attribution.TestTheRowRule::test_every_reclassified_game_through_2025_moved[features_ou]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_only_rest_columns_moved_on_or_after_the_floor[features_wp]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_only_rest_columns_moved_on_or_after_the_floor[features_ats]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_only_rest_columns_moved_on_or_after_the_floor[features_ou]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_every_game_whose_rest_count_moves_moved[features_wp]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_every_game_whose_rest_count_moves_moved[features_ats]",
+        "tests.integration.test_p332_step3c_attribution.TestTheRowRule::test_every_game_whose_rest_count_moves_moved[features_ou]",
+        "tests.integration.test_p332_step4b_attribution.TestTheRowRule::test_the_redecided_games_now_weather_apply_and_the_flag_did_not_move[features_wp]",
+        "tests.integration.test_p332_step4b_attribution.TestTheRowRule::test_the_redecided_games_now_weather_apply_and_the_flag_did_not_move[features_ats]",
+        "tests.integration.test_p332_step4b_attribution.TestTheRowRule::test_the_redecided_games_now_weather_apply_and_the_flag_did_not_move[features_ou]",
+        "tests.integration.test_phase33_expected_failure_set::test_the_whole_tier_verdict_when_opted_in",
+        "tests.integration.test_phase33_expected_failure_set::test_the_recorded_full_run_report_when_given",
+        "tests.integration.test_postlock_moves_neutralised.TestGoldCarriesThePreMoveFacts::test_the_post_lock_game_moved_in_exactly_its_changed_fact_columns[features_wp]",
+        "tests.integration.test_postlock_moves_neutralised.TestGoldCarriesThePreMoveFacts::test_the_post_lock_game_moved_in_exactly_its_changed_fact_columns[features_ats]",
+        "tests.integration.test_postlock_moves_neutralised.TestGoldCarriesThePreMoveFacts::test_the_post_lock_game_moved_in_exactly_its_changed_fact_columns[features_ou]",
     ),
 }
