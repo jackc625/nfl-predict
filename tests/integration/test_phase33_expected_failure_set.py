@@ -181,6 +181,11 @@ _SUMMARY_LINE_RE = re.compile(
     r"^=*\s*\d+ (failed|passed|skipped|errors?|xfailed|xpassed)\b.* in \d"
 )
 
+# A non-strict xfail that XPASSES is written to JUnit as a plain pass, so no report can
+# show it; pytest's closing summary line still counts it (`1 xpassed`), with or without
+# `-rX`. Any xfail count there is a quarantine.
+_QUARANTINE_COUNT_RE = re.compile(r"\b\d+ (xpassed|xfailed)\b")
+
 # What the run step appends to `exits.txt` after each tier: `<tier> <exit code>`. Only
 # the tier holding the tripwires may exit 1; an internal error or interrupt is no run.
 FULL_RUN_EXITS_FILE = "exits.txt"
@@ -569,6 +574,12 @@ def full_run_problems(
                 f"BOUNDARY: {tier} log does not end on pytest's closing summary line -- "
                 "the session-end sweep did not complete, so the stores were not compared"
             )
+        elif log_text is not None:
+            summary = log_text.strip().splitlines()[-1]
+            if _QUARANTINE_COUNT_RE.search(summary):
+                problems.append(
+                    f"QUARANTINE: {tier} log's closing summary counts an xfail: {summary}"
+                )
 
         for key, states in (outcomes or {}).items():
             union[key] = union.get(key, frozenset()) | states
@@ -1180,6 +1191,13 @@ def test_the_full_run_judge_refuses_a_bad_report(tmp_path: Path) -> None:
         "INTERNALERROR> planted\n1 passed in 0.01s\n", encoding="utf-8"
     )
     assert _kinds(full_run_problems(internal, tripwires)) == ["BOUNDARY"]
+
+    # A non-strict xfail that XPASSED is a plain pass in JUnit; the summary counts it.
+    xpassed = _planted_run(tmp_path / "xpassed")
+    (xpassed / "unit.log").write_text(
+        "1 passed, 1 xpassed in 0.01s\n", encoding="utf-8"
+    )
+    assert _kinds(full_run_problems(xpassed, tripwires)) == ["QUARANTINE"]
 
     # exits.txt is required, and only the tripwire tier may exit 1.
     no_exits = _planted_run(tmp_path / "no_exits")

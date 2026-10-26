@@ -73,18 +73,58 @@ def _site(node_id: str) -> tuple[str, str]:
     return path, rest.split("[", 1)[0]
 
 
-def _is_xfail_mark(node: ast.AST) -> bool:
-    """``pytest.mark.xfail`` (bare or called) or a runtime ``pytest.xfail``."""
+class _PytestNames:
+    """The names a module binds to ``pytest``, ``pytest.mark`` and ``pytest.xfail``.
+
+    ``import pytest as _pytest`` already exists in this suite, so a scan that knew only the
+    name ``pytest`` would miss ``_pytest.mark.xfail``; ``from pytest import mark`` and
+    ``from pytest import xfail`` bind the other two.
+    """
+
+    def __init__(self, tree: ast.AST) -> None:
+        self.pytest: set[str] = {"pytest"}
+        self.mark: set[str] = set()
+        self.xfail: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "pytest":
+                        self.pytest.add(alias.asname or "pytest")
+            elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
+                for alias in node.names:
+                    if alias.name == "mark":
+                        self.mark.add(alias.asname or "mark")
+                    elif alias.name == "xfail":
+                        self.xfail.add(alias.asname or "xfail")
+
+
+def _is_xfail_mark(node: ast.AST, names: _PytestNames) -> bool:
+    """An xfail mark or call under any name the module binds (see ``_PytestNames``).
+
+    ``pytest.mark.xfail`` (bare or called), a runtime ``pytest.xfail``, ``mark.xfail``, a
+    bare imported ``xfail``, and ``add_marker("xfail")`` / ``applymarker("xfail")``.
+    """
+    if isinstance(node, ast.Name):
+        return node.id in names.xfail
+    if isinstance(node, ast.Call):
+        func = node.func
+        return (
+            isinstance(func, ast.Attribute)
+            and func.attr in ("add_marker", "applymarker")
+            and bool(node.args)
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "xfail"
+        )
     if not (isinstance(node, ast.Attribute) and node.attr == "xfail"):
         return False
     owner = node.value
     if isinstance(owner, ast.Name):
-        return owner.id == "pytest"
+        return owner.id in names.pytest or owner.id in names.mark
     return (
         isinstance(owner, ast.Attribute)
         and owner.attr == "mark"
         and isinstance(owner.value, ast.Name)
-        and owner.value.id == "pytest"
+        and owner.value.id in names.pytest
     )
 
 
@@ -109,9 +149,10 @@ def _xfail_sites(path: Path) -> set[str]:
     """The innermost def or class enclosing every xfail mark in *path* (``<module>`` if none)."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     definitions = _definitions(tree)
+    names = _PytestNames(tree)
     sites: set[str] = set()
     for node in ast.walk(tree):
-        if not _is_xfail_mark(node):
+        if not _is_xfail_mark(node, names):
             continue
         line = getattr(node, "lineno", 0)
         enclosing = [
@@ -123,10 +164,10 @@ def _xfail_sites(path: Path) -> set[str]:
     return sites
 
 
-def _strict_xfail(definition: ast.AST) -> bool:
+def _strict_xfail(definition: ast.AST, names: _PytestNames) -> bool:
     """Whether *definition* is decorated ``pytest.mark.xfail(..., strict=True, ...)``."""
     for decorator in getattr(definition, "decorator_list", ()):
-        if isinstance(decorator, ast.Call) and _is_xfail_mark(decorator.func):
+        if isinstance(decorator, ast.Call) and _is_xfail_mark(decorator.func, names):
             for keyword in decorator.keywords:
                 if (
                     keyword.arg == "strict"
@@ -184,7 +225,7 @@ def test_every_recorded_quarantine_is_still_a_strict_xfail() -> None:
             node for _start, _end, name, node in _definitions(tree) if name == qualname
         ]
         assert matches, f"QUARANTINE ERASED: {node_id} no longer exists"
-        assert _strict_xfail(matches[0]), (
+        assert _strict_xfail(matches[0], _PytestNames(tree)), (
             f"QUARANTINE ERASED: {node_id} is no longer marked xfail(strict=True)"
         )
 
@@ -206,6 +247,32 @@ def test_no_xfail_exists_outside_the_recorded_set(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert _xfail_sites(sample) == {"<module>", "TestA::test_marked", "test_runtime"}
+
+    # The same forms under the names an import can bind, and a string-named marker.
+    aliased = tmp_path / "test_aliased.py"
+    aliased.write_text(
+        "import pytest as _pytest\n"
+        "from pytest import mark as m, xfail as xf\n"
+        "@_pytest.mark.xfail\n"
+        "def test_aliased_module():\n"
+        "    pass\n"
+        "@m.xfail(strict=True)\n"
+        "def test_aliased_mark():\n"
+        "    pass\n"
+        "def test_aliased_runtime():\n"
+        "    xf('r')\n"
+        "def test_string_marker(request):\n"
+        "    request.node.add_marker('xfail')\n"
+        "def test_clean(request):\n"
+        "    request.node.add_marker('slow')\n",
+        encoding="utf-8",
+    )
+    assert _xfail_sites(aliased) == {
+        "test_aliased_module",
+        "test_aliased_mark",
+        "test_aliased_runtime",
+        "test_string_marker",
+    }
 
     recorded = {_site(node_id) for node_id in _QUARANTINES}
     found = {
