@@ -1418,6 +1418,14 @@ run has graded the bets and recorded the scores:
 2. An in-scope game lacks a final score.
 3. No played week-22 game is in the schedule yet (the Super Bowl result has not reached it).
 
+Waiting only ever clears refusal 2 for a week-22 game. Once the Super Bowl is scored, an unscored
+game of an earlier week is not waited for: the run infers it was never played and voids its bets
+(each listed by name in the document's void-bets list). Refusal 2 also has a second form that does
+NOT clear by waiting: "game(s) inferred not played carry a graded counted bet". A graded bet means
+the game's final score existed and silver has since lost it (an ingest gap or an upstream
+revision). Find out why and restore the score in `data/silver/games.parquet` before trying again;
+never let the run void a settled result.
+
 **Already done -- do not run it again.**
 
 4. The record already exists, or its path appears anywhere in git history. The binding run has

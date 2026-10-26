@@ -782,6 +782,28 @@ def test_binding_refuses_without_a_played_week_22_game(
 
 
 @pytest.mark.usefixtures("isolated_git_env")
+def test_binding_refuses_a_graded_bet_on_a_game_inferred_not_played(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """WR-A03: a week-6 score that vanished from silver would make its game "not played" and
+    void its already-graded bet; the grade proves the score existed, so the run refuses."""
+    lost_score = WEEK6_GAMES[0]
+    games = [
+        schedule_game(game["game_id"], scored=game["game_id"] != lost_score)
+        for game in complete_games()
+    ]
+    argv = binding_fixture(tmp_path, games=games)
+
+    line = _assert_refuses(argv, capsys, tmp_path)
+
+    assert line == (
+        f"{REFUSED}1 game(s) inferred not played carry a graded counted bet: {lost_score}. "
+        "A grade means a final score existed, so silver lost it; restore the schedule's score "
+        "instead of waiting (voiding it would drop a settled result from the verdict)."
+    )
+
+
+@pytest.mark.usefixtures("isolated_git_env")
 def test_binding_refuses_while_a_counted_bet_is_ungraded(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -53,7 +53,9 @@ naming the first one unmet:
    daily run's settle pass applies): an absent, emptied or stale-backup ledger is never judged;
 1. a counted bet (status live) of a played game is not graded (suppressed rows and void bets never
    block);
-2. an in-scope game that is not "not played" lacks a final score;
+2. an in-scope game that is not "not played" lacks a final score, or a game inferred not played
+   carries a counted bet already graded win, loss or push (a grade is direct evidence that a final
+   score existed, so its missing silver score is a store contradiction, never a void game);
 3. the schedule holds no played week-22 game;
 4. the binding record ``<repo root>/docs/records/SEASON-2026-READOUT.md`` exists, or that path
    appears anywhere in git history (``git log --all``);
@@ -729,7 +731,8 @@ def binding_refusal(
                 f"{_first_five(keys)}. Wait for the next 17:00 ET daily run to grade them."
             )
 
-    # (2) An in-scope game that is not 'not played' lacks a final score.
+    # (2) An in-scope game that is not 'not played' lacks a final score, or a not-played
+    # game carries a graded counted bet (its score existed; silver lost it).
     unscored = [
         game.game_id
         for game in report.games
@@ -740,6 +743,20 @@ def binding_refusal(
             f"{len(unscored)} in-scope game(s) lack a final score: {_first_five(unscored)}. "
             "Wait for the next 17:00 ET daily run to record the scores."
         )
+    if not counted.empty:
+        live = counted.loc[counted["status"] == BET_STATUS_LIVE]
+        graded_void = live.loc[
+            live["grading_status"].isin(_GRADED_STATUSES)
+            & _on_games(live, not_played_game_ids(report))
+        ]
+        contradicted = sorted({str(game_id) for game_id in graded_void["game_id"]})
+        if contradicted:
+            return (
+                f"{len(contradicted)} game(s) inferred not played carry a graded counted bet: "
+                f"{_first_five(contradicted)}. A grade means a final score existed, so silver "
+                "lost it; restore the schedule's score instead of waiting (voiding it would drop "
+                "a settled result from the verdict)."
+            )
 
     # (3) The schedule holds no played game of the scope's last week.
     final_week = schedule.loc[
