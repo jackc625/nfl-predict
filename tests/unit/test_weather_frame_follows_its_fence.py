@@ -122,6 +122,10 @@ class TestTheDefectIsRealAndIsStillThereInSilver:
             "it. Re-measure: the defect this module fixes was an UNDATABLE capture."
         )
 
+
+class TestLiveSilverAgreesWithItsFence:
+    """The live frame holds no contradiction: the post-lock reading never came back."""
+
     def test_live_silver_agrees_with_its_fence(
         self, silver: dict[str, pd.DataFrame]
     ) -> None:
@@ -175,9 +179,8 @@ class TestTheFenceIsAppliedToTheFeatureFrame:
         self, silver: dict[str, pd.DataFrame]
     ) -> None:
         calc = WeatherFeaturesCalculator()
-        after = calc.enforce_fence_on_feature_frame(
-            silver["weather_features"], silver["games"]
-        )
+        planted = _with_the_recorded_post_lock_reading(silver["weather_features"])
+        after = calc.enforce_fence_on_feature_frame(planted, silver["games"])
         row = after[after["game_id"] == THE_POST_LOCK_CAPTURE].iloc[0]
         for column, declared in WEATHER_NO_INFORMATION_SIGNATURE.items():
             if column not in after.columns:
@@ -215,7 +218,7 @@ class TestTheFenceIsAppliedToTheFeatureFrame:
 
 
 class TestTheGateNowAcceptsTheFencedFrame:
-    """End to end: the frame and its provenance agree, so the gate passes."""
+    """End to end, on the planted copy: refused unfenced, accepted once fenced."""
 
     def test_the_information_time_gate_accepts_the_fenced_weather_source(
         self, silver: dict[str, pd.DataFrame]
@@ -228,7 +231,8 @@ class TestTheGateNowAcceptsTheFencedFrame:
 
         calc = WeatherFeaturesCalculator()
         games = silver["games"]
-        frame = calc.enforce_fence_on_feature_frame(silver["weather_features"], games)
+        planted = _with_the_recorded_post_lock_reading(silver["weather_features"])
+        frame = calc.enforce_fence_on_feature_frame(planted, games)
         scoped = games[games["game_id"].isin(frame["game_id"])]
         state = InformationTimeGate().check(
             "weather",
