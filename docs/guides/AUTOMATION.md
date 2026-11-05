@@ -166,6 +166,15 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
    rebuild, and before the phone pushes, every
    run that did not fail pushes the dashboard to Vercel (a run that failed records "not pushed"
    instead). See "Website push" near the end of this document.
+6. **The early-lines capture (owner ruling 2026-11-05)** -- after the day's steps (item 4
+   included) and before the website push, on every real run that refreshed the schedule,
+   `no_games` days included; never on `--dry-run`, a `lock_passed` day or the offseason.
+   `scripts/capture_early_lines.py` requests the WHOLE upcoming board (no kickoff window, so next
+   week's games are included) and appends one JSON line -- the capture instant, the credits read
+   before it and the raw board from every book -- to `data/bronze/early_lines/early_lines.jsonl`.
+   It records early-week prices for the planned earlier-betting study; nothing on the decision
+   path reads that file. It prints `EARLY_LINES= captured|skipped|failed ...` and never changes
+   the exit code. Its credit rule is in "Odds API credit budget" below.
 
 `--date YYYY-MM-DD` runs as of another ET day; `--dry-run` runs the schedule refresh and
 the collection stage under a recording write sink, writing nothing (it stops before the
@@ -1042,6 +1051,14 @@ reading checks that the credits left after it still cover every remaining decisi
 calendar month at the retry bound: reserve = 3 credits x 3 boards x the month's remaining decision
 days, today included. When `remaining - 3` is below the reserve, the reading is skipped with
 `credit_reserve`. The decision capture never consults this rule.
+
+**The early-lines capture comes last (owner ruling 2026-11-05).** The daily run's early-lines
+capture (daily run item 6) spends one more board a day, about 90 credits in a 30-day month, which
+the table above does not include: November becomes 225 planned and 315 at worst, still under 500.
+Its reserve covers BOTH other captures: reserve = 3 credits x (3 boards x the month's remaining
+decision days + the month's remaining closing windows), today included. When `remaining - 3` is
+below it, the capture is skipped with `credit_reserve`; an unreadable header skips it with
+`credit_header_unreadable`.
 
 **The credit count is read, never computed, and reading it costs 0 credits.** The remaining count
 comes from the `x-requests-remaining` header of the free `/v4/sports` endpoint, read just before

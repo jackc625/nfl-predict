@@ -26,6 +26,12 @@ WHAT ONE RUN DOES
    sync and before the phone pushes, through ``pipeline.site_push``; a run ending ``failed`` or
    ``run_failed`` records "not pushed" instead. Unless ``config/site_push_enabled.json`` reads
    ``"enabled": true``, every push only records "not pushed".
+6. Records the whole upcoming odds board for the early-week betting study (owner ruling
+   2026-11-05, ``scripts.capture_early_lines``) after the day's steps, on every real run that
+   refreshed the schedule (``no_games`` days included) and never on a dry run or a lock-passed or
+   offseason day. It is a non-fatal side step: it prints ``EARLY_LINES=``, spends a board only
+   when the month's decision and closing captures stay covered, and never changes the exit code.
+   Nothing on the decision path reads what it records.
 
 WHY THE FULL HISTORY IS REBUILT, AND WHY THAT CANNOT DENY PREDICTIONS TO TONIGHT'S GAMES
 -----------------------------------------------------------------------------------------
@@ -911,6 +917,42 @@ def _refit_quietly(
     return outcome.wrote_records
 
 
+# ---------------------------------------------------------------------------
+# The early-lines side step (owner ruling 2026-11-05). It runs after the day's steps (on a slate day,
+# after the picks, their ledger sync and the re-fit side step) and before the website push and the
+# notifier. It can never change the run's result: it is called only through
+# _capture_early_lines_quietly.
+# ---------------------------------------------------------------------------
+
+
+def _capture_early_lines(_report: RunReport) -> object:
+    """Record the whole upcoming odds board (``scripts.capture_early_lines``).
+
+    The import is LAZY, like the notifier's, so a broken capture module can never break this
+    script's import.
+    """
+    from scripts.capture_early_lines import capture_early_lines_now
+
+    return capture_early_lines_now()
+
+
+#: Seam: the test suite keeps it inert (tests/conftest.py); a wiring test replaces it itself.
+EARLY_LINES: Callable[[RunReport], object] = _capture_early_lines
+
+
+def _capture_early_lines_quietly(report: RunReport) -> None:
+    """Call the early-lines capture; a failure prints its class name and NEVER propagates.
+
+    Only ``Exception`` is caught: a Ctrl+C, and the test guard's ``pytest.fail``, still stop the
+    process.
+    """
+    try:
+        EARLY_LINES(report)
+    except Exception as exc:  # noqa: BLE001 - the capture never alters the run's result
+        print(f"EARLY_LINES= failed {_failure_text(exc)}")
+        logger.error("Early lines capture failed", error=_failure_text(exc))
+
+
 def _season_window(run_date_et: date) -> str:
     """The watcher's season window for *run_date_et* (``notify.season_window``, Plan 35-13).
 
@@ -1030,7 +1072,7 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                 cut_over = forward_rows_go_to_ledger()
                 if cut_over:
                     print(f"LEDGER_RUN_ID= {run_id}")
-                return _run_the_day(
+                code = _run_the_day(
                     run_date_et,
                     start=start,
                     dry_run=dry_run,
@@ -1038,6 +1080,10 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                     progress=progress,
                     report=report,
                 )
+                # Every real day that refreshed the schedule, slate or not (step 6).
+                if not dry_run and report.status != STATUS_OFFSEASON:
+                    _capture_early_lines_quietly(report)
+                return code
             except BaseException as exc:
                 named = _record_run_failure(run_date_et, progress.get("slate"), exc)
                 report.record_exception(exc)

@@ -579,6 +579,10 @@ def _notifications_inert_unless_a_test_turns_them_on(
     The daily run's re-fit side step (Phase 37, Plan 37-13) is a no-op here too: the hook builds
     gold and trains models, so no unrelated run may reach it; a wiring test replaces
     ``REFIT_HOOK`` with its own recorder, or restores ``daily._run_refit`` itself.
+
+    The daily run's early-lines capture (owner ruling 2026-11-05) is a no-op here too: it would
+    build the real Odds API client from the owner's ``.env`` and spend a paid board; a wiring test
+    replaces ``EARLY_LINES`` with its own recorder.
     """
     import pandas as pd
 
@@ -592,6 +596,7 @@ def _notifications_inert_unless_a_test_turns_them_on(
     monkeypatch.setattr(
         daily_lock_pipeline, "REFIT_HOOK", lambda _report, **_kwargs: None
     )
+    monkeypatch.setattr(daily_lock_pipeline, "EARLY_LINES", lambda _report: None)
     monkeypatch.setattr(
         capture_closing_lines, "NOTIFY_CLOSING_FAILURE", lambda *_a, **_k: None
     )
