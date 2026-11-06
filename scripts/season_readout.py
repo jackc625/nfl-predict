@@ -124,7 +124,10 @@ Exit codes: 0 the readout was printed (preview) or the binding document was writ
 store cannot be read -- the ledger is unreadable or its chain does not verify
 (``LEDGER_UNREADABLE=``), or the silver schedule, the run log or the skip records cannot be read
 (``STORE_UNREADABLE=``, naming the exception class); 3 the binding run refused
-(``BINDING_REFUSED=``). A malformed evidence line refuses; it is never read as absent.
+(``BINDING_REFUSED=``), or the preview found a counted row after the switch: before printing
+anything else it runs the same switch check (:func:`after_switch_refusal`) and prints only
+``SWITCH_REFUSED= <sentence>``, because its figures would count a row its coverage (weeks 5-12)
+never shows. A malformed evidence line refuses; it is never read as absent.
 
 Usage:
     uv run python -m scripts.season_readout
@@ -1454,6 +1457,13 @@ def main(argv: list[str] | None = None) -> int:
             report=report,
             scope=scope,
         )
+
+    # The binding run's switch check, before any figure: a counted row after week 12 means the
+    # retirement leaked, and the figures would count a row the coverage never shows.
+    after_switch = after_switch_refusal(counted)
+    if after_switch is not None:
+        print(f"SWITCH_REFUSED= {after_switch}")
+        return 3
 
     head, entry_count = ledger_head(entries)
     print(f"READOUT= preview: {PREVIEW_LABEL}")

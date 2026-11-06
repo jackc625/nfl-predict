@@ -585,6 +585,48 @@ def test_the_preview_shows_no_test_result_and_writes_nothing(
     assert _tree(tmp_path) == before
 
 
+@pytest.mark.parametrize("status", ["live", "suppressed"])
+def test_a_preview_refuses_a_counted_row_after_the_switch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], status: str
+) -> None:
+    """Review fix R2 (PR #6): MIDSEASON-SWITCH-RECORD.md section 5 in the preview too.
+
+    A counted week-13 row -- a bet or a no-bet -- means the retirement leaked. The preview's
+    coverage stops at week 12, so its figures would count a row the coverage never shows: it
+    refuses with the binding run's switch sentence, prints no figure and exits 3.
+    """
+    before_switch, after_switch = "2026_W12_BUF@SF", "2026_W13_NYJ@MIA"
+    argv = _stores(
+        tmp_path,
+        [_game(before_switch), _game(after_switch)],
+        [_row(before_switch, "wp"), _row(after_switch, "wp", status)],
+    )
+
+    code, lines = _run(argv, capsys)
+
+    assert code == 3
+    assert lines == [
+        "SWITCH_REFUSED= a counted live row in week 13 is after the switch "
+        f"(MIDSEASON-SWITCH-RECORD.md): {after_switch}"
+    ]
+    assert not any(line.startswith("FIGURES= ") for line in lines)
+
+
+def test_a_preview_through_week_12_is_not_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The control: a counted week-12 row is before the switch, so the preview is unchanged."""
+    game_id = "2026_W12_BUF@SF"
+    argv = _stores(tmp_path, [_game(game_id)], [_row(game_id, "wp")])
+
+    code, lines = _run(argv, capsys)
+
+    assert code == 0
+    assert not any(line.startswith("SWITCH_REFUSED=") for line in lines)
+    assert _figures(lines)["wp"]["counted_rows"] == "1"
+    assert lines[0] == "READOUT= preview: season to date -- not the verdict"
+
+
 def test_the_real_ledger_is_byte_identical_after_a_preview(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
