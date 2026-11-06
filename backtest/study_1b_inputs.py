@@ -18,6 +18,18 @@ here is a gold row with the inputs that can change between the two instants rebu
   fixed roof is a fact of the stadium, known on Tuesday as on Saturday, so such a game
   keeps the gold's wind (0.0 in every indoor game of 2020-2024).
 
+THE SITE. The indoor wind above and the kept ``hfa_used`` (0.0 in the gold for a
+neutral-site game) both rest on where the game is played. Silver ``games`` records the site
+a game was PLAYED at and no time at which it was announced, so a relocation announced after
+the early capture would leak into the early row: 2022_W11_CLE@BUF, moved from Buffalo's
+outdoor stadium to Ford Field on Thursday 2022-11-17, two days after its early capture, and
+the wild card 2024_W19_MIN@LA, moved to Glendale on Thursday 2025-01-09. So every
+early-timed game silver flags ``neutral_site`` is left out and counted
+(``SITE_NOT_KNOWN_AT_EARLY_CAPTURE``), the international games with them, since silver
+cannot tell them from a relocation -- except a Super Bowl (``game_type == "SB"``), whose
+site is fixed years ahead. A missing flag counts as not neutral, as
+``features.market_rating`` reads it.
+
 ``scripts.build_gold_v2.add_v2_derived_columns`` then recomputes ``qb_value_diff`` and the
 other derived inputs from the per-side columns. EVERY OTHER COLUMN IS THE GOLD'S, unchanged.
 Elo, success rate, opponent-adjusted EPA, pace and the home-field advantage rest only on
@@ -62,6 +74,7 @@ __all__ = [
     "EARLY_REPLACED_COLUMNS",
     "NOT_SETTLED",
     "NO_GOLD_ROW",
+    "SITE_NOT_KNOWN_AT_EARLY_CAPTURE",
     "EarlyInputs",
     "build_early_inputs",
     "early_lock_frame",
@@ -85,6 +98,10 @@ EARLY_REPLACED_COLUMNS: tuple[str, ...] = (
 )
 
 NOT_SETTLED = "inputs_not_settled_at_early_capture"
+#: A neutral-site game other than a Super Bowl: silver holds no time at which its site was
+#: announced, so the site the gold's ``hfa_used`` and indoor wind rest on may postdate the
+#: early capture.
+SITE_NOT_KNOWN_AT_EARLY_CAPTURE = "site_may_postdate_early_capture"
 NO_GOLD_ROW = "no_gold_row"
 
 #: The identity columns every early row carries ahead of its target's ``V2_INPUTS``.
@@ -111,8 +128,8 @@ class EarlyInputs:
             ``models.v2_recipe.V2_INPUTS``, in that order, each as known at the early
             capture. Never empty.
         excluded: ``game_id, reason`` for every early-timed game left out, sorted by
-            ``game_id``; the reason is ``NOT_SETTLED`` or ``NO_GOLD_ROW``, the first that
-            applies.
+            ``game_id``; the reason is ``NOT_SETTLED``, ``SITE_NOT_KNOWN_AT_EARLY_CAPTURE``
+            or ``NO_GOLD_ROW``, the first that applies in that order.
         qb_values_clipped: How many rebuilt QB values (one per side of a kept game) the
             clip to the gold's season range moved. A value moved in any target's rows is
             counted once; the three gold matrices share one QB column, so this is also
@@ -519,16 +536,43 @@ def _refuse_late_information(name: str, family: pd.DataFrame, early: pd.Series) 
         raise RuntimeError(msg)
 
 
+def _site_known_at_early_capture(
+    games: pd.DataFrame, early_ids: pd.Index
+) -> np.ndarray:
+    """Per early-timed game: was its site known at the early capture?
+
+    Yes unless silver flags the game ``neutral_site`` and it is not a Super Bowl
+    (``game_type == "SB"``, whose site is fixed years ahead). A missing flag counts as not
+    neutral, and a missing ``game_type`` as not a Super Bowl. *games* must name every
+    early-timed game once (``settled_by_early_time`` checks that first).
+    """
+    missing = [c for c in ("neutral_site", "game_type") if c not in games.columns]
+    if missing:
+        msg = f"the games frame is missing {missing}"
+        raise ValueError(msg)
+    site = (
+        games.loc[:, ["neutral_site", "game_type"]]
+        .set_axis(pd.Index(games["game_id"].astype(str), name="game_id"))
+        .reindex(early_ids)
+    )
+    neutral = site["neutral_site"].eq(True).fillna(False).to_numpy(dtype=bool)
+    super_bowl = site["game_type"].eq("SB").fillna(False).to_numpy(dtype=bool)
+    return ~neutral | super_bowl
+
+
 def _exclusion_reasons(
     games: pd.DataFrame, early: pd.Series, golds: dict[str, pd.DataFrame]
 ) -> pd.Series:
     """Per early-timed game, its first failing reason, or "" when it is kept."""
     settled = settled_by_early_time(games, early).to_numpy()
+    site_known = _site_known_at_early_capture(games, early.index)
     in_every_gold = np.ones(len(early), dtype=bool)
     for gold in golds.values():
         in_every_gold &= early.index.isin(gold["game_id"].astype(str))
     reason = np.select(
-        [~settled, ~in_every_gold], [NOT_SETTLED, NO_GOLD_ROW], default=""
+        [~settled, ~site_known, ~in_every_gold],
+        [NOT_SETTLED, SITE_NOT_KNOWN_AT_EARLY_CAPTURE, NO_GOLD_ROW],
+        default="",
     )
     return pd.Series(reason, index=early.index, name="reason")
 
@@ -545,8 +589,10 @@ def build_early_inputs(
 
     Args:
         gold_dir: The v2 gold directory holding ``features_{target}.parquet``.
-        games: All silver games. The families run on the seasons from the first early
-            season minus one through the last, every one of which must have a kickoff.
+        games: All silver games, with ``neutral_site`` and ``game_type`` (an early-timed
+            neutral-site game other than a Super Bowl is left out). The families run on
+            the seasons from the first early season minus one through the last, every one
+            of which must have a kickoff.
         nflverse: The pinned nflverse schedules the market rating reads its lines from.
         early_times: ``game_id``-indexed tz-aware early capture instants.
 

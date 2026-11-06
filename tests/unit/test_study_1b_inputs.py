@@ -23,6 +23,7 @@ from backtest.study_1b_inputs import (
     EARLY_REPLACED_COLUMNS,
     NO_GOLD_ROW,
     NOT_SETTLED,
+    SITE_NOT_KNOWN_AT_EARLY_CAPTURE,
     EarlyInputs,
     build_early_inputs,
     early_lock_frame,
@@ -64,7 +65,7 @@ def _games(
 
     Season, week and both teams are read off the id (``2020_W12_KC@PIT``); the kickoff
     is stored in UTC, as silver stores it. ``venue_roof`` is ``outdoor`` unless *roofs*
-    names the game.
+    names the game. Every game is a regular-season game at its home team's stadium.
     """
     roofs = roofs or {}
     records = []
@@ -80,6 +81,7 @@ def _games(
                 "away_team": away,
                 "kickoff_et": et(kickoff).tz_convert("UTC"),
                 "venue_roof": roofs.get(game_id, "outdoor"),
+                "game_type": "REG",
                 "neutral_site": False,
                 "home_score": home_score,
                 "away_score": away_score,
@@ -468,6 +470,45 @@ def test_build_reads_every_family_at_the_early_time_and_counts_what_it_leaves_ou
     assert ou.loc[0, "league_points_level"] == pytest.approx(35.0)
     assert not np.isnan(ou.loc[0, "mkt_total_sum"])
     assert np.isnan(ou.loc[0, "wind_mph"])
+
+
+def test_a_neutral_site_game_is_left_out_unless_it_is_a_super_bowl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Silver records the site a game was played at, not when it was announced, so a
+    # relocation announced after the early capture (2022_W11_CLE@BUF, moved Thursday)
+    # would reach the kept hfa_used and indoor wind. A Super Bowl's site is fixed years
+    # ahead. A missing flag reads as not neutral.
+    super_bowl = "2020_W21_KC@TB"
+    games = pd.concat(
+        [
+            _weeks_12_13_2020(),
+            _games([(super_bowl, "2021-02-07 18:30", 31.0, 9.0)]),
+        ],
+        ignore_index=True,
+    )
+    games["neutral_site"] = games["neutral_site"].astype("boolean")
+    games.loc[games["game_id"] == OTHER_GAME, "neutral_site"] = True
+    games.loc[games["game_id"] == THU_W13, "neutral_site"] = pd.NA
+    games.loc[games["game_id"] == super_bowl, "neutral_site"] = True
+    games.loc[games["game_id"] == super_bowl, "game_type"] = "SB"
+    studied = [OTHER_GAME, THU_W13, super_bowl]
+    gold_dir = _write_gold(tmp_path / "gold", dict.fromkeys(V2_TARGETS, studied))
+    _QBStub().install(monkeypatch)
+    early_times = pd.Series(
+        {
+            OTHER_GAME: et(EARLY_W13),
+            THU_W13: et(EARLY_W13),
+            super_bowl: et("2021-02-02 11:55"),
+        }
+    )
+
+    out = build_early_inputs(gold_dir, games, _nflverse(games), early_times)
+
+    reasons = dict(zip(out.excluded["game_id"], out.excluded["reason"], strict=True))
+    assert reasons == {OTHER_GAME: SITE_NOT_KNOWN_AT_EARLY_CAPTURE}
+    for target in V2_TARGETS:
+        assert out.rows[target]["game_id"].tolist() == [THU_W13, super_bowl]
 
 
 def _build_one_game(
