@@ -1135,33 +1135,52 @@ def test_binding_fails_closed_on_every_git_branch(
 
 
 @pytest.mark.usefixtures("isolated_git_env")
-def test_binding_refuses_an_unscored_week_12_game_beside_a_scored_one(
+def test_an_unscored_week_12_game_waits_only_until_a_later_week_is_scored(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """WR-A09, refusal 2 alone: the coverage's last week is never inferred not played (no later
-    coverage week), so an unscored game of it refuses even while another game of it is scored.
+    """WR-A09, refusal 2: an unscored game of the coverage's last week refuses while nothing later
+    is scored, even beside a scored game of its week; once a later week of the season is scored
+    it is inferred not played, its bet is void, and it never blocks the run.
 
-    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: coverage ends at week 12, so that last
-    week is week 12, not week 22. The ledger is the post-switch one (no Super Bowl row), so the
-    switch check passes and refusal 2 is the first to fire.
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: coverage ends at week 12, but the
+    not-played inference reads every later week of the season, so a cancelled week-12 game is
+    voided once week 13 is scored instead of blocking the February run. (Before the switch this
+    test pinned an unscored week-22 game refusing at refusal 2.) The ledger is the post-switch
+    one plus a bet on the unscored game; the Super Bowl is unscored, so nothing later than week
+    12 is scored until the week-13 game is.
     """
     unscored, scored = "2026_W12_BUF@SF", "2026_W12_NYJ@MIA"
-    argv = binding_fixture(
-        tmp_path,
-        rows=switch_rows(),
-        games=[
-            *complete_games(),
-            schedule_game(scored),
-            schedule_game(unscored, scored=False),
-        ],
-    )
+    later = "2026_W13_KC@DEN"
+    rows = [*switch_rows(), ledger_row(unscored, "wp")]
+    waiting_games = [
+        schedule_game(game["game_id"], scored=game["game_id"] != SUPER_BOWL)
+        for game in complete_games()
+    ]
+    waiting_games += [schedule_game(scored), schedule_game(unscored, scored=False)]
 
-    line = _assert_refuses(argv, capsys, tmp_path)
-
+    # Nothing later than week 12 is scored: refusal 2 waits for the score.
+    waiting = binding_fixture(tmp_path / "waiting", rows=rows, games=waiting_games)
+    line = _assert_refuses(waiting, capsys, tmp_path / "waiting")
     assert line == (
         f"{REFUSED}1 in-scope game(s) lack a final score: {unscored}. "
         "Wait for the next 17:00 ET daily run to record the scores."
     )
+
+    # A week-13 game is scored: the week-12 game is not played, so refusal 2 passes and the run
+    # stops only at refusal 3, waiting for the Super Bowl.
+    week_13 = binding_fixture(
+        tmp_path / "week_13", rows=rows, games=[*waiting_games, schedule_game(later)]
+    )
+    line = _assert_refuses(week_13, capsys, tmp_path / "week_13")
+    assert "the schedule holds no played week-22 game" in line
+    preview = [arg for arg in week_13 if arg != "--binding"]
+    code, lines = _run(preview, capsys, tmp_path / "week_13" / "repo")
+    assert code == 0, lines
+    assert (
+        f"NOT_PLAYED= {unscored} week=12 reason=inferred: no final score while week 13 is "
+        "scored" in lines
+    )
+    assert f"VOID_BETS= {unscored} target=wp" in lines
 
 
 @pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
@@ -1234,17 +1253,20 @@ def test_coverage_ends_at_week_12_and_says_why(
 
 
 @pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.parametrize("status", ["live", "suppressed"])
 def test_a_counted_live_row_after_the_switch_refuses(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], status: str
 ) -> None:
     """Record section 5: a counted live row in week 13 or later means the retirement leaked.
 
-    The week-13 bet is ungraded on a scored game, so it would trip refusal 1 ("wait") if the
-    switch check came later; waiting never clears this one, so it comes first.
+    "Counted live row" is any live-arm row the verdict keeps, a bet or a no-bet alike: from week
+    13 the day-before system records no decision of either kind. The week-13 bet is ungraded on a
+    scored game, so it would trip refusal 1 ("wait") if the switch check came later; waiting never
+    clears this one, so it comes first.
     """
     argv = binding_fixture(
         tmp_path,
-        rows=[*switch_rows(), ledger_row(AFTER_SWITCH_GAME, "wp")],
+        rows=[*switch_rows(), ledger_row(AFTER_SWITCH_GAME, "wp", status=status)],
         games=[*complete_games(), schedule_game(AFTER_SWITCH_GAME)],
     )
 

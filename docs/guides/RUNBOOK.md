@@ -1551,12 +1551,13 @@ do depends on which one it names.
 day-before system decides nothing from week 13, so the coverage the run reports ends at week 12
 (`R6_COVERAGE_END_WEEK`): the document's coverage section says so in one sentence, the run prints
 `COVERAGE_END= week=12 reason=MIDSEASON-SWITCH-RECORD.md`, and weeks 13-22 are never reported as
-missed. Right after condition 0, a counted bet in week 13 or later refuses with "a counted live row
-in week <w> is after the switch (MIDSEASON-SWITCH-RECORD.md): <game_id>". Such a row means the
-retirement leaked and the record is false; waiting never clears it, so take it to the owner.
-Condition 3 below still waits for the Super Bowl. Last, after condition 8 and before anything is
-written, a section of the document holding a non-ASCII character refuses, naming the section and
-the character's code point (for example U+2014); find what put it there before trying again.
+missed. Right after condition 0, any counted live-arm row in week 13 or later, a bet or a no-bet,
+refuses with "a counted live row in week <w> is after the switch (MIDSEASON-SWITCH-RECORD.md):
+<game_id>". Such a row means the retirement leaked and the record is false; waiting never clears
+it, so take it to the owner. Condition 3 below still waits for the Super Bowl. Last, after
+condition 8 and before anything is written, a section of the document holding a non-ASCII
+character refuses, naming the section and the character's code point (for example U+2014); find
+what put it there before trying again.
 
 **Wait for the next 17:00 ET daily run, then try again.** These clear on their own once the daily
 run has graded the bets and recorded the scores:
@@ -1583,9 +1584,9 @@ run), the Super Bowl bets stay ungraded for good and refusal 1 never clears by w
 3. Publish and check it: `uv run python -m scripts.sync_ledger`, then
    `uv run python -m scripts.verify_ledger`. Re-enable the tasks, then run the binding run again.
 
-Waiting only ever clears refusal 2 for a week-12 game: coverage ends there (the switch check
-above), so a week-12 game is never inferred not played. Once week 12 is scored, an unscored game
-of an earlier week is not waited for: the run infers it was never played and voids its bets
+Refusal 2 only waits while no later week of the season is scored. Once one is (by February, the
+Super Bowl), an unscored game of weeks 5-12 is not waited for, week 12 included although coverage
+ends there: the run infers it was never played and voids its bets
 (each listed by name in the document's void-bets list). Refusal 2 also has a second form that does
 NOT clear by waiting: "game(s) inferred not played carry a graded counted bet". A graded bet means
 the game's final score existed and silver has since lost it (an ingest gap or an upstream

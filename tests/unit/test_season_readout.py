@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ from pipeline.skip_log import SKIP_RECORD_PATH
 from scripts import season_readout
 from scripts.season_coverage import (
     STATE_MISSED,
+    STATE_NOT_PLAYED,
     STATE_NOT_YET_DUE,
     CoverageReport,
     classify_coverage,
@@ -58,6 +60,8 @@ KICKOFF_BY_WEEK: dict[int, datetime] = {
     4: datetime(2026, 10, 4, 17, 0, tzinfo=UTC),
     5: datetime(2026, 10, 11, 17, 0, tzinfo=UTC),
     6: datetime(2026, 10, 18, 17, 0, tzinfo=UTC),
+    12: datetime(2026, 11, 29, 18, 0, tzinfo=UTC),
+    13: datetime(2026, 12, 6, 18, 0, tzinfo=UTC),
 }
 
 
@@ -191,11 +195,15 @@ def _run(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, list
     return code, capsys.readouterr().out.splitlines()
 
 
-def _report(argv: list[str], *, now: datetime | None) -> CoverageReport:
-    """classify_coverage over the fixture stores *argv* names."""
+def _report(
+    argv: list[str], *, now: datetime | None, end_week: int | None = None
+) -> CoverageReport:
+    """classify_coverage over the fixture stores *argv* names, through *end_week* when given."""
     arg = dict(zip(argv[::2], argv[1::2], strict=True))
     scope = load_verdict_scope()
     counted = verdict_rows(read_entries(arg["--ledger-dir"]), scope)
+    if end_week is not None:
+        scope = replace(scope, end_week=end_week)
     games_path = Path(arg["--silver-dir"]) / SILVER_GAMES_FILENAME
     _, refused = season_readout.read_refusal_evidence(
         Path(arg["--run-log"]), Path(arg["--skip-records"])
@@ -414,6 +422,43 @@ def test_a_postponed_game_reads_as_not_played_until_its_score_lands(
     assert (week5["scheduled"], week5["bet"]) == ("1", "1")
     wp = _figures(lines)["wp"]
     assert (wp["counted_rows"], wp["bets"], wp["pending"]) == ("1", "1", "1")
+
+
+def test_a_cancelled_week_12_game_is_inferred_not_played_once_a_later_week_is_scored(
+    tmp_path: Path,
+) -> None:
+    """MIDSEASON-SWITCH-RECORD.md: the coverage ends at week 12, but "not played" reads every
+    later week of the season. A week-12 game with no final score waits (missed, in the
+    denominator) while nothing later is scored, and is inferred not played once a week-13 game,
+    itself outside the coverage, is scored -- so a cancelled week-12 game never blocks February."""
+    cancelled, played, later = "2026_W12_BUF@SF", "2026_W12_NYJ@MIA", "2026_W13_KC@DEN"
+    week_12 = [_game(played), _game(cancelled, scored=False)]
+
+    before = _report(_stores(tmp_path / "before", week_12), now=None, end_week=12)
+    after = _report(
+        _stores(tmp_path / "after", [*week_12, _game(later)]), now=None, end_week=12
+    )
+
+    assert {game.game_id: game.state for game in before.games} == {
+        played: STATE_MISSED,
+        cancelled: STATE_MISSED,
+    }
+    assert before.not_played == ()
+    # The week-13 game is outside the coverage: it is in no state and no week.
+    assert {game.game_id: game.state for game in after.games} == {
+        played: STATE_MISSED,
+        cancelled: STATE_NOT_PLAYED,
+    }
+    assert [week.week for week in after.weeks] == list(range(5, 13))
+    assert [(game.game_id, game.week, game.reason) for game in after.not_played] == [
+        (cancelled, 12, "inferred: no final score while week 13 is scored")
+    ]
+    week_12_row = after.weeks[-1]
+    assert (week_12_row.scheduled, week_12_row.missed, week_12_row.not_played) == (
+        1,
+        1,
+        1,
+    )
 
 
 def test_a_future_lock_is_not_yet_due_in_preview_only(tmp_path: Path) -> None:

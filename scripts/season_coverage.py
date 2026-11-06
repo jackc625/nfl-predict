@@ -22,8 +22,9 @@ all zeros. Rows outrank a refusal record: a game with rows AND a refusal is deci
 
 NOT PLAYED IS AN INFERENCE, READ EACH RUN (D-26, D-20)
 ------------------------------------------------------
-A game is not played when (a) it is in scope and has no final score while a game of a LATER scope
-week already has one, or (b) its id is named by ledger, run-log or skip-record evidence for an
+A game is not played when (a) it is in scope and has no final score while a game of a LATER week
+of the season (from the scope's start week on, past ``end_week`` too) already has one, or (b) its
+id is named by ledger, run-log or skip-record evidence for an
 in-scope week but is absent from the schedule. Each is printed with the reason it was inferred. A
 postponed game therefore reads as not played (and its bets as void, D-20) until its score lands,
 then returns to the denominator with its bets; the binding run reads it once, after week 22.
@@ -290,6 +291,29 @@ def _scope_games(schedule: pd.DataFrame, scope: VerdictScope) -> pd.DataFrame:
     return schedule.loc[in_scope].sort_values(["week", "game_id"])
 
 
+def _last_scored_week(
+    schedule: pd.DataFrame, played: set[str], scope: VerdictScope
+) -> int | None:
+    """The latest week of the scope's season, from its start week on, holding a scored game.
+
+    Read over the whole season, NOT only weeks up to ``end_week``: the readout ends the coverage at
+    week 12 (MIDSEASON-SWITCH-RECORD.md section 5), and a week-12 game with no final score must
+    still be inferred not played once a later week (13-22) is scored. With ``end_week`` 22 no
+    week is later, so this is the scope's own last scored week.
+    """
+    season = schedule.loc[
+        (schedule["season"] == scope.season) & (schedule["week"] >= scope.start_week)
+    ]
+    scored_weeks = [
+        int(week)
+        for game_id, week in zip(
+            season["game_id"].astype(str), season["week"], strict=True
+        )
+        if game_id in played
+    ]
+    return max(scored_weeks, default=None)
+
+
 def _rows_by_game(counted: pd.DataFrame) -> dict[str, tuple[set[str], bool]]:
     """``{game_id -> (its counted rows' targets, whether any row is a bet)}``."""
     by_game: dict[str, tuple[set[str], bool]] = {}
@@ -385,7 +409,9 @@ def classify_coverage(
         refused: :func:`refused_game_ids` over the run log and the skip records.
         scope: The scope whose weeks ``start_week..end_week`` the coverage reads. The readout
             passes the committed verdict scope with ``end_week`` set to
-            ``R6_COVERAGE_END_WEEK`` (week 12, MIDSEASON-SWITCH-RECORD.md section 5).
+            ``R6_COVERAGE_END_WEEK`` (week 12, MIDSEASON-SWITCH-RECORD.md section 5). The
+            not-played inference still reads every later week of its season
+            (:func:`_last_scored_week`).
         now: The preview's instant (tz-aware), below which a lock is "not yet due"; None in the
             binding run, where nothing is ever not yet due.
 
@@ -396,12 +422,7 @@ def classify_coverage(
     played = set(realized_values_from_scores(scores)["ats"])
     universe = _scope_games(schedule, scope)
     universe_ids = universe["game_id"].astype(str)
-    played_weeks = [
-        int(week)
-        for game_id, week in zip(universe_ids, universe["week"], strict=True)
-        if game_id in played
-    ]
-    last_scored_week = max(played_weeks, default=None)
+    last_scored_week = _last_scored_week(schedule, played, scope)
 
     games: list[GameCoverage] = []
     not_played = _absent_from_schedule(schedule, rows_by_game, refused, scope)

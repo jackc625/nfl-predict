@@ -51,8 +51,9 @@ The day-before system decides nothing from 2026 week 13, so the coverage (``clas
 reads the scope's weeks ``start_week..R6_COVERAGE_END_WEEK`` (5-12) and weeks 13-22 are never
 reported as missed. Only the coverage is shortened: the frozen scope (weeks 5-22) still selects the
 counted rows, refusal 3 still waits for a played week-22 game, and section 2 of the document still
-reports the scope as declared. Week 12 is now the coverage's last week, so an unscored week-12 game
-is never inferred not played (no later coverage week is scored).
+reports the scope as declared. "Not played" still reads every later week of the season
+(``scripts.season_coverage``): an unscored coverage game is inferred not played once a game of a
+later week, 13-22 included, is scored, so a cancelled week-12 game never blocks the binding run.
 
 THE BINDING RUN (``--binding``; Plan 38-09, SPEC R8-R9, D-09, D-24)
 --------------------------------------------------------------------
@@ -65,9 +66,10 @@ naming the first one unmet:
    daily run's settle pass applies): an absent, emptied or stale-backup ledger is never judged;
 
    then the switch check (MIDSEASON-SWITCH-RECORD.md section 5, :func:`after_switch_refusal`): a
-   counted bet (status live) sits in a week after ``R6_COVERAGE_END_WEEK``. The day-before system
-   retired from week 13, so such a row means the retirement leaked and the record is false; waiting
-   never clears it, so it comes before the conditions that wait;
+   counted row -- any live-arm row the verdict keeps, a bet or a no-bet -- sits in a week after
+   ``R6_COVERAGE_END_WEEK``. The day-before system retired from week 13, so such a row means the
+   retirement leaked and the record is false; waiting never clears it, so it comes before the
+   conditions that wait;
 1. a counted bet (status live) of a played game is not graded (suppressed rows and void bets never
    block);
 2. a coverage game (weeks 5-12) that is not "not played" lacks a final score, or a game inferred
@@ -748,19 +750,19 @@ def ledger_refusal(entries: Sequence[LedgerEntry], repo_root: Path) -> str | Non
 
 
 def after_switch_refusal(counted: pd.DataFrame) -> str | None:
-    """The switch check: the earliest counted bet after ``R6_COVERAGE_END_WEEK``, or None.
+    """The switch check: the earliest counted row after ``R6_COVERAGE_END_WEEK``, or None.
 
-    From 2026 week 13 the day-before system records no decision (MIDSEASON-SWITCH-RECORD.md
-    section 1), so a counted bet (status live) in a later week means the retirement leaked and the
-    record is false (section 5). Waiting never clears it. The earliest such row (by week, then game
-    id) is named.
+    A counted row is a live-arm row the verdict keeps (``forward_ledger.verdict.verdict_rows``),
+    whatever its status: a bet and a no-bet alike. From 2026 week 13 the day-before system records
+    no decision of either kind (MIDSEASON-SWITCH-RECORD.md section 1), so any counted row in a
+    later week means the retirement leaked and the record is false (section 5). Waiting never
+    clears it. The earliest such row (by week, then game id) is named.
     """
     if counted.empty:
         return None
-    late = counted.loc[
-        (counted["status"] == BET_STATUS_LIVE)
-        & (counted["week"].astype(int) > R6_COVERAGE_END_WEEK)
-    ].sort_values(["week", "game_id"])
+    late = counted.loc[counted["week"].astype(int) > R6_COVERAGE_END_WEEK].sort_values(
+        ["week", "game_id"]
+    )
     if late.empty:
         return None
     week, game_id = int(late["week"].iloc[0]), str(late["game_id"].iloc[0])
@@ -783,7 +785,7 @@ def binding_refusal(
     written. *comparison* runs only when the switch check and conditions (1)-(7) hold. *report*
     is the coverage (weeks 5-12); *scope* is the frozen scope, whose last week refusal 3 reads.
     """
-    # The switch check first: no counted bet after the week the day-before system retired.
+    # The switch check first: no counted row after the week the day-before system retired.
     after_switch = after_switch_refusal(counted)
     if after_switch is not None:
         return after_switch
