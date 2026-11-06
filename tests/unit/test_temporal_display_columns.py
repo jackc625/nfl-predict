@@ -359,10 +359,6 @@ class TestOneConstantTwoConsumers:
         assert "raw_sentinel_pct" not in _splitter()._feature_cols(frame)
 
 
-@pytest.mark.skipif(
-    not (_GOLD_DIR / "features_wp.parquet").exists(),
-    reason="data/gold not built on this checkout",
-)
 def _assert_the_v2_wp_fit_survives_the_nan(frame: pd.DataFrame) -> None:
     """The v2 form of the WP NaN claim: the served v2 WP pipeline fits on NaN-carrying gold.
 
@@ -397,6 +393,10 @@ def _assert_the_v2_wp_fit_survives_the_nan(frame: pd.DataFrame) -> None:
     assert pipeline.predict_proba(sample).shape == (len(sample), 2)
 
 
+@pytest.mark.skipif(
+    not (_GOLD_DIR / "features_wp.parquet").exists(),
+    reason="data/gold not built on this checkout",
+)
 class TestRealGold:
     """Measured against the on-disk gold, not a synthetic stand-in.
 

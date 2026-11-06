@@ -295,8 +295,11 @@ _BUILD_CLOCK_COLUMN: str = "feature_timestamp"
 def gold_history_content_sha256(gold_dir: Path) -> str:
     """sha256 of the 2002-2025 rows of the three gold matrices, by content.
 
-    The served models were fitted on that history; a nightly append of the season in progress
-    cannot move it, so a change means a historical feature value changed under them. The recipe
+    The v2 models are fitted on these completed seasons AND on the 2026 games played before the
+    install instant; the key deliberately covers only seasons up to 2025, because the nightly build
+    recomputes the season in progress, so a 2026 append or a 2026 recomputation cannot move it. A
+    change therefore means a feature value of a completed season changed under the served models;
+    the 2026 rows they were also fitted on are not covered by this key. The recipe
     is the one ``tests/unit/test_final_fit_entry_point.py`` restates beside
     ``ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256``: per matrix (wp, ats, ou), its production
     path ``data/gold/features_<t>.parquet``, then the season <= 2025 rows sorted by ``game_id``
