@@ -22,6 +22,13 @@ The close comes from a different source than the early line, and a consistent di
 two sources can make a model look as if it predicts the move. A passing target may get an
 early-week arm in plan 4; a failed one gets none.
 
+THE DECIDING P (owner ruling 3, 2026-11-06). Line moves are heavy-tailed, so the p that decides
+comes from heteroskedasticity-robust (HC1) standard errors on the same regression and the same
+rows: V = (X'X)^-1 (X' diag(e^2) X) (X'X)^-1 x n / (n - 2), p = ``norm.sf(slope / robust SE)``.
+The classical p from ``information_beyond_line`` is reported beside it and decides nothing. The
+slope is the same under both. Games of one week barely move together, so no clustering is
+applied. A robust SE that is not finite and positive is a degenerate fit: a note, never a pass.
+
 Every game left out on the way from the schedule to a test is counted by name in
 ``Study1bResult.counts``. Nothing is written except ``study_1b.json`` and ``report.md``, into a
 directory refused if it lies under ``data/``. ASCII only, no emoji.
@@ -41,6 +48,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike
 from scipy.special import logit
+from scipy.stats import norm
 
 from backtest.market_info import InfoResult, information_beyond_line
 from backtest.refit_preregistration_2026 import MARKET_CONVERTER_ID
@@ -63,6 +71,7 @@ from backtest.study_1b_inputs import (
 from backtest.study_1b_lines import (
     EARLY_WINDOW,
     EXCLUSION_REASONS,
+    NO_EARLY_CAPTURE,
     StudyLines,
     load_study_lines,
 )
@@ -89,6 +98,7 @@ __all__ = [
     "context_notes",
     "move_test",
     "passes",
+    "postseason_counts",
     "render_report",
     "run_study_1b",
     "summary_lines",
@@ -142,14 +152,18 @@ class MoveTest:
     """One line-move test: does (model - early) predict (later - early)?
 
     Attributes:
-        info: The slope on (model - early), or None when the fit could not run.
-        note: Why ``info`` is None; empty otherwise.
+        info: The slope on (model - early) with its CLASSICAL standard error and p, reported
+            beside the robust one and deciding nothing; None when the fit could not run.
+        robust_info: The same slope with its HC1 standard error and p, the one that decides
+            (owner ruling 3); None when the fit, or its robust standard error, could not run.
+        note: Why ``info`` or ``robust_info`` is None; empty otherwise.
         games: The rows where the later line, the early line and the model are all finite.
         mean_abs_move: Mean |later - early| over those rows (None with no rows).
         mean_abs_departure: Mean |model - early| over those rows (None with no rows).
     """
 
     info: InfoResult | None
+    robust_info: InfoResult | None
     note: str
     games: int
     mean_abs_move: float | None
@@ -218,21 +232,65 @@ def _finite_rows(
     return columns[0][keep], columns[1][keep], columns[2][keep]
 
 
+def _hc1_slope(later: np.ndarray, early: np.ndarray, model: np.ndarray) -> InfoResult:
+    """The slope of (later - early) on an intercept and (model - early), HC1 standard error.
+
+    The regression of ``information_beyond_line`` on the same finite rows, so the slope is
+    the same; only the standard error differs:
+    V = (X'X)^-1 (X' diag(e^2) X) (X'X)^-1 x n / (n - 2), and the one-sided p is
+    ``norm.sf(slope / sqrt(V[1, 1]))``.
+
+    Raises:
+        ValueError: fewer than 3 rows, a singular design, or a robust variance that is not
+            finite and positive (a degenerate fit).
+    """
+    y = later - early
+    x = np.column_stack([np.ones(len(y)), model - early])
+    n = len(y)
+    if n < 3:
+        msg = f"the robust fit needs at least 3 rows, got {n}"
+        raise ValueError(msg)
+    try:
+        beta, *_ = np.linalg.lstsq(x, y, rcond=None)
+        bread = np.linalg.inv(x.T @ x)
+    except np.linalg.LinAlgError as exc:
+        msg = f"singular design in the robust line regression: {exc}"
+        raise ValueError(msg) from exc
+    resid = y - x @ beta
+    with np.errstate(over="ignore", invalid="ignore"):
+        meat = x.T @ (x * (resid**2)[:, None])
+        variance = float((bread @ meat @ bread)[1, 1] * n / (n - 2))
+    if not (np.isfinite(variance) and variance > 0.0):
+        msg = (
+            f"degenerate robust fit: the HC1 variance {variance!r} is not finite and "
+            "positive, so no robust significance can be reported"
+        )
+        raise ValueError(msg)
+    coef, se = float(beta[1]), float(np.sqrt(variance))
+    return InfoResult(coef=coef, se=se, p_one_sided=float(norm.sf(coef / se)), n=n)
+
+
 def move_test(later: ArrayLike, early: ArrayLike, model: ArrayLike) -> MoveTest:
     """The slope of (later - early) on (model - early), over the rows where all are finite.
 
-    A fit that cannot run (too few rows, a singular or degenerate design) is recorded as a
-    note, never raised: it clears no bar.
+    The slope carries a classical standard error (``information_beyond_line``, reported) and
+    an HC1 one (the deciding p, owner ruling 3). A fit that cannot run (too few rows, a
+    singular or degenerate design, a robust standard error that is not finite and positive)
+    is recorded as a note, never raised: it clears no bar.
     """
     later_f, early_f, model_f = _finite_rows(later, early, model)
     games = len(later_f)
+    info: InfoResult | None = None
+    robust_info: InfoResult | None = None
+    note = ""
     try:
-        info: InfoResult | None = information_beyond_line(later_f, early_f, model_f)
-        note = ""
+        info = information_beyond_line(later_f, early_f, model_f)
+        robust_info = _hc1_slope(later_f, early_f, model_f)
     except ValueError as exc:
-        info, note = None, str(exc)
+        note = str(exc)
     return MoveTest(
         info=info,
+        robust_info=robust_info,
         note=note,
         games=games,
         mean_abs_move=float(np.mean(np.abs(later_f - early_f))) if games else None,
@@ -241,16 +299,17 @@ def move_test(later: ArrayLike, early: ArrayLike, model: ArrayLike) -> MoveTest:
 
 
 def _clears(test: MoveTest) -> bool:
-    """A positive slope at one-sided p < ``PASS_ALPHA``."""
-    return (
-        test.info is not None
-        and test.info.coef > 0
-        and test.info.p_one_sided < PASS_ALPHA
-    )
+    """A positive slope at ROBUST one-sided p < ``PASS_ALPHA`` (owner ruling 3).
+
+    The one rule behind the verdict, the summary and the report's "Clears" column. The
+    classical p decides nothing.
+    """
+    robust = test.robust_info
+    return robust is not None and robust.coef > 0 and robust.p_one_sided < PASS_ALPHA
 
 
 def passes(close: MoveTest, day_before: MoveTest) -> bool:
-    """True only if both comparisons clear the bar (owner ruling 1, 2026-11-06)."""
+    """True only if both comparisons clear the bar (owner rulings 1 and 3, 2026-11-06)."""
     return _clears(close) and _clears(day_before)
 
 
@@ -358,13 +417,16 @@ def _reason_counts(
     return {f"{prefix}_{name}": observed[name] for name in names}
 
 
-def _line_and_input_counts(lines: StudyLines, inputs: EarlyInputs) -> dict[str, int]:
+def _line_and_input_counts(
+    lines: StudyLines, inputs: EarlyInputs, games: pd.DataFrame
+) -> dict[str, int]:
     """The games of the study seasons, and those left out at the lines and the inputs."""
     counts = {"study_season_games": len(lines.frame) + len(lines.excluded)}
     counts.update(
         _reason_counts("lines_excluded", lines.excluded["reason"], EXCLUSION_REASONS)
     )
     counts["games_with_lines"] = len(lines.frame)
+    counts.update(postseason_counts(lines, games))
     counts.update(
         _reason_counts(
             "inputs_excluded", inputs.excluded["reason"], _INPUT_EXCLUSION_REASONS
@@ -372,6 +434,28 @@ def _line_and_input_counts(lines: StudyLines, inputs: EarlyInputs) -> dict[str, 
     )
     counts["qb_values_clipped"] = inputs.qb_values_clipped
     return counts
+
+
+def postseason_counts(lines: StudyLines, games: pd.DataFrame) -> dict[str, int]:
+    """The study seasons' postseason games and how many of them reached the lines.
+
+    A postseason game is one whose silver ``game_type`` is not ``REG``; a game with no
+    ``game_type`` counts as postseason too, so a "regular season only" claim built on these
+    counts is never overstated.
+
+    Returns:
+        ``postseason_games`` (kept or left out at the lines), ``postseason_games_with_lines``
+        and ``postseason_no_early_capture`` (left out for want of an early capture).
+    """
+    regular = games.loc[games["game_type"].eq("REG"), "game_id"].astype(str)
+    kept = ~lines.frame["game_id"].astype(str).isin(regular)
+    left_out = ~lines.excluded["game_id"].astype(str).isin(regular)
+    no_early = left_out & lines.excluded["reason"].eq(NO_EARLY_CAPTURE)
+    return {
+        "postseason_games": int(kept.sum() + left_out.sum()),
+        "postseason_games_with_lines": int(kept.sum()),
+        "postseason_no_early_capture": int(no_early.sum()),
+    }
 
 
 def run_study_1b(
@@ -406,7 +490,7 @@ def run_study_1b(
         Path(v2_gold_dir), games, generation_cutoff, prediction_rows=inputs.rows
     )
 
-    counts = _line_and_input_counts(lines, inputs)
+    counts = _line_and_input_counts(lines, inputs, games)
     verdicts: dict[str, TargetVerdict] = {}
     for target in TARGETS:
         supplied = set(inputs.rows[target]["game_id"].astype(str))
@@ -442,13 +526,31 @@ def _count(result: Study1bResult, name: str) -> str:
     return "n/a" if value is None else f"{value:,}"
 
 
+def _p_text(p: float) -> str:
+    """*p* to four significant figures, or more where four would put it across ``PASS_ALPHA``.
+
+    So 0.04996 and 0.05004 never both read "0.05", and the printed value always sits on the
+    same side of the bar as the value the verdict used. A tiny p stays readable (``1e-06``).
+    """
+    for digits in range(4, 17):
+        text = f"{p:.{digits}g}"
+        if (float(text) < PASS_ALPHA) == (p < PASS_ALPHA):
+            return text
+    return f"{p:.17g}"  # 17 significant figures give back the exact value
+
+
 def _test_text(test: MoveTest) -> str:
+    """A test's slope, its deciding robust p with the classical p beside it, and its games."""
     if test.info is None:
         return f"no result ({test.note})"
-    return (
-        f"slope {test.info.coef:+.3f}, one-sided p {test.info.p_one_sided:.3g}, "
-        f"{test.games:,} games"
-    )
+    classical = f"classical p {_p_text(test.info.p_one_sided)}"
+    if test.robust_info is None:
+        robust = f"no robust p ({test.note}), so it cannot clear; {classical}"
+    else:
+        robust = (
+            f"robust one-sided p {_p_text(test.robust_info.p_one_sided)} ({classical})"
+        )
+    return f"slope {test.info.coef:+.3f}, {robust}, {test.games:,} games"
 
 
 def _target_line(target: str, verdict: TargetVerdict) -> str:
@@ -517,10 +619,18 @@ def context_notes(result: Study1bResult) -> list[str]:
         "kickoff; its own "
         "timestamp is the information time the model's inputs are fenced to.",
         f"Why both comparisons must pass (owner ruling 1, 2026-11-06): a target passes only "
-        f"if its slope is positive at one-sided p < {PASS_ALPHA} against BOTH the nflverse "
-        "close and the same-source day-before line. The close comes from a different source "
-        "than the early line, and a consistent difference between two sources can make a "
-        "model look as if it predicts the move.",
+        f"if its slope is positive at robust one-sided p < {PASS_ALPHA} against BOTH the "
+        "nflverse close and the same-source day-before line. The close comes from a "
+        "different source than the early line, and a consistent difference between two "
+        "sources can make a model look as if it predicts the move.",
+        "Which p decides (owner ruling 3, 2026-11-06): the robust p. Line moves are "
+        "heavy-tailed: most lines barely move and a few move several points, and how far a "
+        "line moves can depend on how far the model departs from it. The classical p assumes "
+        "every game's noise is the same size, so it can make a slope look surer than it is. "
+        "The robust p uses heteroskedasticity-robust (HC1) standard errors, which do not "
+        "assume that. It decides; the classical p is shown beside it and decides nothing. "
+        "The slope is the same under both. Games of one week barely move together, so the "
+        "errors are not clustered by week.",
         "Inputs as of the capture: each game is scored by the v2 model trained walk-forward "
         "on the day-before v2 gold, from inputs rebuilt as known at the game's early capture "
         "(usually Tuesday 11:55 ET): QB, the market rating and the league scoring level. "
@@ -530,8 +640,9 @@ def context_notes(result: Study1bResult) -> list[str]:
         "QB is each team's latest primary passer (the passer of its last game); the untimed "
         "depth charts are never read, which is conservative: a live early arm would see "
         f"Tuesday's charts. {_count(result, 'qb_values_clipped')} rebuilt QB values were "
-        "clipped to the day-before gold's range of that column in that season, as the gold "
-        "build winsorizes its QB columns.",
+        "clipped to the range of that column in the day-before gold, observed over the "
+        "WHOLE season (every game of it, including the weeks after the game's early "
+        "capture), standing in for the bounds the gold build winsorizes its QB columns to.",
         "Wind is unknown at the early capture, so it is left blank and the model's median "
         "fill supplies it; games in indoor stadiums keep their wind of 0.0, a fact of the "
         "stadium (a retractable roof's state is not known then, so its wind is left blank "
@@ -571,15 +682,17 @@ def _move_rows(result: Study1bResult) -> list[list[str]]:
     for t in TARGETS:
         for c in COMPARISONS:
             test: MoveTest = getattr(result.verdicts[t], c)
-            info = test.info
+            info, robust = test.info, test.robust_info
             rows.append(
                 [
                     _SHORT_NAME[t],
                     _COMPARISON_NAME[c],
                     f"{test.games:,}",
                     "n/a" if info is None else f"{info.coef:+.4f}",
+                    "n/a" if robust is None else f"{robust.se:.4f}",
+                    "n/a" if robust is None else _p_text(robust.p_one_sided),
                     "n/a" if info is None else f"{info.se:.4f}",
-                    "n/a" if info is None else f"{info.p_one_sided:.3g}",
+                    "n/a" if info is None else _p_text(info.p_one_sided),
                     "yes" if _clears(test) else "no",
                     _number(test.mean_abs_move, 3),
                     _number(test.mean_abs_departure, 3),
@@ -598,17 +711,18 @@ def _move_section(result: Study1bResult) -> list[str]:
         f"- {_SHORT_NAME[t]} against {_COMPARISON_NAME[c]}: {getattr(result.verdicts[t], c).note}"
         for t in TARGETS
         for c in COMPARISONS
-        if getattr(result.verdicts[t], c).info is None
+        if getattr(result.verdicts[t], c).robust_info is None
     ]
     shares = ", ".join(_share_text(t, result.verdicts[t]) for t in TARGETS if t != "wp")
     return [
         "## The move tests",
         "",
         "Slope of (later line - early line) on (model - early line), one-sided (H1: slope "
-        f"> 0). 'Clears' means a positive slope at one-sided p < {PASS_ALPHA}. Mean abs move "
-        "is the mean absolute (later - early); mean abs model - early is the model's mean "
-        "absolute disagreement with the early line (ATS and O/U in points, WP in market "
-        "log-odds).",
+        f"> 0). 'Clears' means a positive slope at ROBUST one-sided p < {PASS_ALPHA}: the "
+        "robust SE and p are heteroskedasticity-robust (HC1) and decide (owner ruling 3); "
+        "the classical SE and p beside them decide nothing. Mean abs move is the mean "
+        "absolute (later - early); mean abs model - early is the model's mean absolute "
+        "disagreement with the early line (ATS and O/U in points, WP in market log-odds).",
         "",
         *_table(
             [
@@ -616,8 +730,10 @@ def _move_section(result: Study1bResult) -> list[str]:
                 "Against",
                 "Games",
                 "Slope",
-                "SE",
-                "One-sided p",
+                "Robust SE",
+                "Robust one-sided p (decides)",
+                "Classical SE",
+                "Classical one-sided p",
                 "Clears",
                 "Mean abs move",
                 "Mean abs model - early",
@@ -627,7 +743,11 @@ def _move_section(result: Study1bResult) -> list[str]:
         f"Share of the close test's games whose predicted move reaches {SLIPPAGE_POINTS} "
         f"points (reported only): {shares}.",
         "",
-        *(["Tests that could not run:", "", *notes, ""] if notes else []),
+        *(
+            ["Tests with no robust result (they cannot clear):", "", *notes, ""]
+            if notes
+            else []
+        ),
     ]
 
 
@@ -681,6 +801,23 @@ def _funnel_section(result: Study1bResult) -> list[str]:
     ]
 
 
+def _seasons_text(result: Study1bResult) -> str:
+    """The seasons covered, and how many postseason games reached the lines (from counts)."""
+    seasons = f"Seasons {STUDY_SEASONS[0]}-{STUDY_SEASONS[-1]}, week 1 included"
+    postseason = _count(result, "postseason_games")
+    no_early = _count(result, "postseason_no_early_capture")
+    if result.counts.get("postseason_games_with_lines") == 0:
+        return (
+            f"{seasons}; the verdict covers the regular season only: none of the "
+            f"{postseason} postseason games has lines ({no_early} of them have no early "
+            "capture)."
+        )
+    return (
+        f"{seasons}; {_count(result, 'postseason_games_with_lines')} of the {postseason} "
+        f"postseason games have lines ({no_early} have no early capture)."
+    )
+
+
 def render_report(result: Study1bResult) -> str:
     """The report: the summary (at most eight lines), the notes, the tables. ASCII only."""
     lines = [
@@ -696,8 +833,7 @@ def render_report(result: Study1bResult) -> str:
         *[f"- {note}" for note in context_notes(result)],
         "",
         f"Replay cutoff (UTC): {result.generation_cutoff_utc}. Code commit: "
-        f"{result.code_commit or 'unknown'}. Seasons {STUDY_SEASONS[0]}-"
-        f"{STUDY_SEASONS[-1]}, week 1 and the postseason included.",
+        f"{result.code_commit or 'unknown'}. {_seasons_text(result)}",
         "",
         *_move_section(result),
         *_funnel_section(result),

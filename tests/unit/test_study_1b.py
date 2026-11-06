@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -18,11 +20,14 @@ from backtest.study_1b import (
     TargetVerdict,
     move_test,
     passes,
+    postseason_counts,
+    render_report,
     summary_lines,
     target_verdict,
     wp_market_log_odds,
     write_report,
 )
+from backtest.study_1b_lines import NO_DAY_BEFORE, NO_EARLY_CAPTURE, StudyLines
 from models.market_probability import NoPriorFoldError
 from scripts.run_study_1b import main
 
@@ -33,11 +38,33 @@ def _moves(seed=11, n=1300):
     return early + 0.2 * edge + rng.normal(0, 1.0, n), early, early + edge
 
 
-_OK = MoveTest(InfoResult(0.05, 0.01, 1e-6, 1300), "", 1300, 1.0, 2.0)
-_FLAT = MoveTest(InfoResult(0.01, 0.02, 0.31, 1300), "", 1300, 0.6, 2.0)
+def _move(
+    coef: float, p: float, *, robust_p: float | None = None, move: float = 1.0
+) -> MoveTest:
+    """A move test whose classical and robust results share *coef*.
+
+    *robust_p* defaults to *p*; the robust SE is set larger than the classical one, as on
+    heavy-tailed moves.
+    """
+    return MoveTest(
+        info=InfoResult(coef=coef, se=0.01, p_one_sided=p, n=1300),
+        robust_info=InfoResult(
+            coef=coef, se=0.015, p_one_sided=p if robust_p is None else robust_p, n=1300
+        ),
+        note="",
+        games=1300,
+        mean_abs_move=move,
+        mean_abs_departure=2.0,
+    )
 
 
-def fake_result(*, passed: dict[str, bool]) -> Study1bResult:
+_OK = _move(0.05, 1e-6)
+_FLAT = _move(0.01, 0.31, move=0.6)
+
+
+def fake_result(
+    *, passed: dict[str, bool], postseason_with_lines: int = 0
+) -> Study1bResult:
     verdicts = {
         target: TargetVerdict(
             close=_OK if passed[target] else _FLAT,
@@ -51,6 +78,9 @@ def fake_result(*, passed: dict[str, bool]) -> Study1bResult:
         "study_season_games": 1408,
         "lines_excluded_no_early_capture": 65,
         "games_with_lines": 1343,
+        "postseason_games": 65,
+        "postseason_games_with_lines": postseason_with_lines,
+        "postseason_no_early_capture": 65 - postseason_with_lines,
         "inputs_excluded_site_may_postdate_early_capture": 22,
         "qb_values_clipped": 59,
         "wp_no_prior_fold_converter": 260,
@@ -67,10 +97,11 @@ def fake_result(*, passed: dict[str, bool]) -> Study1bResult:
 def test_a_planted_move_toward_the_model_is_found():
     later, early, model = _moves()
     r = move_test(later, early, model)
-    assert r.info is not None
+    assert r.info is not None and r.robust_info is not None
     assert (
         r.info.coef == pytest.approx(0.2, abs=0.05)
         and r.info.p_one_sided < 0.05
+        and r.robust_info.p_one_sided < 0.05
         and r.games == 1300
     )
 
@@ -83,17 +114,124 @@ def test_a_missing_early_line_drops_only_that_row():
 
 def test_a_fit_that_cannot_run_becomes_a_note():
     r = move_test([1.0, 2.0], [0.0, 0.0], [1.0, 1.5])
-    assert r.info is None and "at least 3" in r.note and r.games == 2
+    assert r.info is None and r.robust_info is None
+    assert "at least 3" in r.note and r.games == 2
 
 
 def test_both_comparisons_must_pass():
-    ok = MoveTest(InfoResult(0.05, 0.01, 1e-6, 1300), "", 1300, 1.0, 2.0)
-    flat = MoveTest(InfoResult(0.01, 0.02, 0.31, 1300), "", 1300, 0.6, 2.0)
-    wrong_way = MoveTest(InfoResult(-0.05, 0.01, 1.0, 1300), "", 1300, 1.0, 2.0)
-    broken = MoveTest(None, "degenerate fit", 1300, None, None)
+    ok = _move(0.05, 1e-6)
+    flat = _move(0.01, 0.31, move=0.6)
+    wrong_way = _move(-0.05, 1.0)
+    broken = MoveTest(
+        info=None,
+        robust_info=None,
+        note="degenerate fit",
+        games=1300,
+        mean_abs_move=None,
+        mean_abs_departure=None,
+    )
     assert passes(ok, ok)
     assert not passes(ok, flat) and not passes(flat, ok)
     assert not passes(ok, broken) and not passes(wrong_way, ok)
+
+
+def test_the_robust_se_is_hc1_by_hand():
+    """HC1 on seven fixed rows, against the slope's sandwich written out by hand."""
+    later = [1.0, 2.5, 0.5, 4.0, 3.0, -1.0, 2.0]
+    early = [0.0, 1.0, 0.5, 2.0, 1.0, 0.0, 1.5]
+    model = [1.5, 2.0, -0.5, 4.5, 3.5, -2.0, 1.0]
+    y = [a - b for a, b in zip(later, early, strict=True)]
+    x = [m - b for m, b in zip(model, early, strict=True)]
+    n = len(y)
+    x_bar, y_bar = sum(x) / n, sum(y) / n
+    sxx = sum((xi - x_bar) ** 2 for xi in x)
+    slope = sum((xi - x_bar) * (yi - y_bar) for xi, yi in zip(x, y, strict=True)) / sxx
+    intercept = y_bar - slope * x_bar
+    resid = [yi - intercept - slope * xi for xi, yi in zip(x, y, strict=True)]
+    # The slope row of (X'X)^-1 X' is (x_i - x_bar) / Sxx, so its sandwich entry is the sum
+    # of that weight squared times e_i^2; HC1 scales it by n / (n - 2).
+    variance = (
+        n
+        / (n - 2)
+        * sum(
+            ((xi - x_bar) / sxx) ** 2 * ei**2 for xi, ei in zip(x, resid, strict=True)
+        )
+    )
+    se = math.sqrt(variance)
+    p_one_sided = 0.5 * math.erfc(slope / se / math.sqrt(2.0))
+
+    r = move_test(later, early, model)
+    assert r.info is not None and r.robust_info is not None
+    assert r.robust_info.n == n == r.games
+    assert abs(r.robust_info.coef - slope) < 1e-10
+    assert abs(r.robust_info.se - se) < 1e-10
+    assert abs(r.robust_info.p_one_sided - p_one_sided) < 1e-10
+    assert r.robust_info.coef == r.info.coef  # one slope, two standard errors
+
+
+def test_a_classical_pass_with_a_robust_miss_does_not_clear():
+    robust_miss = _move(0.05, 0.01, robust_p=0.08)
+    robust_only = _move(0.05, 0.08, robust_p=0.01)
+    no_robust = replace(_OK, robust_info=None, note="degenerate robust fit")
+    assert not passes(robust_miss, _OK) and not passes(_OK, robust_miss)
+    assert not passes(no_robust, _OK)
+    assert passes(robust_only, _OK)  # the robust p decides, the classical p does not
+
+    result = fake_result(passed={"wp": False, "ats": False, "ou": False})
+    verdict = TargetVerdict(
+        close=robust_miss,
+        day_before=_OK,
+        passed=passes(robust_miss, _OK),
+        share_clearing_slippage=0.41,
+    )
+    result = replace(result, verdicts={**result.verdicts, "ats": verdict})
+    summary = "\n".join(summary_lines(result))
+    assert "ATS: does NOT pass (it fails against the nflverse close)." in summary
+    rows = {
+        line.split(" | ")[1]: line
+        for line in render_report(result).splitlines()
+        if line.startswith("| ATS | ")
+    }
+    assert "| no |" in rows["the nflverse close"]
+    assert "| yes |" in rows["the day-before line"]
+
+
+def test_noise_growing_with_the_disagreement_widens_the_robust_se():
+    rng = np.random.default_rng(7)
+    n = 2000
+    early, edge = rng.normal(0, 6, n), rng.normal(0, 2.5, n)
+    later = early + 0.2 * edge + rng.normal(0, 1.0, n) * 0.5 * np.abs(edge)
+    r = move_test(later, early, early + edge)
+    assert r.info is not None and r.robust_info is not None
+    assert r.robust_info.coef == r.info.coef
+    assert r.robust_info.se > 1.4 * r.info.se
+
+
+def test_a_robust_se_that_is_not_finite_becomes_a_note():
+    """Rows near 1e78 overflow the HC1 meat (e^2 x^2) while the classical fit stays finite."""
+    x = np.array([-2.0, -1.0, 0.0, 1.0, 2.0]) * 1e78
+    later = 0.5 * x + np.array([1.0, -1.0, 0.5, 1.0, -1.0]) * 1e78
+    r = move_test(later, np.zeros(5), x)
+    assert r.info is not None and r.robust_info is None
+    assert "robust" in r.note
+    assert not passes(r, _OK)
+
+
+def test_p_values_either_side_of_the_bar_print_differently():
+    result = fake_result(passed={"wp": False, "ats": False, "ou": False})
+    below = _move(0.05, 0.04996, robust_p=0.04996)
+    above = _move(0.05, 0.05004, robust_p=0.05004)
+    hair = _move(0.05, 0.0499996, robust_p=0.0499996)
+    verdicts = {
+        "wp": TargetVerdict(below, below, passes(below, below), None),
+        "ats": TargetVerdict(above, above, passes(above, above), 0.41),
+        "ou": TargetVerdict(hair, _OK, passes(hair, _OK), 0.41),
+    }
+    result = replace(result, verdicts=verdicts)
+    for text in ("\n".join(summary_lines(result)), render_report(result)):
+        assert "0.04996" in text and "0.05004" in text
+        assert "0.0499996" in text  # never rounded up onto the bar
+        assert "1e-06" in text  # a tiny p stays readable
 
 
 def test_wp_market_log_odds_are_the_season_slope_times_the_spread():
@@ -209,7 +347,8 @@ def test_the_report_states_the_counted_caveats(tmp_path: Path):
     write_report(fake_result(passed={"wp": False, "ats": False, "ou": False}), tmp_path)
     text = (tmp_path / "report.md").read_text(encoding="ascii")
     assert "22 neutral-site games" in text
-    assert "59 rebuilt QB values" in text
+    assert "59 rebuilt QB values" in text and "WHOLE season" in text
+    assert "robust" in text and "HC1" in text and "owner ruling 3" in text
     assert "indoor" in text and "Prediction Tracker" in text
     assert "Thursday" in text
     for comparison in COMPARISONS:
@@ -217,6 +356,45 @@ def test_the_report_states_the_counted_caveats(tmp_path: Path):
             comparison
             in json.loads((tmp_path / "study_1b.json").read_text())["verdicts"]["ou"]
         )
+
+
+def test_postseason_counts_come_from_the_games():
+    games = pd.DataFrame(
+        {
+            "game_id": ["r1", "r2", "r3", "p1", "p2", "p3"],
+            "game_type": ["REG", "REG", "REG", "WC", "SB", "DIV"],
+        }
+    )
+    lines = StudyLines(
+        frame=pd.DataFrame({"game_id": ["r1", "r2", "p3"]}),
+        excluded=pd.DataFrame(
+            {
+                "game_id": ["r3", "p1", "p2"],
+                "reason": [NO_EARLY_CAPTURE, NO_EARLY_CAPTURE, NO_DAY_BEFORE],
+            }
+        ),
+    )
+    assert postseason_counts(lines, games) == {
+        "postseason_games": 3,
+        "postseason_games_with_lines": 1,
+        "postseason_no_early_capture": 1,
+    }
+
+
+def test_the_report_says_the_verdict_covers_only_the_regular_season():
+    none = render_report(fake_result(passed={"wp": False, "ats": False, "ou": False}))
+    assert "postseason included" not in none
+    assert "the regular season only" in none
+    assert "none of the 65 postseason games has lines" in none
+    assert "65 of them have no early capture" in none
+
+    some = render_report(
+        fake_result(
+            passed={"wp": False, "ats": False, "ou": False}, postseason_with_lines=3
+        )
+    )
+    assert "the regular season only" not in some
+    assert "3 of the 65 postseason games have lines" in some
 
 
 def test_summary_names_the_arms_plan_4_may_build():
