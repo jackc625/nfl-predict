@@ -193,7 +193,7 @@ ARMS: tuple[str, ...] = (ARM_LIVE, ARM_SHADOW)
 # section 1): /bets says such a week is retired instead of refusing it for having no list. This is
 # the PAGE'S OWN COPY of ``backtest.midseason_switch_2026.DAY_BEFORE_RETIRED_FROM``, because api/
 # may not import the record; ``tests/unit/test_switch_week_copies.py`` pins the two equal.
-DAY_BEFORE_RETIRED_FROM: tuple[int, int] = (2026, 13)
+DAY_BEFORE_RETIRED_FROM: tuple[int, int] = (2026, 10)
 
 # The contaminated replay window (2021-2024 were burned across Phases 26/27) and the single
 # unburned clean-holdout season this milestone spends exactly once.

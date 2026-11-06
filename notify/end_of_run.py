@@ -11,7 +11,7 @@ every decision is already written when the first message leaves.
 ORDER (D-13)
 ------------
 1. Every failed push the run owes (:func:`notify.messages.failed_messages`), top priority first.
-2. The one bets push for the live bets the run newly appended, or none. From the 2026 week-13
+2. The one bets push for the live bets the run newly appended, or none. From the 2026 week-10
    switch the day-before system decides nothing (MIDSEASON-SWITCH-RECORD.md), so a run whose
    slate is at or after that week says why there is none (:data:`NO_BETS_RETIRED`) and its
    check-in carries ``day-before=retired``.

@@ -20,13 +20,18 @@ import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
 
+from backtest.midseason_switch_2026 import (
+    DAY_BEFORE_RETIRED_FROM,
+    R6_COVERAGE_END_WEEK,
+)
 from backtest.verdict_test_2026 import VERDICT_TARGETS, VERDICT_TOKENS
 from forward_ledger.declarations import load_verdict_scope
 from forward_ledger.settle import DEFAULT_SILVER_DIR, SILVER_GAMES_FILENAME
@@ -56,12 +61,20 @@ REAL_RUN_LOG = season_readout.DEFAULT_RUN_LOG
 REAL_SKIP_RECORDS = SKIP_RECORD_PATH
 
 # One ET kickoff day per week (the recorded schedule refuses two weeks on one day).
+# The coverage's last week and the switch week, read from the record so a moved switch needs no
+# edit here. RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md section 8: the switch moved from
+# week 13 to week 10, so these are now weeks 9 and 10 (they were literals 12 and 13).
+LAST_COVERAGE_WEEK = R6_COVERAGE_END_WEEK
+SWITCH_WEEK = DAY_BEFORE_RETIRED_FROM[1]
+
+# Week w's Sunday 13:00 ET kickoff, (w - 1) weeks after the 2026 week-1 Sunday, 2026-09-13.
 KICKOFF_BY_WEEK: dict[int, datetime] = {
-    4: datetime(2026, 10, 4, 17, 0, tzinfo=UTC),
-    5: datetime(2026, 10, 11, 17, 0, tzinfo=UTC),
-    6: datetime(2026, 10, 18, 17, 0, tzinfo=UTC),
-    12: datetime(2026, 11, 29, 18, 0, tzinfo=UTC),
-    13: datetime(2026, 12, 6, 18, 0, tzinfo=UTC),
+    week: datetime.combine(
+        date(2026, 9, 13) + timedelta(weeks=week - 1),
+        time(13, 0),
+        tzinfo=ZoneInfo("America/New_York"),
+    ).astimezone(UTC)
+    for week in (4, 5, 6, LAST_COVERAGE_WEEK, SWITCH_WEEK)
 }
 
 
@@ -424,19 +437,25 @@ def test_a_postponed_game_reads_as_not_played_until_its_score_lands(
     assert (wp["counted_rows"], wp["bets"], wp["pending"]) == ("1", "1", "1")
 
 
-def test_a_cancelled_week_12_game_is_inferred_not_played_once_a_later_week_is_scored(
+def test_a_cancelled_last_coverage_week_game_is_inferred_not_played_once_a_later_week_is_scored(
     tmp_path: Path,
 ) -> None:
-    """MIDSEASON-SWITCH-RECORD.md: the coverage ends at week 12, but "not played" reads every
-    later week of the season. A week-12 game with no final score waits (missed, in the
-    denominator) while nothing later is scored, and is inferred not played once a week-13 game,
-    itself outside the coverage, is scored -- so a cancelled week-12 game never blocks February."""
-    cancelled, played, later = "2026_W12_BUF@SF", "2026_W12_NYJ@MIA", "2026_W13_KC@DEN"
-    week_12 = [_game(played), _game(cancelled, scored=False)]
+    """MIDSEASON-SWITCH-RECORD.md: the coverage ends at week 9, but "not played" reads every
+    later week of the season. A week-9 game with no final score waits (missed, in the
+    denominator) while nothing later is scored, and is inferred not played once a week-10 game,
+    itself outside the coverage, is scored -- so a cancelled week-9 game never blocks February."""
+    cancelled = f"2026_W{LAST_COVERAGE_WEEK:02d}_BUF@SF"
+    played = f"2026_W{LAST_COVERAGE_WEEK:02d}_NYJ@MIA"
+    later = f"2026_W{SWITCH_WEEK:02d}_KC@DEN"
+    last_week = [_game(played), _game(cancelled, scored=False)]
 
-    before = _report(_stores(tmp_path / "before", week_12), now=None, end_week=12)
+    before = _report(
+        _stores(tmp_path / "before", last_week), now=None, end_week=LAST_COVERAGE_WEEK
+    )
     after = _report(
-        _stores(tmp_path / "after", [*week_12, _game(later)]), now=None, end_week=12
+        _stores(tmp_path / "after", [*last_week, _game(later)]),
+        now=None,
+        end_week=LAST_COVERAGE_WEEK,
     )
 
     assert {game.game_id: game.state for game in before.games} == {
@@ -444,17 +463,25 @@ def test_a_cancelled_week_12_game_is_inferred_not_played_once_a_later_week_is_sc
         cancelled: STATE_MISSED,
     }
     assert before.not_played == ()
-    # The week-13 game is outside the coverage: it is in no state and no week.
+    # The switch-week game is outside the coverage: it is in no state and no week.
     assert {game.game_id: game.state for game in after.games} == {
         played: STATE_MISSED,
         cancelled: STATE_NOT_PLAYED,
     }
-    assert [week.week for week in after.weeks] == list(range(5, 13))
+    assert [week.week for week in after.weeks] == list(range(5, LAST_COVERAGE_WEEK + 1))
     assert [(game.game_id, game.week, game.reason) for game in after.not_played] == [
-        (cancelled, 12, "inferred: no final score while week 13 is scored")
+        (
+            cancelled,
+            LAST_COVERAGE_WEEK,
+            f"inferred: no final score while week {SWITCH_WEEK} is scored",
+        )
     ]
-    week_12_row = after.weeks[-1]
-    assert (week_12_row.scheduled, week_12_row.missed, week_12_row.not_played) == (
+    last_week_row = after.weeks[-1]
+    assert (
+        last_week_row.scheduled,
+        last_week_row.missed,
+        last_week_row.not_played,
+    ) == (
         1,
         1,
         1,
@@ -591,11 +618,12 @@ def test_a_preview_refuses_a_counted_row_after_the_switch(
 ) -> None:
     """Review fix R2 (PR #6): MIDSEASON-SWITCH-RECORD.md section 5 in the preview too.
 
-    A counted week-13 row -- a bet or a no-bet -- means the retirement leaked. The preview's
-    coverage stops at week 12, so its figures would count a row the coverage never shows: it
-    refuses with the binding run's switch sentence, prints no figure and exits 3.
+    A counted switch-week (week 10) row -- a bet or a no-bet -- means the retirement leaked. The
+    preview's coverage stops at week 9, so its figures would count a row the coverage never shows:
+    it refuses with the binding run's switch sentence, prints no figure and exits 3.
     """
-    before_switch, after_switch = "2026_W12_BUF@SF", "2026_W13_NYJ@MIA"
+    before_switch = f"2026_W{LAST_COVERAGE_WEEK:02d}_BUF@SF"
+    after_switch = f"2026_W{SWITCH_WEEK:02d}_NYJ@MIA"
     argv = _stores(
         tmp_path,
         [_game(before_switch), _game(after_switch)],
@@ -606,17 +634,17 @@ def test_a_preview_refuses_a_counted_row_after_the_switch(
 
     assert code == 3
     assert lines == [
-        "SWITCH_REFUSED= a counted live row in week 13 is after the switch "
+        f"SWITCH_REFUSED= a counted live row in week {SWITCH_WEEK} is after the switch "
         f"(MIDSEASON-SWITCH-RECORD.md): {after_switch}"
     ]
     assert not any(line.startswith("FIGURES= ") for line in lines)
 
 
-def test_a_preview_through_week_12_is_not_refused(
+def test_a_preview_through_the_last_coverage_week_is_not_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The control: a counted week-12 row is before the switch, so the preview is unchanged."""
-    game_id = "2026_W12_BUF@SF"
+    """The control: a counted week-9 row is before the switch, so the preview is unchanged."""
+    game_id = f"2026_W{LAST_COVERAGE_WEEK:02d}_BUF@SF"
     argv = _stores(tmp_path, [_game(game_id)], [_row(game_id, "wp")])
 
     code, lines = _run(argv, capsys)

@@ -4,7 +4,7 @@ THE STATES
 ----------
 Every scheduled game of the verdict scope (season 2026, weeks ``start_week..end_week`` of the
 committed declaration, read through ``forward_ledger.declarations.load_verdict_scope`` and never
-restated -- except that the readout ends the coverage at week 12 under MIDSEASON-SWITCH-RECORD.md,
+restated -- except that the readout ends the coverage at week 9 under MIDSEASON-SWITCH-RECORD.md,
 see :func:`classify_coverage`) lands in exactly ONE state, by this precedence:
 
 * ``not played``        -- inferred never played (below); it leaves the denominator;
@@ -297,8 +297,8 @@ def _last_scored_week(
     """The latest week of the scope's season, from its start week on, holding a scored game.
 
     Read over the whole season, NOT only weeks up to ``end_week``: the readout ends the coverage at
-    week 12 (MIDSEASON-SWITCH-RECORD.md section 5), and a week-12 game with no final score must
-    still be inferred not played once a later week (13-22) is scored. With ``end_week`` 22 no
+    week 9 (MIDSEASON-SWITCH-RECORD.md section 5), and a week-9 game with no final score must
+    still be inferred not played once a later week (10-22) is scored. With ``end_week`` 22 no
     week is later, so this is the scope's own last scored week.
     """
     season = schedule.loc[
@@ -409,7 +409,7 @@ def classify_coverage(
         refused: :func:`refused_game_ids` over the run log and the skip records.
         scope: The scope whose weeks ``start_week..end_week`` the coverage reads. The readout
             passes the committed verdict scope with ``end_week`` set to
-            ``R6_COVERAGE_END_WEEK`` (week 12, MIDSEASON-SWITCH-RECORD.md section 5). The
+            ``R6_COVERAGE_END_WEEK`` (week 9, MIDSEASON-SWITCH-RECORD.md section 5). The
             not-played inference still reads every later week of its season
             (:func:`_last_scored_week`).
         now: The preview's instant (tz-aware), below which a lock is "not yet due"; None in the

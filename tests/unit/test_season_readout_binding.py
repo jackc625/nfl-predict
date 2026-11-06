@@ -22,14 +22,19 @@ import os
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
 
 import backtest.verdict_test_2026
+from backtest.midseason_switch_2026 import (
+    DAY_BEFORE_RETIRED_FROM,
+    R6_COVERAGE_END_WEEK,
+)
 from backtest.profitability_2025 import (
     TargetMeasurement,
     assign_verdict_token,
@@ -74,12 +79,28 @@ RULE_FILES: tuple[str, ...] = (
 # The synthetic lock commit's committer date (the real R6 lock's instant).
 LOCK_COMMITTED_AT: str = "2026-10-21T19:19:13-04:00"
 
+# The coverage's last week and the switch week, read from the record so a moved switch needs no
+# edit here. RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md section 8: the switch moved from
+# week 13 to week 10, so these are now weeks 9 and 10 (they were literals 12 and 13).
+LAST_COVERAGE_WEEK = R6_COVERAGE_END_WEEK
+SWITCH_WEEK = DAY_BEFORE_RETIRED_FROM[1]
+
+
+def _sunday_kickoff(week: int) -> datetime:
+    """Week *week*'s Sunday, 13:00 ET: (week - 1) weeks after the 2026 week-1 Sunday, 2026-09-13."""
+    return datetime.combine(
+        date(2026, 9, 13) + timedelta(weeks=week - 1),
+        time(13, 0),
+        tzinfo=ZoneInfo("America/New_York"),
+    ).astimezone(UTC)
+
+
 # One ET kickoff day per week (the recorded schedule refuses two weeks on one day).
 KICKOFF_BY_WEEK: dict[int, datetime] = {
     5: datetime(2026, 10, 11, 17, 0, tzinfo=UTC),
     6: datetime(2026, 10, 18, 17, 0, tzinfo=UTC),
-    12: datetime(2026, 11, 29, 18, 0, tzinfo=UTC),
-    13: datetime(2026, 12, 6, 18, 0, tzinfo=UTC),
+    LAST_COVERAGE_WEEK: _sunday_kickoff(LAST_COVERAGE_WEEK),
+    SWITCH_WEEK: _sunday_kickoff(SWITCH_WEEK),
     22: datetime(2027, 2, 14, 23, 30, tzinfo=UTC),
 }
 
@@ -147,7 +168,7 @@ _CLV_COLUMNS: tuple[str, ...] = ("clv", "forward_clv", "closing_line", "closing_
 def coverage_through_week_22(monkeypatch: pytest.MonkeyPatch) -> None:
     """Extend the coverage end to week 22 for the tests whose counted bets include the Super Bowl.
 
-    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: R6 coverage now ends at week 12
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: R6 coverage now ends at week 9
     (``R6_COVERAGE_END_WEEK``) and a counted live row after it refuses the run, so a test built
     on the complete fixture's week-22 bets patches the end back to 22, the pre-switch span, to keep
     proving what it proved before. The post-switch behaviour has its own tests at the end of this
@@ -217,7 +238,7 @@ def complete_rows() -> list[dict[str, Any]]:
 
 def switch_rows() -> list[dict[str, Any]]:
     """The complete fixture's rows as they stand after the switch (MIDSEASON-SWITCH-RECORD.md):
-    no row on the Super Bowl, so no counted row after week 12."""
+    no row on the Super Bowl, so no counted row after the coverage's last week (9)."""
     return [row for row in complete_rows() if row["game_id"] != SUPER_BOWL]
 
 
@@ -772,14 +793,14 @@ def test_binding_refuses_on_todays_real_ledger(
     """SPEC AC 27, 28: the real ledger refuses, and its bytes do not move.
 
     It is judged against a COPY of the real schedule whose week-22 scores are blanked (WR-A08).
-    While weeks 5-12 are unfinished, refusal 1 or 2 fires. Once they are graded and scored,
+    While weeks 5-9 are unfinished, refusal 1 or 2 fires. Once they are graded and scored,
     refusal 3 fires, and after the real Super Bowl the copy's blanked week-22 game keeps it
     firing. Judged against the real schedule, the test would turn red on the day the binding run
     is due.
 
-    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: coverage ends at week 12, so the blanked
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: coverage ends at week 9, so the blanked
     week-22 game is outside it and no longer trips refusal 2; refusal 3 ("no played week-22 game")
-    is the honest answer from the end of week 12 until February, so it is accepted too.
+    is the honest answer from the end of week 9 until February, so it is accepted too.
     """
     ledger_file = REAL_REPO_ROOT / ledger_path(LEDGER_DIR)
     real_schedule = REAL_REPO_ROOT / DEFAULT_SILVER_DIR / SILVER_GAMES_FILENAME
@@ -856,7 +877,7 @@ def test_binding_refuses_without_a_played_week_22_game(
 
     RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the assertion is unchanged; only the
     reason given for removing the game moved. Before the switch an unscored week-22 game tripped
-    refusal 2 first (the last coverage week is never 'not played'); coverage now ends at week 12,
+    refusal 2 first (the last coverage week is never 'not played'); coverage now ends at week 9,
     so week 22 is outside it, and refusal 3 alone waits for the Super Bowl.
     """
     argv = binding_fixture(
@@ -1135,22 +1156,23 @@ def test_binding_fails_closed_on_every_git_branch(
 
 
 @pytest.mark.usefixtures("isolated_git_env")
-def test_an_unscored_week_12_game_waits_only_until_a_later_week_is_scored(
+def test_an_unscored_last_coverage_week_game_waits_only_until_a_later_week_is_scored(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """WR-A09, refusal 2: an unscored game of the coverage's last week refuses while nothing later
     is scored, even beside a scored game of its week; once a later week of the season is scored
     it is inferred not played, its bet is void, and it never blocks the run.
 
-    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: coverage ends at week 12, but the
-    not-played inference reads every later week of the season, so a cancelled week-12 game is
-    voided once week 13 is scored instead of blocking the February run. (Before the switch this
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: coverage ends at week 9, but the
+    not-played inference reads every later week of the season, so a cancelled week-9 game is
+    voided once week 10 is scored instead of blocking the February run. (Before the switch this
     test pinned an unscored week-22 game refusing at refusal 2.) The ledger is the post-switch
     one plus a bet on the unscored game; the Super Bowl is unscored, so nothing later than week
-    12 is scored until the week-13 game is.
+    9 is scored until the week-10 game is. The weeks are read from the record.
     """
-    unscored, scored = "2026_W12_BUF@SF", "2026_W12_NYJ@MIA"
-    later = "2026_W13_KC@DEN"
+    unscored = f"2026_W{LAST_COVERAGE_WEEK:02d}_BUF@SF"
+    scored = f"2026_W{LAST_COVERAGE_WEEK:02d}_NYJ@MIA"
+    later = f"2026_W{SWITCH_WEEK:02d}_KC@DEN"
     rows = [*switch_rows(), ledger_row(unscored, "wp")]
     waiting_games = [
         schedule_game(game["game_id"], scored=game["game_id"] != SUPER_BOWL)
@@ -1158,7 +1180,7 @@ def test_an_unscored_week_12_game_waits_only_until_a_later_week_is_scored(
     ]
     waiting_games += [schedule_game(scored), schedule_game(unscored, scored=False)]
 
-    # Nothing later than week 12 is scored: refusal 2 waits for the score.
+    # Nothing later than the coverage's last week is scored: refusal 2 waits for the score.
     waiting = binding_fixture(tmp_path / "waiting", rows=rows, games=waiting_games)
     line = _assert_refuses(waiting, capsys, tmp_path / "waiting")
     assert line == (
@@ -1166,19 +1188,21 @@ def test_an_unscored_week_12_game_waits_only_until_a_later_week_is_scored(
         "Wait for the next 17:00 ET daily run to record the scores."
     )
 
-    # A week-13 game is scored: the week-12 game is not played, so refusal 2 passes and the run
-    # stops only at refusal 3, waiting for the Super Bowl.
-    week_13 = binding_fixture(
-        tmp_path / "week_13", rows=rows, games=[*waiting_games, schedule_game(later)]
+    # A switch-week game is scored: the last coverage week's game is not played, so refusal 2
+    # passes and the run stops only at refusal 3, waiting for the Super Bowl.
+    switch_week = binding_fixture(
+        tmp_path / "switch_week",
+        rows=rows,
+        games=[*waiting_games, schedule_game(later)],
     )
-    line = _assert_refuses(week_13, capsys, tmp_path / "week_13")
+    line = _assert_refuses(switch_week, capsys, tmp_path / "switch_week")
     assert "the schedule holds no played week-22 game" in line
-    preview = [arg for arg in week_13 if arg != "--binding"]
-    code, lines = _run(preview, capsys, tmp_path / "week_13" / "repo")
+    preview = [arg for arg in switch_week if arg != "--binding"]
+    code, lines = _run(preview, capsys, tmp_path / "switch_week" / "repo")
     assert code == 0, lines
     assert (
-        f"NOT_PLAYED= {unscored} week=12 reason=inferred: no final score while week 13 is "
-        "scored" in lines
+        f"NOT_PLAYED= {unscored} week={LAST_COVERAGE_WEEK} reason=inferred: no final score "
+        f"while week {SWITCH_WEEK} is scored" in lines
     )
     assert f"VOID_BETS= {unscored} target=wp" in lines
 
@@ -1200,11 +1224,11 @@ def test_binding_refuses_when_the_comparison_cannot_run(
 
 
 # ---------------------------------------------------------------------------
-# MIDSEASON-SWITCH-RECORD.md section 5: coverage ends at week 12; IN-A03; repo-relative paths
+# MIDSEASON-SWITCH-RECORD.md section 5: coverage ends at week 9; IN-A03; repo-relative paths
 # ---------------------------------------------------------------------------
 
-# A week-13 game: after the switch, the day-before system decides nothing there.
-AFTER_SWITCH_GAME: str = "2026_W13_NYJ@MIA"
+# A switch-week game: after the switch, the day-before system decides nothing there.
+AFTER_SWITCH_GAME: str = f"2026_W{SWITCH_WEEK:02d}_NYJ@MIA"
 
 
 def _coverage_text(document: str) -> str:
@@ -1223,10 +1247,10 @@ def _coverage_weeks(document: str) -> list[int]:
 
 
 @pytest.mark.usefixtures("isolated_git_env")
-def test_coverage_ends_at_week_12_and_says_why(
+def test_coverage_ends_at_the_last_week_before_the_switch_and_says_why(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The table ends at week 12 and cites the record, so the scheduled Super Bowl, which no live
+    """The table ends at week 9 and cites the record, so the scheduled Super Bowl, which no live
     row decides, is not missed; the declared scope is still reported as weeks 5-22."""
     argv = binding_fixture(tmp_path, rows=switch_rows())
     repo = tmp_path / "repo"
@@ -1237,15 +1261,15 @@ def test_coverage_ends_at_week_12_and_says_why(
     assert code == 0, lines
     assert lines[:2] == [
         f"BINDING_WRITTEN= {record.as_posix()}",
-        "COVERAGE_END= week=12 reason=MIDSEASON-SWITCH-RECORD.md",
+        f"COVERAGE_END= week={LAST_COVERAGE_WEEK} reason=MIDSEASON-SWITCH-RECORD.md",
     ]
     document = record.read_text("ascii")
     coverage = _coverage_text(document)
-    assert _coverage_weeks(document) == list(range(5, 13))
+    assert _coverage_weeks(document) == list(range(5, LAST_COVERAGE_WEEK + 1))
     assert (
-        "Coverage ends at week 12: under MIDSEASON-SWITCH-RECORD.md the day-before system "
-        "stopped deciding at week 13, so weeks 13-22 are not reported and none of their games "
-        "is missed.\n" in coverage
+        f"Coverage ends at week {LAST_COVERAGE_WEEK}: under MIDSEASON-SWITCH-RECORD.md the "
+        f"day-before system stopped deciding at week {SWITCH_WEEK}, so weeks {SWITCH_WEEK}-22 "
+        "are not reported and none of their games is missed.\n" in coverage
     )
     # MISSED_GAME alone: the unbet Super Bowl would be the second miss under the old span.
     assert "Missed games: 1\n" in coverage
@@ -1257,10 +1281,10 @@ def test_coverage_ends_at_week_12_and_says_why(
 def test_a_counted_live_row_after_the_switch_refuses(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], status: str
 ) -> None:
-    """Record section 5: a counted live row in week 13 or later means the retirement leaked.
+    """Record section 5: a counted live row in week 10 or later means the retirement leaked.
 
     "Counted live row" is any live-arm row the verdict keeps, a bet or a no-bet alike: from week
-    13 the day-before system records no decision of either kind. The week-13 bet is ungraded on a
+    10 the day-before system records no decision of either kind. The week-10 bet is ungraded on a
     scored game, so it would trip refusal 1 ("wait") if the switch check came later; waiting never
     clears this one, so it comes first.
     """
@@ -1273,7 +1297,7 @@ def test_a_counted_live_row_after_the_switch_refuses(
     line = _assert_refuses(argv, capsys, tmp_path)
 
     assert line == (
-        f"{REFUSED}a counted live row in week 13 is after the switch "
+        f"{REFUSED}a counted live row in week {SWITCH_WEEK} is after the switch "
         f"(MIDSEASON-SWITCH-RECORD.md): {AFTER_SWITCH_GAME}"
     )
 
@@ -1288,7 +1312,7 @@ def test_a_non_ascii_section_refuses_before_any_write(
     written, so the one-shot record is never spent on a crash."""
     argv = binding_fixture(tmp_path, rows=switch_rows())
     monkeypatch.setattr(
-        season_readout, "_scope_section", lambda *_: ["Scope \u2014 weeks 5-12"]
+        season_readout, "_scope_section", lambda *_: ["Scope \u2014 weeks 5-9"]
     )
 
     line = _assert_refuses(argv, capsys, tmp_path)

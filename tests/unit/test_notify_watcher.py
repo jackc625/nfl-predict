@@ -38,6 +38,7 @@ import pandas as pd
 import pytest
 
 import scripts.daily_lock_pipeline as daily
+from api.cache_schema import DAY_BEFORE_RETIRED_FROM
 from notify import log as notification_log
 from notify import transport
 from notify.end_of_run import EndOfRunOutcome, checkin_summary, notify_end_of_run
@@ -260,11 +261,22 @@ def test_an_unlogged_receipt_fails_the_check_in(
     assert "WATCHER_CHECKIN= delivered as failure" in capsys.readouterr().out
 
 
+# The switch week, read from the notifier's copy of the record's value, so a moved switch needs
+# no edit here. RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md section 8: the switch moved
+# from week 13 to week 10, so these are now 2026 weeks 10 and 9 (they were literals 13 and 12).
+SWITCH_SEASON, SWITCH_WEEK = DAY_BEFORE_RETIRED_FROM
+
+
 def test_the_checkin_marks_the_window_retired(monkeypatch: pytest.MonkeyPatch) -> None:
-    """MIDSEASON-SWITCH-RECORD.md: from 2026 week 13 the day-before system decides nothing."""
+    """MIDSEASON-SWITCH-RECORD.md: from 2026 week 10 the day-before system decides nothing."""
     requests = install_hosts(monkeypatch, {"hc-ping.com": (ping_ok(),)})
     report = in_season_report(
-        slate_week=13, tomorrow_game_ids=("2026_13_CIN@CLE", "2026_13_DAL@PHI")
+        slate_season=SWITCH_SEASON,
+        slate_week=SWITCH_WEEK,
+        tomorrow_game_ids=(
+            f"{SWITCH_SEASON}_{SWITCH_WEEK:02d}_CIN@CLE",
+            f"{SWITCH_SEASON}_{SWITCH_WEEK:02d}_DAL@PHI",
+        ),
     )
 
     notify_end_of_run(report, secrets=watcher_secrets(), now=report.start)
@@ -279,7 +291,7 @@ def test_the_checkin_marks_the_window_retired(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.parametrize(
     ("season", "week"),
     [
-        pytest.param(2026, 12, id="the-week-before-the-switch"),
+        pytest.param(SWITCH_SEASON, SWITCH_WEEK - 1, id="the-week-before-the-switch"),
         # Compared as a (season, week) pair: an earlier season's week 14 is not retired.
         pytest.param(2025, 14, id="an-earlier-season-week-14"),
         pytest.param(None, None, id="no-slate-selected"),

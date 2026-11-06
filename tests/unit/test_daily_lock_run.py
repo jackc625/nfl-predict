@@ -26,6 +26,7 @@ import pandas as pd
 import pytest
 
 import scripts.daily_lock_pipeline as daily
+from backtest.midseason_switch_2026 import DAY_BEFORE_RETIRED_FROM
 from notify import end_of_run
 from notify.log import read_notifications
 from notify.report import STATUS_RUN_FAILED, RunReport
@@ -1118,8 +1119,14 @@ def test_recommend_switch_on_uses_runner(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The day-before system retires from 2026 week 13 (MIDSEASON-SWITCH-RECORD.md)
+# The day-before system retires from the record's switch week (MIDSEASON-SWITCH-RECORD.md)
 # ---------------------------------------------------------------------------
+
+# The switch week and the last week before it, read from the record so a moved switch needs no
+# edit here. RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md section 8: the switch moved from
+# week 13 to week 10, so these are now 2026 weeks 10 and 9 (they were literals 13 and 12).
+SWITCH_SEASON, SWITCH_WEEK = DAY_BEFORE_RETIRED_FROM
+LAST_WEEK_BEFORE_SWITCH = SWITCH_WEEK - 1
 
 
 def _slate_in(season: int, week: int) -> DailySlate:
@@ -1168,10 +1175,15 @@ def _spy_on_the_writers(monkeypatch) -> dict[str, list[tuple]]:
 
 @pytest.mark.parametrize(
     ("season", "week"),
-    [pytest.param(2026, 13, id="2026-w13"), pytest.param(2027, 1, id="2027-w1")],
+    [
+        pytest.param(SWITCH_SEASON, SWITCH_WEEK, id="switch-week"),
+        pytest.param(2027, 1, id="2027-w1"),
+    ],
 )
-def test_a_week_13_slate_records_nothing(monkeypatch, tmp_path, capsys, season, week):
-    """From 2026 week 13 on, the decision step writes nothing and says why.
+def test_a_switch_week_slate_records_nothing(
+    monkeypatch, tmp_path, capsys, season, week
+):
+    """From the switch week (2026 week 10) on, the decision step writes nothing and says why.
 
     No live ledger row (so no shadow twin), no old-writer bet list and no passed-lock skip
     record: the step returns before any of them. A later season is still retired.
@@ -1191,10 +1203,10 @@ def test_a_week_13_slate_records_nothing(monkeypatch, tmp_path, capsys, season, 
     )
 
 
-def test_a_week_12_slate_still_records(monkeypatch, tmp_path, capsys):
-    """The last day-before week still decides through the runner, as before the switch."""
+def test_the_week_before_the_switch_still_records(monkeypatch, tmp_path, capsys):
+    """The last day-before week (2026 week 9) still decides through the runner, as before."""
     _cut_over(monkeypatch)
-    slate = _slate_in(2026, 12)
+    slate = _slate_in(SWITCH_SEASON, LAST_WEEK_BEFORE_SWITCH)
     _recommend_env(monkeypatch, tmp_path, slate)
     calls = _spy_on_the_writers(monkeypatch)
 

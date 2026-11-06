@@ -6,7 +6,7 @@ records the install in ``ledger/refit/owner_installs.jsonl`` and swaps ``artifac
 through ``models.artifacts.replace_manifest`` -- or refuses, leaving ``latest.json`` unchanged and
 the v1 gold rebuilt (``refit.owner_install.run_owner_install``).
 
-It refuses before week 12's last lock (Sun 2026-11-29 18:00 ET), from a tree with uncommitted
+It refuses before week 9's last lock (Sun 2026-11-08 18:00 ET), from a tree with uncommitted
 code, and once v2 is already in force. The gold build alone takes about 20 minutes, so the owner
 launches it detached (RUNBOOK.md, "Switch day: install v2").
 

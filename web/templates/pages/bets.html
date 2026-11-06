@@ -183,13 +183,13 @@
       {% include "components/_empty_state.html" %}
     {% endwith %}
   {% elif day_before_retired %}
-    {# From the 2026 week-13 switch on the day-before system decides nothing
+    {# From the 2026 week-10 switch on the day-before system decides nothing
        (MIDSEASON-SWITCH-RECORD.md), so this week has no list BY DESIGN: neither the refusal below
        nor a result. Checked ahead of the refusal because a retired week's locked games carry no
        row, which the refusal would otherwise report as a failed insertion. The route clears every
        per-game verdict for such a week (pages._build_bets_context). #}
-    {% with heading="No day-before bets from week 13 on.",
-            body="The day-before system was retired at the 2026 week 13 switch: the new model is more accurate than the old one but earned no weight against the betting line, so this window places no bets.",
+    {% with heading="No day-before bets from week 10 on.",
+            body="The day-before system was retired at the 2026 week 10 switch: the new model is more accurate than the old one but earned no weight against the betting line, so this window places no bets.",
             action_text=none, action_url=none %}
       {% include "components/_empty_state.html" %}
     {% endwith %}
@@ -507,11 +507,11 @@
      ("forward", "pre_verdict"),
      ("forward", "forward_realized")
    ] %}
-{# Once the current slate reaches the 2026 week-13 switch the forward record is the retired
+{# Once the current slate reaches the 2026 week-10 switch the forward record is the retired
    day-before system's, whichever week is selected, and its heading says so. #}
 {% set TRACKER_HEADINGS = {
      "backtest_replay": "Backtest replay -- reconstructed after the fact",
-     "forward": ("The retired day-before system, weeks 4-12" if forward_record_retired else "Forward record -- recommended before kickoff")
+     "forward": ("The retired day-before system, weeks 4-9" if forward_record_retired else "Forward record -- recommended before kickoff")
    } %}
 {% set TRACKER_CAPTIONS = {
      "backtest_replay": "These bets were never recommended in advance. They were reconstructed from historical data to show how the selection rule would have behaved. Do not read them as a track record.",

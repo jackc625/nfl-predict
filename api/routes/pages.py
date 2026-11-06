@@ -625,7 +625,7 @@ def _build_bets_context(
     # of reads (33.2 review C2 CR-02). See _bet_week_coverage for why each game is judged against
     # its own lock rather than the week against its latest one.
     freshness = _bet_week_coverage(service, season, week)
-    # From the 2026 week-13 switch on the day-before system writes no row
+    # From the 2026 week-10 switch on the day-before system writes no row
     # (MIDSEASON-SWITCH-RECORD.md), so a game of such a week past its lock with no list is the
     # retirement, not a failed insertion, and one before its lock is not awaiting one. No game is
     # owed a list, so none is named: emptying both lists clears the refusal and the not-evaluated
