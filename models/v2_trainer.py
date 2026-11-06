@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -62,21 +63,40 @@ def predict_v2(target: str, model: Pipeline, rows: pd.DataFrame) -> np.ndarray:
 
 
 def walk_forward_v2(
-    gold_dir: Path, games: pd.DataFrame, generation_cutoff: datetime
+    gold_dir: Path,
+    games: pd.DataFrame,
+    generation_cutoff: datetime,
+    *,
+    prediction_rows: Mapping[str, pd.DataFrame] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Every fold's out-of-sample v2 predictions, per target.
 
-    Per fold, the model trains on the eligible labelled rows from ``V2_TRAIN_START`` and predicts
-    the fold's games that have a gold row. Raises ``ValueError`` if a fold would predict a game it
-    trained on, or if one game is predicted twice.
+    Per fold, the model trains on the gold's eligible labelled rows from ``V2_TRAIN_START`` and
+    predicts the fold's games that have a gold row. With *prediction_rows* (a frame per target,
+    each carrying ``game_id``, ``season``, ``week`` and the target's ``V2_INPUTS``) training is
+    unchanged, but each fold predicts only its games present in that target's frame, scored from
+    those rows; a fold with none is skipped before fitting. Raises ``ValueError`` if
+    *prediction_rows* lacks a target or a column, if a fold would predict a game it trained on, or
+    if one game is predicted twice.
     """
+    if prediction_rows is not None:
+        for target in V2_TARGETS:
+            if target not in prediction_rows:
+                msg = f"prediction_rows lacks the {target} target"
+                raise ValueError(msg)
+            needed = ["game_id", "season", "week", *V2_INPUTS[target]]
+            missing = [c for c in needed if c not in prediction_rows[target].columns]
+            if missing:
+                msg = f"{target} prediction_rows lack the column(s) {missing}"
+                raise ValueError(msg)
     specs = fold_specs(games, generation_cutoff)
     labels = realized_values_from_scores(games)
     predictions: dict[str, pd.DataFrame] = {}
     with pinned_thread_pool(THREAD_LIMIT):
         for target in V2_TARGETS:
+            supplied = None if prediction_rows is None else prediction_rows[target]
             predictions[target] = _walk_forward_target(
-                target, gold_dir, games, specs, labels
+                target, gold_dir, games, specs, labels, prediction_rows=supplied
             )
     return predictions
 
@@ -87,13 +107,19 @@ def _walk_forward_target(
     games: pd.DataFrame,
     specs: tuple[FoldSpec, ...],
     labels: dict[str, dict[str, float]],
+    *,
+    prediction_rows: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """One target's out-of-sample predictions over every fold."""
+    """One target's out-of-sample predictions over every fold.
+
+    Trains on the gold; scores *prediction_rows* when given, else the gold rows.
+    """
     gold = pd.read_parquet(Path(gold_dir) / f"features_{target}.parquet")
-    gold_ids = gold["game_id"].astype(str)
+    scored = gold if prediction_rows is None else prediction_rows
+    scored_ids = scored["game_id"].astype(str)
     frames: list[pd.DataFrame] = []
     for fold in specs:
-        rows = gold.loc[gold_ids.isin(fold.predict_game_ids)].copy()
+        rows = scored.loc[scored_ids.isin(fold.predict_game_ids)].copy()
         if rows.empty:
             continue
         rows["game_id"] = rows["game_id"].astype(str)
