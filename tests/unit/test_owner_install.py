@@ -7,7 +7,7 @@ as v2, trains the three v2 models once, saves them, tunes their blend, writes th
 records the install in ``ledger/refit/owner_installs.jsonl`` and swaps ``artifacts/latest.json``
 through ``models.artifacts.replace_manifest`` -- or refuses and puts the v1 gold back.
 
-* Review Focus 2: while any 2026 game of weeks 1-12 is still before its lock, the install refuses
+* Review Focus 2: while any 2026 game of the weeks before the switch (1-9) is still before its lock, the install refuses
   and writes nothing; a second v2 install refuses too.
 * The v2 metadata names the fixed inputs and no ledger stamp column; the v2 bet rule parses
   through the decision path's own reader with no EV floor and no edge band.
