@@ -157,10 +157,26 @@ def _solve_for_lock(
     return ratings, levels, mu, window["kickoff_et"].max()
 
 
-def market_ratings(games: pd.DataFrame, nflverse: pd.DataFrame) -> pd.DataFrame:
-    """One row per silver game: ratings from lines of games kicked off by its lock."""
+def market_ratings(
+    games: pd.DataFrame, nflverse: pd.DataFrame, *, locks: pd.Series | None = None
+) -> pd.DataFrame:
+    """One row per silver game: ratings from lines of games kicked off by its lock.
+
+    ``locks`` is a ``game_id``-indexed series of tz-aware instants (the shape
+    ``lock_rule.lock_frame`` returns) replacing the lock per game, for example an early
+    line capture. It must name every game in ``games``, else ``ValueError`` names the
+    first ten missing ids. ``None`` reads each game at its day-before lock.
+    """
     pool = _line_pool(games, nflverse)
-    locks = lock_rule.lock_frame(games)
+    if locks is None:
+        locks = lock_rule.lock_frame(games)
+    else:
+        missing = [g for g in games["game_id"] if g not in locks.index]
+        if missing:
+            raise ValueError(
+                f"locks must name every game; {len(missing)} missing, "
+                f"first ten: {missing[:10]}"
+            )
     targets = games.loc[:, ["game_id", "season", "home_team", "away_team"]].copy()
     targets["lock"] = pd.to_datetime(targets["game_id"].map(locks), utc=True)
     targets["home_team"] = targets["home_team"].map(normalize_team_abbreviation)
