@@ -226,3 +226,20 @@ def test_build_refuses_an_output_directory_under_data(
     )
     with pytest.raises(ValueError, match="data"):
         build_gold_v2(Path(out_dir))
+
+
+def test_build_refuses_an_absolute_path_inside_the_resolved_live_lake(
+    fake_sources, monkeypatch
+):
+    # The worktree's data/gold is a junction into the live lake; an absolute path written
+    # straight at the resolved lake passes a check of the worktree's own data/ and must
+    # still be refused. Nothing is created: the guard raises before any build work.
+    def unreachable_build(self, **_kwargs):
+        raise AssertionError("the live-lake refusal must come before any build work")
+
+    monkeypatch.setattr(
+        FeatureMatrixBuilderV2, "generate_feature_matrices", unreachable_build
+    )
+    live_gold = (v2.PROJECT_ROOT / "data" / "gold").resolve()
+    with pytest.raises(ValueError, match="data"):
+        build_gold_v2(live_gold / "gold_v2_probe")

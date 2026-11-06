@@ -939,15 +939,21 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def refuse_data_dir(out_dir: Path) -> Path:
+def refuse_data_dir(
+    out_dir: Path,
+    *,
+    what: str = "the Study 1a report",
+    default_dir: Path = DEFAULT_OUT_DIR,
+) -> Path:
     """The resolved *out_dir*, refusing any path under a ``data/`` tree or the live lake.
 
     The path is checked as written and as resolved, against this checkout's ``data/``, the
     working directory's ``data/`` and the live lake the silver junction resolves into (a
-    worktree's ``data/silver`` is a junction into another checkout's ``data/``).
+    worktree's ``data/silver`` is a junction into another checkout's ``data/``). *what* and
+    *default_dir* only word the refusal (the v2 gold build shares this one rule).
     """
     resolved = reject_data_path(
-        out_dir, what="the Study 1a report", suggestion=f"{DEFAULT_OUT_DIR.as_posix()}/"
+        out_dir, what=what, suggestion=f"{default_dir.as_posix()}/"
     )
     written = Path(os.path.abspath(out_dir))
     lake = (_PROJECT_ROOT / "data" / "silver").resolve().parent
@@ -956,8 +962,8 @@ def refuse_data_dir(out_dir: Path) -> Path:
             root.resolve()
         ):
             msg = (
-                f"Refusing to write the Study 1a report to '{out_dir}': it is under {root}, "
-                f"the data lake. Write it under '{DEFAULT_OUT_DIR.as_posix()}/' instead."
+                f"Refusing to write {what} to '{out_dir}': it is under {root}, "
+                f"the data lake. Write it under '{default_dir.as_posix()}/' instead."
             )
             raise ValueError(msg)
     return resolved

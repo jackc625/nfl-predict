@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +37,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from backtest.study_1a import refuse_data_dir
 from data.storage import load_dataframe
 from data.upstream_pin import load_schedules
 from data.write_sink import RecordingSink, active_sink
@@ -60,7 +60,6 @@ from refit.records import code_commit
 from scripts.build_features import FeatureMatrixBuilder
 from scripts.fingerprint_gold import BUILD_CLOCK_COLUMNS
 from utils import get_logger
-from utils.paths import reject_data_path
 
 logger = get_logger(__name__)
 
@@ -265,27 +264,6 @@ def _merge_family(
     return matrix.merge(values, on="game_id", how="left", validate="one_to_one")
 
 
-def _refuse_data_dir(out_dir: Path) -> Path:
-    """The resolved *out_dir*, refusing any path under a ``data/`` tree.
-
-    ``reject_data_path`` compares RESOLVED paths, and in a worktree whose ``data/gold`` is a
-    junction into the live lake ``data/gold/x`` resolves outside this checkout's ``data/``.
-    The path as written (absolute, normalised, not resolved) is therefore checked too.
-    """
-    resolved = reject_data_path(
-        out_dir, what="the v2 gold", suggestion=f"{DEFAULT_OUT_DIR.as_posix()}/"
-    )
-    written = Path(os.path.abspath(out_dir))
-    for root in (PROJECT_ROOT / "data", Path.cwd() / "data"):
-        if written.is_relative_to(os.path.abspath(root)):
-            msg = (
-                f"Refusing to write the v2 gold to '{out_dir}': it is under {root}, the "
-                f"live data lake. Write it under '{DEFAULT_OUT_DIR.as_posix()}/' instead."
-            )
-            raise ValueError(msg)
-    return resolved
-
-
 def build_gold_v2(out_dir: Path) -> dict[str, pd.DataFrame]:
     """Build the v2 matrices, check them, and write them and a manifest to *out_dir*.
 
@@ -296,7 +274,9 @@ def build_gold_v2(out_dir: Path) -> dict[str, pd.DataFrame]:
     """
     from pipeline import live_skip
 
-    target_dir = _refuse_data_dir(out_dir)
+    target_dir = refuse_data_dir(
+        out_dir, what="the v2 gold", default_dir=DEFAULT_OUT_DIR
+    )
     built_at = datetime.now(UTC)
     sink = RecordingSink()
     with active_sink(sink):
