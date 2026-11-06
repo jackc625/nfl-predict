@@ -1217,6 +1217,35 @@ def test_cache_rebuilt_after_changing_settle_on_no_game_day(
     assert "the cache file is locked" not in out
 
 
+def test_early_lines_capture_runs_on_real_days_only_and_never_fails_the_run(
+    monkeypatch, tmp_path, capsys
+):
+    """The early-lines side step (owner ruling 2026-11-05): a no-games day still records the
+    board, a dry run never spends one, and a failing capture leaves the run's result alone."""
+    _cut_over(monkeypatch, on=False)
+    _no_games_env(monkeypatch, tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        daily, "EARLY_LINES", lambda report: calls.append(report.status)
+    )
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+    assert calls == [daily.STATUS_NO_GAMES]
+
+    calls.clear()
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=True) == 0
+    assert calls == [], "a dry run spent an early-lines board"
+
+    def _broken(_report):
+        raise RuntimeError("https://api.example/odds?apiKey=secret")
+
+    monkeypatch.setattr(daily, "EARLY_LINES", _broken)
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+    out = capsys.readouterr().out
+    assert "EARLY_LINES= failed RuntimeError" in out
+    assert "apiKey=secret" not in out
+
+
 def test_triggers_regenerated_before_no_games_return(
     monkeypatch, tmp_path, capsys, trigger_calls
 ):
