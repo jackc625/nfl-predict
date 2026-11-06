@@ -75,7 +75,8 @@ def _games() -> pd.DataFrame:
         ("2024_04_KC_LA", 4, "KC", "LA", datetime(2024, 9, 26, 13, 0, tzinfo=_ET)),
     ]
     return pd.DataFrame(
-        rows, columns=["game_id", "week", "home_team", "away_team", "kickoff_et"]
+        rows,
+        columns=pd.Index(["game_id", "week", "home_team", "away_team", "kickoff_et"]),
     ).assign(season=2024)
 
 
