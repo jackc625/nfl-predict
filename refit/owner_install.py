@@ -50,6 +50,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -118,6 +119,7 @@ __all__ = [
     "SWITCH_RECORD_PATHS",
     "InstallOutcome",
     "InstallRefused",
+    "gold_history_content_sha256",
     "install_preconditions",
     "run_owner_install",
     "switch_record_sha256",
@@ -282,6 +284,42 @@ def _best_params(target: str, pipeline: Pipeline) -> dict[str, float]:
     return {"alpha": float(final.alpha)}
 
 
+#: The last season of the gold history the served v2 models were fitted on, whatever the season
+#: in progress appends nightly: the history key below covers seasons up to this one.
+_GOLD_HISTORY_LAST_SEASON: int = 2025
+
+#: The build clock column, dropped from the history key: every rebuild moves it.
+_BUILD_CLOCK_COLUMN: str = "feature_timestamp"
+
+
+def gold_history_content_sha256(gold_dir: Path) -> str:
+    """sha256 of the 2002-2025 rows of the three gold matrices, by content.
+
+    The served models were fitted on that history; a nightly append of the season in progress
+    cannot move it, so a change means a historical feature value changed under them. The recipe
+    is the one ``tests/unit/test_final_fit_entry_point.py`` restates beside
+    ``ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256``: per matrix (wp, ats, ou), its production
+    path ``data/gold/features_<t>.parquet``, then the season <= 2025 rows sorted by ``game_id``
+    with the build clock dropped -- ``game_id`` joined by newlines, then each other column in
+    name order as its name and its values cast to float64.
+    """
+    digest = hashlib.sha256()
+    for target in V2_TARGETS:
+        frame = pd.read_parquet(Path(gold_dir) / f"features_{target}.parquet")
+        history = (
+            frame.loc[frame["season"] <= _GOLD_HISTORY_LAST_SEASON]
+            .drop(columns=[_BUILD_CLOCK_COLUMN])
+            .sort_values("game_id")
+            .reset_index(drop=True)
+        )
+        digest.update(f"data/gold/features_{target}.parquet\n".encode("ascii"))
+        digest.update("\n".join(history["game_id"]).encode("ascii"))
+        for column in sorted(c for c in history.columns if c != "game_id"):
+            digest.update(f"\n{column}\n".encode("ascii"))
+            digest.update(history[column].astype("float64").to_numpy().tobytes())
+    return digest.hexdigest()
+
+
 def v2_feature_importances(target: str, model: Pipeline) -> dict[str, float]:
     """``{input: |coefficient|}`` of a fitted v2 pipeline, keyed by ``V2_INPUTS[target]``.
 
@@ -316,6 +354,7 @@ def v2_model_metadata(
     cutoff_utc: datetime,
     training_rows: int,
     gold_generation_digest: str,
+    gold_history_digest: str,
     commit: str,
     feature_importances: Mapping[str, float],
 ) -> dict[str, object]:
@@ -324,8 +363,9 @@ def v2_model_metadata(
     It carries what ``models.artifacts.replace_manifest`` validates (``target``, the gold digest),
     what ``backtest.tune.read_source_recipes`` reads (``best_params``, ``exclude_groups``) and what
     ``api.cache._load_feature_importances`` serves (``feature_importances``, from
-    :func:`v2_feature_importances`), and names the recipe under ``v2_recipe`` -- never under a
-    ledger stamp column's name.
+    :func:`v2_feature_importances`), and the 2002-2025 gold history it was fitted on
+    (``gold_history_content_sha256``, :func:`gold_history_content_sha256`). It names the recipe
+    under ``v2_recipe`` -- never under a ledger stamp column's name.
 
     Raises:
         ValueError: *feature_importances* is not keyed by exactly the target's recipe inputs.
@@ -353,6 +393,7 @@ def v2_model_metadata(
         "exclude_groups": [],
         THREAD_LIMIT_METADATA_KEY: THREAD_LIMIT,
         GOLD_GENERATION_DIGEST_METADATA_KEY: gold_generation_digest,
+        "gold_history_content_sha256": gold_history_digest,
         "code_commit": commit,
         "switch_record_sha256": switch_record_sha256(),
     }
@@ -463,6 +504,7 @@ def _save_v2_models(
     artifacts_dir: Path,
     cutoff_utc: datetime,
     gold_generation_digest: str,
+    gold_history_digest: str,
     commit: str,
 ) -> dict[str, str]:
     """Save the three models (never touching ``latest.json``); return their artifact ids."""
@@ -474,6 +516,7 @@ def _save_v2_models(
             cutoff_utc=cutoff_utc,
             training_rows=rows,
             gold_generation_digest=gold_generation_digest,
+            gold_history_digest=gold_history_digest,
             commit=commit,
             feature_importances=v2_feature_importances(target, model),
         )
@@ -533,12 +576,14 @@ def _swap_in_v2(
 ) -> InstallOutcome:
     """Steps 4-10 on the v2 gold: train, save, tune, refuse or record, intent, swap."""
     digest = gold_generation_key(gold_dir)
+    history_digest = gold_history_content_sha256(gold_dir)
     trained = train_v2_models(gold_dir, games, now)
     model_ids = _save_v2_models(
         trained,
         artifacts_dir=artifacts_dir,
         cutoff_utc=now,
         gold_generation_digest=digest,
+        gold_history_digest=history_digest,
         commit=commit,
     )
     run = tune_v2_blend(

@@ -152,6 +152,7 @@ def write_gold(gold: Path, games: pd.DataFrame) -> None:
         frame = games.loc[:, ["game_id", "season", "week"]].copy()
         for column in V2_INPUTS[target]:
             frame[column] = rng.normal(size=len(frame))
+        frame["feature_timestamp"] = pd.Timestamp("2026-12-01T22:00:00Z")
         frame.to_parquet(gold / f"features_{target}.parquet", index=False)
 
 
@@ -300,6 +301,7 @@ def test_v2_metadata_names_the_fixed_inputs_and_no_stamp_keys() -> None:
         cutoff_utc=CUT,
         training_rows=6600,
         gold_generation_digest="g",
+        gold_history_digest="h" * 64,
         commit=CLEAN_COMMIT,
         feature_importances=dict.fromkeys(V2_INPUTS["ou"], 0.5),
     )
@@ -322,6 +324,7 @@ def test_v2_metadata_names_the_fixed_inputs_and_no_stamp_keys() -> None:
         cutoff_utc=CUT,
         training_rows=1,
         gold_generation_digest="g",
+        gold_history_digest="h" * 64,
         commit=CLEAN_COMMIT,
         feature_importances=dict.fromkeys(V2_INPUTS["wp"], 0.5),
     )
@@ -373,6 +376,7 @@ def test_v2_metadata_refuses_importances_not_keyed_by_the_inputs() -> None:
             cutoff_utc=CUT,
             training_rows=1,
             gold_generation_digest="g",
+            gold_history_digest="h" * 64,
             commit=CLEAN_COMMIT,
             feature_importances={"elo_diff": 1.0},
         )
@@ -481,6 +485,35 @@ def test_the_saved_models_are_the_fixed_recipe_trained_once(
     )
     assert wp["metadata"]["preprocessing_is_model"] is True
     assert wp["preprocessing"] is wp["model"]
+
+
+def test_the_saved_models_record_the_gold_history_they_were_fitted_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 2002-2025 history key is recorded, and a 2026 append or a new build clock keeps it."""
+    stores = build_stores(tmp_path)
+    expected = owner_install.gold_history_content_sha256(stores.gold)
+    outcome = run_install(stores, GoldSpy(), monkeypatch, TuneStub())
+    for target in V2_TARGETS:
+        loaded = load_model_artifact(
+            target, version=outcome.ids[target], artifacts_dir=stores.artifacts
+        )
+        assert loaded["metadata"]["gold_history_content_sha256"] == expected
+
+    wp_path = stores.gold / "features_wp.parquet"
+    wp = pd.read_parquet(wp_path)
+    appended = wp.loc[wp["season"] == 2026].head(1).assign(game_id="2026_14_NEW")
+    moved_clock = pd.concat([wp, appended], ignore_index=True).assign(
+        feature_timestamp=pd.Timestamp("2026-12-02T22:00:00Z")
+    )
+    moved_clock.to_parquet(wp_path, index=False)
+    assert owner_install.gold_history_content_sha256(stores.gold) == expected
+
+    history_edit = moved_clock.copy()
+    first_2025 = history_edit.index[history_edit["season"] == 2025][0]
+    history_edit.loc[first_2025, "elo_diff"] += 1.0
+    history_edit.to_parquet(wp_path, index=False)
+    assert owner_install.gold_history_content_sha256(stores.gold) != expected
 
 
 def test_the_saved_models_carry_the_importances_the_cache_serves(

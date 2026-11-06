@@ -263,6 +263,7 @@ def test_v2_metadata_with_a_wrong_input_list_is_a_problem(tmp_path: Path) -> Non
             cutoff_utc=CUTOFF,
             training_rows=100,
             gold_generation_digest="e" * 64,
+            gold_history_digest="h" * 64,
             commit=CLEAN_COMMIT,
             feature_importances=dict.fromkeys(V2_INPUTS[target], 0.5),
         )
