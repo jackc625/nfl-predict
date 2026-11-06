@@ -27,6 +27,12 @@ pipeline must survive the day a flag is selected.
 Controls: a planted stock imputer that drops an all-NaN column fails the same position check on
 the real frame, and a planted reordered output fails it too.
 
+THE V2 MODELS (MIDSEASON-SWITCH-RECORD.md section 4): every target reads its six fixed inputs
+(``models.v2_recipe.V2_INPUTS``) through one Pipeline, median-impute -> scale -> linear model, with
+no missing-value indicator step and no flag among the inputs. While the v2 recipe is in force
+(``refit.generations.in_force_recipe``), the two served-artifact checks below assert that shape
+instead of the v1 shape; the checks on the v1 trainers' own pipelines are unchanged.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -40,6 +46,7 @@ import pytest
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
+from backtest.midseason_switch_2026 import INSTALLED_RECIPE
 from models.artifacts import load_model_artifact
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
@@ -48,13 +55,18 @@ from models.trainers.wp_trainer import (
     _FoldRawIntoMissingIndicator,
     _ImputeAndCarryRaw,
 )
+from models.v2_recipe import V2_INPUTS
+from refit.generations import in_force_recipe
 from scripts.build_features import LEVEL_PRESERVED_COLUMN_SUFFIX
-from tests.live_manifest_record import recorded_live_manifest
+from tests.live_manifest_record import LIVE_LEDGER_DIR, recorded_live_manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS_ROOT = REPO_ROOT / "artifacts"
 GOLD_DIR = REPO_ROOT / "data" / "gold"
 TARGETS = ("wp", "ats", "ou")
+
+# The served v2 Pipeline's steps, in order (models.v2_recipe.build_v2_estimator).
+V2_STEPS: tuple[str, ...] = ("impute", "scale", "model")
 
 pytestmark = pytest.mark.skipif(
     not (ARTIFACTS_ROOT / "latest.json").exists()
@@ -95,10 +107,32 @@ def served() -> dict[str, dict]:
     return {t: load_model_artifact(t, artifacts_dir=ARTIFACTS_ROOT) for t in TARGETS}
 
 
+@pytest.fixture(scope="module")
+def v2_in_force() -> bool:
+    """Whether the generation ``latest.json`` names serves the v2 recipe."""
+    return in_force_recipe(ARTIFACTS_ROOT, LIVE_LEDGER_DIR) == INSTALLED_RECIPE
+
+
 def _augmented(gold_frame: pd.DataFrame, features: list[str]) -> pd.DataFrame:
     """The served feature set plus every flag gold carries (flags not already selected)."""
     extra = [c for c in flag_columns(gold_frame.columns) if c not in features]
     return gold_frame[[*features, *extra]]
+
+
+def served_v2_pipeline(target: str, artifact: dict) -> Pipeline:
+    """The served v2 Pipeline of *target*, after asserting the v2 shape.
+
+    Its ``feature_list.json`` is exactly ``V2_INPUTS[target]``; its steps are :data:`V2_STEPS`;
+    and no served input is a missing-value indicator: no input is a coverage flag and the
+    imputer adds no indicator column.
+    """
+    features = artifact["feature_list"]
+    assert features == list(V2_INPUTS[target]), (target, features)
+    assert flag_columns(features) == [], (target, features)
+    pipeline = artifact["model"]
+    assert tuple(name for name, _step in pipeline.steps) == V2_STEPS, target
+    assert pipeline.named_steps["impute"].add_indicator is False, target
+    return pipeline
 
 
 def test_non_vacuity_gold_carries_flags_and_the_suffix_rule_finds_them(gold) -> None:
@@ -110,11 +144,27 @@ def test_non_vacuity_gold_carries_flags_and_the_suffix_rule_finds_them(gold) -> 
 
 class TestWpFlagsSurviveTheServedPipeline:
     def test_served_feature_set_flags_survive_the_served_preprocessing(
-        self, gold, served
+        self, gold, served, v2_in_force
     ) -> None:
+        """The served WP preprocessing keeps every served flag at its position.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the v2 WP model has no
+        missing-value indicator step and no indicator input (six fixed inputs, median-impute ->
+        scale -> model), so there is no doubled output to check. While v2 is in force the served
+        WP Pipeline must be served as one object with exactly those three steps, read exactly
+        ``V2_INPUTS["wp"]``, and keep every input on the real gold (none dropped, none added).
+        The v1 checks below apply unchanged while a v1 recipe is in force.
+        """
         artifact = served["wp"]
         features = artifact["feature_list"]
         frame = gold["wp"][features]
+        if v2_in_force:
+            assert artifact["metadata"]["preprocessing_is_model"] is True
+            pipeline = served_v2_pipeline("wp", artifact)
+            assert artifact["preprocessing"] is pipeline
+            out = np.asarray(pipeline[:-1].transform(frame), dtype=float)
+            assert out.shape == frame.shape
+            return
         out = np.asarray(
             artifact["preprocessing"][:2].transform(frame.to_numpy(dtype=float))
         )
@@ -196,10 +246,24 @@ class TestAtsAndOuApplyNoTransform:
         assert not (artifact["artifact_dir"] / "preprocessing.pkl").exists()
 
     def test_the_served_model_reads_the_selected_columns_by_name_unchanged(
-        self, target, trainer_class, gold, served
+        self, target, trainer_class, gold, served, v2_in_force
     ) -> None:
+        """The served model reads its feature list by name and predicts on the real gold.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the v2 ATS and O/U models are
+        Ridge Pipelines (median-impute -> scale -> model) with no missing-value indicator step and
+        no indicator input, not XGBoost boosters. While v2 is in force the served Pipeline must
+        have exactly those three steps, read exactly ``V2_INPUTS[target]`` by name and predict
+        finite values on the real gold. The v1 checks below apply unchanged while a v1 recipe is
+        in force.
+        """
         artifact = served[target]
         features = artifact["feature_list"]
+        if v2_in_force:
+            pipeline = served_v2_pipeline(target, artifact)
+            assert list(pipeline.feature_names_in_) == features
+            assert np.isfinite(pipeline.predict(gold[target][features])).all()
+            return
         assert list(artifact["model"].get_booster().feature_names) == features
         frame = gold[target][features]
         assert np.isfinite(artifact["model"].predict(frame)).all()

@@ -8,10 +8,13 @@ re-fit generations unattended (D-01, RFIT-06), recording each install in
 ``ledger/refit/dates.jsonl`` BEFORE the swap writes ``latest.json`` (the install_intent, Plan 37-11,
 research Pitfall 2). So the recorded end state is the newest generation
 ``refit.generations.installed_generations`` derives -- the one derivation; nothing here re-decides
-which intents count -- with ONE exception: a newest install whose date has no ``closed`` event and
-whose four ids ``latest.json`` does not serve is not yet in force, because its run died between the
-intent and the swap. Before the first install the end state is generation 0, the row-19 swap's
-record (``tests.phase33_state.ROW19_SWAP_ARTIFACT_IDS`` and
+which intents count -- with ONE exception: a newest install that recorded no end and whose four ids
+``latest.json`` does not serve is not yet in force, because its run died between the intent and the
+swap. A cadence install records its end with its date's ``closed`` event; the owner install of the
+v2 models (MIDSEASON-SWITCH-RECORD.md section 4, ``ledger/refit/owner_installs.jsonl``) with its
+``installed`` event naming its ids, so a hand roll-back away from v2 after that event is never read
+as the previous generation being in force. Before the first install the end state is generation 0,
+the row-19 swap's record (``tests.phase33_state.ROW19_SWAP_ARTIFACT_IDS`` and
 ``ROW19_POST_SWAP_LATEST_JSON_SHA256``).
 
 The owner's standing ruling that old models and baselines are dead is why row 19 is accepted only
@@ -29,6 +32,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Mapping
 from datetime import date, datetime, time
@@ -36,6 +40,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from backtest.midseason_switch_2026 import INSTALLED_RECIPE
 from backtest.refit_preregistration_2026 import (
     CUTOFF_LOCAL_TIME,
     CUTOFF_TIMEZONE,
@@ -44,8 +49,10 @@ from backtest.refit_preregistration_2026 import (
     REFIT_SEASON,
     TRAINING_START_SEASON,
 )
+from models.v2_recipe import V2_INPUTS
 from refit.generations import Generation, installed_generations
-from refit.records import read_date_events
+from refit.owner_install import switch_record_sha256
+from refit.records import read_date_events, read_owner_installs
 from refit.witness import PREREGISTRATION_SHA256
 from tests.phase33_state import ROW19_SWAP_ARTIFACT_IDS
 
@@ -92,6 +99,25 @@ def _date_closed(events: list[dict[str, Any]], generation: Generation) -> bool:
     )
 
 
+def _owner_installed(events: list[dict[str, Any]], generation: Generation) -> bool:
+    """Whether an owner ``installed`` event names exactly *generation*'s five ids."""
+    ids = dataclasses.asdict(generation.ids)
+    return any(
+        event["event"] == "installed" and event["after_ids"] == ids for event in events
+    )
+
+
+def _install_ended(ledger_dir: Path, generation: Generation) -> bool:
+    """Whether *generation*'s install recorded its end (generation >= 1).
+
+    An owner install (it carries its own cutoff) ends with its ``installed`` event; a cadence
+    install with its date's ``closed`` event.
+    """
+    if generation.cutoff_utc is not None:
+        return _owner_installed(read_owner_installs(ledger_dir), generation)
+    return _date_closed(read_date_events(ledger_dir), generation)
+
+
 def recorded_live_manifest(
     ledger_dir: Path = LIVE_LEDGER_DIR, latest_path: Path = LIVE_LATEST_JSON
 ) -> tuple[int, dict[str, str]]:
@@ -108,10 +134,11 @@ def recorded_live_manifest(
     """
     generations = installed_generations(ledger_dir)
     newest = max(generations, key=lambda generation: generation.number)
-    if newest.number >= 1 and not _date_closed(read_date_events(ledger_dir), newest):
+    if newest.number >= 1 and not _install_ended(ledger_dir, newest):
         if not _serves(latest_path, _manifest_ids(newest)):
-            # The intent is written before replace_manifest (Plan 37-11): a run that died
-            # between them leaves the intent counted but never served, so it is not in force.
+            # The intent is written before replace_manifest (Plan 37-11, and the owner command
+            # alike): a run that died between them leaves the intent counted but never served,
+            # so it is not in force.
             newest = next(g for g in generations if g.number == newest.number - 1)
     if newest.number == 0:
         return 0, dict(ROW19_SWAP_ARTIFACT_IDS)
@@ -127,8 +154,12 @@ def expected_cutoff(generation: Generation) -> datetime:
     """The cutoff *generation*'s models must record: its cadence date at the record's cutoff time.
 
     Read from the pre-registered date list the generation's install names (list week, date
-    index), at ``CUTOFF_LOCAL_TIME`` in ``CUTOFF_TIMEZONE`` -- never derived from a model.
+    index), at ``CUTOFF_LOCAL_TIME`` in ``CUTOFF_TIMEZONE`` -- never derived from a model. An
+    owner install has no cadence date: its cutoff is the one its ``install_intent`` records
+    (``Generation.cutoff_utc``).
     """
+    if generation.cutoff_utc is not None:
+        return generation.cutoff_utc
     if generation.list_week is None or generation.date_index is None:
         msg = f"generation {generation.number} names no cadence date; it has no re-fit cutoff"
         raise ValueError(msg)
@@ -152,22 +183,62 @@ def _cutoff_problem(value: object, expected: datetime) -> str | None:
         return f"cutoff_utc {value!r} is naive; a cutoff is an instant"
     if cutoff != expected:
         return (
-            f"cutoff_utc {value!r} is not the served generation's pre-registered cutoff "
+            f"cutoff_utc {value!r} is not the served generation's recorded cutoff "
             f"{expected.isoformat()}"
         )
     return None
 
 
+def _v2_metadata_problems(
+    metadata: Mapping[str, Any], generation: Generation
+) -> list[str]:
+    """Every way a served v2 model's metadata.json breaks the switch record's install contract.
+
+    Checks, in order: the recipe (``v2_recipe``); the cutoff (exactly the one the owner install
+    recorded); the inputs (exactly ``V2_INPUTS`` of the metadata's target); the switch record's
+    two-file digest (``refit.owner_install.switch_record_sha256``).
+    """
+    problems: list[str] = []
+    recipe = metadata.get("v2_recipe")
+    if recipe != INSTALLED_RECIPE:
+        problems.append(f"v2_recipe {recipe!r} is not {INSTALLED_RECIPE!r}")
+    cutoff = _cutoff_problem(metadata.get("cutoff_utc"), expected_cutoff(generation))
+    if cutoff is not None:
+        problems.append(cutoff)
+    target = metadata.get("target")
+    names = metadata.get("feature_names")
+    inputs = V2_INPUTS.get(target) if isinstance(target, str) else None
+    if inputs is None:
+        problems.append(f"target {target!r} is not one of {list(V2_INPUTS)}")
+    elif names != list(inputs):
+        problems.append(
+            f"feature_names {names!r} are not the v2 inputs of {target!r} {list(inputs)}"
+        )
+    digest = metadata.get("switch_record_sha256")
+    expected_digest = switch_record_sha256(REPO_ROOT)
+    if digest != expected_digest:
+        problems.append(
+            f"switch_record_sha256 {digest!r} is not the switch record's digest "
+            f"{expected_digest!r}"
+        )
+    return problems
+
+
 def refit_metadata_problems(
     metadata: Mapping[str, Any], generation: Generation
 ) -> list[str]:
-    """Every way a served model's metadata.json breaks the pre-registered re-fit contract.
+    """Every way a served model's metadata.json breaks the contract of *generation*'s recipe.
 
-    Checks, in order: the recipe id; the cutoff (exactly *generation*'s pre-registered cutoff,
-    :func:`expected_cutoff`, so a re-install of an earlier generation's models is caught); the
-    calibration season (REFIT_SEASON - 1, D-26); the helper window (TRAINING_START_SEASON to the
-    calibration season, exclusive); the record digest (refit.witness). An empty list is a pass.
+    A generation serving the v2 recipe (``INSTALLED_RECIPE``, the owner install of
+    MIDSEASON-SWITCH-RECORD.md section 4) is checked by :func:`_v2_metadata_problems`. Every other
+    generation by the pre-registered re-fit contract, in order: the recipe id; the cutoff (exactly
+    *generation*'s pre-registered cutoff, :func:`expected_cutoff`, so a re-install of an earlier
+    generation's models is caught); the calibration season (REFIT_SEASON - 1, D-26); the helper
+    window (TRAINING_START_SEASON to the calibration season, exclusive); the record digest
+    (refit.witness). An empty list is a pass.
     """
+    if generation.recipe == INSTALLED_RECIPE:
+        return _v2_metadata_problems(metadata, generation)
     problems: list[str] = []
     recipe = metadata.get("refit_recipe")
     if recipe != REFIT_RECIPE_ID:
