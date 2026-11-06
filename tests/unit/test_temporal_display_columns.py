@@ -93,7 +93,7 @@ import pytest
 
 from models.temporal import TemporalSplitConfig, WalkForwardSplitter
 from tests import phase33_state
-from tests.live_manifest_record import recorded_live_manifest
+from tests.live_manifest_record import production_serves_v2, recorded_live_manifest
 from utils.feature_columns import (
     DISPLAY_ONLY_COLUMNS,
     NORMALIZATION_IDENTIFIER_COLUMNS,
@@ -363,6 +363,40 @@ class TestOneConstantTwoConsumers:
     not (_GOLD_DIR / "features_wp.parquet").exists(),
     reason="data/gold not built on this checkout",
 )
+def _assert_the_v2_wp_fit_survives_the_nan(frame: pd.DataFrame) -> None:
+    """The v2 form of the WP NaN claim: the served v2 WP pipeline fits on NaN-carrying gold.
+
+    Gold must be the v2 width (the v1 count plus the switch slot's 24 added columns), the six
+    fixed WP inputs must be present and carry NaN (non-vacuity), and the v2 recipe's median
+    imputer must let the pipeline fit and predict on a sample that holds NaN.
+    """
+    from models.v2_recipe import V2_INPUTS, build_v2_estimator
+
+    added = phase33_state.P332_SWITCH_V2_GOLD_WIDTH_DELTA["added"]
+    assert isinstance(added, tuple)
+    assert set(added) <= set(frame.columns), sorted(set(added) - set(frame.columns))
+    inputs = list(V2_INPUTS["wp"])
+    assert set(inputs) <= set(frame.columns), sorted(set(inputs) - set(frame.columns))
+    features = frame[inputs]
+    assert int((features.isna().sum() > 0).sum()) > 0, (
+        "non-vacuity: with no NaN in the v2 WP inputs the fit below would pass against a "
+        "pipeline that cannot handle one"
+    )
+    pipeline = build_v2_estimator("wp")
+    assert tuple(pipeline.named_steps) == ("impute", "scale", "model")
+    labelled = frame.loc[frame["home_win"].notna()]
+    with_nan = labelled[inputs].isna().any(axis=1)
+    sample_rows = pd.concat(
+        [labelled.loc[with_nan].head(50), labelled.loc[~with_nan].head(150)]
+    )
+    sample = sample_rows[inputs]
+    assert bool(sample.isna().to_numpy().any()), (
+        "fixture sanity: the sample carries NaN"
+    )
+    pipeline.fit(sample, sample_rows["home_win"].astype(int))
+    assert pipeline.predict_proba(sample).shape == (len(sample), 2)
+
+
 class TestRealGold:
     """Measured against the on-disk gold, not a synthetic stand-in.
 
@@ -433,8 +467,17 @@ class TestRealGold:
         in-fold median imputer with its ``_was_missing`` indicator. A NaN-carrying
         frame is driven through it here. If that pair is ever removed, this fails with
         the original error, which is exactly the coverage the old assertion gave.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: once the owner install serves the
+        v2 recipe (``production_serves_v2``), gold is 24 columns wider and the served WP is the
+        v2 pipeline on its six fixed inputs, so the same claim -- the served WP fit survives
+        the NaN gold carries -- is checked by ``_assert_the_v2_wp_fit_survives_the_nan``. Under
+        v1 the counts and the WPTrainer pipeline below are unchanged.
         """
         frame = pd.read_parquet(_GOLD_DIR / "features_wp.parquet")
+        if production_serves_v2():
+            _assert_the_v2_wp_fit_survives_the_nan(frame)
+            return
         splitter = _splitter()
         columns = splitter._feature_cols(frame)
         features = frame[columns]

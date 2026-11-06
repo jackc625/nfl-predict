@@ -3414,12 +3414,22 @@ class TestThePhase33LadderIsAttributed:
         two ``off_rolling_cpoe_coverage`` and two ``snap_coverage`` flags. Each set is its own
         manifest constant, so the equality stays exact in both directions. Was: the union of
         ``GOLD_LEVEL_PRESERVED_COLUMNS_33_14`` and ``P332_12_LEVEL_PRESERVED_COLUMNS_ADDED`` only.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: once the owner install serves the
+        v2 recipe (``tests.live_manifest_record.production_serves_v2``), gold carries the
+        switch slot's 24 added columns, one of them a coverage flag, ``mkt_rating_coverage``,
+        that the builder's suffix arm level-preserves. It joins the pinned set by name, and
+        only after it is checked to be one of ``P332_SWITCH_V2_GOLD_WIDTH_DELTA``'s added
+        columns; the equality stays exact in both directions. Under v1 the pinned set is
+        unchanged.
         """
+        from tests.live_manifest_record import production_serves_v2
         from tests.phase33_state import (
             GOLD_LEVEL_PRESERVED_COLUMNS_33_14,
             P332_12_LEVEL_PRESERVED_COLUMNS_ADDED,
             P332_18_RUNG8_LEVEL_PRESERVED_COLUMNS_ADDED,
             P332_18_RUNG8_LEVEL_PRESERVED_RUNG7_COLUMNS,
+            P332_SWITCH_V2_GOLD_WIDTH_DELTA,
         )
 
         f = _p331_module()
@@ -3430,6 +3440,12 @@ class TestThePhase33LadderIsAttributed:
             | set(P332_18_RUNG8_LEVEL_PRESERVED_RUNG7_COLUMNS)
             | set(P332_18_RUNG8_LEVEL_PRESERVED_COLUMNS_ADDED)
         )
+        if production_serves_v2():
+            v2_level_preserved = {"mkt_rating_coverage"}
+            added = P332_SWITCH_V2_GOLD_WIDTH_DELTA["added"]
+            assert isinstance(added, tuple)
+            assert v2_level_preserved <= set(added)
+            pinned |= v2_level_preserved
         assert resolved == pinned, (
             f"unexpected members {sorted(resolved - pinned)}; missing members "
             f"{sorted(pinned - resolved)}"

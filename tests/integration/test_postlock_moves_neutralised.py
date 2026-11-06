@@ -48,6 +48,7 @@ from features.schedule_moves import (
     load_schedule_moves,
     post_lock_summary,
 )
+from tests.live_manifest_record import production_serves_v2
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GAMES_PATH = REPO_ROOT / "data" / "silver" / "games.parquet"
@@ -616,11 +617,49 @@ def _same_value(left: object, right: object) -> bool:
 # the gold cell must sit near the pre-move value and nearer to it than to the as-played one.
 NORMALIZED_TOLERANCE = 0.35
 
+# RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: once the v2 recipe is in force
+# (``tests.live_manifest_record.production_serves_v2``) gold keeps the raw (winsorized, never
+# z-scored) level, so the reference is the RAW build and the 0.35 tolerance (a z-score distance)
+# does not apply. The v2 gold cell must EQUAL the raw pre-move build (relative 1e-9; measured on
+# the v2 gold of 2026-11-06: every compared cell exact) and sit nearer to it than to the
+# as-played build. Under v1 the comparison below is unchanged.
+RAW_RELATIVE_TOLERANCE = 1e-9
+
+
+def _far_from_the_pre_move_build(
+    row: pd.Series, pre_move: pd.Series, played: pd.Series, columns: list[str]
+) -> list[str]:
+    """The columns where *row* is not at the pre-move fact, by the recipe in force's rule."""
+    if production_serves_v2():
+        return [
+            c
+            for c in columns
+            if abs(row[c] - pre_move[c])
+            > RAW_RELATIVE_TOLERANCE * max(1.0, abs(pre_move[c]))
+            or abs(row[c] - pre_move[c]) >= abs(row[c] - played[c])
+        ]
+    return [
+        c
+        for c in columns
+        if abs(row[c] - pre_move[c]) > NORMALIZED_TOLERANCE
+        or abs(row[c] - pre_move[c]) >= abs(row[c] - played[c])
+    ]
+
 
 def _normalized_build(
-    silver: pd.DataFrame, calculator, games: pd.DataFrame, game_id: str, season: int
+    silver: pd.DataFrame,
+    calculator,
+    games: pd.DataFrame,
+    game_id: str,
+    season: int,
+    *,
+    normalize: bool = True,
 ) -> pd.Series:
-    """One game's contextual row, normalized exactly as gold normalizes its season."""
+    """One game's contextual row, normalized exactly as gold normalizes its season.
+
+    ``normalize=False`` returns the raw build row: the v2 reference (RE-POINTED 2026-11-06 for
+    MIDSEASON-SWITCH-RECORD.md).
+    """
     from features.normalization import compute_prior_season_stats, expanding_normalize
     from utils.game_lock import lock_frame
 
@@ -632,6 +671,8 @@ def _normalized_build(
     built = built.drop(columns=["season", "week"], errors="ignore").merge(
         window[["game_id", "season", "week"]], on="game_id", how="left"
     )
+    if not normalize:
+        return built.set_index("game_id").loc[game_id]
     numeric = [
         c
         for c in built.select_dtypes("number").columns
@@ -681,11 +722,17 @@ class TestLiveGoldCarriesThePreMoveFacts:
         played_frame.loc[played_frame["game_id"] == game_id, "game_id"] = (
             f"PLAYED_{game_id}"
         )
+        normalize = not production_serves_v2()
         pre_move = _normalized_build(
-            silver, calculator, probe, f"PROBE_{game_id}", season
+            silver, calculator, probe, f"PROBE_{game_id}", season, normalize=normalize
         )
         played = _normalized_build(
-            silver, calculator, played_frame, f"PLAYED_{game_id}", season
+            silver,
+            calculator,
+            played_frame,
+            f"PLAYED_{game_id}",
+            season,
+            normalize=normalize,
         )
         derived = [
             c
@@ -701,6 +748,8 @@ class TestLiveGoldCarriesThePreMoveFacts:
     def test_live_gold_row_carries_the_pre_move_facts(
         self, matrix, silver, calculator, data_boundary_guard
     ) -> None:
+        """RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: judged by
+        ``_far_from_the_pre_move_build`` (v1 rule unchanged; v2 against the raw build)."""
         gold = pd.read_parquet(GOLD_AFTER_DIR / f"{matrix}.parquet").set_index(
             "game_id"
         )
@@ -709,12 +758,7 @@ class TestLiveGoldCarriesThePreMoveFacts:
             columns = [c for c in derived if c in gold.columns]
             assert columns, f"{game_id}: the move reaches no {matrix} column (vacuous)"
             row = gold.loc[game_id]
-            far = [
-                c
-                for c in columns
-                if abs(row[c] - pre_move[c]) > NORMALIZED_TOLERANCE
-                or abs(row[c] - pre_move[c]) >= abs(row[c] - played[c])
-            ]
+            far = _far_from_the_pre_move_build(row, pre_move, played, columns)
             assert not far, (
                 f"{matrix} {game_id}: gold is not at the pre-move fact in {far}: "
                 f"{ {c: (row[c], pre_move[c], played[c]) for c in far} }"
@@ -723,15 +767,13 @@ class TestLiveGoldCarriesThePreMoveFacts:
     def test_a_gold_row_holding_the_post_move_facts_would_be_caught(
         self, silver, calculator, data_boundary_guard
     ) -> None:
-        """CONTROL: the same predicate, on a row planted with the as-played values."""
+        """CONTROL: the same predicate, on a row planted with the as-played values.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the predicate is the recipe in
+        force's (``_far_from_the_pre_move_build``)."""
         game_id = _real_post_lock_games()[0]
         pre_move, played, derived = self._references(silver, calculator, game_id)
         assert derived
         planted = played  # a gold row that carried the post-move facts
-        far = [
-            c
-            for c in derived
-            if abs(planted[c] - pre_move[c]) > NORMALIZED_TOLERANCE
-            or abs(planted[c] - pre_move[c]) >= abs(planted[c] - played[c])
-        ]
+        far = _far_from_the_pre_move_build(planted, pre_move, played, derived)
         assert far, "the post-move facts are indistinguishable from the pre-move ones"

@@ -378,3 +378,47 @@ was 15, after step 8e 5, and after rung 9 it is 0. Each fall is attributed to th
 caused it: the coverage floors retiring (rung 8), the never-populated defensive copies
 leaving (step 8e), step 8d blanking the unscorable cells of `is_home_game` / `is_away_game`,
 and the betting line leaving (rung 9).
+
+
+## After the v2 switch (recipe-2026-v2)
+
+Scanned 2026-11-06 against the v2 gold that the owner install of `MIDSEASON-SWITCH-RECORD.md`
+section 4 puts in production: the study build `outputs/gold_v2/` (built 2026-11-06 02:17 UTC
+at commit `3534e03`) with `weather_condition` dropped, as the sanctioned writer
+(`FeatureMatrixBuilderV2Live` through `save_feature_matrices`) drops it -- 212 / 212 / 211
+columns. Until the install, this section describes gold that is not yet in production, so
+`tests/integration/test_no_precoverage_constants.py` reads it only once the v2 recipe is in
+force; before that it reads the rung-9 section above, which is left exactly as it was.
+
+Machine-readable lines (read by `tests/integration/test_no_precoverage_constants.py`):
+
+CLASSIFIED_AFTER_V2_SWITCH: 549
+UNFLAGGED_AFTER_V2_SWITCH: 0
+UNROUTED_AFTER_V2_SWITCH: 0
+CONSTANT_2002_2017_AFTER_V2_SWITCH: 2
+
+### Counts by class
+
+| Matrix | `varies_from_corpus_start` | `flagged_precoverage` | `unflagged_precoverage` | `never_varies` |
+|---|---|---|---|---|
+| `features_wp` | 153 | 28 | 0 | 2 |
+| `features_ats` | 153 | 28 | 0 | 2 |
+| `features_ou` | 153 | 28 | 0 | 2 |
+
+The UNFLAGGED count is still zero in all three matrices.
+
+### What moved since the rung-9 section
+
+- **CLASSIFIED rises 480 -> 549, which is +23 model inputs per matrix**, all
+  `varies_from_corpus_start`. The v2 builder adds 24 columns (the
+  `P332_SWITCH_V2_GOLD_WIDTH_DELTA` slot in `tests/phase33_state.py`): the twelve raw
+  `{home,away}_{off,def}_rolling_{epa_per_play,pass_epa_per_play,rush_epa_per_play}`, the
+  market ratings `home_mkt_rating`, `away_mkt_rating`, `mkt_rating_diff`, `mkt_total_sum`,
+  `league_points_level`, and the six derived inputs (`success_rate_net`, `opp_adj_epa_net`,
+  `qb_value_diff`, `off_epa_sum`, `def_epa_sum`, `pace_sum`). The 24th, `mkt_rating_coverage`,
+  is a coverage flag and, like every `*_coverage` flag, is not a classified model input.
+- **`CONSTANT_2002_2017` rises 0 -> 2**: `is_home_game` and `is_away_game`. The v2 recipe does
+  not z-score gold, so the 27 season-opener cells that p332_ extra step 8d blanked (their lock
+  group held fewer than `min_periods` rows, so no statistic could be formed) keep their raw
+  value, and each column is single-valued again. They are `never_varies` by construction in
+  both recipes; nothing measured is missing.

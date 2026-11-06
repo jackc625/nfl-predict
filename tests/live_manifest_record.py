@@ -50,7 +50,7 @@ from backtest.refit_preregistration_2026 import (
     TRAINING_START_SEASON,
 )
 from models.v2_recipe import V2_INPUTS
-from refit.generations import Generation, installed_generations
+from refit.generations import Generation, in_force_recipe, installed_generations
 from refit.owner_install import switch_record_sha256
 from refit.records import read_date_events, read_owner_installs
 from refit.witness import PREREGISTRATION_SHA256
@@ -63,6 +63,7 @@ __all__ = [
     "REPO_ROOT",
     "expected_cutoff",
     "expected_manifest_text",
+    "production_serves_v2",
     "recorded_live_manifest",
     "refit_metadata_problems",
 ]
@@ -74,6 +75,21 @@ LIVE_LATEST_JSON: Path = REPO_ROOT / "artifacts" / "latest.json"
 
 # The four pointers latest.json holds, in the order replace_manifest keeps them.
 MANIFEST_KEYS: tuple[str, ...] = ("wp", "ats", "ou", "blend")
+
+
+def production_serves_v2() -> bool:
+    """Whether the production ``latest.json`` serves the owner-installed v2 recipe.
+
+    The one switch the tests that read production gold or the served models branch on
+    (MIDSEASON-SWITCH-RECORD.md section 4): the nightly gold follows the same recipe
+    (``refit.generations.in_force_recipe``), so v2 gold and v2 models are in production together.
+    Reads ``artifacts/latest.json`` and ``ledger/refit`` READ-ONLY.
+
+    Raises:
+        FileNotFoundError: this checkout has no ``artifacts/latest.json``; the recipe in force is
+            never guessed.
+    """
+    return in_force_recipe(REPO_ROOT / "artifacts", LIVE_LEDGER_DIR) == INSTALLED_RECIPE
 
 
 def _manifest_ids(generation: Generation) -> dict[str, str]:

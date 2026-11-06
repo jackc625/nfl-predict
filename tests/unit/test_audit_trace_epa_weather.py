@@ -26,6 +26,7 @@ import features.weather as weather_mod
 from data.storage import load_dataframe
 from features.opponent_adj import OpponentAdjuster
 from features.weather import WeatherFeaturesCalculator
+from tests.live_manifest_record import production_serves_v2
 
 # Open-Meteo Historical Weather API -- the canonical provider (NOT Meteostat;
 # no Meteostat code exists in the repo). scripts/ingest_weather.py:37.
@@ -181,6 +182,28 @@ class TestArea2OpponentAdjEpa:
             assert abs(row["rolling_opp_adj_epa_per_play"] - 0.05) < 0.001
 
 
+#: v2 gold keeps rolling CPOE at its raw scale: percentage points of completion probability
+#: (nflverse ``cpoe``). A team's rolling average beyond 20 points is implausible; measured on the
+#: v2 gold of 2026-11-06: sd about 4.6, 99.98% or more of real values within +-20.
+_RAW_CPOE_PLAUSIBLE_POINTS = 20.0
+#: A raw percentage-point column has an sd of points, not of a fraction (about 0.05) or a z-score.
+_RAW_CPOE_MIN_SD = 1.0
+
+
+def _assert_raw_cpoe_plausible(df: pd.DataFrame) -> None:
+    """The v2 (raw-level) form of the CPOE plausibility check: real variance on the
+    percentage-point scale and more than 99% of real values within +-20 points."""
+    for col in ("home_off_rolling_cpoe", "away_off_rolling_cpoe"):
+        assert col in df.columns
+        real = df[col].dropna()
+        assert len(real) > 0, f"{col} has no real values to range-check"
+        assert real.std() > _RAW_CPOE_MIN_SD, (
+            f"{col} sd {real.std():.3g} is not on the raw percentage-point scale"
+        )
+        within = (real.abs() <= _RAW_CPOE_PLAUSIBLE_POINTS).mean()
+        assert within > 0.99, f"{col} has implausible outliers ({within:.3f})"
+
+
 class TestArea2QbAdjAndCpoe:
     """QB-adjustment all-zeros regression guard + CPOE plausibility on gold."""
 
@@ -203,8 +226,17 @@ class TestArea2QbAdjAndCpoe:
     def test_cpoe_in_plausible_range(self):
         """Offensive rolling CPOE is normalized in gold; confirm it has real
         variance and a plausible z-scored range (not a stuck/degenerate
-        column)."""
+        column).
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: once the v2 recipe is in
+        force (``tests.live_manifest_record.production_serves_v2``) gold keeps the raw
+        level, so the same plausibility is checked on the raw scale by
+        ``_assert_raw_cpoe_plausible``; under v1 this check is unchanged.
+        """
         df = load_dataframe("features_wp", layer="gold")
+        if production_serves_v2():
+            _assert_raw_cpoe_plausible(df)
+            return
         for col in ("home_off_rolling_cpoe", "away_off_rolling_cpoe"):
             assert col in df.columns
             s = df[col]

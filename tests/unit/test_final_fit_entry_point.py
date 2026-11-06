@@ -71,7 +71,12 @@ from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WP_PIPELINE_STEP_NAMES, WPTrainer
 from tests.data_boundary import digest_file
 from tests.gold_generation import GOLD_MATRIX_PATHS
-from tests.live_manifest_record import expected_manifest_text, recorded_live_manifest
+from tests.live_manifest_record import (
+    REPO_ROOT,
+    expected_manifest_text,
+    production_serves_v2,
+    recorded_live_manifest,
+)
 from tests.phase33_state import (
     FINAL_FIT_NOT_RUN_IN_PHASE_331,
     GOLD_GENERATION_AFTER_ELO_REBUILD,
@@ -930,7 +935,26 @@ class TestTheRecordedGenerationIsTheLaddersOwn:
         history's Elo columns and production now serves the re-fits on that gold, so the
         comparison is against ``ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256``; the CLOSE_
         value stays as the record of the 2026-09-23 re-fits' history.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: once the owner install serves the
+        v2 recipe (``production_serves_v2``), the served models were fitted on the v2 gold of
+        the install day, whose history key each v2 artifact records
+        (``gold_history_content_sha256``, ``refit.owner_install``). The same key, recomputed
+        here by this module's own recipe, must equal it; under v1 the comparison below is
+        unchanged.
         """
+        if production_serves_v2():
+            recorded = _served_v2_gold_history_keys()
+            assert len(set(recorded.values())) == 1, (
+                f"the three served v2 models record different gold histories: {recorded}"
+            )
+            assert _gold_history_content_key() == next(iter(recorded.values())), (
+                "the 2002-2025 history in live gold is no longer the history the served v2 "
+                "models were fitted on (their recorded gold_history_content_sha256). A nightly "
+                "2026 append cannot move this digest, so a historical feature value changed: "
+                "find what rebuilt it before re-recording anything."
+            )
+            return
         assert _gold_history_content_key() == (
             ROW19_SERVED_MODELS_GOLD_HISTORY_CONTENT_SHA256
         ), (
@@ -939,6 +963,21 @@ class TestTheRecordedGenerationIsTheLaddersOwn:
             "nightly 2026 append cannot move this digest, so a historical feature value "
             "changed: find what rebuilt it before re-recording anything."
         )
+
+
+def _served_v2_gold_history_keys() -> dict[str, str]:
+    """``{target: gold_history_content_sha256}`` the served v2 models' metadata.json record."""
+    artifacts = REPO_ROOT / "artifacts"
+    latest = json.loads((artifacts / "latest.json").read_text(encoding="utf-8"))
+    keys: dict[str, str] = {}
+    for target in ("wp", "ats", "ou"):
+        metadata_path = artifacts / latest[target] / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        assert "gold_history_content_sha256" in metadata, (
+            f"{metadata_path} records no gold_history_content_sha256"
+        )
+        keys[target] = str(metadata["gold_history_content_sha256"])
+    return keys
 
 
 def _gold_history_content_key() -> str:
