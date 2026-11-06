@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -77,6 +78,8 @@ LOCK_COMMITTED_AT: str = "2026-10-21T19:19:13-04:00"
 KICKOFF_BY_WEEK: dict[int, datetime] = {
     5: datetime(2026, 10, 11, 17, 0, tzinfo=UTC),
     6: datetime(2026, 10, 18, 17, 0, tzinfo=UTC),
+    12: datetime(2026, 11, 29, 18, 0, tzinfo=UTC),
+    13: datetime(2026, 12, 6, 18, 0, tzinfo=UTC),
     22: datetime(2027, 2, 14, 23, 30, tzinfo=UTC),
 }
 
@@ -140,6 +143,19 @@ _CLV_COLUMNS: tuple[str, ...] = ("clv", "forward_clv", "closing_line", "closing_
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def coverage_through_week_22(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Extend the coverage end to week 22 for the tests whose counted bets include the Super Bowl.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: R6 coverage now ends at week 12
+    (``R6_COVERAGE_END_WEEK``) and a counted live row after it refuses the run, so a test built
+    on the complete fixture's week-22 bets patches the end back to 22, the pre-switch span, to keep
+    proving what it proved before. The post-switch behaviour has its own tests at the end of this
+    file.
+    """
+    monkeypatch.setattr(season_readout, "R6_COVERAGE_END_WEEK", 22)
+
+
 def _week_of(game_id: str) -> int:
     """The week a standard game id names."""
     return int(game_id.split("_W")[1][:2])
@@ -197,6 +213,12 @@ def complete_rows() -> list[dict[str, Any]]:
         ledger_row(NO_BET_GAME, "wp", status="suppressed"),
         ledger_row(SUPER_BOWL, "ats", arm="shadow"),
     ]
+
+
+def switch_rows() -> list[dict[str, Any]]:
+    """The complete fixture's rows as they stand after the switch (MIDSEASON-SWITCH-RECORD.md):
+    no row on the Super Bowl, so no counted row after week 12."""
+    return [row for row in complete_rows() if row["game_id"] != SUPER_BOWL]
 
 
 def counted_of(ledger_dir: Path) -> pd.DataFrame:
@@ -491,7 +513,7 @@ SECTION_HEADINGS: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_a_binding_run_writes_the_document_in_order(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -587,10 +609,12 @@ def test_a_binding_run_writes_the_document_in_order(
     head, entries = ledger_head(read_entries(ledger_dir))
     assert f"- Ledger chain head: {head}\n" in document
     assert f"- Ledger entries: {entries}\n" in document
+    # This fixture's silver lies outside the repository, so the document names it as given; a
+    # store inside it is named repo-relative (test_the_document_names_repo_relative_paths).
     assert f"- Silver directory: {silver_dir.as_posix()}\n" in document
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_a_void_bet_leaves_the_test(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -622,7 +646,7 @@ def test_a_void_bet_leaves_the_test(
     assert _table_row(document, "wp")[1] == str(len(BET_GAMES))
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_every_row_of_a_not_played_game_leaves_the_figures(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -663,7 +687,7 @@ def test_every_row_of_a_not_played_game_leaves_the_figures(
     )
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_after_an_honest_invalidation_the_lock_section_reports_the_applied_rule(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -748,10 +772,14 @@ def test_binding_refuses_on_todays_real_ledger(
     """SPEC AC 27, 28: the real ledger refuses, and its bytes do not move.
 
     It is judged against a COPY of the real schedule whose week-22 scores are blanked (WR-A08).
-    Today the season is unfinished, so refusal 1 or 2 fires. Once the real Super Bowl is graded
-    the copy's week-22 game still lacks a score, and the last week is never inferred "not
-    played", so refusal 2 still fires (probed on the complete fixture). Judged against the real
-    schedule, the test would turn red on the day the binding run is due.
+    While weeks 5-12 are unfinished, refusal 1 or 2 fires. Once they are graded and scored,
+    refusal 3 fires, and after the real Super Bowl the copy's blanked week-22 game keeps it
+    firing. Judged against the real schedule, the test would turn red on the day the binding run
+    is due.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: coverage ends at week 12, so the blanked
+    week-22 game is outside it and no longer trips refusal 2; refusal 3 ("no played week-22 game")
+    is the honest answer from the end of week 12 until February, so it is accepted too.
     """
     ledger_file = REAL_REPO_ROOT / ledger_path(LEDGER_DIR)
     real_schedule = REAL_REPO_ROOT / DEFAULT_SILVER_DIR / SILVER_GAMES_FILENAME
@@ -786,6 +814,7 @@ def test_binding_refuses_on_todays_real_ledger(
     assert (
         "counted bet(s) of played games are not graded yet" in line
         or "in-scope game(s) lack a final score" in line
+        or "the schedule holds no played week-22 game" in line
     ), line
     assert hashlib.sha256(ledger_file.read_bytes()).hexdigest() == before
 
@@ -823,8 +852,13 @@ def test_binding_refuses_an_absent_a_stale_or_an_unanchored_ledger(
 def test_binding_refuses_without_a_played_week_22_game(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The Super Bowl is REMOVED from the schedule and the ledger (an unscored week-22 game
-    would trip refusal 2 first: with no later week it is never 'not played')."""
+    """The Super Bowl is REMOVED from the schedule and the ledger.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the assertion is unchanged; only the
+    reason given for removing the game moved. Before the switch an unscored week-22 game tripped
+    refusal 2 first (the last coverage week is never 'not played'); coverage now ends at week 12,
+    so week 22 is outside it, and refusal 3 alone waits for the Super Bowl.
+    """
     argv = binding_fixture(
         tmp_path,
         rows=[row for row in complete_rows() if row["game_id"] != SUPER_BOWL],
@@ -836,7 +870,7 @@ def test_binding_refuses_without_a_played_week_22_game(
     assert "the schedule holds no played week-22 game" in line
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_binding_refuses_a_graded_bet_on_a_game_inferred_not_played(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -858,7 +892,7 @@ def test_binding_refuses_a_graded_bet_on_a_game_inferred_not_played(
     )
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_binding_refuses_while_a_counted_bet_is_ungraded(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -878,7 +912,7 @@ def test_binding_refuses_while_a_counted_bet_is_ungraded(
     )
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_a_second_binding_run_refuses_even_after_the_record_is_deleted(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -913,7 +947,7 @@ def test_a_second_binding_run_refuses_even_after_the_record_is_deleted(
         season_readout.main([*argv, "--repo-root", str(tmp_path / "another_clone")])
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_binding_refuses_when_the_rule_moved(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -973,7 +1007,7 @@ def test_the_witnessed_lock_is_the_recorded_witness() -> None:
     assert season_readout.unwitnessed_lock_problem(REAL_REPO_ROOT, lock) is None
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_binding_refuses_a_lock_it_cannot_prove(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1033,7 +1067,7 @@ def test_binding_refuses_a_lock_it_cannot_prove(
     assert problem is not None and "not exactly the two R6 files" in problem
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_binding_refuses_reordered_verdict_words(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1051,7 +1085,7 @@ def test_binding_refuses_reordered_verdict_words(
     assert line.startswith(f"{REFUSED}the frozen value VERDICT_TOKENS is pinned at ")
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_binding_fails_closed_on_every_git_branch(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1101,14 +1135,25 @@ def test_binding_fails_closed_on_every_git_branch(
 
 
 @pytest.mark.usefixtures("isolated_git_env")
-def test_binding_refuses_an_unscored_week_22_game_beside_a_scored_one(
+def test_binding_refuses_an_unscored_week_12_game_beside_a_scored_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """WR-A09, refusal 2 alone: a week-22 game is never inferred not played (no later week),
-    so an unscored one refuses even while another week-22 game is scored."""
-    unscored = "2026_W22_BUF@SF"
+    """WR-A09, refusal 2 alone: the coverage's last week is never inferred not played (no later
+    coverage week), so an unscored game of it refuses even while another game of it is scored.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: coverage ends at week 12, so that last
+    week is week 12, not week 22. The ledger is the post-switch one (no Super Bowl row), so the
+    switch check passes and refusal 2 is the first to fire.
+    """
+    unscored, scored = "2026_W12_BUF@SF", "2026_W12_NYJ@MIA"
     argv = binding_fixture(
-        tmp_path, games=[*complete_games(), schedule_game(unscored, scored=False)]
+        tmp_path,
+        rows=switch_rows(),
+        games=[
+            *complete_games(),
+            schedule_game(scored),
+            schedule_game(unscored, scored=False),
+        ],
     )
 
     line = _assert_refuses(argv, capsys, tmp_path)
@@ -1119,7 +1164,7 @@ def test_binding_refuses_an_unscored_week_22_game_beside_a_scored_one(
     )
 
 
-@pytest.mark.usefixtures("isolated_git_env")
+@pytest.mark.usefixtures("isolated_git_env", "coverage_through_week_22")
 def test_binding_refuses_when_the_comparison_cannot_run(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1133,3 +1178,134 @@ def test_binding_refuses_when_the_comparison_cannot_run(
 
     assert line.startswith(f"{REFUSED}the re-fit comparison could not run (exit 2): ")
     assert "STORE_UNREADABLE= " in line
+
+
+# ---------------------------------------------------------------------------
+# MIDSEASON-SWITCH-RECORD.md section 5: coverage ends at week 12; IN-A03; repo-relative paths
+# ---------------------------------------------------------------------------
+
+# A week-13 game: after the switch, the day-before system decides nothing there.
+AFTER_SWITCH_GAME: str = "2026_W13_NYJ@MIA"
+
+
+def _coverage_text(document: str) -> str:
+    """Section 1 of the binding document, heading excluded."""
+    return document.partition("## 1. Coverage")[2].partition("## 2. ")[0]
+
+
+def _coverage_weeks(document: str) -> list[int]:
+    """The week numbers of section 1's per-week table rows, in order."""
+    first_cells = [
+        line.strip("|").partition("|")[0].strip()
+        for line in _coverage_text(document).splitlines()
+        if line.startswith("| ")
+    ]
+    return [int(cell) for cell in first_cells if cell.isdigit()]
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_coverage_ends_at_week_12_and_says_why(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The table ends at week 12 and cites the record, so the scheduled Super Bowl, which no live
+    row decides, is not missed; the declared scope is still reported as weeks 5-22."""
+    argv = binding_fixture(tmp_path, rows=switch_rows())
+    repo = tmp_path / "repo"
+    record = repo / BINDING_RECORD_PATH
+
+    code, lines = _run(argv, capsys, repo)
+
+    assert code == 0, lines
+    assert lines[:2] == [
+        f"BINDING_WRITTEN= {record.as_posix()}",
+        "COVERAGE_END= week=12 reason=MIDSEASON-SWITCH-RECORD.md",
+    ]
+    document = record.read_text("ascii")
+    coverage = _coverage_text(document)
+    assert _coverage_weeks(document) == list(range(5, 13))
+    assert (
+        "Coverage ends at week 12: under MIDSEASON-SWITCH-RECORD.md the day-before system "
+        "stopped deciding at week 13, so weeks 13-22 are not reported and none of their games "
+        "is missed.\n" in coverage
+    )
+    # MISSED_GAME alone: the unbet Super Bowl would be the second miss under the old span.
+    assert "Missed games: 1\n" in coverage
+    assert "- Weeks: 5-22\n" in document
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_a_counted_live_row_after_the_switch_refuses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Record section 5: a counted live row in week 13 or later means the retirement leaked.
+
+    The week-13 bet is ungraded on a scored game, so it would trip refusal 1 ("wait") if the
+    switch check came later; waiting never clears this one, so it comes first.
+    """
+    argv = binding_fixture(
+        tmp_path,
+        rows=[*switch_rows(), ledger_row(AFTER_SWITCH_GAME, "wp")],
+        games=[*complete_games(), schedule_game(AFTER_SWITCH_GAME)],
+    )
+
+    line = _assert_refuses(argv, capsys, tmp_path)
+
+    assert line == (
+        f"{REFUSED}a counted live row in week 13 is after the switch "
+        f"(MIDSEASON-SWITCH-RECORD.md): {AFTER_SWITCH_GAME}"
+    )
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_a_non_ascii_section_refuses_before_any_write(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IN-A03: a non-ASCII character refuses by section and code point before anything is
+    written, so the one-shot record is never spent on a crash."""
+    argv = binding_fixture(tmp_path, rows=switch_rows())
+    monkeypatch.setattr(
+        season_readout, "_scope_section", lambda *_: ["Scope \u2014 weeks 5-12"]
+    )
+
+    line = _assert_refuses(argv, capsys, tmp_path)
+
+    assert line == (
+        f"{REFUSED}section 2 (Verdict scope) of the document holds the non-ASCII character "
+        "U+2014; the record is written as ASCII only, so nothing was written (IN-A03)."
+    )
+    assert not (tmp_path / "repo" / BINDING_RECORD_PATH).parent.exists()
+
+
+@pytest.mark.usefixtures("isolated_git_env")
+def test_the_document_names_repo_relative_paths(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The stores the real run reads lie inside the repository; the document names them relative
+    to it, never by the machine's absolute path."""
+    argv = binding_fixture(tmp_path, rows=switch_rows())
+    repo = tmp_path / "repo"
+    # Copy the stores to where the defaults point, and pass the relative defaults' shape: the
+    # binding run resolves a relative store path against the repository root.
+    inside = {
+        "--silver-dir": "data/silver",
+        "--run-log": "logs/daily_lock_runs.jsonl",
+        "--skip-records": "config/skip_records.jsonl",
+    }
+    shutil.copytree(_arg(argv, "--silver-dir"), repo / inside["--silver-dir"])
+    for option in ("--run-log", "--skip-records"):
+        target = repo / inside[option]
+        target.parent.mkdir(parents=True)
+        target.write_bytes(_arg(argv, option).read_bytes())
+    for option, relative in inside.items():
+        argv[argv.index(option) + 1] = relative
+
+    code, lines = _run(argv, capsys, repo)
+
+    assert code == 0, lines
+    document = (repo / BINDING_RECORD_PATH).read_text("ascii")
+    assert "- Silver directory: data/silver\n" in document
+    assert "- Evidence logs/daily_lock_runs.jsonl: 1 lines, sha256 " in document
+    assert "- Evidence config/skip_records.jsonl: 0 lines, sha256 " in document
+    assert tmp_path.as_posix() not in document

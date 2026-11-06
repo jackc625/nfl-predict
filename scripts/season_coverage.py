@@ -4,7 +4,8 @@ THE STATES
 ----------
 Every scheduled game of the verdict scope (season 2026, weeks ``start_week..end_week`` of the
 committed declaration, read through ``forward_ledger.declarations.load_verdict_scope`` and never
-restated) lands in exactly ONE state, by this precedence:
+restated -- except that the readout ends the coverage at week 12 under MIDSEASON-SWITCH-RECORD.md,
+see :func:`classify_coverage`) lands in exactly ONE state, by this precedence:
 
 * ``not played``        -- inferred never played (below); it leaves the denominator;
 * ``bet``               -- it has counted live-arm rows and at least one of them has status ``live``;
@@ -382,7 +383,9 @@ def classify_coverage(
             played when ``realized_values_from_scores`` gives it a value (THE final-score rule).
         counted: The counted live-arm rows (``forward_ledger.verdict.verdict_rows``).
         refused: :func:`refused_game_ids` over the run log and the skip records.
-        scope: The committed verdict scope.
+        scope: The scope whose weeks ``start_week..end_week`` the coverage reads. The readout
+            passes the committed verdict scope with ``end_week`` set to
+            ``R6_COVERAGE_END_WEEK`` (week 12, MIDSEASON-SWITCH-RECORD.md section 5).
         now: The preview's instant (tz-aware), below which a lock is "not yet due"; None in the
             binding run, where nothing is ever not yet due.
 

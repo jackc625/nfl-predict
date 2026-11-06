@@ -1529,14 +1529,15 @@ uv run python -m scripts.season_readout --binding
 ```
 
 It takes no output-path option: the document always lands at `docs/records/SEASON-2026-READOUT.md`
-under the repository root. On success it prints `BINDING_WRITTEN= <path>` and one
-`VERDICT_<TARGET>= <word>` line per target, and exits 0.
+under the repository root. On success it prints `BINDING_WRITTEN= <path>`, the `COVERAGE_END=`
+line and one `VERDICT_<TARGET>= <word>` line per target, and exits 0.
 
 ### If it refuses
 
-Before computing or writing anything it checks nine conditions, numbered 0 to 8, in the order
-below, and stops at the first one that is not met. It then prints `BINDING_REFUSED= <sentence>`
-naming that condition and exits 3. Nothing is written. What to do depends on which one it names.
+Before computing or writing anything it checks nine numbered conditions, 0 to 8, with the switch
+check right after 0, in the order below, and stops at the first one that is not met. It then
+prints `BINDING_REFUSED= <sentence>` naming that condition and exits 3. Nothing is written. What to
+do depends on which one it names.
 
 **Restore the ledger first.**
 
@@ -1545,6 +1546,17 @@ naming that condition and exits 3. Nothing is written. What to do depends on whi
    check, so this is what stops the one run being spent on it. Never run the binding run while
    `ledger/` is moved aside (step 2 of "Restore the ledger from the private backup" above): finish
    the restore, confirm `uv run python -m scripts.verify_ledger` passes, then run it again.
+
+**Then the switch check -- stop and investigate.** Under `MIDSEASON-SWITCH-RECORD.md` the
+day-before system decides nothing from week 13, so the coverage the run reports ends at week 12
+(`R6_COVERAGE_END_WEEK`): the document's coverage section says so in one sentence, the run prints
+`COVERAGE_END= week=12 reason=MIDSEASON-SWITCH-RECORD.md`, and weeks 13-22 are never reported as
+missed. Right after condition 0, a counted bet in week 13 or later refuses with "a counted live row
+in week <w> is after the switch (MIDSEASON-SWITCH-RECORD.md): <game_id>". Such a row means the
+retirement leaked and the record is false; waiting never clears it, so take it to the owner.
+Condition 3 below still waits for the Super Bowl. Last, after condition 8 and before anything is
+written, a section of the document holding a non-ASCII character refuses, naming the section and
+the character's code point (for example U+2014); find what put it there before trying again.
 
 **Wait for the next 17:00 ET daily run, then try again.** These clear on their own once the daily
 run has graded the bets and recorded the scores:
@@ -1571,8 +1583,9 @@ run), the Super Bowl bets stay ungraded for good and refusal 1 never clears by w
 3. Publish and check it: `uv run python -m scripts.sync_ledger`, then
    `uv run python -m scripts.verify_ledger`. Re-enable the tasks, then run the binding run again.
 
-Waiting only ever clears refusal 2 for a week-22 game. Once the Super Bowl is scored, an unscored
-game of an earlier week is not waited for: the run infers it was never played and voids its bets
+Waiting only ever clears refusal 2 for a week-12 game: coverage ends there (the switch check
+above), so a week-12 game is never inferred not played. Once week 12 is scored, an unscored game
+of an earlier week is not waited for: the run infers it was never played and voids its bets
 (each listed by name in the document's void-bets list). Refusal 2 also has a second form that does
 NOT clear by waiting: "game(s) inferred not played carry a graded counted bet". A graded bet means
 the game's final score existed and silver has since lost it (an ingest gap or an upstream

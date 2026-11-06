@@ -2,8 +2,9 @@
 """The 2026 season-close readout (Phase 38; SPEC R7-R9, D-08, D-16, D-20, D-25, D-26).
 
 Accounts for every scheduled game of the verdict scope (season 2026, weeks 5-22, read from the
-committed declaration through ``forward_ledger.declarations.load_verdict_scope``) and reports the
-counted live-arm rows. It runs any time as a PREVIEW, labelled "season to date -- not the
+committed declaration through ``forward_ledger.declarations.load_verdict_scope``) through the
+last week before the day-before system retired -- the coverage ends at week 12 (below) -- and
+reports the counted live-arm rows. It runs any time as a PREVIEW, labelled "season to date -- not the
 verdict"; the one binding run happens after the Super Bowl is graded (Plan 38-09).
 
 Output is ``KEY= value`` lines on stdout, in this order:
@@ -14,7 +15,9 @@ Output is ``KEY= value`` lines on stdout, in this order:
 * ``LEDGER= head=<hash> entries=<n>`` -- the chain head and entry count of the ledger read;
 * one ``EVIDENCE=`` line per evidence file (the run log, then the skip records): its path, line
   count and SHA-256, or ``missing`` (D-08);
-* one ``COVERAGE=`` line per scope week, in week order: scheduled, decided, bet, no_bet,
+* ``COVERAGE_END= week=12 reason=MIDSEASON-SWITCH-RECORD.md`` -- the last week the coverage covers
+  and the record that ends it there (below);
+* one ``COVERAGE=`` line per coverage week, in week order: scheduled, decided, bet, no_bet,
   failed_or_refused, missed, not_yet_due, not_played (the per-game rule is
   ``scripts.season_coverage.classify_coverage``), then ``COVERAGE_TOTAL=`` with the same fields
   summed and ``MISSED_GAMES=``;
@@ -42,6 +45,15 @@ them, so the preview's and the binding run's figures cannot drift apart.
 The ledger is read through its chain check (``forward_ledger.store.verify_chain``): nothing is
 reported over a ledger whose chain does not verify. The preview writes no file anywhere (D-16).
 
+COVERAGE ENDS AT WEEK 12 (MIDSEASON-SWITCH-RECORD.md section 5)
+---------------------------------------------------------------
+The day-before system decides nothing from 2026 week 13, so the coverage (``classify_coverage``)
+reads the scope's weeks ``start_week..R6_COVERAGE_END_WEEK`` (5-12) and weeks 13-22 are never
+reported as missed. Only the coverage is shortened: the frozen scope (weeks 5-22) still selects the
+counted rows, refusal 3 still waits for a played week-22 game, and section 2 of the document still
+reports the scope as declared. Week 12 is now the coverage's last week, so an unscored week-12 game
+is never inferred not played (no later coverage week is scored).
+
 THE BINDING RUN (``--binding``; Plan 38-09, SPEC R8-R9, D-09, D-24)
 --------------------------------------------------------------------
 Run ONCE, after the Super Bowl is graded. It reads the same stores, checks every condition below
@@ -51,11 +63,17 @@ naming the first one unmet:
 0. the ledger holds no entry, the repository holds no ``ledger-anchor`` commit, or the ledger does
    not extend that anchored head (``forward_ledger.store.assert_extends_anchor``, the check the
    daily run's settle pass applies): an absent, emptied or stale-backup ledger is never judged;
+
+   then the switch check (MIDSEASON-SWITCH-RECORD.md section 5, :func:`after_switch_refusal`): a
+   counted bet (status live) sits in a week after ``R6_COVERAGE_END_WEEK``. The day-before system
+   retired from week 13, so such a row means the retirement leaked and the record is false; waiting
+   never clears it, so it comes before the conditions that wait;
 1. a counted bet (status live) of a played game is not graded (suppressed rows and void bets never
    block);
-2. an in-scope game that is not "not played" lacks a final score, or a game inferred not played
-   carries a counted bet already graded win, loss or push (a grade is direct evidence that a final
-   score existed, so its missing silver score is a store contradiction, never a void game);
+2. a coverage game (weeks 5-12) that is not "not played" lacks a final score, or a game inferred
+   not played carries a counted bet already graded win, loss or push (a grade is direct evidence
+   that a final score existed, so its missing silver score is a store contradiction, never a void
+   game);
 3. the schedule holds no played week-22 game;
 4. the binding record ``<repo root>/docs/records/SEASON-2026-READOUT.md`` exists, or that path
    appears anywhere in git history (``git log --all``). The record is one-shot only once it is
@@ -73,21 +91,28 @@ naming the first one unmet:
    minimum attainable p and the verdict words in their order) no longer holds its pinned value;
 8. the re-fit comparison (``scripts.compare_refit_arms``) cannot run (exit other than 0).
 
-What each refusal means: (0) needs the ledger restored from the private backup (RUNBOOK); (1)-(3)
+What each refusal means: (0) needs the ledger restored from the private backup (RUNBOOK); the
+switch check means the switch record no longer describes the ledger -- stop and investigate; (1)-(3)
 clear by waiting for the next 17:00 ET daily run to grade the
 bets and record the scores; (4) means the binding run already happened and will never run again;
 (5)-(7), and any failed git command, are repository-integrity refusals -- stop and investigate,
 never work around them; (8) needs the store the comparison names fixed.
 
 When every condition holds it computes each target's verdict (:func:`measure_targets`), embeds the
-comparison's stdout byte for byte, and writes the one document atomically (sibling ``.tmp`` then
-replace, ASCII, LF line endings) to ``<repo root>/docs/records/SEASON-2026-READOUT.md`` -- the path
+comparison's stdout byte for byte and renders the document. Before anything is written -- before
+the record's directory is made and before the record that spends the one shot exists -- each
+rendered section is checked with ``str.isascii`` (IN-A03): the first that is not ASCII refuses,
+naming the section and the character's code point (:func:`non_ascii_refusal`). Only then does it
+write the one document atomically (sibling ``.tmp`` then replace, ASCII, LF line endings; the ASCII
+encode stays as the backstop) to ``<repo root>/docs/records/SEASON-2026-READOUT.md`` -- the path
 is DERIVED from :data:`REPO_ROOT` and never chosen (there is no option naming another path or
 another repository). ``REPO_ROOT`` is the checkout this file was imported from, so the history, the
 uncommitted changes and the one-shot record the run checks belong to the same tree whose rule and
 verdict code it executes. In binding mode a relative store path (every default is one) resolves
-against that root, never against the working directory the command happens to run from. It then
-prints ``BINDING_WRITTEN= <path>`` and one ``VERDICT_<TARGET>= <word>`` line per target. No run
+against that root, never against the working directory the command happens to run from, and the
+document names every path relative to that root when it lies inside it (the path as given
+otherwise), never by the machine's absolute path. It then prints ``BINDING_WRITTEN= <path>``,
+the ``COVERAGE_END=`` line and one ``VERDICT_<TARGET>= <word>`` line per target. No run
 ledger is kept (D-09): the output is deterministic (fixed bootstrap seed; nothing writes the ledger
 after the Super Bowl).
 
@@ -116,7 +141,7 @@ import io
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -131,6 +156,7 @@ from api.cache import (
     GRADING_STATUS_PUSH,
     GRADING_STATUS_WIN,
 )
+from backtest.midseason_switch_2026 import R6_COVERAGE_END_WEEK, RECORD_PATH
 from backtest.profitability_2025 import (
     TargetMeasurement,
     assign_verdict_token,
@@ -721,6 +747,26 @@ def ledger_refusal(entries: Sequence[LedgerEntry], repo_root: Path) -> str | Non
     return None
 
 
+def after_switch_refusal(counted: pd.DataFrame) -> str | None:
+    """The switch check: the earliest counted bet after ``R6_COVERAGE_END_WEEK``, or None.
+
+    From 2026 week 13 the day-before system records no decision (MIDSEASON-SWITCH-RECORD.md
+    section 1), so a counted bet (status live) in a later week means the retirement leaked and the
+    record is false (section 5). Waiting never clears it. The earliest such row (by week, then game
+    id) is named.
+    """
+    if counted.empty:
+        return None
+    late = counted.loc[
+        (counted["status"] == BET_STATUS_LIVE)
+        & (counted["week"].astype(int) > R6_COVERAGE_END_WEEK)
+    ].sort_values(["week", "game_id"])
+    if late.empty:
+        return None
+    week, game_id = int(late["week"].iloc[0]), str(late["game_id"].iloc[0])
+    return f"a counted live row in week {week} is after the switch ({RECORD_PATH}): {game_id}"
+
+
 def binding_refusal(
     *,
     counted: pd.DataFrame,
@@ -734,8 +780,14 @@ def binding_refusal(
     """The first unmet binding condition as a plain sentence, or None when every one holds.
 
     Evaluated in the documented order (module docstring), before anything is computed or
-    written. *comparison* runs only when conditions (1)-(7) hold.
+    written. *comparison* runs only when the switch check and conditions (1)-(7) hold. *report*
+    is the coverage (weeks 5-12); *scope* is the frozen scope, whose last week refusal 3 reads.
     """
+    # The switch check first: no counted bet after the week the day-before system retired.
+    after_switch = after_switch_refusal(counted)
+    if after_switch is not None:
+        return after_switch
+
     played = set(realized_values_from_scores(scores)["ats"])
 
     # (1) A counted bet of a played game is ungraded (suppressed rows and void bets never block).
@@ -757,8 +809,8 @@ def binding_refusal(
                 f"{_first_five(keys)}. Wait for the next 17:00 ET daily run to grade them."
             )
 
-    # (2) An in-scope game that is not 'not played' lacks a final score, or a not-played
-    # game carries a graded counted bet (its score existed; silver lost it).
+    # (2) A coverage game (weeks 5-12) that is not 'not played' lacks a final score, or a
+    # not-played game carries a graded counted bet (its score existed; silver lost it).
     unscored = [
         game.game_id
         for game in report.games
@@ -784,7 +836,8 @@ def binding_refusal(
                 "a settled result from the verdict)."
             )
 
-    # (3) The schedule holds no played game of the scope's last week.
+    # (3) The schedule holds no played game of the frozen scope's last week (22, never the
+    # coverage's week 12): the binding run still waits for the Super Bowl.
     final_week = schedule.loc[
         (schedule["season"] == scope.season) & (schedule["week"] == scope.end_week)
     ]
@@ -870,11 +923,30 @@ def weeks_graded_at(counted: pd.DataFrame, committed_at: str) -> list[int]:
     return sorted({int(week) for week in weeks})
 
 
-def _coverage_section(report: CoverageReport, void: pd.DataFrame) -> list[str]:
-    """Section 1: the missed-game count, the per-week table and the named exceptions."""
+def coverage_end_line() -> str:
+    """The last week the coverage covers, and the record that ends it there."""
+    return f"COVERAGE_END= week={R6_COVERAGE_END_WEEK} reason={RECORD_PATH}"
+
+
+def coverage_end_sentence(scope: VerdictScope) -> str:
+    """Why the coverage table stops at ``R6_COVERAGE_END_WEEK``, in one sentence."""
+    retired_from = R6_COVERAGE_END_WEEK + 1
+    return (
+        f"Coverage ends at week {R6_COVERAGE_END_WEEK}: under {RECORD_PATH} the day-before system "
+        f"stopped deciding at week {retired_from}, so weeks {retired_from}-{scope.end_week} are "
+        "not reported and none of their games is missed."
+    )
+
+
+def _coverage_section(
+    report: CoverageReport, void: pd.DataFrame, scope: VerdictScope
+) -> list[str]:
+    """Section 1: where it ends and why, the missed-game count, the table and the exceptions."""
     header = "| Week | Scheduled | Decided | Bet | No bet | Failed or refused | Missed | Not played |"
     lines = [
         "## 1. Coverage",
+        "",
+        coverage_end_sentence(scope),
         "",
         f"Missed games: {report.missed_total}",
         "",
@@ -1013,6 +1085,18 @@ def _refit_section_lines(refit_text: str) -> list[str]:
     ]
 
 
+def document_path(path: Path | str) -> str:
+    """*path* as the document names it: relative to :data:`REPO_ROOT` (POSIX) when it lies inside
+    it, the path as given (POSIX) otherwise -- never the machine's absolute repository path.
+
+    Lexical, never resolved: a store reached through a junction stays named where it was read.
+    """
+    given = Path(path)
+    if given.is_relative_to(REPO_ROOT):
+        return given.relative_to(REPO_ROOT).as_posix()
+    return given.as_posix()
+
+
 def _read_section(
     ledger: tuple[str, int], evidence: Sequence[EvidenceFile], silver_dir: Path
 ) -> list[str]:
@@ -1025,17 +1109,20 @@ def _read_section(
         f"- Ledger entries: {entry_count}",
     ]
     for item in evidence:
+        name = document_path(item.path)
         if item.missing:
-            lines.append(f"- Evidence {item.path}: missing")
+            lines.append(f"- Evidence {name}: missing")
         else:
-            lines.append(
-                f"- Evidence {item.path}: {item.lines} lines, sha256 {item.sha256}"
-            )
-    lines.append(f"- Silver directory: {silver_dir.as_posix()}")
+            lines.append(f"- Evidence {name}: {item.lines} lines, sha256 {item.sha256}")
+    lines.append(f"- Silver directory: {document_path(silver_dir)}")
     return lines
 
 
-def render_document(
+# One part of the binding document: the name a refusal gives it (ASCII, fixed), and its lines.
+DocumentPart = tuple[str, list[str]]
+
+
+def document_parts(
     *,
     report: CoverageReport,
     void: pd.DataFrame,
@@ -1049,30 +1136,66 @@ def render_document(
     evidence: Sequence[EvidenceFile],
     silver_dir: Path,
     written_at: datetime,
-) -> str:
-    """The one binding document: ASCII, LF line endings, the six sections in order."""
-    sections = [
-        _coverage_section(report, void),
-        _scope_section(scope),
-        _verdict_section(results),
-        _lock_section(lock, graded_weeks, frozen_weeks),
-        _refit_section_lines(refit_text),
-        _read_section(ledger, evidence, silver_dir),
-    ]
-    lines = [
+) -> list[DocumentPart]:
+    """The binding document's parts in order: its title, then the six sections, each named."""
+    title = [
         "# The 2026 season-close readout (binding)",
         "",
         f"Written once by `{BINDING_COMMAND}` at "
         f"{written_at.astimezone(UTC).isoformat(timespec='seconds')} (UTC), under the rule "
         "frozen in SEASON-VERDICT-PREREGISTRATION.md.",
     ]
-    for section in sections:
-        lines += ["", *section]
+    return [
+        ("the title", title),
+        ("section 1 (Coverage)", _coverage_section(report, void, scope)),
+        ("section 2 (Verdict scope)", _scope_section(scope)),
+        ("section 3 (The verdict per target)", _verdict_section(results)),
+        (
+            "section 4 (The rule's lock)",
+            _lock_section(lock, graded_weeks, frozen_weeks),
+        ),
+        ("section 5 (Re-fit comparison)", _refit_section_lines(refit_text)),
+        (
+            "section 6 (What this readout read)",
+            _read_section(ledger, evidence, silver_dir),
+        ),
+    ]
+
+
+def non_ascii_refusal(parts: Sequence[DocumentPart]) -> str | None:
+    """IN-A03: the first part holding a non-ASCII character, as a refusal sentence, or None.
+
+    Checked before anything is written, so a character the ASCII record cannot hold refuses by
+    name instead of crashing the write after every binding condition has passed.
+    """
+    for name, lines in parts:
+        text = "\n".join(lines)
+        if not text.isascii():
+            character = next(char for char in text if not char.isascii())
+            return (
+                f"{name} of the document holds the non-ASCII character "
+                f"U+{ord(character):04X}; the record is written as ASCII only, so nothing was "
+                "written (IN-A03)."
+            )
+    return None
+
+
+def render_document(parts: Sequence[DocumentPart]) -> str:
+    """The one binding document: the parts in order, a blank line between, LF line endings."""
+    lines: list[str] = []
+    for _name, part in parts:
+        if lines:
+            lines.append("")
+        lines += part
     return "\n".join(lines) + "\n"
 
 
 def _write_text(text: str, path: Path) -> None:
-    """Write *text* as ASCII bytes (LF kept) at *path*."""
+    """Write *text* as ASCII bytes (LF kept) at *path*.
+
+    The encode is the backstop: :func:`non_ascii_refusal` has already refused anything it cannot
+    hold.
+    """
     path.write_bytes(text.encode("ascii"))
 
 
@@ -1163,10 +1286,11 @@ def _coverage_values(week: WeekCoverage) -> str:
 
 
 def coverage_lines(report: CoverageReport) -> list[str]:
-    """The per-week lines, the total, and the named missed, partial and not-played games."""
-    lines = [
+    """Where the coverage ends, the per-week lines, the total, and the named exceptions."""
+    lines = [coverage_end_line()]
+    lines.extend(
         f"COVERAGE= week={week.week} {_coverage_values(week)}" for week in report.weeks
-    ]
+    )
     totals = " ".join(
         f"{field}={sum(getattr(week, field) for week in report.weeks)}"
         for field in _COVERAGE_FIELDS
@@ -1250,7 +1374,7 @@ def _binding_run(
     void = void_bets(counted, report)
     results = measure_targets(counted, not_played_game_ids(report))
     lock = lock_commit(repo_root)
-    text = render_document(
+    parts = document_parts(
         report=report,
         void=void,
         scope=scope,
@@ -1264,10 +1388,17 @@ def _binding_run(
         silver_dir=Path(args.silver_dir),
         written_at=datetime.now(UTC),
     )
+    # IN-A03, before the first write: writing the record spends the one shot (refusal 4).
+    not_ascii = non_ascii_refusal(parts)
+    if not_ascii is not None:
+        print(f"BINDING_REFUSED= {not_ascii}")
+        return 3
+
     record = repo_root / rule.BINDING_RECORD_PATH
     record.parent.mkdir(parents=True, exist_ok=True)
-    _replace_atomically(functools.partial(_write_text, text), record)
+    _replace_atomically(functools.partial(_write_text, render_document(parts)), record)
     print(f"BINDING_WRITTEN= {record.as_posix()}")
+    print(coverage_end_line())
     for result in results:
         print(f"VERDICT_{result.figures.target.upper()}= {result.token}")
     return 0
@@ -1294,13 +1425,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     scope = load_verdict_scope()
     counted = verdict_rows(entries, scope)
+    # MIDSEASON-SWITCH-RECORD.md section 5: only the coverage stops at week 12. The frozen scope
+    # still selects the counted rows, and refusal 3 and section 2 still read it.
+    coverage_scope = replace(scope, end_week=R6_COVERAGE_END_WEEK)
     try:
         schedule = load_recorded_schedule(args.silver_dir / SILVER_GAMES_FILENAME)
         scores = load_silver_games(args.silver_dir)
         evidence, refused = read_refusal_evidence(args.run_log, args.skip_records)
         # The binding run passes no instant: there, nothing is ever "not yet due".
         now = None if args.binding else datetime.now(UTC)
-        report = classify_coverage(schedule, scores, counted, refused, scope, now=now)
+        report = classify_coverage(
+            schedule, scores, counted, refused, coverage_scope, now=now
+        )
     except _STORE_ERRORS as error:
         print(f"STORE_UNREADABLE= {type(error).__name__}: {error}")
         return 2
