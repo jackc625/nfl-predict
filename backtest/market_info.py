@@ -15,12 +15,14 @@ The slope is the quantity of interest. The test is one-sided (H1: slope > 0).
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.special import expit
 from scipy.stats import norm
 
 _PROB_CLIP = 1e-6
 _MIN_ROWS = 3
 _MAX_ITER = 100
 _TOL = 1e-10
+_PERFECT_FIT_RTOL = 1e-20
 _PERFECT_FIT_RTOL = 1e-20
 
 
@@ -49,6 +51,11 @@ def _usable(*arrays: np.ndarray) -> list[np.ndarray]:
 
 
 def _result(coef: float, se: float, n: int) -> InfoResult:
+    if not (np.isfinite(se) and se > 0.0):
+        raise ValueError(
+            f"degenerate fit: standard error {se!r} is not finite and positive, "
+            "so no significance can be reported"
+        )
     p = float(norm.sf(coef / se))  # = 1 - cdf, without underflow to 0
     return InfoResult(coef=float(coef), se=float(se), p_one_sided=p, n=n)
 
@@ -69,10 +76,16 @@ def information_beyond_line(
     y_raw, line_c, model_c = _usable(outcome, line, model)
     y = y_raw - line_c
     x = np.column_stack([np.ones(len(y)), model_c - line_c])
-    beta, *_ = np.linalg.lstsq(x, y, rcond=None)
-    resid = y - x @ beta
-    sigma2 = float(resid @ resid) / (len(y) - 2)
-    se = np.sqrt(np.diag(sigma2 * np.linalg.inv(x.T @ x)))
+    try:
+        beta, *_ = np.linalg.lstsq(x, y, rcond=None)
+        resid = y - x @ beta
+        rss = float(resid @ resid)
+        if rss <= _PERFECT_FIT_RTOL * float(y @ y):
+            raise ValueError("degenerate fit: residuals are numerically zero")
+        sigma2 = rss / (len(y) - 2)
+        se = np.sqrt(np.diag(sigma2 * np.linalg.inv(x.T @ x)))
+    except np.linalg.LinAlgError as exc:
+        raise ValueError(f"singular design in line regression: {exc}") from exc
     return _result(beta[1], se[1], len(y))
 
 
@@ -89,16 +102,19 @@ def information_beyond_probability(
     offset = _logit(market)
     x = np.column_stack([np.ones(len(y)), _logit(model) - offset])
     beta = np.zeros(2)
-    for _ in range(_MAX_ITER):
-        p = 1.0 / (1.0 + np.exp(-(offset + x @ beta)))
+    try:
+        for _ in range(_MAX_ITER):
+            p = expit(offset + x @ beta)
+            info = x.T @ (x * (p * (1.0 - p))[:, None])
+            step = np.linalg.solve(info, x.T @ (y - p))
+            beta = beta + step
+            if np.max(np.abs(step)) < _TOL:
+                break
+        else:
+            raise ValueError("logistic fit did not converge")
+        p = expit(offset + x @ beta)
         info = x.T @ (x * (p * (1.0 - p))[:, None])
-        step = np.linalg.solve(info, x.T @ (y - p))
-        beta = beta + step
-        if np.max(np.abs(step)) < _TOL:
-            break
-    else:
-        raise ValueError("logistic fit did not converge")
-    p = 1.0 / (1.0 + np.exp(-(offset + x @ beta)))
-    info = x.T @ (x * (p * (1.0 - p))[:, None])
-    se = np.sqrt(np.diag(np.linalg.inv(info)))
+        se = np.sqrt(np.diag(np.linalg.inv(info)))
+    except np.linalg.LinAlgError as exc:
+        raise ValueError(f"singular design in logistic fit: {exc}") from exc
     return _result(beta[1], se[1], len(y))
