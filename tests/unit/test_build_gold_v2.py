@@ -213,6 +213,16 @@ def test_build_refuses_when_the_builder_asked_to_write(
 
 
 @pytest.mark.parametrize("out_dir", ["data/gold_v2", "data/gold/v2"])
-def test_build_refuses_an_output_directory_under_data(out_dir):
-    with pytest.raises(ValueError):
+def test_build_refuses_an_output_directory_under_data(
+    out_dir, fake_sources, monkeypatch
+):
+    # Every source is faked and the build itself raises, so even a broken guard can never
+    # reach real data or write into the live lake; it fails here instead.
+    def unreachable_build(self, **_kwargs):
+        raise AssertionError("the data/ refusal must come before any build work")
+
+    monkeypatch.setattr(
+        FeatureMatrixBuilderV2, "generate_feature_matrices", unreachable_build
+    )
+    with pytest.raises(ValueError, match="data"):
         build_gold_v2(Path(out_dir))
