@@ -1,7 +1,12 @@
 """The 2026 mid-season switch record: the constants the code reads.
 
-From 2026 week 13 the day-before betting system retires, the v1 calendar re-fit is paused, and the
+From 2026 week 10 the day-before betting system retires, the v1 calendar re-fit is paused, and the
 repaired v2 models are installed once by a recorded owner command.
+
+CORRECTED ONCE, 2026-11-06 (record section 8): by owner ruling the switch moved from week 13 to
+week 10, so ``DAY_BEFORE_RETIRED_FROM``, ``R6_COVERAGE_END_WEEK`` and
+``PREREGISTRATION_DEADLINE_UTC`` changed in a later commit touching only the two record files,
+whose message INVALIDATES the original record commit in part. Every other value is unchanged.
 
 ONE RECORD IN TWO FILES, in the shape of ``backtest/refit_preregistration_2026.py``. The root
 ``MIDSEASON-SWITCH-RECORD.md`` is the human-readable half: it states in plain English what changes,
@@ -53,10 +58,10 @@ __all__ = [
 # The human-readable half of this record, at the repository root.
 RECORD_PATH: str = "MIDSEASON-SWITCH-RECORD.md"
 
-# Tue 2026-12-01 17:00 America/New_York (EST), in UTC: the cutoff of re-fit date 2, after week
-# 12's last lock (Sun 2026-11-29 18:00 ET) and before week 13's first (Wed 2026-12-02 18:00 ET).
-# The record commit, and the code that reads it, must be on GitHub's master before this instant.
-PREREGISTRATION_DEADLINE_UTC: str = "2026-12-01T22:00:00+00:00"
+# Tue 2026-11-10 17:00 America/New_York (EST), in UTC: after week 9's last lock (Sun 2026-11-08
+# 18:00 ET) and before week 10's first (Wed 2026-11-11 18:00 ET). The commit that last changed the
+# record, and the code that reads it, must be on GitHub's master before this instant.
+PREREGISTRATION_DEADLINE_UTC: str = "2026-11-10T22:00:00+00:00"
 
 # The earlier records this one INVALIDATES, in part or by section (record section 6): the verdict
 # test (922b010), the verdict scope (c3a3399) and the rolling re-fit (e25884d).
@@ -73,10 +78,10 @@ INVALIDATES: tuple[str, ...] = (
 
 # (season, week): from this NFL week on, no live row is written, so no shadow twin either. The
 # switch is keyed on the NFL week, never the clock.
-DAY_BEFORE_RETIRED_FROM: tuple[int, int] = (2026, 13)
+DAY_BEFORE_RETIRED_FROM: tuple[int, int] = (2026, 10)
 
 # The last week the February R6 coverage table reports: the week before the switch.
-R6_COVERAGE_END_WEEK: int = 12
+R6_COVERAGE_END_WEEK: int = 9
 
 
 # ---------------------------------------------------------------------------
