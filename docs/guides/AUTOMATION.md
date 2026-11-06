@@ -164,7 +164,8 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
    the watcher alerts that evening.
 
    **Paused for the rest of 2026 (`MIDSEASON-SWITCH-RECORD.md` section 3).** The 4-weekly re-fit
-   is paused for its remaining 2026 dates, 2026-12-01, 2026-12-29 and 2027-01-26
+   is paused for the rest of the 2026 season, its remaining dates 2026-12-01, 2026-12-29 and
+   2027-01-26
    (`REFIT_PAUSED_DATES` in `backtest/midseason_switch_2026.py`), because any of them would
    retrain the old recipe and overwrite the v2 models. When one falls due, the side step closes it
    `not run`, once, with `paused_by` naming the ruling, and prints `REFIT= not_due`: no schedule
@@ -601,7 +602,10 @@ failure. The owner's setup steps, the TEST command and what each message means a
   lock file, so the daily run and the closing task never interleave. It is the one place to read
   what reached the owner. A dry run writes nothing to it.
 - **Console lines** on the daily run: `NOTIFY_FAILED=` and `NOTIFY_BETS=` (`delivered <receipt id>`
-  or `failed <kind>`, then the title; `NOTIFY_BETS= none` when there is no bets push),
+  or `failed <kind>`, then the title; `NOTIFY_BETS= none` when there is no bets push, and
+  `NOTIFY_BETS= none (day-before window retired from 2026 week 13)` for a slate of 2026 week 13 or
+  later, whose day-before window `MIDSEASON-SWITCH-RECORD.md` retired; the watcher check-in of such
+  a run carries the token `day-before=retired` after its bets count),
   `NOTIFY_DIGEST=` (`delivered <receipt id>`, `failed <kind>` or `not a digest day`), and the
   `WATCHER_CHECKIN=` line above. A delivered message whose record could not be written also prints
   `NOTIFICATION_LOG= failed <ExceptionClass>`.

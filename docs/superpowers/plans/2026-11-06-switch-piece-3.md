@@ -724,12 +724,12 @@ Ask the owner to push, open PR B and merge it (`--admin`), outside 17:00-17:20 E
 
 ### Task 12: Switch day -- install v2 (owner command, main checkout)
 
-**Files:** none (runs the Task 5 command). Allowed: any day on or after Tue 2026-12-01 once week 12's last lock (Sun 11-29 18:00 ET) has passed, never 17:00-17:20 ET; best on Tue 12-01 before 16:00 ET so the 17:00 run is the first on v2. It changes the live lake and `latest.json`: run it only after the owner says go on the day.
+**Files:** none (runs the Task 5 command). Allowed: any day on or after Tue 2026-12-01 once week 12's last lock (Sun 11-29 18:00 ET) has passed, never 17:00-17:20 ET; best on Tue 12-01, started no later than 15:00 ET (the v2 gold build, about 20 minutes, training and the walk-forward, and a possible v1 gold rebuild of about 20 minutes on a refusal must all finish before 17:00), so the 17:00 run is the first on v2. It changes the live lake and `latest.json`: run it only after the owner says go on the day.
 
 - [ ] **Step 1: Preconditions**
 
 Run (PowerShell): `Get-Date`; `git -C C:\Users\jackc\code\nfl-predict status --porcelain`; `git -C C:\Users\jackc\code\nfl-predict log -1 --format=%h`
-Expected: ET time outside 16:00-17:30; no modified or untracked file under the code paths (`refit/records.py:117-133`); HEAD is the PR B merge. Record the bytes of `artifacts/latest.json` and the modification times of `data/gold/features_{wp,ats,ou}.parquet`.
+Expected: ET time no later than 15:00 (the latest start); no modified or untracked file under the code paths (`refit/records.py:117-133`); HEAD is the PR B merge. Record the bytes of `artifacts/latest.json` and the modification times of `data/gold/features_{wp,ats,ou}.parquet`.
 
 - [ ] **Step 2: Run the install detached** (the gold build alone is about 20 minutes; Claude Code stops long foreground jobs for memory)
 
@@ -755,7 +755,24 @@ Expected: `5 failed`, each an `AssertionError`; the gate `8 passed, 1 skipped`. 
 
 Run (working directory: the main checkout): `uv run python -c "import json,pandas as pd; m=json.load(open('artifacts/latest.json')); [print(t, set(json.load(open(f'artifacts/{m[t]}/feature_list.json'))) <= set(pd.read_parquet(f'data/gold/features_{t}.parquet').columns)) for t in ('wp','ats','ou')]"` -- three `True`. Then the Task 6 Step 4 command and `tests/integration/test_gold_write_scope.py tests/integration/test_audit_integrity.py` -- all PASS.
 
-- [ ] **Step 5: After the 17:00 ET run** (read `logs/daily_lock_runs.jsonl`'s last record and the run log): no failed step; the gold build used the v2 builder (212/212/211 columns); the re-fit side step closed 2026-12-01 `not run` with `paused_by` in `ledger/refit/dates.jsonl`. On Wed 12-02 (week 13's first slate) the run prints `LEDGER_RETIRED= season=2026 week=13` and `NOTIFY_BETS= none (day-before window retired from 2026 week 13)`, and /bets for week 13 shows the retired message.
+Then the tests re-pointed to the recipe in force by the final fix wave (2026-11-06; each verified on a scratch v2 install before the merge, so on v2 they must PASS):
+
+```bash
+uv run pytest tests/integration/test_live_2026_prediction_set.py tests/unit/test_audit_trace_epa_weather.py::TestArea2QbAdjAndCpoe::test_cpoe_in_plausible_range tests/integration/test_postlock_moves_neutralised.py::TestLiveGoldCarriesThePreMoveFacts "tests/unit/test_final_fit_entry_point.py::TestTheRecordedGenerationIsTheLaddersOwn::test_the_live_gold_is_the_generation_the_served_models_were_fitted_on" tests/unit/test_promote_models_tuned_path.py::test_the_serving_models_carry_the_ratified_exclusion tests/unit/test_promote_models_tuned_path.py::test_the_v2_serving_check_passes_the_fixed_inputs_and_catches_a_leak "tests/unit/test_temporal_display_columns.py::TestRealGold::test_the_wp_fit_survives_the_nan_the_owner_rulings_put_in_gold" "tests/integration/test_gold_rebuild_attribution.py::TestThePhase33LadderIsAttributed::test_the_level_preservation_family_is_the_builders_own_predicate" tests/integration/test_no_precoverage_constants.py tests/unit/test_build_gold_v2.py::test_build_refuses_an_absolute_path_inside_the_resolved_live_lake -q -p no:cacheprovider
+```
+
+Expected: all PASS except `test_live_2026_prediction_set.py::test_every_live_prediction_row_is_stamped_against_its_lock` if it was already red before the install (it is red in the worktree for reasons unrelated to the recipe; compare with the Step 1 state, never accept a NEW red). `test_build_refuses_an_absolute_path_inside_the_resolved_live_lake` could not be run on v2 before the merge (its live lake was the scratch gold), so it is checked here for the first time on v2.
+
+Two nodes can only be verified after the install AND the next cache rebuild (the 17:00 run rebuilds `data/web_cache.duckdb` from the served models; before that the cache still holds what the v1 models served): run them after the Tue 12-01 17:00 run (Step 5):
+
+```bash
+uv run pytest tests/integration/test_activation_parity.py::test_part_a_cache_predictions_equal_backtest_csv tests/integration/test_activation_parity.py::test_part_b_cache_feature_importances_equal_deployed_metadata -q -p no:cacheprovider
+```
+
+Expected: both PASS. `test_part_b_cache_feature_importances_equal_deployed_metadata` is RED on the main checkout today (the generation-1 v1 re-fit artifacts carry no `feature_importances`, so the cache table is empty); the v2 artifacts write them (`refit.owner_install.v2_feature_importances`), so it turns green once the cache is rebuilt from v2. If either is still red after the rebuild, stop and report.
+
+- [ ] **Step 5: After the Tue 12-01 17:00 ET run** (read `logs/daily_lock_runs.jsonl`'s last record and the run log): no failed step. Tuesday's run has no game tomorrow, so it takes the no-games branch: no gold build. It closes the paused re-fit date 2026-12-01 `not run` with `paused_by` in `ledger/refit/dates.jsonl` and rebuilds the cache.
+- [ ] **Step 5b: After the Wed 12-02 17:00 ET run** (week 13's first slate, Thursday's game; the first v2 nightly gold build and the first unplayed game through the v2 families): no failed step; the gold build used the v2 builder (212/212/211 columns, the data QA width check green); the run prints `LEDGER_RETIRED= season=2026 week=13` and `NOTIFY_BETS= none (day-before window retired from 2026 week 13)`; /bets for week 13 shows the retired message.
 
 - [ ] **Step 6: File and report**
 

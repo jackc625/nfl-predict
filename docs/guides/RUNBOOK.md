@@ -476,6 +476,11 @@ uv run python scripts/fingerprint_gold.py --out outputs/fingerprints/after.json
 uv run python scripts/fingerprint_gold.py --compare outputs/fingerprints/before.json outputs/fingerprints/after.json --attribute-rung 2
 ```
 
+- **Once the v2 recipe is live** (MIDSEASON-SWITCH-RECORD.md section 4), the
+  `scripts/build_features.py --all-seasons` line above writes v1 gold under the v2 models, and
+  the daily data QA then refuses on width. Rebuild with `uv run python -m scripts.rebuild_gold`
+  instead: it follows the in-force recipe.
+
 - **Succeeded when:** the attribution judge EXITS 0 -- every moved column is attributed to the
   rung's one named cause and `unattributed` is empty. Judge by the exit code, not by reading
   the printed report, and do not pipe the command through anything that masks `$?`. Exit 1 is
@@ -1396,8 +1401,10 @@ gold. `uv run python -m scripts.rebuild_gold` rebuilds gold for whichever recipe
   nothing.
 - Never so that it overlaps the 17:00-17:20 ET daily run: both write the gold matrices. Read the ET
   time with PowerShell `Get-Date`.
-- Best on Tue 2026-12-01, started before 16:00 ET, so the 17:00 ET run that evening is the first on
-  v2.
+- Best on Tue 2026-12-01, started no later than 15:00 ET, so the 17:00 ET run that evening is the
+  first on v2. The latest start is 15:00 ET because everything must finish before 17:00 ET: the v2
+  gold build (about 20 minutes), training and the walk-forward, and, if the install refuses, a
+  v1 gold rebuild (about 20 minutes more).
 - From the main checkout with PR A merged, and with no modified or untracked file under the code
   paths (`git status --porcelain` shows none under `refit`, `models`, `scripts`, `pipeline` and the
   other paths in `refit.records.REFIT_CODE_PATHS`). Write down the bytes of `artifacts/latest.json`
