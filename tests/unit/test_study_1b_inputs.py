@@ -23,11 +23,13 @@ from backtest.study_1b_inputs import (
     EARLY_REPLACED_COLUMNS,
     NO_GOLD_ROW,
     NOT_SETTLED,
+    EarlyInputs,
     build_early_inputs,
     early_lock_frame,
     replace_early_columns,
     settled_by_early_time,
 )
+from models.v2_recipe import V2_INPUTS, V2_TARGETS
 from scripts.build_gold_v2 import add_v2_derived_columns
 
 _ET = "America/New_York"
@@ -54,12 +56,17 @@ def et(text: str) -> pd.Timestamp:
     return cast(pd.Timestamp, pd.Timestamp(text, tz=_ET))
 
 
-def _games(rows: list[tuple[str, str, float, float]]) -> pd.DataFrame:
+def _games(
+    rows: list[tuple[str, str, float, float]],
+    roofs: Mapping[str, str | None] | None = None,
+) -> pd.DataFrame:
     """Silver-shaped games from ``(game_id, ET kickoff, home_score, away_score)``.
 
     Season, week and both teams are read off the id (``2020_W12_KC@PIT``); the kickoff
-    is stored in UTC, as silver stores it.
+    is stored in UTC, as silver stores it. ``venue_roof`` is ``outdoor`` unless *roofs*
+    names the game.
     """
+    roofs = roofs or {}
     records = []
     for game_id, kickoff, home_score, away_score in rows:
         season, week, teams = game_id.split("_")
@@ -72,6 +79,7 @@ def _games(rows: list[tuple[str, str, float, float]]) -> pd.DataFrame:
                 "home_team": home,
                 "away_team": away,
                 "kickoff_et": et(kickoff).tz_convert("UTC"),
+                "venue_roof": roofs.get(game_id, "outdoor"),
                 "neutral_site": False,
                 "home_score": home_score,
                 "away_score": away_score,
@@ -86,7 +94,7 @@ def _week_2_2024() -> pd.DataFrame:
     )
 
 
-def _weeks_12_13_2020() -> pd.DataFrame:
+def _weeks_12_13_2020(roofs: Mapping[str, str | None] | None = None) -> pd.DataFrame:
     return _games(
         [
             (LV_ATL, "2020-11-29 13:00", 17.0, 13.0),  # 30 points, ends 17:00
@@ -96,11 +104,25 @@ def _weeks_12_13_2020() -> pd.DataFrame:
             (KC_GAME, "2020-12-06 13:00", 22.0, 16.0),
             (OTHER_GAME, "2020-12-06 13:00", 16.0, 21.0),
             (NO_GOLD_GAME, "2020-12-06 13:00", 28.0, 31.0),
-        ]
+        ],
+        roofs,
     )
 
 
-def _gold_row(game_id: str) -> dict[str, Any]:
+#: The stale gold QB values of a fixture game, (home, away).
+STALE_QB = (9.9, 9.0)
+
+
+def _range_game(season: int) -> str:
+    """The extra game every fixture gold season holds, its stale QB values negated.
+
+    It opens the season's gold QB range to [-9.9, 9.9] (home) and [-9.0, 9.0] (away), as a
+    real season's spread of QB values encloses the early ones.
+    """
+    return f"{season}_W01_QBL@QBH"
+
+
+def _gold_row(game_id: str, qb: tuple[float, float] = STALE_QB) -> dict[str, Any]:
     """One gold row before its derived columns: identity, per-side inputs, stale values."""
     season, week, _ = game_id.split("_")
     row: dict[str, Any] = {
@@ -111,8 +133,8 @@ def _gold_row(game_id: str) -> dict[str, Any]:
         "hfa_used": 48.0,
         "wind_mph": 14.0,
         "home_win": 1.0,
-        "home_qb_adjustment": 9.9,
-        "away_qb_adjustment": 9.0,
+        "home_qb_adjustment": qb[0],
+        "away_qb_adjustment": qb[1],
     }
     for side, success, pace in (("home", 0.47, 28.0), ("away", 0.43, 30.0)):
         row[f"{side}_mkt_rating"] = 9.9
@@ -129,11 +151,21 @@ def _gold_row(game_id: str) -> dict[str, Any]:
     return row
 
 
-def _gold(ids: list[str]) -> pd.DataFrame:
-    """A gold matrix of *ids*, its derived columns computed as the v2 gold build does."""
-    return add_v2_derived_columns(
-        pd.DataFrame.from_records([_gold_row(g) for g in ids])
-    )
+def _gold(
+    ids: list[str], qb: Mapping[str, tuple[float, float]] | None = None
+) -> pd.DataFrame:
+    """A gold matrix of *ids* plus each season's ``_range_game``, derived columns included.
+
+    *qb* overrides a game's stale ``(home, away)`` QB values. The derived columns are
+    computed as the v2 gold build does.
+    """
+    qb = qb or {}
+    seasons = sorted({int(game_id.split("_")[0]) for game_id in ids})
+    records = [_gold_row(g, qb.get(g, STALE_QB)) for g in ids] + [
+        _gold_row(_range_game(season), (-STALE_QB[0], -STALE_QB[1]))
+        for season in seasons
+    ]
+    return add_v2_derived_columns(pd.DataFrame.from_records(records))
 
 
 def _write_gold(directory: Path, ids_by_target: Mapping[str, list[str]]) -> Path:
@@ -143,13 +175,12 @@ def _write_gold(directory: Path, ids_by_target: Mapping[str, list[str]]) -> Path
     return directory
 
 
-def _qb_rows(games_df: pd.DataFrame, season: int, week: int) -> pd.DataFrame:
-    """What the tracker returns for one week: one row per team per game."""
-    week_games = games_df.loc[
-        (games_df["season"] == season) & (games_df["week"] == week)
-    ]
+def _qb_rows(
+    week_games: pd.DataFrame, team_qb: Mapping[str, float] = TEAM_QB
+) -> pd.DataFrame:
+    """What the tracker returns for *week_games*: one row per team per game."""
     rows = [
-        {"game_id": game_id, "team": team, "qb_adjustment": TEAM_QB.get(team, 0.0)}
+        {"game_id": game_id, "team": team, "qb_adjustment": team_qb.get(team, 0.0)}
         for game_id, home, away in zip(
             week_games["game_id"],
             week_games["home_team"],
@@ -164,7 +195,8 @@ def _qb_rows(games_df: pd.DataFrame, season: int, week: int) -> pd.DataFrame:
 class _QBStub:
     """Stands in for ``QBTrackerEarly.build_features`` and records each call's locks."""
 
-    def __init__(self) -> None:
+    def __init__(self, team_qb: Mapping[str, float] = TEAM_QB) -> None:
+        self.team_qb = team_qb
         self.calls: list[tuple[int, int, pd.Series]] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -180,7 +212,11 @@ class _QBStub:
             lock_frame: pd.Series,
         ) -> pd.DataFrame:
             stub.calls.append((target_season, target_week, lock_frame))
-            return _qb_rows(games_df, target_season, target_week)
+            week_games = games_df.loc[
+                (games_df["season"] == target_season)
+                & (games_df["week"] == target_week)
+            ]
+            return _qb_rows(week_games, stub.team_qb)
 
         monkeypatch.setattr(
             study_1b_inputs.QBTrackerEarly, "build_features", build_features
@@ -265,7 +301,73 @@ def test_replaced_columns_come_from_the_early_families_and_wind_is_unknown() -> 
     kept = [
         c for c in gold.columns if c not in (*EARLY_REPLACED_COLUMNS, "qb_value_diff")
     ]
-    pd.testing.assert_frame_equal(out[kept], gold[kept])
+    gold_row = gold.loc[gold["game_id"] == OTHER_GAME].reset_index(drop=True)
+    pd.testing.assert_frame_equal(out[kept], gold_row[kept])
+
+
+def _early_families(
+    games_df: pd.DataFrame, ids: list[str], team_qb: Mapping[str, float] = TEAM_QB
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """``(qb, ratings, level)`` for *ids*, as the early families would return them."""
+    qb = _qb_rows(games_df.loc[games_df["game_id"].isin(ids)], team_qb)
+    ratings = pd.DataFrame(
+        {
+            "game_id": ids,
+            "home_mkt_rating": 1.5,
+            "away_mkt_rating": -1.0,
+            "mkt_rating_diff": 2.5,
+            "mkt_total_sum": 45.5,
+            "mkt_rating_coverage": 1.0,
+            "information_time": et("2020-11-29 16:25"),
+        }
+    )
+    level = pd.DataFrame(
+        {
+            "game_id": ids,
+            "league_points_level": 46.0,
+            "information_time": et("2020-11-29 20:25"),
+        }
+    )
+    return qb, ratings, level
+
+
+def test_a_rebuilt_qb_value_outside_its_seasons_gold_range_is_clipped_to_it() -> None:
+    # The 2020 gold range is [-9.9, 9.9] home and [-9.0, 9.0] away. The 2019 game widens
+    # 2019's range only, so it must not reach the 2020 game's clip.
+    prior_season_game = "2019_W17_ATL@NO"
+    games = _weeks_12_13_2020()
+    gold = _gold([OTHER_GAME, prior_season_game], qb={prior_season_game: (20.0, -20.0)})
+    qb, ratings, level = _early_families(
+        games, [OTHER_GAME], {"ATL": 12.0, "NO": -12.0}
+    )
+    out = replace_early_columns(gold, games, qb, ratings, level)
+    assert out.loc[0, "home_qb_adjustment"] == pytest.approx(9.9)
+    assert out.loc[0, "away_qb_adjustment"] == pytest.approx(-9.0)
+    assert out.loc[0, "qb_value_diff"] == pytest.approx(9.9 - (-9.0))
+    kept = [
+        c for c in gold.columns if c not in (*EARLY_REPLACED_COLUMNS, "qb_value_diff")
+    ]
+    gold_row = gold.loc[gold["game_id"] == OTHER_GAME].reset_index(drop=True)
+    pd.testing.assert_frame_equal(out[kept], gold_row[kept])
+
+
+def test_an_indoor_game_keeps_its_gold_wind_and_every_other_roof_is_unknown() -> None:
+    ids = [OTHER_GAME, KC_GAME, NO_GOLD_GAME, THU_W13]
+    games = _weeks_12_13_2020(
+        {
+            OTHER_GAME: "indoor",
+            KC_GAME: "outdoor",
+            NO_GOLD_GAME: "retractable",
+            THU_W13: None,
+        }
+    )
+    gold = _gold(ids)
+    gold.loc[gold["game_id"] == OTHER_GAME, "wind_mph"] = 0.0
+    out = replace_early_columns(gold, games, *_early_families(games, ids))
+    wind = dict(zip(out["game_id"], out["wind_mph"], strict=True))
+    assert wind[OTHER_GAME] == 0.0
+    assert np.isnan(wind[KC_GAME]) and np.isnan(wind[NO_GOLD_GAME])
+    assert np.isnan(wind[THU_W13])
 
 
 def test_build_refuses_a_family_read_after_the_early_time(
@@ -352,12 +454,52 @@ def test_build_reads_every_family_at_the_early_time_and_counts_what_it_leaves_ou
 
     reasons = dict(zip(out.excluded["game_id"], out.excluded["reason"], strict=True))
     assert reasons == {KC_GAME: NOT_SETTLED, NO_GOLD_GAME: NO_GOLD_ROW}
-    for target in ("wp", "ats", "ou"):
+    assert out.qb_values_clipped == 0
+    for target in V2_TARGETS:
+        assert out.rows[target]["game_id"].tolist() == [OTHER_GAME]
+    for target in ("wp", "ats"):
         rows = out.rows[target]
-        assert rows["game_id"].tolist() == [OTHER_GAME]
-        # Only the two Sunday 11-29 games had ended: (30 + 40) / 2. KC's Wednesday
-        # game (60 points) and the Thursday game would move it.
-        assert rows.loc[0, "league_points_level"] == pytest.approx(35.0)
-        assert rows.loc[0, "mkt_rating_coverage"] == 1.0
         assert rows.loc[0, "qb_value_diff"] == pytest.approx(1.2 - (-0.5))
-        assert np.isnan(rows.loc[0, "wind_mph"])
+        # Both teams were rated at the early capture.
+        assert not np.isnan(rows.loc[0, "mkt_rating_diff"])
+    ou = out.rows["ou"]
+    # Only the two Sunday 11-29 games had ended: (30 + 40) / 2. KC's Wednesday
+    # game (60 points) and the Thursday game would move it.
+    assert ou.loc[0, "league_points_level"] == pytest.approx(35.0)
+    assert not np.isnan(ou.loc[0, "mkt_total_sum"])
+    assert np.isnan(ou.loc[0, "wind_mph"])
+
+
+def _build_one_game(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    team_qb: Mapping[str, float] = TEAM_QB,
+) -> EarlyInputs:
+    """``build_early_inputs`` for OTHER_GAME alone, the QB tracker stubbed with *team_qb*."""
+    games = _weeks_12_13_2020()
+    gold_dir = _write_gold(
+        tmp_path / "gold", {target: [OTHER_GAME] for target in V2_TARGETS}
+    )
+    _QBStub(team_qb).install(monkeypatch)
+    early_times = pd.Series({OTHER_GAME: et(EARLY_W13)})
+    return build_early_inputs(gold_dir, games, _nflverse(games), early_times)
+
+
+def test_build_counts_the_early_qb_values_the_clip_moved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # ATL (home) at 12.0 is above the 2020 gold max of 9.9; NO (away) at -0.5 is inside.
+    out = _build_one_game(monkeypatch, tmp_path, {**TEAM_QB, "ATL": 12.0})
+    # One early value moved, counted once although each of the three gold matrices clipped it.
+    assert out.qb_values_clipped == 1
+    for target in ("wp", "ats"):
+        assert out.rows[target].loc[0, "qb_value_diff"] == pytest.approx(9.9 - (-0.5))
+
+
+def test_build_rows_hold_only_the_game_keys_and_the_targets_inputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    out = _build_one_game(monkeypatch, tmp_path)
+    for target in V2_TARGETS:
+        expected = ["game_id", "season", "week", *V2_INPUTS[target]]
+        assert list(out.rows[target].columns) == expected

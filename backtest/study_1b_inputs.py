@@ -6,12 +6,17 @@ here is a gold row with the inputs that can change between the two instants rebu
 
 * QB (``home_/away_qb_adjustment``): ``features.qb_early.QBTrackerEarly``, which never reads
   an untimed depth chart, run with the EARLY lock frame (without ``lock_frame=`` it would
-  silently use the day-before locks);
+  silently use the day-before locks). Each value is then clipped to the gold's range of
+  that column in that game's season, because the gold build winsorizes the QB columns and
+  the model trains on the clipped values (``_clip_to_gold_season_range``);
 * the market rating (``home_/away_mkt_rating``, ``mkt_rating_diff``, ``mkt_total_sum``,
   ``mkt_rating_coverage``) and the league scoring level (``league_points_level``), each read
-  through its ``locks=`` keyword at the same early lock frame;
+  through its ``locks=`` keyword at the same early lock frame. The v2 gold merges both
+  families after the builder's winsorization, so they are never clipped here either;
 * wind (``wind_mph``), which nothing knows on Tuesday: it is left blank and the recipe's
-  median imputer fills it.
+  median imputer fills it -- except where silver ``games.venue_roof`` is ``indoor``. A
+  fixed roof is a fact of the stadium, known on Tuesday as on Saturday, so such a game
+  keeps the gold's wind (0.0 in every indoor game of 2020-2024).
 
 ``scripts.build_gold_v2.add_v2_derived_columns`` then recomputes ``qb_value_diff`` and the
 other derived inputs from the per-side columns. EVERY OTHER COLUMN IS THE GOLD'S, unchanged.
@@ -20,6 +25,11 @@ finished games, so they are the same at the early capture as at the lock -- PROV
 teams' previous games had ended by then. ``settled_by_early_time`` checks exactly that per
 game; a game failing it is left out and counted (``NOT_SETTLED``), never scored with
 day-before inputs. A game with no row in a gold matrix is left out too (``NO_GOLD_ROW``).
+
+``build_early_inputs`` then trims each target's rows to ``game_id, season, week`` and the
+target's ``models.v2_recipe.V2_INPUTS``, in that order. The gold's other columns (the
+forecast and its siblings, the injury flags, the labels) are day-before values, so they
+never travel with an early row.
 
 THE EARLY LOCK FRAME is ``utils.game_lock.lock_frame`` over the family scope with each
 early-timed game's lock replaced by its early time. An early time after the game's own lock
@@ -45,7 +55,7 @@ from features.league_level import league_points_level
 from features.market_rating import market_ratings
 from features.provenance import DECLARED_GAME_DURATION
 from features.qb_early import QBTrackerEarly
-from models.v2_recipe import V2_TARGETS
+from models.v2_recipe import V2_INPUTS, V2_TARGETS
 from scripts.build_gold_v2 import add_v2_derived_columns
 
 __all__ = [
@@ -59,8 +69,9 @@ __all__ = [
     "settled_by_early_time",
 ]
 
-#: The gold columns rebuilt as of the early capture (``wind_mph`` is blanked). The derived
-#: inputs (``qb_value_diff`` and the rest) are recomputed from them afterwards.
+#: The gold columns rebuilt as of the early capture (``wind_mph`` is blanked except in an
+#: indoor game). The derived inputs (``qb_value_diff`` and the rest) are recomputed from
+#: them afterwards.
 EARLY_REPLACED_COLUMNS: tuple[str, ...] = (
     "home_qb_adjustment",
     "away_qb_adjustment",
@@ -76,6 +87,11 @@ EARLY_REPLACED_COLUMNS: tuple[str, ...] = (
 NOT_SETTLED = "inputs_not_settled_at_early_capture"
 NO_GOLD_ROW = "no_gold_row"
 
+#: The identity columns every early row carries ahead of its target's ``V2_INPUTS``.
+_ROW_KEYS: tuple[str, ...] = ("game_id", "season", "week")
+
+_QB_COLUMNS: tuple[str, ...] = ("home_qb_adjustment", "away_qb_adjustment")
+
 _MARKET_COLUMNS: tuple[str, ...] = (
     "home_mkt_rating",
     "away_mkt_rating",
@@ -90,15 +106,22 @@ class EarlyInputs:
     """The early-capture input rows and the games left out.
 
     Attributes:
-        rows: One frame per target (``V2_TARGETS``): the gold rows of the kept games with
-            the early columns replaced. Never empty, one row per game.
+        rows: One frame per target (``V2_TARGETS``), one row per kept game in gold row
+            order, holding exactly ``game_id, season, week`` and then the target's
+            ``models.v2_recipe.V2_INPUTS``, in that order, each as known at the early
+            capture. Never empty.
         excluded: ``game_id, reason`` for every early-timed game left out, sorted by
             ``game_id``; the reason is ``NOT_SETTLED`` or ``NO_GOLD_ROW``, the first that
             applies.
+        qb_values_clipped: How many rebuilt QB values (one per side of a kept game) the
+            clip to the gold's season range moved. A value moved in any target's rows is
+            counted once; the three gold matrices share one QB column, so this is also
+            each target's own count.
     """
 
     rows: dict[str, pd.DataFrame]
     excluded: pd.DataFrame
+    qb_values_clipped: int
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +327,54 @@ def _side_qb(
     return qb.reindex(keys).to_numpy(dtype=float)
 
 
+def _clip_to_gold_season_range(
+    values: np.ndarray, seasons: pd.Series, gold: pd.DataFrame, column: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """*values* clipped to *gold*'s observed [min, max] of *column* in each value's season.
+
+    The gold build winsorizes every continuous feature per season and per column at the
+    1st and 99th percentiles of all strictly earlier seasons
+    (``scripts.build_features.FeatureMatrixBuilder.handle_missing_data_and_outliers``),
+    and the QB columns are merged before that step, so the model trains on clipped QB
+    values. The EXACT bounds cannot be recomputed here: they are quantiles of the earlier
+    seasons' UNCLIPPED values, and the gold keeps only the clipped ones. The observed range
+    of the season's gold rows (every game of the season, not just the studied ones) stands
+    in for them. In a season the build clipped, that range lies inside the exact bounds and
+    meets a bound wherever the build clipped a value there; where no value reached a bound,
+    the observed edge is a little inside it and an early value in that gap is clipped
+    slightly harder than the build would have. (The gold's first season, which the build
+    left unclipped for want of an earlier one, has no bounds at all.) A season whose gold
+    column holds no value leaves its values unclipped.
+
+    Returns:
+        The clipped values, and a bool mask of the values the clip moved (a NaN value
+        stays NaN and never counts as moved).
+    """
+    by_season = gold.groupby("season")[column]
+    low = by_season.min().reindex(seasons.to_numpy()).to_numpy(dtype=float)
+    high = by_season.max().reindex(seasons.to_numpy()).to_numpy(dtype=float)
+    above = values > high
+    below = values < low
+    clipped = np.where(above, high, np.where(below, low, values))
+    return clipped, above | below
+
+
+def _indoor(games: pd.DataFrame, game_ids: pd.Series) -> np.ndarray:
+    """Per game of *game_ids*: is its silver ``venue_roof`` exactly ``indoor``?
+
+    A retractable, outdoor or missing roof is not: a retractable roof's state is not known
+    at the early capture, and the gold carries a measured wind for those games.
+    """
+    if "venue_roof" not in games.columns:
+        msg = "the games frame is missing ['venue_roof']"
+        raise ValueError(msg)
+    roofs = pd.Series(
+        games["venue_roof"].to_numpy(),
+        index=pd.Index(games["game_id"].astype(str), name="game_id"),
+    )
+    return (roofs.reindex(game_ids) == "indoor").to_numpy(dtype=bool)
+
+
 def replace_early_columns(
     gold: pd.DataFrame,
     games: pd.DataFrame,
@@ -314,16 +385,33 @@ def replace_early_columns(
     """The gold rows of the games in *ratings*, with the early columns replaced.
 
     ``home_/away_qb_adjustment`` come from *qb* (``game_id, team, qb_adjustment``, the team
-    matched to the game's home and away team in *games*), the five market columns from
-    *ratings*, ``league_points_level`` from *level*, ``wind_mph`` is NaN, and then
-    ``add_v2_derived_columns`` recomputes the derived inputs. Every other column, the column
-    order and the gold's row order are unchanged; the index is reset.
+    matched to the game's home and away team in *games*), each clipped to *gold*'s observed
+    range of that column in the game's season (``_clip_to_gold_season_range``), so pass the
+    WHOLE gold matrix. The five market columns come from *ratings* and
+    ``league_points_level`` from *level*, both unclipped (the v2 gold merges them after the
+    builder's winsorization). ``wind_mph`` keeps the gold's value where the game's
+    ``venue_roof`` in *games* is ``indoor`` and is NaN for every other roof, missing
+    included. Then ``add_v2_derived_columns`` recomputes the derived inputs. Every other
+    column, the column order and the gold's row order are unchanged; the index is reset.
 
     Raises:
         ValueError: a game lacks a QB row for either team, a level row, a gold row or a
-            *games* row; *gold* lacks a replaced column; or any frame repeats a key.
+            *games* row; *gold* lacks a replaced column or ``season``; *games* lacks
+            ``venue_roof``; or any frame repeats a key.
     """
-    missing = [c for c in ("game_id", *EARLY_REPLACED_COLUMNS) if c not in gold.columns]
+    return _replaced_rows(gold, games, qb, ratings, level)[0]
+
+
+def _replaced_rows(
+    gold: pd.DataFrame,
+    games: pd.DataFrame,
+    qb: pd.DataFrame,
+    ratings: pd.DataFrame,
+    level: pd.DataFrame,
+) -> tuple[pd.DataFrame, set[tuple[str, str]]]:
+    """``replace_early_columns`` and the ``(game_id, column)`` of every QB value clipped."""
+    needed = ("game_id", "season", *EARLY_REPLACED_COLUMNS)
+    missing = [c for c in needed if c not in gold.columns]
     if missing:
         msg = f"the gold matrix is missing {missing}"
         raise ValueError(msg)
@@ -345,10 +433,14 @@ def replace_early_columns(
     teams = teams.reindex(game_ids)
 
     qb_values = _qb_by_team(qb)
-    for side in ("home", "away"):
-        out[f"{side}_qb_adjustment"] = _side_qb(
-            qb_values, game_ids, teams[f"{side}_team"].to_numpy(), side
+    clipped: set[tuple[str, str]] = set()
+    for side, column in zip(("home", "away"), _QB_COLUMNS, strict=True):
+        early_qb = _side_qb(qb_values, game_ids, teams[f"{side}_team"].to_numpy(), side)
+        values, moved = _clip_to_gold_season_range(
+            early_qb, out["season"], gold, column
         )
+        out[column] = values
+        clipped.update((game_id, column) for game_id in game_ids.to_numpy()[moved])
 
     market = rated.reindex(game_ids)
     for column in _MARKET_COLUMNS:
@@ -362,9 +454,10 @@ def replace_early_columns(
     out["league_points_level"] = (
         levels["league_points_level"].reindex(game_ids).to_numpy(dtype=float)
     )
-    # Nothing knows the wind at the early capture; the recipe's median imputer fills it.
-    out["wind_mph"] = np.nan
-    return add_v2_derived_columns(out)
+    # Nothing knows the wind at the early capture, so the recipe's median imputer fills it;
+    # only an indoor game's wind (the gold's 0.0) is a known fact of the stadium.
+    out["wind_mph"] = out["wind_mph"].where(_indoor(games, game_ids), np.nan)
+    return add_v2_derived_columns(out), clipped
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +538,11 @@ def build_early_inputs(
 ) -> EarlyInputs:
     """The v2 input rows of every early-timed game, as known at its early capture.
 
+    Each target's rows are ``replace_early_columns`` over the whole gold matrix, trimmed to
+    ``game_id, season, week`` and the target's ``V2_INPUTS``, in that order (see
+    ``EarlyInputs``). ``qb_values_clipped`` counts the rebuilt QB values the clip to the
+    gold's season range moved.
+
     Args:
         gold_dir: The v2 gold directory holding ``features_{target}.parquet``.
         games: All silver games. The families run on the seasons from the first early
@@ -484,14 +582,17 @@ def build_early_inputs(
 
     kept_ratings = ratings.loc[ratings["game_id"].astype(str).isin(kept)]
     kept_level = level.loc[level["game_id"].astype(str).isin(kept)]
-    rows = {
-        target: replace_early_columns(
+    rows: dict[str, pd.DataFrame] = {}
+    clipped: set[tuple[str, str]] = set()
+    for target in V2_TARGETS:
+        replaced, moved = _replaced_rows(
             golds[target], scope, qb, kept_ratings, kept_level
         )
-        for target in V2_TARGETS
-    }
+        # Only the keys and the target's inputs: every other gold column is a day-before value.
+        rows[target] = replaced.loc[:, [*_ROW_KEYS, *V2_INPUTS[target]]]
+        clipped |= moved
     left_out = reasons.loc[reasons != ""]
     excluded = pd.DataFrame(
         {"game_id": left_out.index.to_numpy(), "reason": left_out.to_numpy()}
     ).sort_values("game_id", ignore_index=True)
-    return EarlyInputs(rows=rows, excluded=excluded)
+    return EarlyInputs(rows=rows, excluded=excluded, qb_values_clipped=len(clipped))
