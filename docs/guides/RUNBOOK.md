@@ -662,6 +662,9 @@ ledger steps are in `PIPELINE.md`. Every command runs in PowerShell from the rep
     written once and named by its own hash;
   - `ledger/refit/shadow_holes.jsonl` -- the frozen-arm holes (a live row written without a
     shadow twin, with the reason);
+  - `ledger/refit/owner_installs.jsonl` -- the owner install of the v2 models
+    (`MIDSEASON-SWITCH-RECORD.md` section 4): its `install_intent`, then `installed` or
+    `refused` (see "Switch day: install v2" below);
   - `ledger/refit/attempt.lock` -- held while a re-fit attempt runs; never backed up.
 
   Every record file is append-only (a bet-rule file is written once and never rewritten) and is
@@ -1358,6 +1361,124 @@ wrong bypass value instead of none; it must be refused the same way.
   rebuild the cache (operation 7); the server picks it up on the next request with no restart. On
   the phone copy, the next push fixes it (it rebuilds a mismatched cache before deploying); push by
   hand to fix it sooner. `/health` names both versions.
+
+---
+
+## Switch day: install v2
+
+Added 2026-11-06 for `MIDSEASON-SWITCH-RECORD.md` section 4; it is an operating procedure, not a
+result. **Verification basis:** verified on fixtures by `tests/unit/test_owner_install.py`; the real
+install happens once.
+
+### What it does
+
+One owner command installs the repaired v2 models, once. In order, it:
+
+1. refuses if the v2 recipe is already in force, or if any 2026 game of weeks 1-12 is still before
+   its lock (so no week-12 decision can be stamped with a v2 model);
+2. refuses if the code it runs has uncommitted changes (the install record names the commit);
+3. rebuilds the shared gold matrices (`data/gold/features_{wp,ats,ou}.parquet`) as v2 gold;
+4. trains the three v2 models once, on every finished game from 2002 that kicked off before this
+   moment, and saves them under `artifacts/`;
+5. tunes their blend and refuses unless every tuned weight is Study 1a's earned weight, 0;
+6. writes the v2 bet-rule record under `ledger/refit/bet_rules/` (no EV floors, no edge bands);
+7. records `install_intent` in `ledger/refit/owner_installs.jsonl`, swaps `artifacts/latest.json`
+   (the four pointers, in one write, through `models.artifacts.replace_manifest`), then records
+   `installed`.
+
+From then on the daily gold build follows the v2 recipe by itself. Never hand-edit
+`artifacts/latest.json`, and never run `scripts.build_features --save` once v2 is live: it writes v1
+gold. `uv run python -m scripts.rebuild_gold` rebuilds gold for whichever recipe is in force.
+
+### When it may run
+
+- Only after week 12's last lock, Sun 2026-11-29 18:00 ET. Before that it refuses and writes
+  nothing.
+- Never so that it overlaps the 17:00-17:20 ET daily run: both write the gold matrices. Read the ET
+  time with PowerShell `Get-Date`.
+- Best on Tue 2026-12-01, started before 16:00 ET, so the 17:00 ET run that evening is the first on
+  v2.
+- From the main checkout with PR A merged, and with no modified or untracked file under the code
+  paths (`git status --porcelain` shows none under `refit`, `models`, `scripts`, `pipeline` and the
+  other paths in `refit.records.REFIT_CODE_PATHS`). Write down the bytes of `artifacts/latest.json`
+  first, so you can confirm afterwards whether it changed.
+
+### The command, launched detached
+
+```powershell
+uv run python -m scripts.install_v2
+```
+
+The gold build alone takes about 20 minutes, and a long job run in the foreground of a Claude Code
+session can be stopped for memory. So launch it detached, from the repository root, and wait on its
+process id:
+
+```powershell
+New-Item -ItemType Directory -Force outputs\switch_install | Out-Null
+$p = Start-Process -FilePath uv -ArgumentList 'run','python','-m','scripts.install_v2' -WorkingDirectory $PWD -RedirectStandardOutput "$PWD\outputs\switch_install\install.log" -RedirectStandardError "$PWD\outputs\switch_install\install.err" -PassThru -WindowStyle Hidden
+$p.Id
+$p.WaitForExit(); $p.ExitCode
+Get-Content outputs\switch_install\install.log
+```
+
+From a Claude Code session, wait with a Monitor until-loop on `Get-Process -Id <id>` instead of
+`WaitForExit`, then read the two files.
+
+### What success prints
+
+Exit code 0, and in `install.log`:
+
+```
+INSTALLED= wp=<id> ats=<id> ou=<id> blend=<id> converter=<id>
+BET_RULE_SHA256= <sha256>
+BLEND_WEIGHTS= wp=0.0 ats=0.0 ou=0.0
+```
+
+`artifacts/latest.json` now names the three new v2 model ids and the new blend, and
+`ledger/refit/owner_installs.jsonl` ends with an `install_intent` and then an `installed` event, both
+carrying the install's ET calendar date. The install is the next generation (generation 2).
+
+### What a refusal means
+
+Exit code 2 and `INSTALL_REFUSED= <reason>`. `artifacts/latest.json` is unchanged. If the refusal
+came after the v2 gold build began, the command rebuilt the v1 gold before it stopped, so the next
+daily run's data check passes with the v1 models. The models and blend a stopped attempt saved stay
+in `artifacts/`, unserved; leave them there. What to do depends on the reason:
+
+- **A week-1-12 game still locks later**: wait until after Sun 2026-11-29 18:00 ET.
+- **The v2 recipe is already in force**: nothing to do; v2 installs once.
+- **`clean_code_commit`**: the code has uncommitted changes. Never install from it; get back to the
+  merged commit, then run it again.
+- **The tuned blend weights are not the earned weights**: stop. A nonzero tuned weight is a new
+  finding, and installing it is an owner decision. Never re-run to get past it.
+- **The install intent was not written**, **`bundle_validation`** or **`swap`**: stop and report the
+  reason. For the last two a `refused` event was recorded after the intent, so that attempt never
+  counts as a generation; the message says so if that record could not be written.
+- **"the v1 gold rebuild then failed"**: the gold may still be v2 while the v1 models serve. Run
+  `uv run python -m scripts.rebuild_gold` before the next 17:00 ET run, then report.
+
+Any other ending (a Python traceback in `install.err`, exit code 1) is a crash: the same v1 gold
+rebuild ran and `latest.json` is unchanged, unless the crash came after the swap wrote. If
+`latest.json` already names the ids of the last `install_intent` in
+`ledger/refit/owner_installs.jsonl`, the swap happened and v2 is in force; otherwise it did not.
+
+### The checks after it
+
+After a successful install, run the five deliberate tripwires and the bounded gate:
+
+```powershell
+uv run pytest "tests/integration/test_gate_baseline_byte_identity.py::TestTheRegeneratedBaselineIsByteIdenticalToTheCommittedOne::test_the_generated_block_equals_the_committed_block_byte_for_byte" "tests/integration/test_gold_rebuild_attribution.py::TestThePhase31Rung3IsTheFullRebuildOfTheVerdictPopulation::test_no_NON_CLOCK_column_moved_in_a_protected_season" "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_every_data_column_reproduces_its_pre_resync_digest_exactly" "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_the_moved_set_is_exactly_the_build_clock" "tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore_all_fields" -q -p no:cacheprovider
+uv run pytest tests/integration/test_phase33_expected_failure_set.py -q -p no:cacheprovider
+```
+
+The five must fail, each with an `AssertionError`, and the gate run must have no failure. A crash
+in either (a `KeyError`, an `AttributeError`) means stop and report.
+
+Then confirm the gold carries every input the served models read. It must print three `True`:
+
+```powershell
+uv run python -c "import json,pandas as pd; m=json.load(open('artifacts/latest.json')); [print(t, set(json.load(open(f'artifacts/{m[t]}/feature_list.json'))) <= set(pd.read_parquet(f'data/gold/features_{t}.parquet').columns)) for t in ('wp','ats','ou')]"
+```
 
 ---
 
