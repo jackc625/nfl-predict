@@ -40,7 +40,7 @@ import pytest
 import scripts.daily_lock_pipeline as daily
 from notify import log as notification_log
 from notify import transport
-from notify.end_of_run import notify_end_of_run
+from notify.end_of_run import EndOfRunOutcome, checkin_summary, notify_end_of_run
 from notify.log import read_notifications
 from notify.report import (
     STATUS_LOCK_PASSED,
@@ -258,6 +258,39 @@ def test_an_unlogged_receipt_fails_the_check_in(
     assert str(requests[-1].url) == f"{DUMMY_PING_URL}/fail"
     assert "unlogged receipts=1" in requests[-1].content.decode("ascii")
     assert "WATCHER_CHECKIN= delivered as failure" in capsys.readouterr().out
+
+
+def test_the_checkin_marks_the_window_retired(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MIDSEASON-SWITCH-RECORD.md: from 2026 week 13 the day-before system decides nothing."""
+    requests = install_hosts(monkeypatch, {"hc-ping.com": (ping_ok(),)})
+    report = in_season_report(
+        slate_week=13, tomorrow_game_ids=("2026_13_CIN@CLE", "2026_13_DAL@PHI")
+    )
+
+    notify_end_of_run(report, secrets=watcher_secrets(), now=report.start)
+
+    body = requests[-1].content
+    assert len(body) <= 1000
+    text = body.decode("ascii")
+    assert "day-before=retired" in text
+    assert "bets appended=0" in text
+
+
+@pytest.mark.parametrize(
+    ("season", "week"),
+    [
+        pytest.param(2026, 12, id="the-week-before-the-switch"),
+        # Compared as a (season, week) pair: an earlier season's week 14 is not retired.
+        pytest.param(2025, 14, id="an-earlier-season-week-14"),
+        pytest.param(None, None, id="no-slate-selected"),
+    ],
+)
+def test_a_week_before_the_switch_is_not_marked_retired(
+    season: int | None, week: int | None
+) -> None:
+    report = in_season_report(slate_season=season, slate_week=week)
+
+    assert "day-before" not in checkin_summary(report, EndOfRunOutcome())
 
 
 # ---------------------------------------------------------------------------

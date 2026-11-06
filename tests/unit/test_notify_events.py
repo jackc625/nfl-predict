@@ -658,3 +658,43 @@ def test_an_unlogged_receipt_is_reported(monkeypatch: pytest.MonkeyPatch) -> Non
         "failed",
         "checkin",
     ]
+
+
+# ---------------------------------------------------------------------------
+# MIDSEASON-SWITCH-RECORD.md: from 2026 week 13 the run says why no bets push went out
+# ---------------------------------------------------------------------------
+
+RETIRED_BETS_LINE = "NOTIFY_BETS= none (day-before window retired from 2026 week 13)"
+
+
+@pytest.mark.parametrize(
+    ("season", "week", "expected"),
+    [
+        pytest.param(2026, 13, RETIRED_BETS_LINE, id="the-switch-week"),
+        pytest.param(2027, 1, RETIRED_BETS_LINE, id="a-later-season"),
+        pytest.param(2026, 12, "NOTIFY_BETS= none", id="the-week-before-the-switch"),
+        # Compared as a (season, week) pair: an earlier season's week 14 is not retired.
+        pytest.param(2025, 14, "NOTIFY_BETS= none", id="an-earlier-season-week-14"),
+    ],
+)
+def test_a_retired_week_prints_why_there_are_no_bets(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    season: int,
+    week: int,
+    expected: str,
+) -> None:
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(monkeypatch, _ping_ok)
+    report = _clean(slate_season=season, slate_week=week)
+
+    notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
+
+    # Nothing was appended, so no bets push left: only the watcher check-in did.
+    assert [request.url.host for request in requests] == ["hc-ping.com"]
+    (line,) = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("NOTIFY_BETS=")
+    ]
+    assert line == expected

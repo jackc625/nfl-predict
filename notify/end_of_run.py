@@ -11,7 +11,10 @@ every decision is already written when the first message leaves.
 ORDER (D-13)
 ------------
 1. Every failed push the run owes (:func:`notify.messages.failed_messages`), top priority first.
-2. The one bets push for the live bets the run newly appended, or none.
+2. The one bets push for the live bets the run newly appended, or none. From the 2026 week-13
+   switch the day-before system decides nothing (MIDSEASON-SWITCH-RECORD.md), so a run whose
+   slate is at or after that week says why there is none (:data:`NO_BETS_RETIRED`) and its
+   check-in carries ``day-before=retired``.
 3. The weekly digest email, on its digest run only (:func:`notify.digest.send_digest_if_due`). An
    email that is not delivered sends one normal-priority ``FAILED: weekly email`` push naming the
    failure kind (SPEC R8), and both count toward :attr:`EndOfRunOutcome.any_undelivered`.
@@ -39,7 +42,7 @@ from datetime import UTC, datetime
 
 from api.cache import ARM_LIVE, BET_STATUS_LIVE
 from notify import secrets as notify_secrets
-from notify.digest import send_digest_if_due
+from notify.digest import SWITCH_WEEK_LABEL, day_before_retired, send_digest_if_due
 from notify.events import (
     PushMessage,
     SendContext,
@@ -54,10 +57,19 @@ from notify.season_window import SEASON_WINDOW_IN, SEASON_WINDOW_OUT
 from notify.secrets import NotifySecrets
 from notify.transport import OUTCOME_FAILED, Delivery
 
-__all__ = ["LOAD_SECRETS", "EndOfRunOutcome", "checkin_summary", "notify_end_of_run"]
+__all__ = [
+    "LOAD_SECRETS",
+    "NO_BETS_RETIRED",
+    "EndOfRunOutcome",
+    "checkin_summary",
+    "notify_end_of_run",
+]
 
 # Seam, read at call time: tests hand in dummy secrets so the owner's .env is never read.
 LOAD_SECRETS = notify_secrets.load_secrets
+
+#: The bets step's console state for a slate the retired day-before system no longer serves.
+NO_BETS_RETIRED = f"none (day-before window retired from {SWITCH_WEEK_LABEL})"
 
 
 @dataclass
@@ -150,7 +162,8 @@ def notify_end_of_run(
     try:
         bets = bets_message(report)
         if bets is None:
-            print("NOTIFY_BETS= none")  # noqa: T201
+            state = NO_BETS_RETIRED if _slate_retired(report) else "none"
+            print(f"NOTIFY_BETS= {state}")  # noqa: T201
         else:
             _send_one("bets", bets, context, outcome)
     except Exception as error:  # noqa: BLE001 - a later step still runs
@@ -205,8 +218,17 @@ def _step_outcome(outcome: EndOfRunOutcome, step: str) -> str:
     return found[-1] if found else "none"
 
 
+def _slate_retired(report: RunReport) -> bool:
+    """True when the run's selected slate is at or after the switch week (an unknown one is not)."""
+    return day_before_retired(report.slate_season, report.slate_week)
+
+
 def checkin_summary(report: RunReport, outcome: EndOfRunOutcome) -> str:
-    """The D-15 ping body: one ASCII line of stored facts, never a secret or an error text."""
+    """The D-15 ping body: one ASCII line of stored facts, never a secret or an error text.
+
+    A slate at or after the switch week adds ``day-before=retired`` after the bets count, so a
+    run of zero bets reads as the retirement, not as a quiet failure.
+    """
     games = (
         "unknown"
         if report.tomorrow_game_ids is None
@@ -224,10 +246,12 @@ def checkin_summary(report: RunReport, outcome: EndOfRunOutcome) -> str:
         for _step, delivery in outcome.deliveries
         if delivery.delivered and not delivery.logged
     )
+    retired = "day-before=retired; " if _slate_retired(report) else ""
     return (
         f"NFL Predict daily run {report.run_date_et.isoformat()}: "
         f"outcome={report.status or 'unknown'}; games tomorrow={games}; "
-        f"bets appended={live_bets}; failed pushes={delivered_failed}/{len(failed)}; "
+        f"bets appended={live_bets}; {retired}"
+        f"failed pushes={delivered_failed}/{len(failed)}; "
         f"bets push={_step_outcome(outcome, 'bets')}; "
         f"digest={_step_outcome(outcome, 'digest')}; unlogged receipts={unlogged}"
     )

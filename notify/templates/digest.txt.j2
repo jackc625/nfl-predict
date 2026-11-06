@@ -19,7 +19,9 @@ RUN FAILED:
 Run clean.
 {% endif %}
 LIVE BETS
-{% if not inputs.cache_current -%}
+{% if inputs.day_before_retired -%}
+{{ retired_line }}
+{% elif not inputs.cache_current -%}
 {{ stale_notice }}
 Bet list last populated: {{ populated_label }}.
 {% elif not inputs.bets -%}

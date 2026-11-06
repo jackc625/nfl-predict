@@ -17,6 +17,9 @@
   digest is ``(update)``; a lock-passed Saturday (D-18) and an unreadable-schedule Saturday (D-24)
   still email; a playoff week keeps its number (D-25); no CLV in the subject or header; the
   not-advice line is last; a shadow-arm row never reaches the email.
+* A week at or after the 2026 week-13 switch (MIDSEASON-SWITCH-RECORD.md) says the day-before
+  system is retired instead of ``bets unknown``, and its game lines name no pick time; an earlier
+  season's week 14 is not retired.
 
 Every request goes through ``notify.transport.CLIENT_FACTORY`` replaced by an ``httpx.MockTransport``
 that answers per host, and every retry delay through a recording ``SLEEP``. The schedule is a
@@ -34,7 +37,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -99,14 +102,16 @@ WEEK6: tuple[tuple[str, int, datetime], ...] = (
 Reply = Callable[[], httpx.Response] | Exception
 
 
-def schedule_frame(games: tuple[tuple[str, int, datetime], ...]) -> pd.DataFrame:
+def schedule_frame(
+    games: tuple[tuple[str, int, datetime], ...], *, season: int = 2026
+) -> pd.DataFrame:
     """The recorded schedule as ``utils.current_slate.load_recorded_schedule`` returns it."""
     return prepare_schedule(
         pd.DataFrame(
             [
                 {
                     "game_id": game_id,
-                    "season": 2026,
+                    "season": season,
                     "week": week,
                     "kickoff_et": pd.Timestamp(kickoff).tz_localize(ET),
                     "game_type": "REG",
@@ -1006,3 +1011,146 @@ def test_a_shadow_row_never_reaches_the_email(
     assert matchup(SHADOW_GAME) not in bets_table
     assert bets_table.count("<tr data-digest-row>") == 3
     assert "+9.00%" not in sent["html"] and "+9.00%" not in sent["text"]
+
+
+# ---------------------------------------------------------------------------
+# MIDSEASON-SWITCH-RECORD.md: a week at or after the 2026 week-13 switch reads "retired"
+# ---------------------------------------------------------------------------
+
+RETIRED_LINE = "No day-before bets: retired at the 2026 week 13 switch."
+RETIRED_STATE = "no day-before bet"
+
+
+def three_games(
+    season: int, week: int, sunday: date
+) -> tuple[tuple[str, int, datetime], ...]:
+    """A Thursday-night, a Sunday and a Monday-night game of *season* week *week*."""
+    prefix = f"{season}_{week:02d}"
+    return (
+        (
+            f"{prefix}_NYJ@NE",
+            week,
+            datetime.combine(sunday - timedelta(days=3), time(20, 15)),
+        ),
+        (f"{prefix}_CIN@CLE", week, datetime.combine(sunday, time(13, 0))),
+        (
+            f"{prefix}_SF@SEA",
+            week,
+            datetime.combine(sunday + timedelta(days=1), time(20, 15)),
+        ),
+    )
+
+
+def send_week_digest(
+    monkeypatch: pytest.MonkeyPatch,
+    cache_path: Path,
+    *,
+    season: int,
+    week: int,
+    sunday: date,
+    titles: tuple[str, ...] = (),
+    **fields: Any,
+) -> dict[str, Any]:
+    """Send *season* week *week*'s digest from its Saturday run; return the email sent.
+
+    The cache holds no populated-at marker for that week -- the cache build writes none for a
+    week with no list -- so before the switch the email reads ``bets unknown``.
+    """
+    games = three_games(season, week, sunday)
+    schedule = schedule_frame(games, season=season)
+    monkeypatch.setattr(digest, "LOAD_SCHEDULE", lambda: schedule)
+    saturday = sunday - timedelta(days=1)
+    lock = slate_lock(saturday)
+    values: dict[str, Any] = {
+        "run_date_et": saturday,
+        "start": lock - timedelta(hours=1),
+        "lock": lock,
+        "status": STATUS_SUCCESS,
+        "tomorrow_game_ids": (games[1][0],),
+        "unpredicted_game_ids": (),
+        "slate_season": season,
+        "slate_week": week,
+    }
+    values.update(fields)
+    build_cache(cache_path, bets=[], stamped_at=None)
+    requests = install_router(monkeypatch)
+
+    delivery = send_one(
+        RunReport(**values),
+        titles=titles,
+        context=SendContext("daily_run", saturday, email_secrets()),
+    )
+
+    assert delivery is not None and delivery.delivered
+    (request,) = requests["api.resend.com"]
+    return _sent_email(request)
+
+
+def test_the_digest_of_a_retired_week_does_not_read_unknown(
+    monkeypatch: pytest.MonkeyPatch, cache_path: Path
+) -> None:
+    sent = send_week_digest(
+        monkeypatch, cache_path, season=2026, week=13, sunday=date(2026, 12, 6)
+    )
+
+    assert sent["subject"] == (
+        "NFL Predict - 2026 week 13 - no day-before bets - run clean"
+    )
+    html, text = sent["html"], sent["text"]
+    assert f'<p data-digest-retired style="margin:0;">{RETIRED_LINE}</p>' in html
+    for part in (html, text):
+        assert RETIRED_LINE in part
+        assert "bets unknown" not in part
+        assert "0 bets" not in part
+        assert "Bet list last populated" not in part
+        # No game line names a pick time, or a result the cache "is not current" to show.
+        assert "picked" not in part
+        assert digest.STATE_NOT_SHOWN not in part
+    assert game_states(text) == dict.fromkeys(
+        ("NYJ @ NE", "CIN @ CLE", "SF @ SEA"), RETIRED_STATE
+    )
+    assert html.count(f"data-digest-game-state>{RETIRED_STATE}<") == 3
+
+
+def test_a_failed_retired_saturday_still_names_the_unpredicted_game(
+    monkeypatch: pytest.MonkeyPatch, cache_path: Path
+) -> None:
+    """The games are still predicted for the website: a game left without one says so."""
+    sent = send_week_digest(
+        monkeypatch,
+        cache_path,
+        season=2026,
+        week=13,
+        sunday=date(2026, 12, 6),
+        titles=("FAILED: 1 game not predicted",),
+        status=STATUS_RUN_FAILED,
+        unpredicted_game_ids=("2026_13_CIN@CLE",),
+    )
+
+    assert sent["subject"] == (
+        "NFL Predict - 2026 week 13 - RUN FAILED - no day-before bets"
+    )
+    assert game_states(sent["text"]) == {
+        "NYJ @ NE": RETIRED_STATE,
+        "CIN @ CLE": "not predicted",
+        "SF @ SEA": RETIRED_STATE,
+    }
+
+
+def test_an_earlier_season_week_14_is_not_retired(
+    monkeypatch: pytest.MonkeyPatch, cache_path: Path
+) -> None:
+    """Compared as a (season, week) pair: 2025 week 14 keeps the day-before reading."""
+    sent = send_week_digest(
+        monkeypatch, cache_path, season=2025, week=14, sunday=date(2025, 12, 7)
+    )
+
+    assert sent["subject"] == "NFL Predict - 2025 week 14 - bets unknown - run clean"
+    for part in (sent["html"], sent["text"]):
+        assert digest.STALE_NOTICE in part
+        assert "retired" not in part
+    assert game_states(sent["text"]) == {
+        "NYJ @ NE": digest.STATE_NOT_SHOWN,
+        "CIN @ CLE": "picked Saturday evening",
+        "SF @ SEA": "picked Sunday evening",
+    }
