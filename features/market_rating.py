@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 import utils.game_lock as lock_rule
+from features.supplied_locks import check_supplied_locks
 from utils.game_id_utils import create_standard_game_id
 from utils.team_data import normalize_team_abbreviation
 
@@ -157,10 +158,22 @@ def _solve_for_lock(
     return ratings, levels, mu, window["kickoff_et"].max()
 
 
-def market_ratings(games: pd.DataFrame, nflverse: pd.DataFrame) -> pd.DataFrame:
-    """One row per silver game: ratings from lines of games kicked off by its lock."""
+def market_ratings(
+    games: pd.DataFrame, nflverse: pd.DataFrame, *, locks: pd.Series | None = None
+) -> pd.DataFrame:
+    """One row per silver game: ratings from lines of games kicked off by its lock.
+
+    ``locks`` is a ``game_id``-indexed series of tz-aware instants (the shape
+    ``lock_rule.lock_frame`` returns) replacing the lock per game, for example an early
+    line capture. It must name every game in ``games`` exactly once with a non-null
+    instant, else ``ValueError`` names the first ten offending ids
+    (``features.supplied_locks``). ``None`` reads each game at its day-before lock.
+    """
     pool = _line_pool(games, nflverse)
-    locks = lock_rule.lock_frame(games)
+    if locks is None:
+        locks = lock_rule.lock_frame(games)
+    else:
+        check_supplied_locks(locks, games["game_id"])
     targets = games.loc[:, ["game_id", "season", "home_team", "away_team"]].copy()
     targets["lock"] = pd.to_datetime(targets["game_id"].map(locks), utc=True)
     targets["home_team"] = targets["home_team"].map(normalize_team_abbreviation)

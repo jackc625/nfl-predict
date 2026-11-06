@@ -139,3 +139,68 @@ def test_no_information_signature_shape():
     sig = market_rating_no_information_signature()
     assert sig["mkt_rating_coverage"] == 0.0
     assert sig["home_mkt_rating"] is None
+
+
+def _early_week_slate():
+    """Weeks 1-2 played, a Thursday game of week 3, and the Sunday target BUF@KC."""
+    target = _game(2024, 3, "BUF", "KC", "2024-09-22 17:00")
+    thursday = _game(2024, 3, "NYJ", "NE", "2024-09-20 00:15")  # Thu 20:15 ET
+    games = pd.DataFrame(
+        [
+            _game(2024, 1, "BUF", "DEN", "2024-09-08 17:00"),
+            _game(2024, 2, "KC", "DEN", "2024-09-15 17:00"),
+            thursday,
+            target,
+        ]
+    )
+    nfl = pd.DataFrame(
+        [
+            _nfl(2024, 1, "BUF", "DEN", 3.0),
+            _nfl(2024, 2, "KC", "DEN", -2.0),
+            _nfl(2024, 3, "NYJ", "NE", -6.0),
+            _nfl(2024, 3, "BUF", "KC", 3.0),
+        ]
+    )
+    return games, nfl, target["game_id"], thursday["kickoff_et"]
+
+
+def test_a_supplied_earlier_time_leaves_out_a_game_kicked_off_after_it():
+    games, nfl, gid, thursday_kickoff_utc = _early_week_slate()
+    early = pd.Timestamp("2024-09-17 11:55", tz="America/New_York")
+    locks = lock_rule.lock_frame(games)
+    locks[gid] = early
+    default = market_ratings(games, nfl).set_index("game_id")
+    moved = market_ratings(games, nfl, locks=locks).set_index("game_id")
+    assert default.loc[gid, "information_time"] == thursday_kickoff_utc
+    assert moved.loc[gid, "information_time"] <= early
+    assert moved.loc[gid, "information_time"] < thursday_kickoff_utc
+    assert moved.loc[gid, "mkt_rating_diff"] != default.loc[gid, "mkt_rating_diff"]
+
+
+def test_the_default_locks_match_the_lock_rule_frame():
+    games, nfl, _, _ = _early_week_slate()
+    explicit = market_ratings(games, nfl, locks=lock_rule.lock_frame(games))
+    pd.testing.assert_frame_equal(explicit, market_ratings(games, nfl))
+
+
+def test_supplied_locks_must_name_every_game():
+    games, nfl, gid, _ = _early_week_slate()
+    locks = lock_rule.lock_frame(games)
+    with pytest.raises(ValueError, match="2024_W03_BUF@KC"):
+        market_ratings(games, nfl, locks=locks.drop(gid))
+
+
+def test_supplied_locks_must_not_name_a_game_twice():
+    games, nfl, gid, _ = _early_week_slate()
+    locks = lock_rule.lock_frame(games)
+    repeated = pd.concat([locks, locks.loc[[gid]]])
+    with pytest.raises(ValueError, match=r"more than once.*2024_W03_BUF@KC"):
+        market_ratings(games, nfl, locks=repeated)
+
+
+def test_supplied_locks_must_give_every_game_an_instant():
+    games, nfl, gid, _ = _early_week_slate()
+    locks = lock_rule.lock_frame(games)
+    locks[gid] = pd.NaT
+    with pytest.raises(ValueError, match=r"no instant.*2024_W03_BUF@KC"):
+        market_ratings(games, nfl, locks=locks)

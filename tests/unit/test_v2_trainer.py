@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import models.v2_trainer as trainer
 from models.v2_recipe import V2_INPUTS
@@ -147,3 +148,79 @@ def test_every_fit_runs_inside_the_pinned_thread_pool(tmp_path, monkeypatch):
     assert state["fits"] > 0
     assert state["unpinned_fits"] == 0
     assert state["limit"] == trainer.THREAD_LIMIT
+
+
+def test_supplied_rows_change_only_what_is_predicted(tmp_path):
+    gold_dir, games = _tiny_world(tmp_path)
+    cutoff = datetime(2026, 9, 1, tzinfo=UTC)
+    default = walk_forward_v2(gold_dir, games, cutoff)
+    rows = {
+        t: pd.read_parquet(gold_dir / f"features_{t}.parquet")
+        .query("season == 2024")
+        .reset_index(drop=True)
+        for t in ("wp", "ats", "ou")
+    }
+    moved_id = rows["ats"].loc[0, "game_id"]
+    rows["ats"].loc[0, "elo_diff"] += 5.0
+    out = walk_forward_v2(gold_dir, games, cutoff, prediction_rows=rows)
+    assert set(out["ats"]["season"]) == {2024}
+    both = out["ats"].merge(default["ats"], on="game_id", suffixes=("", "_default"))
+    same = both["game_id"] != moved_id
+    np.testing.assert_allclose(
+        both.loc[same, "prediction"], both.loc[same, "prediction_default"]
+    )
+    assert (
+        both.loc[~same, "prediction"].iloc[0]
+        != both.loc[~same, "prediction_default"].iloc[0]
+    )
+
+
+def test_supplied_rows_must_cover_every_target(tmp_path):
+    gold_dir, games = _tiny_world(tmp_path)
+    rows = {"ats": pd.read_parquet(gold_dir / "features_ats.parquet")}
+    with pytest.raises(ValueError):
+        walk_forward_v2(
+            gold_dir, games, datetime(2026, 9, 1, tzinfo=UTC), prediction_rows=rows
+        )
+
+
+def test_supplied_rows_must_carry_the_keys_and_inputs(tmp_path, monkeypatch):
+    gold_dir, games = _tiny_world(tmp_path)
+    fits: list[str] = []
+    real_fit = trainer.fit_v2
+
+    def counting_fit(target, train):
+        fits.append(target)
+        return real_fit(target, train)
+
+    monkeypatch.setattr(trainer, "fit_v2", counting_fit)
+    rows = {
+        t: pd.read_parquet(gold_dir / f"features_{t}.parquet")
+        for t in ("wp", "ats", "ou")
+    }
+    rows["ou"] = rows["ou"].drop(columns=["week"])
+    with pytest.raises(ValueError, match="week"):
+        walk_forward_v2(
+            gold_dir, games, datetime(2026, 9, 1, tzinfo=UTC), prediction_rows=rows
+        )
+    assert fits == []
+
+
+def test_a_fold_with_no_supplied_rows_is_never_fitted(tmp_path, monkeypatch):
+    gold_dir, games = _tiny_world(tmp_path)
+    fits: list[str] = []
+    real_fit = trainer.fit_v2
+
+    def counting_fit(target, train):
+        fits.append(target)
+        return real_fit(target, train)
+
+    monkeypatch.setattr(trainer, "fit_v2", counting_fit)
+    rows = {
+        t: pd.read_parquet(gold_dir / f"features_{t}.parquet").query("season == 2024")
+        for t in ("wp", "ats", "ou")
+    }
+    walk_forward_v2(
+        gold_dir, games, datetime(2026, 9, 1, tzinfo=UTC), prediction_rows=rows
+    )
+    assert fits == ["wp", "ats", "ou"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+import utils.game_lock as lock_rule
 from features.league_level import LEVEL_PRIOR_GAMES, league_points_level
 
 ET = "America/New_York"
@@ -120,3 +121,64 @@ def test_information_time_is_the_latest_end_read():
     out = league_points_level(games).set_index("game_id")
     expected = pd.Timestamp("2025-11-08 14:00", tz=ET) + pd.Timedelta(hours=4)
     assert out.loc["2025_SUN", "information_time"] == expected
+
+
+def _early_week_games() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            *_prior_season(),
+            _game("2025_THU", 2025, "2025-11-06 20:15", 28, 22),  # total 50
+            _game("2025_SUN", 2025, "2025-11-09 13:00"),  # target, unplayed
+        ]
+    )
+
+
+def test_a_supplied_earlier_time_leaves_out_a_game_ended_after_it():
+    games = _early_week_games()
+    locks = lock_rule.lock_frame(games)
+    locks["2025_SUN"] = pd.Timestamp("2025-11-04 11:55", tz=ET)
+    default = league_points_level(games).set_index("game_id")
+    moved = league_points_level(games, locks=locks).set_index("game_id")
+    assert default.loc["2025_SUN", "league_points_level"] == pytest.approx(
+        (50 + 32 * 44.0) / 33
+    )
+    assert moved.loc["2025_SUN", "league_points_level"] == pytest.approx(44.0)
+
+
+def test_supplied_locks_must_name_every_game():
+    games = _early_week_games()
+    locks = lock_rule.lock_frame(games)
+    with pytest.raises(ValueError, match="2025_SUN"):
+        league_points_level(games, locks=locks.drop("2025_SUN"))
+
+
+def test_supplied_locks_must_not_name_a_game_twice():
+    # A repeated id once shifted later games onto a neighbour's lock, so a game could
+    # read games that ended after its own supplied instant.
+    games = _early_week_games()
+    locks = lock_rule.lock_frame(games)
+    locks["2025_SUN"] = pd.Timestamp("2025-11-04 11:55", tz=ET)
+    repeated = pd.concat([locks.loc[["2024_A"]], locks])
+    with pytest.raises(ValueError, match=r"more than once.*2024_A"):
+        league_points_level(games, locks=repeated)
+
+
+def test_supplied_locks_must_give_every_game_an_instant():
+    # A missing instant once sorted after every game end, so the game read its season.
+    games = _early_week_games()
+    locks = lock_rule.lock_frame(games)
+    locks["2025_SUN"] = pd.NaT
+    with pytest.raises(ValueError, match=r"no instant.*2025_SUN"):
+        league_points_level(games, locks=locks)
+
+
+def test_supplied_locks_are_matched_by_game_id_not_by_position():
+    games = _early_week_games()
+    locks = lock_rule.lock_frame(games)
+    extra = pd.Series(
+        [pd.Timestamp("2025-12-01 18:00", tz=ET)], index=pd.Index(["2025_X"])
+    )
+    shuffled = pd.concat([locks.iloc[::-1], extra])
+    pd.testing.assert_frame_equal(
+        league_points_level(games, locks=shuffled), league_points_level(games)
+    )

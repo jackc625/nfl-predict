@@ -30,6 +30,7 @@ import pandas as pd
 
 import utils.game_lock as lock_rule
 from features.provenance import DECLARED_GAME_DURATION
+from features.supplied_locks import check_supplied_locks
 
 LEVEL_PRIOR_GAMES = 32.0
 
@@ -124,12 +125,19 @@ def _season_levels(
     )
 
 
-def league_points_level(games: pd.DataFrame) -> pd.DataFrame:
+def league_points_level(
+    games: pd.DataFrame, *, locks: pd.Series | None = None
+) -> pd.DataFrame:
     """One row per silver game with a kickoff: the league level its lock admits.
 
     Args:
         games: Silver ``games`` rows with ``game_id, season, kickoff_et, home_score,
             away_score``. ``kickoff_et`` must be timezone-aware.
+        locks: Optional ``game_id``-indexed series of tz-aware instants replacing each
+            game's lock (for example an early line capture). It must name every game with
+            a kickoff exactly once with a non-null instant, else ``ValueError`` names the
+            first ten offending ids (``features.supplied_locks``). ``None`` uses the
+            day-before lock rule.
 
     Returns:
         A frame with ``game_id, league_points_level, information_time``. The level is NaN
@@ -137,14 +145,19 @@ def league_points_level(games: pd.DataFrame) -> pd.DataFrame:
         (NaT when nothing was read).
     """
     with_kickoff = games.loc[games["kickoff_et"].notna()].reset_index(drop=True)
-    locks = pd.DatetimeIndex(lock_rule.lock_frame(with_kickoff)).tz_convert("UTC")
+    if locks is None:
+        game_locks = lock_rule.lock_frame(with_kickoff)
+    else:
+        check_supplied_locks(locks, with_kickoff["game_id"])
+        game_locks = with_kickoff["game_id"].map(locks)
+    lock_index = pd.DatetimeIndex(game_locks).tz_convert("UTC")
     indexes = _index_by_season(_scored_games_with_end(with_kickoff))
     seasons = with_kickoff["season"].astype(int).to_numpy()
 
     pieces = []
     for season in np.unique(seasons):
         positions = np.flatnonzero(seasons == season)
-        piece = _season_levels(indexes, int(season), locks[positions])
+        piece = _season_levels(indexes, int(season), lock_index[positions])
         piece.index = positions
         pieces.append(piece)
     levels = pd.concat(pieces).sort_index()
