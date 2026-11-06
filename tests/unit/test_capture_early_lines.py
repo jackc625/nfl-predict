@@ -33,7 +33,8 @@ def _games() -> pd.DataFrame:
     """Two November games left: a Sunday 13:00 ET and a Monday 20:15 ET kickoff.
 
     Their locks fall on Saturday and Sunday (two decision days), and each has its own closing
-    window, so the reserve is 3 x (3 x 2 + 2) = 24 credits and a board needs 27 on hand.
+    window, so the reserve is 3 x (3 x 2 + 2) = 24 credits and a board, at its retry bound of 9
+    credits, needs 33 on hand.
     """
     return pd.DataFrame(
         {
@@ -80,17 +81,17 @@ def _capture(client: _Client):
 
 
 def test_a_covered_month_records_the_whole_board(lines_path, capsys):
-    client = _Client(remaining=27)
+    client = _Client(remaining=33)
 
     outcome = _capture(client)
 
-    assert outcome == early.EarlyLinesOutcome("captured", None, 2, 27)
+    assert outcome == early.EarlyLinesOutcome("captured", None, 2, 33)
     assert client.board_requests == [{}], "the board must be requested with no window"
     assert client.closed
     (line,) = lines_path.read_text(encoding="utf-8").splitlines()
     record = json.loads(line)
     assert record["captured_at_utc"] == NOW.isoformat()
-    assert record["remaining_credits_before"] == 27
+    assert record["remaining_credits_before"] == 33
     assert record["events"] == 2
     assert record["board"] == BOARD
     assert "EARLY_LINES= captured events=2" in capsys.readouterr().out
@@ -98,7 +99,7 @@ def test_a_covered_month_records_the_whole_board(lines_path, capsys):
 
 @pytest.mark.parametrize(
     ("remaining", "reason"),
-    [(26, "credit_reserve"), (None, "credit_header_unreadable")],
+    [(32, "credit_reserve"), (None, "credit_header_unreadable")],
 )
 def test_no_board_is_spent_when_the_other_captures_are_not_covered(
     lines_path, capsys, remaining, reason

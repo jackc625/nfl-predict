@@ -1056,8 +1056,9 @@ days, today included. When `remaining - 3` is below the reserve, the reading is 
 capture (daily run item 6) spends one more board a day, about 90 credits in a 30-day month, which
 the table above does not include: November becomes 225 planned and 315 at worst, still under 500.
 Its reserve covers BOTH other captures: reserve = 3 credits x (3 boards x the month's remaining
-decision days + the month's remaining closing windows), today included. When `remaining - 3` is
-below it, the capture is skipped with `credit_reserve`; an unreadable header skips it with
+decision days + the month's remaining closing windows), today included. The request's maximum
+spend is 9 credits, because the ingest step retries a lost or undecodable paid response up to 3
+times; when `remaining - 9` is below the reserve, the capture is skipped with `credit_reserve`; an unreadable header skips it with
 `credit_header_unreadable`.
 
 **The credit count is read, never computed, and reading it costs 0 credits.** The remaining count

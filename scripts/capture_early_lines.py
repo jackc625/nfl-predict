@@ -10,8 +10,9 @@ per-book prices, so they are recorded here, starting now.
 WHAT ONE CAPTURE DOES
 ---------------------
 1. Reads the remaining Odds API credits from the FREE ``/v4/sports`` endpoint (0 credits).
-2. Spends one board (``CREDITS_PER_BOARD`` = 3 credits) only when the credits left after it still
-   cover every remaining decision capture of the month at its retry bound AND every remaining
+2. Spends one board only when the credits left after the request's MAXIMUM spend (the ingest step
+   may retry a lost response, so ``CREDITS_PER_BOARD`` x ``DECISION_CAPTURE_SAFETY`` = 9 credits)
+   still cover every remaining decision capture of the month at its retry bound AND every remaining
    closing reading window of the month (:func:`early_capture_allowed`). The decision and closing
    captures always come first; an unreadable header refuses the capture (fail closed).
 3. Requests the board with NO kickoff window, so every game the books list is returned: next
@@ -135,7 +136,8 @@ def early_capture_allowed(
         today_et: Today's ET calendar date.
 
     Returns:
-        ``(True, None)`` when the credits left after this board still cover the month's remaining
+        ``(True, None)`` when the credits left after this request's maximum spend (one board per
+        retry attempt, ``DECISION_CAPTURE_SAFETY`` attempts) still cover the month's remaining
         decision captures at their retry bound plus its remaining closing readings;
         ``(False, "credit_reserve")`` when they do not; ``(False, "credit_header_unreadable")``
         when the header could not be read.
@@ -146,7 +148,8 @@ def early_capture_allowed(
         DECISION_CAPTURE_SAFETY * remaining_decision_days_in_month(games, today_et)
         + remaining_closing_windows_in_month(games, today_et)
     )
-    if remaining_credits - CREDITS_PER_BOARD < reserve:
+    max_spend = CREDITS_PER_BOARD * DECISION_CAPTURE_SAFETY
+    if remaining_credits - max_spend < reserve:
         return False, REASON_CREDIT_RESERVE
     return True, None
 
