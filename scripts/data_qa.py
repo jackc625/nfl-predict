@@ -154,6 +154,41 @@ GOLD_FEATURE_MATRICES = {
     "features_ou": 187,
 }
 
+# THE MID-SEASON SWITCH (MIDSEASON-SWITCH-RECORD.md section 4, 2026-11-06) adds a SECOND pin
+# rather than moving the one above, because from the owner install two gold recipes exist and
+# the models in force read their columns BY NAME. ``GOLD_FEATURE_MATRICES`` stays the v1 widths,
+# 188/188/187, the gold every recipe before the install reads. The v2 recipe's gold is exactly
+# +24 on each matrix, 212/212/211: the twelve raw rolling EPA columns the v1 merge drops
+# (``{home,away}_{off,def}_rolling_{epa_per_play,pass_epa_per_play,rush_epa_per_play}``), the
+# five market-rating columns (``home_mkt_rating``, ``away_mkt_rating``, ``mkt_rating_diff``,
+# ``mkt_total_sum``, ``mkt_rating_coverage``), ``league_points_level`` and the six derived
+# inputs (``scripts.build_gold_v2.V2_DERIVED_COLUMNS``). The widths were MEASURED on the study's
+# v2 gold read through ``save_feature_matrices``, the writer the nightly build uses: it drops
+# no v2 column and drops ``weather_condition`` as it does today. The width check below expects
+# the pin of the recipe in force (``expected_gold_widths``), so production gold must match its
+# models before and after the install. The delta is pinned to those NAMES by the
+# ``P332_SWITCH_V2_GOLD_WIDTH_DELTA`` manifest slot.
+GOLD_FEATURE_MATRICES_V2 = {
+    "features_wp": 212,
+    "features_ats": 212,
+    "features_ou": 211,
+}
+
+
+def expected_gold_widths(recipe: str) -> dict[str, int]:
+    """The gold widths *recipe*'s models read: the v2 pin for the installed v2 recipe, else v1's.
+
+    Args:
+        recipe: A recipe id, as ``refit.generations.in_force_recipe`` answers it.
+    """
+    # Imported here: importing the ``backtest`` package at load time would pull its engine.
+    from backtest.midseason_switch_2026 import INSTALLED_RECIPE
+
+    if recipe == INSTALLED_RECIPE:
+        return dict(GOLD_FEATURE_MATRICES_V2)
+    return dict(GOLD_FEATURE_MATRICES)
+
+
 # Tables whose DuckDB and parquet copies must agree on row-set MEMBERSHIP (D30-18).
 #
 # Data, not logic: a future table is added here without touching
@@ -851,9 +886,11 @@ class DataQualityMonitor:
         features_ou) this checks:
 
         - the matrix loads and is non-empty (row count),
-        - its column count matches the expected schema width declared in
-          ``GOLD_FEATURE_MATRICES`` (named there rather than repeated here, so
-          the two cannot drift apart across phase widenings),
+        - its column count matches the expected schema width of the recipe in
+          force, ``expected_gold_widths(in_force_recipe(...))`` -- the v1 pin
+          ``GOLD_FEATURE_MATRICES`` or, once the owner install puts the v2 recipe
+          in force, ``GOLD_FEATURE_MATRICES_V2`` (named there rather than repeated
+          here, so the two cannot drift apart across phase widenings),
         - the season span and the latest season present,
         - no feature column is entirely null (an all-null column signals a
           broken builder),
@@ -865,11 +902,19 @@ class DataQualityMonitor:
         a ``status`` of ``pass`` / ``fail`` and the trailing-gap entry carries
         an informational ``status`` of ``expected_gap``.
         """
+        from forward_ledger.store import LEDGER_DIR
+        from refit.generations import in_force_recipe
+
         logger.info("Checking Gold-layer feature-matrix integrity")
 
         result = {"timestamp": datetime.now(), "checks": {}}
 
-        for table_name, expected_columns in GOLD_FEATURE_MATRICES.items():
+        # The recipe in force is read once, and never guessed: with no artifacts/latest.json the
+        # check raises rather than judging gold against a recipe nothing serves.
+        expected_widths = expected_gold_widths(
+            in_force_recipe(Path("artifacts"), LEDGER_DIR)
+        )
+        for table_name, expected_columns in expected_widths.items():
             try:
                 df = load_dataframe(table_name, layer="gold")
 

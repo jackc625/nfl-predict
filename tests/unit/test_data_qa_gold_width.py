@@ -41,6 +41,15 @@ so the residual assertions follow the manifest and a later rung edits no test. T
 test pins the arithmetic and the names; ``PHASE_28_WIDTHS``,
 ``PHASE_30_REMOVED_LINE_MOVEMENT_COLUMNS``, ``PHASE_331_ADDED_WEATHER_COLUMNS`` and
 ``test_the_phase33_ladder_moved_no_width`` stay byte-unchanged as the records they are.
+
+THE MID-SEASON SWITCH (MIDSEASON-SWITCH-RECORD.md section 4, 2026-11-06) appends ONE more rung,
+``P332_SWITCH_V2_GOLD_WIDTH_DELTA``: the v2 recipe's gold, 24 named columns over the final v1
+widths. Production reaches it only when the owner install puts the v2 recipe in force, so data QA
+carries two pins (``GOLD_FEATURE_MATRICES`` for v1, ``GOLD_FEATURE_MATRICES_V2``) and every node
+that reads LIVE gold compares it with the pin and the ladder widths of the recipe IN FORCE
+(``refit.generations.in_force_recipe``), before and after the install. The Phase-33.2 residual
+assertions keep pinning the v1 pin: the switch rung carries the ``P332_`` prefix only because it
+is the discovery contract, and ``phase332_net_width_delta`` leaves it out.
 """
 
 from pathlib import Path
@@ -48,12 +57,20 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from backtest.midseason_switch_2026 import INSTALLED_RECIPE
 from backtest.signal_lift import group_columns
 from features.weather import WEATHER_COVERAGE_COLUMN
-from scripts.data_qa import GOLD_FEATURE_MATRICES
+from forward_ledger.store import LEDGER_DIR
+from refit.generations import in_force_recipe
+from scripts.data_qa import (
+    GOLD_FEATURE_MATRICES,
+    GOLD_FEATURE_MATRICES_V2,
+    expected_gold_widths,
+)
 from tests import phase33_state
 
-GOLD_DIR = Path(__file__).resolve().parents[2] / "data" / "gold"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+GOLD_DIR = REPO_ROOT / "data" / "gold"
 
 # The Phase-29 line-movement family (Plan 29-06 / SIG-04): the seven D-09 totals
 # features, the shared coverage flag, and the seven Tier (a) spread siblings -- 15
@@ -187,9 +204,36 @@ def slot_delta(slot: dict, matrix: str) -> int:
     )
 
 
+def v1_ladder_width_deltas() -> list[dict]:
+    """Every width-delta slot but the switch rung: the ladder the v1 recipes' gold stands on."""
+    switch = phase33_state.P332_SWITCH_V2_GOLD_WIDTH_DELTA
+    return [slot for slot in phase332_width_deltas() if slot is not switch]
+
+
+def ladder_widths_for(recipe: str) -> tuple[int, int, int]:
+    """The widths the ladder records for *recipe*'s gold.
+
+    The installed v2 recipe's gold stands on the switch rung, the ladder's last; every other
+    recipe's on the last v1 rung.
+    """
+    if recipe == INSTALLED_RECIPE:
+        return current_ladder_widths()
+    return tuple(v1_ladder_width_deltas()[-1]["widths_after"])
+
+
+def recipe_in_force() -> str:
+    """The recipe of the generation production serves: the recipe live gold must match."""
+    return in_force_recipe(REPO_ROOT / "artifacts", REPO_ROOT / LEDGER_DIR)
+
+
 def phase332_net_width_delta(matrix: str) -> int:
-    """The net column change of every Phase-33.2 rung, for one matrix."""
-    return sum(slot_delta(slot, matrix) for slot in phase332_width_deltas())
+    """The net column change of every Phase-33.2 rung, for one matrix.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the switch rung is left out. It is the
+    v2 recipe's rung, not a Phase-33.2 one, and the residual assertions that read this pin the v1
+    pin ``GOLD_FEATURE_MATRICES``; the v2 pin is pinned by the chain test.
+    """
+    return sum(slot_delta(slot, matrix) for slot in v1_ladder_width_deltas())
 
 
 def width_chain_violations(
@@ -222,23 +266,27 @@ def width_chain_violations(
     return violations
 
 
-@pytest.mark.parametrize(
-    ("table_name", "expected_width"), list(GOLD_FEATURE_MATRICES.items())
-)
-def test_gold_matrix_width_matches_tripwire(
-    table_name: str, expected_width: int
-) -> None:
-    """Each rebuilt gold matrix's real column count equals its tripwire value."""
+@pytest.mark.parametrize("table_name", list(GOLD_FEATURE_MATRICES))
+def test_gold_matrix_width_matches_tripwire(table_name: str) -> None:
+    """Each rebuilt gold matrix's real column count equals its tripwire value.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the tripwire value is the pin of the
+    recipe in force, ``expected_gold_widths(in_force_recipe(...))`` -- the v1 pin until the owner
+    install puts the v2 recipe in force, the v2 pin after it -- which is what data QA's width
+    check now expects. Was: ``GOLD_FEATURE_MATRICES`` alone.
+    """
     path = GOLD_DIR / f"{table_name}.parquet"
     if not path.exists():
         pytest.skip(f"{path} not built yet -- run scripts.build_features first")
 
+    recipe = recipe_in_force()
+    expected_width = expected_gold_widths(recipe)[table_name]
     actual_width = pd.read_parquet(path).shape[1]
     assert actual_width == expected_width, (
-        f"{table_name}: real column count {actual_width} != "
-        f"GOLD_FEATURE_MATRICES expected {expected_width}. If the change is "
-        f"intentional, update GOLD_FEATURE_MATRICES in scripts/data_qa.py to the "
-        f"new empirically-counted width (IN-03, never silence the tripwire)."
+        f"{table_name}: real column count {actual_width} != the {recipe} pin's "
+        f"expected {expected_width}. If the change is intentional, update that pin "
+        f"in scripts/data_qa.py to the new empirically-counted width (IN-03, never "
+        f"silence the tripwire)."
     )
 
 
@@ -297,6 +345,9 @@ def test_phase_30_narrowing_is_exactly_the_line_movement_family(
     forecast can supply (``precip_mm``, ``raw_precip_mm``), so the residual is the
     Phase-33.1 flag plus the summed Phase-33.2 net delta. The names are asserted by
     ``test_the_phase_332_width_deltas_chain_and_are_pinned_by_name``.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: ``phase332_net_width_delta`` leaves
+    out the switch rung, so this still pins the v1 pin ``GOLD_FEATURE_MATRICES``.
     """
     path = GOLD_DIR / f"{table_name}.parquet"
     if not path.exists():
@@ -348,6 +399,10 @@ def test_the_phase_331_widening_is_pinned_to_the_named_coverage_flag(
     The width half now adds the Phase-33.2 net delta (Plan 33.2-12): the flag is still
     present and still counted, and the rungs after it are accounted for by the manifest's
     named width-delta slots rather than by a relaxed integer.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: ``phase332_net_width_delta`` leaves
+    out the switch rung, so the width half still pins the v1 pin ``GOLD_FEATURE_MATRICES``; the
+    flag is in v1 and v2 gold alike.
     """
     path = GOLD_DIR / f"{table_name}.parquet"
     if not path.exists():
@@ -456,12 +511,20 @@ def test_the_live_matrix_width_matches_the_ladder_record(table_name: str) -> Non
     The recorded triple is ``current_ladder_widths()`` since Plan 33.2-12: the last
     Phase-33.2 width-delta slot's measured ``widths_after``, or the Phase-33 ladder's close
     while no Phase-33.2 rung has moved a width.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the recorded triple is the ladder's
+    widths for the recipe in force (``ladder_widths_for``) -- the switch rung's ``widths_after``
+    under the v2 recipe, the last v1 rung's otherwise. Production reaches the switch rung only
+    at the owner install, so ``current_ladder_widths()`` alone would read v2 widths a v1 store
+    must not have.
     """
     path = GOLD_DIR / f"{table_name}.parquet"
     if not path.exists():
         pytest.skip(f"{path} not built yet -- run scripts.build_features first")
 
-    recorded = dict(zip(MATRIX_ORDER, current_ladder_widths(), strict=True))
+    recorded: dict[str, int] = dict(
+        zip(MATRIX_ORDER, ladder_widths_for(recipe_in_force()), strict=True)
+    )
     actual = pd.read_parquet(path).shape[1]
     assert actual == recorded[table_name], (
         f"{table_name} is {actual} columns wide but the ladder records "
@@ -484,6 +547,12 @@ def test_the_phase_332_width_deltas_chain_and_are_pinned_by_name() -> None:
 
     Controls: at least one slot is discovered once rung 4 has run (non-vacuity), and a
     planted chain whose ``widths_after`` is off by one yields a violation.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the switch rung's names are in each
+    live matrix exactly when the v2 recipe is in force (present under it, every one absent
+    otherwise); every other rung's names are checked as before. ``GOLD_FEATURE_MATRICES`` now
+    equals the last v1 rung's widths and ``GOLD_FEATURE_MATRICES_V2`` equals
+    ``current_ladder_widths()``, the switch rung's.
     """
     slots = phase332_width_deltas()
     assert slots, "non-vacuity: no P332_*_GOLD_WIDTH_DELTA slot was discovered"
@@ -491,19 +560,28 @@ def test_the_phase_332_width_deltas_chain_and_are_pinned_by_name() -> None:
     baseline = tuple(phase33_state.GOLD_WIDTHS_AFTER_ELO_REBUILD)
     assert width_chain_violations(slots, baseline) == []
 
+    switch = phase33_state.P332_SWITCH_V2_GOLD_WIDTH_DELTA
     for table_name in MATRIX_ORDER:
         path = GOLD_DIR / f"{table_name}.parquet"
         if not path.exists():
             pytest.skip(f"{path} not built yet -- run scripts.build_features first")
         columns = set(pd.read_parquet(path).columns)
-        for slot in slots:
+        for slot in v1_ladder_width_deltas():
             added = set(slot_names(slot, "added", table_name))
             removed = set(slot_names(slot, "removed", table_name))
             assert added <= columns, (table_name, slot["rung"])
             assert not removed & columns, (table_name, slot["rung"])
+        switch_added = set(slot_names(switch, "added", table_name))
+        if recipe_in_force() == INSTALLED_RECIPE:
+            assert switch_added <= columns, (table_name, switch["rung"])
+        else:
+            assert not switch_added & columns, (table_name, switch["rung"])
 
+    assert tuple(GOLD_FEATURE_MATRICES[name] for name in MATRIX_ORDER) == tuple(
+        v1_ladder_width_deltas()[-1]["widths_after"]
+    )
     assert (
-        tuple(GOLD_FEATURE_MATRICES[name] for name in MATRIX_ORDER)
+        tuple(GOLD_FEATURE_MATRICES_V2[name] for name in MATRIX_ORDER)
         == current_ladder_widths()
     )
 

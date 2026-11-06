@@ -38,7 +38,7 @@ import pytest
 import scripts.fingerprint_gold as fg
 import tests.phase33_state as state
 from backtest.signal_lift import group_columns
-from scripts.data_qa import GOLD_FEATURE_MATRICES
+from scripts.data_qa import expected_gold_widths
 from scripts.fingerprint_gold import (
     FINGERPRINT_DIR,
     PHASE332_MARKET_RUNG,
@@ -375,11 +375,17 @@ class TestTheLiveGold:
         owned by ``tests/unit/test_data_qa_gold_width.py``. Rung 9 happens to be the
         last rung, so the two agree today; the re-fit's gold step (Plan 33.2-23) may
         move the width, and this node must not go red when it does.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the pin is the one of the recipe
+        in force, ``expected_gold_widths(in_force_recipe(...))``. The owner install moves the
+        live width to the v2 pin, and this node must not go red when it does either.
         """
-        measured = {
-            matrix: self._frame(matrix).shape[1] for matrix in GOLD_FEATURE_MATRICES
-        }
-        assert measured == dict(GOLD_FEATURE_MATRICES)
+        from forward_ledger.store import LEDGER_DIR
+        from refit.generations import in_force_recipe
+
+        pin = expected_gold_widths(in_force_recipe(Path("artifacts"), LEDGER_DIR))
+        measured = {matrix: self._frame(matrix).shape[1] for matrix in pin}
+        assert measured == pin
 
 
 @pytest.mark.skipif(

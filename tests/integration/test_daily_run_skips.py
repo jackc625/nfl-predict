@@ -454,6 +454,13 @@ def make_day(
             "FeatureMatrixBuilder",
             _fixture_builder(root, planted, recorders.build_exclusions),
         )
+        # RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the gold builder follows the
+        # recipe in force, read from artifacts/latest.json, which the sandbox does not carry; the
+        # v1 recipe is pinned in force so the fixture builder above is the builder used.
+        monkeypatch.setattr(
+            "refit.generations.in_force_recipe",
+            lambda *_a, **_k: "recipe-2026-refit-v1",
+        )
         for name_ in _NO_OP_STEPS:
             adapter = f"step_{name_}"
             assert hasattr(steps, adapter), f"pipeline.steps has no {adapter}"

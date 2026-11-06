@@ -1171,15 +1171,27 @@ class TestTheIdentityMigrationMovesNoGoldColumn:
         resolver, not two: the last Phase-33.2 ``P332_*_GOLD_WIDTH_DELTA`` slot's
         measured widths. ``GOLD_WIDTHS_AFTER_WEATHER_RUNG`` is left BYTE-UNCHANGED as
         the record of what gold was between Phase 33.1 and that rung.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the reference is the width pin
+        of the recipe in force, ``expected_gold_widths(in_force_recipe(...))``. The ladder's
+        last rung is now the v2 recipe's (``P332_SWITCH_V2_GOLD_WIDTH_DELTA``), which
+        production reaches only at the owner install, so ``current_ladder_widths()`` would read
+        v2 widths a v1 store must not have; production gold must match the recipe in force,
+        before and after the install. The pins are tied to the ladder by
+        ``tests/unit/test_data_qa_gold_width.py``'s chain test.
         """
-        from tests.unit.test_data_qa_gold_width import current_ladder_widths
+        from forward_ledger.store import LEDGER_DIR
+        from refit.generations import in_force_recipe
+        from scripts.data_qa import expected_gold_widths
 
         measured = _production_gold_widths()
-        recorded = current_ladder_widths()
+        recipe = in_force_recipe(Path("artifacts"), LEDGER_DIR)
+        expected = expected_gold_widths(recipe)
+        recorded = tuple(expected[f"features_{target}"] for target in GOLD_TARGETS)
         superseded = tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD)
         assert measured == recorded, (
             f"production gold is {measured} wide but "
-            f"the Phase-33.2 width ladder records {recorded}. Either gold was "
+            f"the {recipe} width pin records {recorded}. Either gold was "
             "rebuilt with a schema change that nobody attributed, or this "
             "reference is stale in its turn. The superseded pre-33.1 reference "
             f"GOLD_WIDTHS_BEFORE_ELO_REBUILD reads {superseded} and is retained "

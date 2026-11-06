@@ -1,7 +1,6 @@
 """Build the v2 ("repaired") gold matrices into ``outputs/gold_v2/``, beside the live gold.
 
-The live nightly build (``pipeline.steps.build_and_save_gold``) is untouched. This script
-reuses its builder through a SUBCLASS that changes three seams:
+This script reuses the live builder through a SUBCLASS that changes three seams:
 
 * ``opponent_adj`` is the windowed adjuster (``features.opponent_adj_windowed``) and
   ``qb_tracker`` the replacement-level tracker (``features.qb_v2``);
@@ -17,8 +16,16 @@ families -- market-implied team ratings and the league scoring level -- are then
 names). The six derived inputs are added, the combined-matrix ``LeakageGate`` runs on each
 matrix, and the three matrices are written with plain ``DataFrame.to_parquet``.
 
-NEVER ``save_dataframe`` / ``save_feature_matrices``: they also replace the layer-blind
-DuckDB table ``features_{t}`` the live predictor reads. Nothing is written under ``data/``.
+``build_gold_v2`` NEVER calls ``save_dataframe`` / ``save_feature_matrices``: they also
+replace the layer-blind DuckDB table ``features_{t}`` the live predictor reads. It writes
+nothing under ``data/``.
+
+THE ONE SANCTIONED WAY V2 GOLD REACHES ``data/gold`` (MIDSEASON-SWITCH-RECORD.md section 4) is
+``FeatureMatrixBuilderV2Live``: the same build, the same two families and the same checks, run by
+the nightly gold build (``pipeline.steps.build_and_save_gold``) and written there by the parent's
+``save_feature_matrices`` -- parquet and the DuckDB table together. The nightly build picks it
+only while ``refit.generations.in_force_recipe`` answers the installed v2 recipe, so v2 gold and
+the v2 models can only reach production together.
 
 Usage:
     uv run python -m scripts.build_gold_v2 [--out-dir outputs/gold_v2]
@@ -264,6 +271,64 @@ def _merge_family(
     return matrix.merge(values, on="game_id", how="left", validate="one_to_one")
 
 
+def check_v2_matrices(matrices: dict[str, pd.DataFrame], built_at: datetime) -> None:
+    """Check each finished v2 matrix: the combined-matrix ``LeakageGate`` and the dtype guard.
+
+    The gate runs with the label columns dropped (the live build runs it before they exist);
+    ``refuse_provenance_columns`` refuses any time-typed or provenance-named column.
+
+    Raises:
+        LeakageViolation: a matrix carries a leakage keyword or misses a required group.
+        InformationTimeViolation: a matrix carries a time or a provenance column.
+    """
+    leakage_gate = LeakageGate()
+    for matrix in matrices.values():
+        features = matrix.drop(columns=[c for c in _LABEL_COLUMNS if c in matrix])
+        leakage_gate.validate_combined_matrix(features, built_at)
+        refuse_provenance_columns(matrix, build_clock_columns=BUILD_CLOCK_COLUMNS)
+
+
+class FeatureMatrixBuilderV2Live(FeatureMatrixBuilderV2):
+    """The v2 builder whose matrices are finished v2 gold: the families added and checked.
+
+    The one sanctioned way v2 gold reaches ``data/gold``: the nightly build saves what this
+    returns with the parent's ``save_feature_matrices``. ``build_gold_v2`` keeps using the bare
+    ``FeatureMatrixBuilderV2`` and adds the families itself, so they are never added twice.
+    """
+
+    def generate_feature_matrices(
+        self,
+        target_season: int | None = None,
+        target_week: int | None = None,
+        as_of_datetime: datetime | None = None,
+        *,
+        excluded_game_ids: frozenset[str] = frozenset(),
+        through_season: int | None = None,
+        unplayed_through_lock: datetime | None = None,
+    ) -> dict[str, pd.DataFrame]:
+        """The v2 build, then the market-rating and league-level families, then the checks.
+
+        An empty build is returned as is: there is nothing to add the families to.
+        """
+        matrices = super().generate_feature_matrices(
+            target_season=target_season,
+            target_week=target_week,
+            as_of_datetime=as_of_datetime,
+            excluded_game_ids=excluded_game_ids,
+            through_season=through_season,
+            unplayed_through_lock=unplayed_through_lock,
+        )
+        if not matrices:
+            return matrices
+        matrices = add_v2_families(
+            matrices,
+            load_dataframe("games", layer="silver"),
+            load_schedules(list(NFLVERSE_SEASONS)),
+        )
+        check_v2_matrices(matrices, datetime.now(UTC))
+        return matrices
+
+
 def build_gold_v2(out_dir: Path) -> dict[str, pd.DataFrame]:
     """Build the v2 matrices, check them, and write them and a manifest to *out_dir*.
 
@@ -293,11 +358,7 @@ def build_gold_v2(out_dir: Path) -> dict[str, pd.DataFrame]:
         matrices = add_v2_families(matrices, games, nflverse)
         _refuse_recorded_writes(sink)
 
-    leakage_gate = LeakageGate()
-    for matrix in matrices.values():
-        features = matrix.drop(columns=[c for c in _LABEL_COLUMNS if c in matrix])
-        leakage_gate.validate_combined_matrix(features, built_at)
-        refuse_provenance_columns(matrix, build_clock_columns=BUILD_CLOCK_COLUMNS)
+    check_v2_matrices(matrices, built_at)
 
     target_dir.mkdir(parents=True, exist_ok=True)
     for target in TARGETS:
