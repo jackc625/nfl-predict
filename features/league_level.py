@@ -30,6 +30,7 @@ import pandas as pd
 
 import utils.game_lock as lock_rule
 from features.provenance import DECLARED_GAME_DURATION
+from features.supplied_locks import check_supplied_locks
 
 LEVEL_PRIOR_GAMES = 32.0
 
@@ -134,8 +135,9 @@ def league_points_level(
             away_score``. ``kickoff_et`` must be timezone-aware.
         locks: Optional ``game_id``-indexed series of tz-aware instants replacing each
             game's lock (for example an early line capture). It must name every game with
-            a kickoff, else ``ValueError`` names the first ten missing ids. ``None`` uses
-            the day-before lock rule.
+            a kickoff exactly once with a non-null instant, else ``ValueError`` names the
+            first ten offending ids (``features.supplied_locks``). ``None`` uses the
+            day-before lock rule.
 
     Returns:
         A frame with ``game_id, league_points_level, information_time``. The level is NaN
@@ -146,13 +148,8 @@ def league_points_level(
     if locks is None:
         game_locks = lock_rule.lock_frame(with_kickoff)
     else:
-        missing = [g for g in with_kickoff["game_id"] if g not in locks.index]
-        if missing:
-            raise ValueError(
-                f"locks must name every game with a kickoff; {len(missing)} missing, "
-                f"first ten: {missing[:10]}"
-            )
-        game_locks = locks.loc[with_kickoff["game_id"]]
+        check_supplied_locks(locks, with_kickoff["game_id"])
+        game_locks = with_kickoff["game_id"].map(locks)
     lock_index = pd.DatetimeIndex(game_locks).tz_convert("UTC")
     indexes = _index_by_season(_scored_games_with_end(with_kickoff))
     seasons = with_kickoff["season"].astype(int).to_numpy()

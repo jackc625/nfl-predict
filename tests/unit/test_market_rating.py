@@ -188,3 +188,19 @@ def test_supplied_locks_must_name_every_game():
     locks = lock_rule.lock_frame(games)
     with pytest.raises(ValueError, match="2024_W03_BUF@KC"):
         market_ratings(games, nfl, locks=locks.drop(gid))
+
+
+def test_supplied_locks_must_not_name_a_game_twice():
+    games, nfl, gid, _ = _early_week_slate()
+    locks = lock_rule.lock_frame(games)
+    repeated = pd.concat([locks, locks.loc[[gid]]])
+    with pytest.raises(ValueError, match=r"more than once.*2024_W03_BUF@KC"):
+        market_ratings(games, nfl, locks=repeated)
+
+
+def test_supplied_locks_must_give_every_game_an_instant():
+    games, nfl, gid, _ = _early_week_slate()
+    locks = lock_rule.lock_frame(games)
+    locks[gid] = pd.NaT
+    with pytest.raises(ValueError, match=r"no instant.*2024_W03_BUF@KC"):
+        market_ratings(games, nfl, locks=locks)

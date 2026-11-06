@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 import utils.game_lock as lock_rule
+from features.supplied_locks import check_supplied_locks
 from utils.game_id_utils import create_standard_game_id
 from utils.team_data import normalize_team_abbreviation
 
@@ -164,19 +165,15 @@ def market_ratings(
 
     ``locks`` is a ``game_id``-indexed series of tz-aware instants (the shape
     ``lock_rule.lock_frame`` returns) replacing the lock per game, for example an early
-    line capture. It must name every game in ``games``, else ``ValueError`` names the
-    first ten missing ids. ``None`` reads each game at its day-before lock.
+    line capture. It must name every game in ``games`` exactly once with a non-null
+    instant, else ``ValueError`` names the first ten offending ids
+    (``features.supplied_locks``). ``None`` reads each game at its day-before lock.
     """
     pool = _line_pool(games, nflverse)
     if locks is None:
         locks = lock_rule.lock_frame(games)
     else:
-        missing = [g for g in games["game_id"] if g not in locks.index]
-        if missing:
-            raise ValueError(
-                f"locks must name every game; {len(missing)} missing, "
-                f"first ten: {missing[:10]}"
-            )
+        check_supplied_locks(locks, games["game_id"])
     targets = games.loc[:, ["game_id", "season", "home_team", "away_team"]].copy()
     targets["lock"] = pd.to_datetime(targets["game_id"].map(locks), utc=True)
     targets["home_team"] = targets["home_team"].map(normalize_team_abbreviation)
