@@ -141,7 +141,7 @@
     <span class="flex-1 h-px bg-line" aria-hidden="true"></span>
     {# A count of the rows on this page, like "Suppressed candidates (N)". No stake total: summing
        the stakes here would be a request-path aggregate (UIAP-01). #}
-    {% if bet_list_available and not bets_blocked and not week_not_evaluated and current_week is not none and bets %}
+    {% if bet_list_available and not day_before_retired and not bets_blocked and not week_not_evaluated and current_week is not none and bets %}
     <span class="text-xs text-muted whitespace-nowrap">ranked by expected value &middot; {{ bets|length }} {{ "bet" if bets|length == 1 else "bets" }}</span>
     {% endif %}
   </div>
@@ -179,6 +179,17 @@
   {% if not bet_list_available %}
     {% with heading="Bet list not built yet",
             body='The bet-list cache table does not exist. Load it with "uv run python scripts/populate_cache.py", then reload this page. That command only COPIES what the forward ledger holds, plus the stored backtest replay rows: forward bets come only from the 5 PM daily run, which records each one before its game locks.',
+            action_text=none, action_url=none %}
+      {% include "components/_empty_state.html" %}
+    {% endwith %}
+  {% elif day_before_retired %}
+    {# From the 2026 week-13 switch on the day-before system decides nothing
+       (MIDSEASON-SWITCH-RECORD.md), so this week has no list BY DESIGN: neither the refusal below
+       nor a result. Checked ahead of the refusal because a retired week's locked games carry no
+       row, which the refusal would otherwise report as a failed insertion. The route clears every
+       per-game verdict for such a week (pages._build_bets_context). #}
+    {% with heading="No day-before bets from week 13 on.",
+            body="The day-before system was retired at the 2026 week 13 switch: the new model is more accurate than the old one but earned no weight against the betting line, so this window places no bets.",
             action_text=none, action_url=none %}
       {% include "components/_empty_state.html" %}
     {% endwith %}
@@ -312,7 +323,7 @@
   {% endif %}
 </section>
 
-{# The suppressed section is WITHHELD in three states, each for its own reason:
+{# The suppressed section is WITHHELD in these states, each for its own reason:
    - no bet_list table: there is no record to show, only an action to take;
    - the stale-cache hard-block: every suppression reason is a verdict computed from the same
      cache the block just declared out of date, so showing them would assert a current record of
@@ -320,8 +331,10 @@
    - no current week: season and week are both None, so the getter carries NO week filter and
      would dump every suppressed row in the cache under a single week's heading;
    - a week not evaluated yet: nothing was evaluated, so "no candidate was suppressed" would be
-     a claim about an evaluation that has not happened (33.2 review C2 WR-01). #}
-{% if bet_list_available and not bets_blocked and not week_not_evaluated and current_week is not none %}
+     a claim about an evaluation that has not happened (33.2 review C2 WR-01);
+   - a week the retired day-before system no longer serves: nothing is evaluated for it at all,
+     for the same reason. #}
+{% if bet_list_available and not day_before_retired and not bets_blocked and not week_not_evaluated and current_week is not none %}
 {# ------------------------------------------------------------------------ #}
 {# Rank 3: the suppressed-candidates disclosure (SPEC R6, UI-SPEC E3).       #}
 {#                                                                          #}
@@ -494,9 +507,11 @@
      ("forward", "pre_verdict"),
      ("forward", "forward_realized")
    ] %}
+{# Once the current slate reaches the 2026 week-13 switch the forward record is the retired
+   day-before system's, whichever week is selected, and its heading says so. #}
 {% set TRACKER_HEADINGS = {
      "backtest_replay": "Backtest replay -- reconstructed after the fact",
-     "forward": "Forward record -- recommended before kickoff"
+     "forward": ("The retired day-before system, weeks 4-12" if forward_record_retired else "Forward record -- recommended before kickoff")
    } %}
 {% set TRACKER_CAPTIONS = {
      "backtest_replay": "These bets were never recommended in advance. They were reconstructed from historical data to show how the selection rule would have behaved. Do not read them as a track record.",

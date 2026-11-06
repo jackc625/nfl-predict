@@ -16,6 +16,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -50,9 +51,22 @@ _SECOND_GAME = "2023_W01_CAR@ATL"
 _PAST_LOCK = datetime(2023, 9, 7, 22, 0, 0, tzinfo=UTC)
 _FUTURE_LOCK = datetime(2099, 9, 7, 22, 0, 0, tzinfo=UTC)
 
+# The retired render exists only from the 2026 week-13 switch on (MIDSEASON-SWITCH-RECORD.md), so
+# its fixture is that week: scheduled, no bet-list row at all -- the cache the daily run leaves
+# once it stops deciding -- and judged on a clock pinned after the week's first lock (Wed
+# 2026-12-02 18:00 ET), where the per-game refusal would otherwise call the week missing.
+_RETIRED_SEASON = 2026
+_RETIRED_WEEK = 13
+_RETIRED_GAME = "2026_W13_DAL@NYG"
+_RETIRED_FIRST_LOCK = datetime(2026, 12, 2, 23, 0, 0, tzinfo=UTC)
+# Thursday noon ET of week 13. Every other fixture's lock is in 2023 or 2099, so judging them at
+# this instant renders exactly what the wall clock renders.
+_PINNED_CLOCK = datetime(2026, 12, 3, 17, 0, 0, tzinfo=UTC)
+
 # The text only one /bets render carries, per state. "bets" is the render that carries none.
 _BETS_PAGE_MARKERS: dict[str, str] = {
     "not_built": "Bet list not built yet",
+    "retired": "No day-before bets from week 13 on.",
     "blocked": "its locked games have no list in the cache",
     "not_evaluated": "No game of this week has reached its lock.",
     "no_week": "No current week",
@@ -71,7 +85,7 @@ _REQUEST = cast(Request, _StubRequest())
 
 
 def _rendered_state(html: str) -> str:
-    """Which of the six renders a /bets page made, read off the text only that render carries."""
+    """Which HEADLINER_STATES render a /bets page made, read off the text only it carries."""
     present = [state for state, marker in _BETS_PAGE_MARKERS.items() if marker in html]
     assert len(present) <= 1, f"/bets rendered more than one state at once: {present}"
     return present[0] if present else "bets"
@@ -131,8 +145,30 @@ def _prediction(game_id: str, game_date: datetime | None) -> dict[str, Any]:
     return row
 
 
+def _week_of(state: str) -> tuple[int, int]:
+    """The (season, week) whose /bets render is *state* in the cache built for it."""
+    if state == "retired":
+        return _RETIRED_SEASON, _RETIRED_WEEK
+    return _SEASON, _WEEK
+
+
+def _pin_the_coverage_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Judge the /bets per-game coverage at _PINNED_CLOCK instead of the wall clock.
+
+    ``_bet_week_coverage`` takes the instant as a parameter for tests; the context builder passes
+    none, so the module attribute it calls is replaced by the same function with the instant bound.
+    """
+    import api.routes.pages as pages_module
+
+    monkeypatch.setattr(
+        pages_module,
+        "_bet_week_coverage",
+        partial(pages_module._bet_week_coverage, now=_PINNED_CLOCK),
+    )
+
+
 def _build_state_cache(db_path: Path, state: str) -> None:
-    """Build a cache in which /bets?season=2023&week=1 makes the render named *state*.
+    """Build a cache in which /bets for ``_week_of(state)`` makes the render named *state*.
 
     Each state is built the way tests/api/test_bets_page.py builds it, from the same
     materializers production calls, so the parity below is checked against real cache shapes.
@@ -156,18 +192,22 @@ def _build_state_cache(db_path: Path, state: str) -> None:
         )
         if state == "no_week":
             return
+        season, week = _week_of(state)
+        game = _RETIRED_GAME if state == "retired" else _GAME
         materialize_available_bet_weeks(
-            conn, pd.DataFrame([{"game_id": _GAME, "season": _SEASON, "week": _WEEK}])
+            conn, pd.DataFrame([{"game_id": game, "season": season, "week": week}])
         )
-        lock = _FUTURE_LOCK if state == "not_evaluated" else _PAST_LOCK
+        lock = {"not_evaluated": _FUTURE_LOCK, "retired": _RETIRED_FIRST_LOCK}.get(
+            state, _PAST_LOCK
+        )
         materialize_bet_week_freeze(
             conn,
             pd.DataFrame(
                 [
                     {
-                        "game_id": _GAME,
-                        "season": _SEASON,
-                        "week": _WEEK,
+                        "game_id": game,
+                        "season": season,
+                        "week": week,
                         "game_freeze_ts": lock,
                     }
                 ]
@@ -207,16 +247,18 @@ def _serving(db_path: Path) -> Iterator[tuple[TestClient, duckdb.DuckDBPyConnect
 
 @pytest.mark.parametrize("state", HEADLINER_STATES)
 def test_the_headliner_names_the_render_bets_makes_for_the_same_week(
-    tmp_path: Path, state: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
     db_path = tmp_path / f"{state}.duckdb"
     _build_state_cache(db_path, state)
+    _pin_the_coverage_clock(monkeypatch)
+    season, week = _week_of(state)
 
     with _serving(db_path) as (client, conn):
-        bets_response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+        bets_response = client.get(f"/bets?season={season}&week={week}")
         bets_html = bets_response.text
         clear_cache()
-        headliner = _build_headliner(DataService(conn), _SEASON, _WEEK, _REQUEST)
+        headliner = _build_headliner(DataService(conn), season, week, _REQUEST)
 
     # A 500 page carries none of the markers and would otherwise be classified as "bets".
     assert bets_response.status_code == 200
@@ -228,11 +270,12 @@ def test_the_headliner_names_the_render_bets_makes_for_the_same_week(
         f"/bets renders {state!r} for this week but the This Week headliner says "
         f"{headliner['state']!r}"
     )
-    assert headliner["season"] == _SEASON and headliner["week"] == _WEEK
+    assert headliner["season"] == season and headliner["week"] == week
 
 
 _QUIET: dict[str, Any] = {
     "bet_list_available": True,
+    "day_before_retired": False,
     "bets_blocked": False,
     "week_not_evaluated": False,
     "current_week": _WEEK,
@@ -247,10 +290,20 @@ _QUIET: dict[str, Any] = {
         (
             {
                 "bet_list_available": False,
+                "day_before_retired": True,
                 "bets_blocked": True,
                 "week_not_evaluated": True,
             },
             "not_built",
+        ),
+        # A retired week is said to be retired before any per-game verdict is read.
+        (
+            {
+                "day_before_retired": True,
+                "bets_blocked": True,
+                "week_not_evaluated": True,
+            },
+            "retired",
         ),
         ({"bets_blocked": True, "week_not_evaluated": True}, "blocked"),
         ({"week_not_evaluated": True, "current_week": None}, "not_evaluated"),
@@ -521,14 +574,33 @@ def test_this_week_leads_with_the_weeks_bets(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("state", [s for s in HEADLINER_STATES if s != "bets"])
 def test_every_other_state_is_one_line_pointing_to_bets(
-    tmp_path: Path, state: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
-    html = _page(tmp_path, state, f"/?season={_SEASON}&week={_WEEK}")
+    _pin_the_coverage_clock(monkeypatch)
+    season, week = _week_of(state)
+    html = _page(tmp_path, state, f"/?season={season}&week={week}")
 
     assert f'data-headliner-state="{state}"' in html
     assert "data-headliner-note" in html
     assert "data-headliner-bet" not in html
     assert 'href="/bets' in html[html.index('id="headliners"') :]
+
+
+def test_a_retired_week_says_the_day_before_bets_are_retired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The headliner words the retired week as /bets does, and points to its week on Bets."""
+    _pin_the_coverage_clock(monkeypatch)
+    html = _page(
+        tmp_path, "retired", f"/?season={_RETIRED_SEASON}&week={_RETIRED_WEEK}"
+    )
+
+    headliners = html[html.index('id="headliners"') :]
+    note = headliners[headliners.index("data-headliner-note") :]
+    note = note[: note.index("</p>")]
+    assert "Day-before bets retired from week 13." in note
+    assert 'href="/bets?season=2026&amp;week=13"' in note
+    assert "missing" not in note
 
 
 def test_a_week_change_re_renders_the_headliners_with_the_slate(tmp_path: Path) -> None:
