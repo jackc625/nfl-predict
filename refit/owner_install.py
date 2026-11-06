@@ -6,7 +6,7 @@ WHAT ONE CALL DOES
 (``scripts/install_v2.py``). In order:
 
 1. **Preconditions** (:func:`install_preconditions`): the v2 recipe is not already in force, and
-   no 2026 game of weeks 1-12 is still before its lock, so no week-12 decision can be stamped with
+   no 2026 game of weeks 1-9 is still before its lock, so no week-9 decision can be stamped with
    a v2 model. A refusal here builds and writes nothing.
 2. **A clean commit** (``refit.swap._code_commit_problem``): the permanent install record names the
    code that ran, so an unknown or dirty commit is refused before anything is built.
@@ -200,7 +200,7 @@ def _as_utc(instant: datetime) -> datetime:
 def install_preconditions(
     games: pd.DataFrame, now_utc: datetime, in_force: str
 ) -> None:
-    """Refuse the install unless it is the first v2 install and week 12 has fully locked.
+    """Refuse the install unless it is the first v2 install and week 9 has fully locked.
 
     Args:
         games: Silver ``games`` (``game_id``, ``season``, ``week``, tz-aware ``kickoff_et``).

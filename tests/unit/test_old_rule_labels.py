@@ -181,7 +181,7 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "betting result."
     ),
     "MIDSEASON-SWITCH-RECORD.md": (
-        "A sealed record of the 2026 mid-season switch, written before week 13 and witnessed in "
+        "A sealed record of the 2026 mid-season switch, written before week 10 and witnessed in "
         "a later commit by tests/midseason_switch_state.py; editing it in place would destroy "
         "that evidence. The Study 1a replay figures it quotes come from walk-forward folds on "
         "the corrected and repaired gold and rest on no pre-fix model, so the old-rule addendum "

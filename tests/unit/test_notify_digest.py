@@ -17,7 +17,7 @@
   digest is ``(update)``; a lock-passed Saturday (D-18) and an unreadable-schedule Saturday (D-24)
   still email; a playoff week keeps its number (D-25); no CLV in the subject or header; the
   not-advice line is last; a shadow-arm row never reaches the email.
-* A week at or after the 2026 week-13 switch (MIDSEASON-SWITCH-RECORD.md) says the day-before
+* A week at or after the 2026 week-10 switch (MIDSEASON-SWITCH-RECORD.md) says the day-before
   system is retired instead of ``bets unknown``, and its game lines name no pick time; an earlier
   season's week 14 is not retired.
 
@@ -60,6 +60,7 @@ from api.cache import (
     materialize_bet_tracker_blocks,
     materialize_bet_week_results,
 )
+from api.cache_schema import DAY_BEFORE_RETIRED_FROM
 from api.presentation import NOT_ADVICE_KEY, NOT_ADVICE_LINE
 from api.services import DataService
 from notify import digest, digest_sections, transport
@@ -1014,11 +1015,18 @@ def test_a_shadow_row_never_reaches_the_email(
 
 
 # ---------------------------------------------------------------------------
-# MIDSEASON-SWITCH-RECORD.md: a week at or after the 2026 week-13 switch reads "retired"
+# MIDSEASON-SWITCH-RECORD.md: a week at or after the 2026 week-10 switch reads "retired"
 # ---------------------------------------------------------------------------
 
-RETIRED_LINE = "No day-before bets: retired at the 2026 week 13 switch."
+# The retired line is a copy literal; the switch week the cases send is read from the notifier's
+# copy of the record's value, and its Sunday derived, so a moved switch needs no edit to them.
+# RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md section 8: the switch moved from week 13
+# (Sunday 2026-12-06) to week 10 (Sunday 2026-11-15).
+RETIRED_LINE = "No day-before bets: retired at the 2026 week 10 switch."
 RETIRED_STATE = "no day-before bet"
+SWITCH_SEASON, SWITCH_WEEK = DAY_BEFORE_RETIRED_FROM
+# Week w's Sunday is (w - 1) weeks after the 2026 season's week-1 Sunday, 2026-09-13.
+SWITCH_SUNDAY = date(2026, 9, 13) + timedelta(weeks=SWITCH_WEEK - 1)
 
 
 def three_games(
@@ -1090,11 +1098,15 @@ def test_the_digest_of_a_retired_week_does_not_read_unknown(
     monkeypatch: pytest.MonkeyPatch, cache_path: Path
 ) -> None:
     sent = send_week_digest(
-        monkeypatch, cache_path, season=2026, week=13, sunday=date(2026, 12, 6)
+        monkeypatch,
+        cache_path,
+        season=SWITCH_SEASON,
+        week=SWITCH_WEEK,
+        sunday=SWITCH_SUNDAY,
     )
 
     assert sent["subject"] == (
-        "NFL Predict - 2026 week 13 - no day-before bets - run clean"
+        f"NFL Predict - {SWITCH_SEASON} week {SWITCH_WEEK} - no day-before bets - run clean"
     )
     html, text = sent["html"], sent["text"]
     assert f'<p data-digest-retired style="margin:0;">{RETIRED_LINE}</p>' in html
@@ -1119,16 +1131,16 @@ def test_a_failed_retired_saturday_still_names_the_unpredicted_game(
     sent = send_week_digest(
         monkeypatch,
         cache_path,
-        season=2026,
-        week=13,
-        sunday=date(2026, 12, 6),
+        season=SWITCH_SEASON,
+        week=SWITCH_WEEK,
+        sunday=SWITCH_SUNDAY,
         titles=("FAILED: 1 game not predicted",),
         status=STATUS_RUN_FAILED,
-        unpredicted_game_ids=("2026_13_CIN@CLE",),
+        unpredicted_game_ids=(f"{SWITCH_SEASON}_{SWITCH_WEEK:02d}_CIN@CLE",),
     )
 
     assert sent["subject"] == (
-        "NFL Predict - 2026 week 13 - RUN FAILED - no day-before bets"
+        f"NFL Predict - {SWITCH_SEASON} week {SWITCH_WEEK} - RUN FAILED - no day-before bets"
     )
     assert game_states(sent["text"]) == {
         "NYJ @ NE": RETIRED_STATE,

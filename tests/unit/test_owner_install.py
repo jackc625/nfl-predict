@@ -7,7 +7,7 @@ as v2, trains the three v2 models once, saves them, tunes their blend, writes th
 records the install in ``ledger/refit/owner_installs.jsonl`` and swaps ``artifacts/latest.json``
 through ``models.artifacts.replace_manifest`` -- or refuses and puts the v1 gold back.
 
-* Review Focus 2: while any 2026 game of weeks 1-12 is still before its lock, the install refuses
+* Review Focus 2: while any 2026 game of the weeks before the switch (1-9) is still before its lock, the install refuses
   and writes nothing; a second v2 install refuses too.
 * The v2 metadata names the fixed inputs and no ledger stamp column; the v2 bet rule parses
   through the decision path's own reader with no EV floor and no edge band.
@@ -34,7 +34,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -46,7 +46,11 @@ import pytest
 
 import utils.game_lock as lock_rule
 from api.cache import CACHE_SCHEMA, _load_feature_importances
-from backtest.midseason_switch_2026 import INSTALLED_RECIPE, RECORD_PATH
+from backtest.midseason_switch_2026 import (
+    DAY_BEFORE_RETIRED_FROM,
+    INSTALLED_RECIPE,
+    RECORD_PATH,
+)
 from backtest.refit_preregistration_2026 import MARKET_CONVERTER_ID, REFIT_RECIPE_ID
 from backtest.weekly_bet_list import load_bet_rule_record
 from forward_ledger.canonical import IMMUTABLE_COLUMNS_V1
@@ -80,24 +84,57 @@ from tests.unit.test_refit_swap import _write_converter, write_blend, write_bund
 CLEAN_COMMIT: str = "c" * 40
 DIRTY_COMMIT: str = f"{'c' * 40}+dirty"
 
-# Tue 2026-12-01 21:30 ET, already Wed 2026-12-02 in UTC: the install date must be the ET day.
-NOW = datetime(2026, 12, 2, 2, 30, tzinfo=UTC)
-INSTALL_DATE: str = "2026-12-01"
+# The fixture calendar is derived from the record's switch week, so a moved switch needs no edit
+# here. RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md section 8: the switch moved from week
+# 13 to week 10, so the last week before it is week 9 (Sun 2026-11-08) and the switch Tuesday is
+# Tue 2026-11-10 (they were the literals week 12, Sun 2026-11-29 and Tue 2026-12-01).
+SWITCH_SEASON, SWITCH_WEEK = DAY_BEFORE_RETIRED_FROM
+LAST_WEEK_BEFORE_SWITCH = SWITCH_WEEK - 1
+# Week w's Sunday is (w - 1) weeks after the week-1 Sunday of the fixture 2026 season.
+WEEK1_SUNDAY_2026 = date(2026, 9, 13)
+LAST_SUNDAY_BEFORE_SWITCH = WEEK1_SUNDAY_2026 + timedelta(
+    weeks=LAST_WEEK_BEFORE_SWITCH - 1
+)
+SWITCH_TUESDAY = LAST_SUNDAY_BEFORE_SWITCH + timedelta(days=2)
 
-# The Monday-night week-12 game kicks off Mon 2026-11-30, so it locks Sun 2026-11-29 18:00 ET.
-WEEK12_LAST_LOCK = datetime(2026, 11, 29, 18, 0, tzinfo=lock_rule.ET)
-DEC1_15ET = datetime(2026, 12, 1, 15, 0, tzinfo=lock_rule.ET)
-CUT = datetime(2026, 12, 1, 20, 0, tzinfo=UTC)
+# The Monday-night game of the last week before the switch kicks off the day after that Sunday, so
+# it locks that Sunday at 18:00 ET: the last lock before the switch. Two games of the switch week
+# follow (Thursday night and Sunday), still to come.
+LAST_GAME_BEFORE_SWITCH = datetime.combine(
+    LAST_SUNDAY_BEFORE_SWITCH + timedelta(days=1), time(20, 15), tzinfo=lock_rule.ET
+)
+SWITCH_WEEK_KICKOFFS: tuple[datetime, datetime] = (
+    datetime.combine(
+        SWITCH_TUESDAY + timedelta(days=2), time(20, 15), tzinfo=lock_rule.ET
+    ),
+    datetime.combine(
+        SWITCH_TUESDAY + timedelta(days=5), time(13, 0), tzinfo=lock_rule.ET
+    ),
+)
+LAST_LOCK_BEFORE_SWITCH = datetime.combine(
+    LAST_SUNDAY_BEFORE_SWITCH, time(18, 0), tzinfo=lock_rule.ET
+)
+
+# The switch Tuesday at 21:30 ET is already Wednesday in UTC: the install date must be the ET day.
+NOW = datetime.combine(SWITCH_TUESDAY, time(21, 30), tzinfo=lock_rule.ET).astimezone(
+    UTC
+)
+INSTALL_DATE: str = SWITCH_TUESDAY.isoformat()
+SWITCH_TUESDAY_15ET = datetime.combine(SWITCH_TUESDAY, time(15, 0), tzinfo=lock_rule.ET)
+CUT = datetime.combine(SWITCH_TUESDAY, time(20, 0), tzinfo=UTC)
 
 V2_IDS: dict[str, str] = {
-    "wp": "wp_20261201_200001",
-    "ats": "ats_20261201_200002",
-    "ou": "ou_20261201_200003",
-    "blend": "blend_20261201_200500",
+    "wp": f"wp_{SWITCH_TUESDAY:%Y%m%d}_200001",
+    "ats": f"ats_{SWITCH_TUESDAY:%Y%m%d}_200002",
+    "ou": f"ou_{SWITCH_TUESDAY:%Y%m%d}_200003",
+    "blend": f"blend_{SWITCH_TUESDAY:%Y%m%d}_200500",
     "converter": MARKET_CONVERTER_ID,
 }
 ZERO: dict[str, float] = {"wp": 0.0, "ats": 0.0, "ou": 0.0}
-BLEND_VERSION: str = "blend_20261202_023000"
+BLEND_VERSION: str = f"blend_{NOW:%Y%m%d_%H%M%S}"
+# The gold build clock: the switch Tuesday 22:00 UTC, before NOW; one day later for a rebuild.
+GOLD_BUILT_AT = pd.Timestamp(datetime.combine(SWITCH_TUESDAY, time(22, 0), tzinfo=UTC))
+GOLD_REBUILT_AT = GOLD_BUILT_AT + pd.Timedelta(days=1)
 
 # The 11 ledger stamp columns: no dict key the install writes may carry one of these names.
 STAMP_COLUMNS: frozenset[str] = frozenset(
@@ -115,7 +152,8 @@ SWITCH_RECORD_FILES: tuple[str, str] = (
 
 
 def schedule() -> pd.DataFrame:
-    """A silver ``games`` frame: 2025, 2026 weeks 1-12 played, week 13 still to come."""
+    """A silver ``games`` frame: 2025 and the 2026 weeks before the switch played, the switch
+    week (2026 week 10) still to come."""
     rng = np.random.default_rng(7)
     rows: list[dict[str, Any]] = []
 
@@ -137,13 +175,13 @@ def schedule() -> pd.DataFrame:
     for week in range(1, 19):
         for _game in range(2):
             add(2025, week, first_2025 + timedelta(weeks=week - 1), True)
-    first_2026 = datetime(2026, 9, 13, 13, 0, tzinfo=lock_rule.ET)
-    for week in range(1, 13):
+    first_2026 = datetime.combine(WEEK1_SUNDAY_2026, time(13, 0), tzinfo=lock_rule.ET)
+    for week in range(1, SWITCH_WEEK):
         for _game in range(2):
-            add(2026, week, first_2026 + timedelta(weeks=week - 1), True)
-    add(2026, 12, datetime(2026, 11, 30, 20, 15, tzinfo=lock_rule.ET), True)
-    add(2026, 13, datetime(2026, 12, 3, 20, 15, tzinfo=lock_rule.ET), False)
-    add(2026, 13, datetime(2026, 12, 6, 13, 0, tzinfo=lock_rule.ET), False)
+            add(SWITCH_SEASON, week, first_2026 + timedelta(weeks=week - 1), True)
+    add(SWITCH_SEASON, LAST_WEEK_BEFORE_SWITCH, LAST_GAME_BEFORE_SWITCH, True)
+    for kickoff in SWITCH_WEEK_KICKOFFS:
+        add(SWITCH_SEASON, SWITCH_WEEK, kickoff, False)
     return pd.DataFrame(rows)
 
 
@@ -155,7 +193,7 @@ def write_gold(gold: Path, games: pd.DataFrame) -> None:
         frame = games.loc[:, ["game_id", "season", "week"]].copy()
         for column in V2_INPUTS[target]:
             frame[column] = rng.normal(size=len(frame))
-        frame["feature_timestamp"] = pd.Timestamp("2026-12-01T22:00:00Z")
+        frame["feature_timestamp"] = GOLD_BUILT_AT
         frame.to_parquet(gold / f"features_{target}.parquet", index=False)
 
 
@@ -264,33 +302,40 @@ def normalized_sha256(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_the_install_refuses_before_week_12s_last_lock() -> None:
+def test_the_install_refuses_before_the_last_lock_before_the_switch() -> None:
+    """Before week 9's last lock (Sun 2026-11-08 18:00 ET) a pre-switch game is still open."""
     with pytest.raises(InstallRefused, match="week"):
         install_preconditions(
             schedule(),
-            now_utc=WEEK12_LAST_LOCK - timedelta(seconds=1),
+            now_utc=LAST_LOCK_BEFORE_SWITCH - timedelta(seconds=1),
             in_force=REFIT_RECIPE_ID,
         )
 
 
-def test_the_install_may_run_from_week_12s_last_lock() -> None:
-    """The control: at the last lock nothing of weeks 1-12 is still before its lock."""
+def test_the_install_may_run_from_the_last_lock_before_the_switch() -> None:
+    """The control: at that lock no game of the weeks before the switch is still open."""
     install_preconditions(
-        schedule(), now_utc=WEEK12_LAST_LOCK, in_force=REFIT_RECIPE_ID
+        schedule(), now_utc=LAST_LOCK_BEFORE_SWITCH, in_force=REFIT_RECIPE_ID
     )
 
 
 def test_the_install_refuses_a_second_v2_install() -> None:
     with pytest.raises(InstallRefused, match=INSTALLED_RECIPE):
-        install_preconditions(schedule(), now_utc=DEC1_15ET, in_force=INSTALLED_RECIPE)
+        install_preconditions(
+            schedule(), now_utc=SWITCH_TUESDAY_15ET, in_force=INSTALLED_RECIPE
+        )
 
 
-def test_the_install_refuses_a_schedule_without_weeks_1_to_12() -> None:
-    """No week-12 game in the schedule is no proof week 12 has locked: refused, never passed."""
+def test_the_install_refuses_a_schedule_without_the_weeks_before_the_switch() -> None:
+    """No pre-switch game in the schedule is no proof week 9 has locked: refused, never passed."""
     games = schedule()
-    later_only = games.loc[(games["season"] == 2026) & (games["week"] >= 13)]
+    later_only = games.loc[
+        (games["season"] == SWITCH_SEASON) & (games["week"] >= SWITCH_WEEK)
+    ]
     with pytest.raises(InstallRefused, match="no 2026 game"):
-        install_preconditions(later_only, now_utc=DEC1_15ET, in_force=REFIT_RECIPE_ID)
+        install_preconditions(
+            later_only, now_utc=SWITCH_TUESDAY_15ET, in_force=REFIT_RECIPE_ID
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +552,7 @@ def test_the_saved_models_record_the_gold_history_they_were_fitted_on(
     wp = pd.read_parquet(wp_path)
     appended = wp.loc[wp["season"] == 2026].head(1).assign(game_id="2026_14_NEW")
     moved_clock = pd.concat([wp, appended], ignore_index=True).assign(
-        feature_timestamp=pd.Timestamp("2026-12-02T22:00:00Z")
+        feature_timestamp=GOLD_REBUILT_AT
     )
     moved_clock.to_parquet(wp_path, index=False)
     assert owner_install.gold_history_content_sha256(stores.gold) == expected

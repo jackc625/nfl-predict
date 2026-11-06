@@ -24,11 +24,11 @@ notice and ``bets unknown``: a missing list is never rendered as zero bets (RESE
 
 A RETIRED WEEK: NEITHER "UNKNOWN" NOR "0 BETS" (MIDSEASON-SWITCH-RECORD.md)
 --------------------------------------------------------------------------
-From the 2026 week-13 switch on the day-before system decides nothing, so such a week has no list
+From the 2026 week-10 switch on the day-before system decides nothing, so such a week has no list
 BY DESIGN and never gets a populated-at marker. Read as above, every one of those weeks would say
 ``bets unknown`` and describe pick times for games nobody picks. So a week at or after
 ``api.cache_schema.DAY_BEFORE_RETIRED_FROM`` -- compared as a ``(season, week)`` pair, so every
-later season is retired and an earlier season's week 13-18 is not -- says :data:`RETIRED_LINE`, the
+later season is retired and an earlier season's week 10-18 is not -- says :data:`RETIRED_LINE`, the
 subject reads ``no day-before bets``, and a game line names no pick time: it reads
 :data:`STATE_RETIRED`, or ``not predicted`` for a game the run left without a prediction.
 
@@ -236,7 +236,7 @@ def day_before_retired(season: int | None, week: int | None) -> bool:
 
     A ``(season, week)`` pair compared against ``api.cache_schema.DAY_BEFORE_RETIRED_FROM``, never
     the clock (MIDSEASON-SWITCH-RECORD.md keys the switch on the NFL week): every later season's
-    week is retired, an earlier season's week 13-18 is not. An unknown week is not retired.
+    week is retired, an earlier season's week 10-18 is not. An unknown week is not retired.
     """
     if season is None or week is None:
         return False

@@ -5,7 +5,11 @@ copies values other code also holds: the v2 recipe name, the re-fit date list in
 switch week, whose deadline must fall between two NFL weeks' locks. These tests prove the copies
 agree, and check RELATIONSHIPS rather than only that strings appear: the paused dates are the
 list-week-8 dates after the first re-fit, the coverage ends the week before the switch, and the
-deadline sits between week 12's last lock and week 13's first on the recorded 2026 schedule.
+deadline sits between the last lock of the week before the switch and the first lock of the switch
+week on the recorded 2026 schedule, both weeks derived from ``DAY_BEFORE_RETIRED_FROM``.
+
+RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md section 8 (the correction to week 10): the
+switch-instant test is named for the derived weeks, now week 9's last lock and week 10's first.
 
 The silver schedule is read only, through ``forward_ledger.settle.load_silver_games``; nothing is
 written. The markdown is read from the repository root by path.
@@ -73,7 +77,7 @@ def test_every_earned_weight_is_zero() -> None:
     assert dict(V2_EARNED_WEIGHTS) == {"wp": 0.0, "ats": 0.0, "ou": 0.0}
 
 
-def test_the_switch_instant_falls_between_week_12_and_week_13() -> None:
+def test_the_switch_instant_falls_between_the_week_before_and_the_switch_week() -> None:
     season, switch_week = DAY_BEFORE_RETIRED_FROM
     games = load_silver_games(REPO_ROOT / "data" / "silver")
     games = games.loc[games["season"] == season]

@@ -3,7 +3,7 @@
 
 Accounts for every scheduled game of the verdict scope (season 2026, weeks 5-22, read from the
 committed declaration through ``forward_ledger.declarations.load_verdict_scope``) through the
-last week before the day-before system retired -- the coverage ends at week 12 (below) -- and
+last week before the day-before system retired -- the coverage ends at week 9 (below) -- and
 reports the counted live-arm rows. It runs any time as a PREVIEW, labelled "season to date -- not the
 verdict"; the one binding run happens after the Super Bowl is graded (Plan 38-09).
 
@@ -15,7 +15,7 @@ Output is ``KEY= value`` lines on stdout, in this order:
 * ``LEDGER= head=<hash> entries=<n>`` -- the chain head and entry count of the ledger read;
 * one ``EVIDENCE=`` line per evidence file (the run log, then the skip records): its path, line
   count and SHA-256, or ``missing`` (D-08);
-* ``COVERAGE_END= week=12 reason=MIDSEASON-SWITCH-RECORD.md`` -- the last week the coverage covers
+* ``COVERAGE_END= week=9 reason=MIDSEASON-SWITCH-RECORD.md`` -- the last week the coverage covers
   and the record that ends it there (below);
 * one ``COVERAGE=`` line per coverage week, in week order: scheduled, decided, bet, no_bet,
   failed_or_refused, missed, not_yet_due, not_played (the per-game rule is
@@ -45,15 +45,15 @@ them, so the preview's and the binding run's figures cannot drift apart.
 The ledger is read through its chain check (``forward_ledger.store.verify_chain``): nothing is
 reported over a ledger whose chain does not verify. The preview writes no file anywhere (D-16).
 
-COVERAGE ENDS AT WEEK 12 (MIDSEASON-SWITCH-RECORD.md section 5)
----------------------------------------------------------------
-The day-before system decides nothing from 2026 week 13, so the coverage (``classify_coverage``)
-reads the scope's weeks ``start_week..R6_COVERAGE_END_WEEK`` (5-12) and weeks 13-22 are never
+COVERAGE ENDS AT WEEK 9 (MIDSEASON-SWITCH-RECORD.md section 5)
+--------------------------------------------------------------
+The day-before system decides nothing from 2026 week 10, so the coverage (``classify_coverage``)
+reads the scope's weeks ``start_week..R6_COVERAGE_END_WEEK`` (5-9) and weeks 10-22 are never
 reported as missed. Only the coverage is shortened: the frozen scope (weeks 5-22) still selects the
 counted rows, refusal 3 still waits for a played week-22 game, and section 2 of the document still
 reports the scope as declared. "Not played" still reads every later week of the season
 (``scripts.season_coverage``): an unscored coverage game is inferred not played once a game of a
-later week, 13-22 included, is scored, so a cancelled week-12 game never blocks the binding run.
+later week, 10-22 included, is scored, so a cancelled week-9 game never blocks the binding run.
 
 THE BINDING RUN (``--binding``; Plan 38-09, SPEC R8-R9, D-09, D-24)
 --------------------------------------------------------------------
@@ -67,12 +67,12 @@ naming the first one unmet:
 
    then the switch check (MIDSEASON-SWITCH-RECORD.md section 5, :func:`after_switch_refusal`): a
    counted row -- any live-arm row the verdict keeps, a bet or a no-bet -- sits in a week after
-   ``R6_COVERAGE_END_WEEK``. The day-before system retired from week 13, so such a row means the
+   ``R6_COVERAGE_END_WEEK``. The day-before system retired from week 10, so such a row means the
    retirement leaked and the record is false; waiting never clears it, so it comes before the
    conditions that wait;
 1. a counted bet (status live) of a played game is not graded (suppressed rows and void bets never
    block);
-2. a coverage game (weeks 5-12) that is not "not played" lacks a final score, or a game inferred
+2. a coverage game (weeks 5-9) that is not "not played" lacks a final score, or a game inferred
    not played carries a counted bet already graded win, loss or push (a grade is direct evidence
    that a final score existed, so its missing silver score is a store contradiction, never a void
    game);
@@ -126,7 +126,7 @@ store cannot be read -- the ledger is unreadable or its chain does not verify
 (``STORE_UNREADABLE=``, naming the exception class); 3 the binding run refused
 (``BINDING_REFUSED=``), or the preview found a counted row after the switch: before printing
 anything else it runs the same switch check (:func:`after_switch_refusal`) and prints only
-``SWITCH_REFUSED= <sentence>``, because its figures would count a row its coverage (weeks 5-12)
+``SWITCH_REFUSED= <sentence>``, because its figures would count a row its coverage (weeks 5-9)
 never shows. A malformed evidence line refuses; it is never read as absent.
 
 Usage:
@@ -756,7 +756,7 @@ def after_switch_refusal(counted: pd.DataFrame) -> str | None:
     """The switch check: the earliest counted row after ``R6_COVERAGE_END_WEEK``, or None.
 
     A counted row is a live-arm row the verdict keeps (``forward_ledger.verdict.verdict_rows``),
-    whatever its status: a bet and a no-bet alike. From 2026 week 13 the day-before system records
+    whatever its status: a bet and a no-bet alike. From 2026 week 10 the day-before system records
     no decision of either kind (MIDSEASON-SWITCH-RECORD.md section 1), so any counted row in a
     later week means the retirement leaked and the record is false (section 5). Waiting never
     clears it. The earliest such row (by week, then game id) is named.
@@ -786,7 +786,7 @@ def binding_refusal(
 
     Evaluated in the documented order (module docstring), before anything is computed or
     written. *comparison* runs only when the switch check and conditions (1)-(7) hold. *report*
-    is the coverage (weeks 5-12); *scope* is the frozen scope, whose last week refusal 3 reads.
+    is the coverage (weeks 5-9); *scope* is the frozen scope, whose last week refusal 3 reads.
     """
     # The switch check first: no counted row after the week the day-before system retired.
     after_switch = after_switch_refusal(counted)
@@ -814,7 +814,7 @@ def binding_refusal(
                 f"{_first_five(keys)}. Wait for the next 17:00 ET daily run to grade them."
             )
 
-    # (2) A coverage game (weeks 5-12) that is not 'not played' lacks a final score, or a
+    # (2) A coverage game (weeks 5-9) that is not 'not played' lacks a final score, or a
     # not-played game carries a graded counted bet (its score existed; silver lost it).
     unscored = [
         game.game_id
@@ -842,7 +842,7 @@ def binding_refusal(
             )
 
     # (3) The schedule holds no played game of the frozen scope's last week (22, never the
-    # coverage's week 12): the binding run still waits for the Super Bowl.
+    # coverage's week 9): the binding run still waits for the Super Bowl.
     final_week = schedule.loc[
         (schedule["season"] == scope.season) & (schedule["week"] == scope.end_week)
     ]
@@ -1430,7 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     scope = load_verdict_scope()
     counted = verdict_rows(entries, scope)
-    # MIDSEASON-SWITCH-RECORD.md section 5: only the coverage stops at week 12. The frozen scope
+    # MIDSEASON-SWITCH-RECORD.md section 5: only the coverage stops at week 9. The frozen scope
     # still selects the counted rows, and refusal 3 and section 2 still read it.
     coverage_scope = replace(scope, end_week=R6_COVERAGE_END_WEEK)
     try:
@@ -1458,7 +1458,7 @@ def main(argv: list[str] | None = None) -> int:
             scope=scope,
         )
 
-    # The binding run's switch check, before any figure: a counted row after week 12 means the
+    # The binding run's switch check, before any figure: a counted row after week 9 means the
     # retirement leaked, and the figures would count a row the coverage never shows.
     after_switch = after_switch_refusal(counted)
     if after_switch is not None:

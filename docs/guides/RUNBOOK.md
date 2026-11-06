@@ -1379,8 +1379,8 @@ install happens once.
 
 One owner command installs the repaired v2 models, once. In order, it:
 
-1. refuses if the v2 recipe is already in force, or if any 2026 game of weeks 1-12 is still before
-   its lock (so no week-12 decision can be stamped with a v2 model);
+1. refuses if the v2 recipe is already in force, or if any 2026 game of weeks 1-9 is still before
+   its lock (so no week-9 decision can be stamped with a v2 model);
 2. refuses if the code it runs has uncommitted changes (the install record names the commit);
 3. rebuilds the shared gold matrices (`data/gold/features_{wp,ats,ou}.parquet`) as v2 gold;
 4. trains the three v2 models once, on every finished game from 2002 that kicked off before this
@@ -1397,14 +1397,18 @@ gold. `uv run python -m scripts.rebuild_gold` rebuilds gold for whichever recipe
 
 ### When it may run
 
-- Only after week 12's last lock, Sun 2026-11-29 18:00 ET. Before that it refuses and writes
-  nothing.
+- Only after week 9's last lock, Sun 2026-11-08 18:00 ET. Before that it refuses and writes
+  nothing. (The switch was moved from week 13 to week 10 by the owner on 2026-11-06,
+  `MIDSEASON-SWITCH-RECORD.md` section 8.)
 - Never so that it overlaps the 17:00-17:20 ET daily run: both write the gold matrices. Read the ET
   time with PowerShell `Get-Date`.
-- Best on Tue 2026-12-01, started no later than 15:00 ET, so the 17:00 ET run that evening is the
+- Best on Tue 2026-11-10, started no later than 15:00 ET, so the 17:00 ET run that evening is the
   first on v2. The latest start is 15:00 ET because everything must finish before 17:00 ET: the v2
   gold build (about 20 minutes), training and the walk-forward, and, if the install refuses, a
   v1 gold rebuild (about 20 minutes more).
+- Tue 2026-11-10's 17:00 ET run has no game the next day, so it takes the no-games branch: no gold
+  build, only the cache rebuild. The first v2 nightly gold build is Wed 2026-11-11's 17:00 ET run,
+  for week 10's Thursday game.
 - From the main checkout with PR A merged, and with no modified or untracked file under the code
   paths (`git status --porcelain` shows none under `refit`, `models`, `scripts`, `pipeline` and the
   other paths in `refit.records.REFIT_CODE_PATHS`). Write down the bytes of `artifacts/latest.json`
@@ -1452,7 +1456,7 @@ came after the v2 gold build began, the command rebuilt the v1 gold before it st
 daily run's data check passes with the v1 models. The models and blend a stopped attempt saved stay
 in `artifacts/`, unserved; leave them there. What to do depends on the reason:
 
-- **A week-1-12 game still locks later**: wait until after Sun 2026-11-29 18:00 ET.
+- **A week-1-9 game still locks later**: wait until after Sun 2026-11-08 18:00 ET.
 - **The v2 recipe is already in force**: nothing to do; v2 installs once.
 - **`clean_code_commit`**: the code has uncommitted changes. Never install from it; get back to the
   merged commit, then run it again.
@@ -1517,6 +1521,11 @@ word, and it writes nothing:
 uv run python -m scripts.season_readout
 ```
 
+If the ledger holds a counted live-arm row in week 10 or later (after the switch), the preview
+prints only `SWITCH_REFUSED= <message>` and exits with code 3, with no figure, because its figures
+would count a row its coverage (weeks 5-9) never shows. It is the binding run's switch check (see
+"If it refuses" below): the retirement leaked, so take it to the owner.
+
 ### The command
 
 From the repository root, in PowerShell, first run the two witness tests by file. They check that
@@ -1555,10 +1564,10 @@ do depends on which one it names.
    the restore, confirm `uv run python -m scripts.verify_ledger` passes, then run it again.
 
 **Then the switch check -- stop and investigate.** Under `MIDSEASON-SWITCH-RECORD.md` the
-day-before system decides nothing from week 13, so the coverage the run reports ends at week 12
+day-before system decides nothing from week 10, so the coverage the run reports ends at week 9
 (`R6_COVERAGE_END_WEEK`): the document's coverage section says so in one sentence, the run prints
-`COVERAGE_END= week=12 reason=MIDSEASON-SWITCH-RECORD.md`, and weeks 13-22 are never reported as
-missed. Right after condition 0, any counted live-arm row in week 13 or later, a bet or a no-bet,
+`COVERAGE_END= week=9 reason=MIDSEASON-SWITCH-RECORD.md`, and weeks 10-22 are never reported as
+missed. Right after condition 0, any counted live-arm row in week 10 or later, a bet or a no-bet,
 refuses with "a counted live row in week <w> is after the switch (MIDSEASON-SWITCH-RECORD.md):
 <game_id>". Such a row means the retirement leaked and the record is false; waiting never clears
 it, so take it to the owner. Condition 3 below still waits for the Super Bowl. Last, after
@@ -1592,7 +1601,7 @@ run), the Super Bowl bets stay ungraded for good and refusal 1 never clears by w
    `uv run python -m scripts.verify_ledger`. Re-enable the tasks, then run the binding run again.
 
 Refusal 2 only waits while no later week of the season is scored. Once one is (by February, the
-Super Bowl), an unscored game of weeks 5-12 is not waited for, week 12 included although coverage
+Super Bowl), an unscored game of weeks 5-9 is not waited for, week 9 included although coverage
 ends there: the run infers it was never played and voids its bets
 (each listed by name in the document's void-bets list). Refusal 2 also has a second form that does
 NOT clear by waiting: "game(s) inferred not played carry a graded counted bet". A graded bet means

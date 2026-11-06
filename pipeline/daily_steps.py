@@ -645,7 +645,7 @@ def recommend_slate(slate: DailySlate) -> None:
     refused rather than restarted (34-REVIEW CR-01). Both branches share the late-publish refusal
     below.
 
-    RETIRED FROM 2026 WEEK 13 (``MIDSEASON-SWITCH-RECORD.md``): a slate at or after
+    RETIRED FROM THE RECORD'S SWITCH WEEK, 2026 WEEK 10 (``MIDSEASON-SWITCH-RECORD.md``): a slate at or after
     ``DAY_BEFORE_RETIRED_FROM`` is decided by nobody. The step prints ``LEDGER_RETIRED=`` and
     returns FIRST -- before the passed-lock refusal, the runner and the old writer -- so it writes
     no live row (and so no shadow twin), no bet list and no skip record. The cutover switch is

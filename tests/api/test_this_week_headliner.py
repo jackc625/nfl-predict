@@ -15,10 +15,11 @@ import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 import duckdb
 import pandas as pd
@@ -36,6 +37,7 @@ from api.cache import (
     materialize_bet_list,
     materialize_bet_week_freeze,
 )
+from api.cache_schema import DAY_BEFORE_RETIRED_FROM
 from api.routes.pages import (
     HEADLINER_STATES,
     _build_headliner,
@@ -51,22 +53,30 @@ _SECOND_GAME = "2023_W01_CAR@ATL"
 _PAST_LOCK = datetime(2023, 9, 7, 22, 0, 0, tzinfo=UTC)
 _FUTURE_LOCK = datetime(2099, 9, 7, 22, 0, 0, tzinfo=UTC)
 
-# The retired render exists only from the 2026 week-13 switch on (MIDSEASON-SWITCH-RECORD.md), so
+# The retired render exists only from the 2026 week-10 switch on (MIDSEASON-SWITCH-RECORD.md), so
 # its fixture is that week: scheduled, no bet-list row at all -- the cache the daily run leaves
 # once it stops deciding -- and judged on a clock pinned after the week's first lock (Wed
-# 2026-12-02 18:00 ET), where the per-game refusal would otherwise call the week missing.
-_RETIRED_SEASON = 2026
-_RETIRED_WEEK = 13
-_RETIRED_GAME = "2026_W13_DAL@NYG"
-_RETIRED_FIRST_LOCK = datetime(2026, 12, 2, 23, 0, 0, tzinfo=UTC)
-# Thursday noon ET of week 13. Every other fixture's lock is in 2023 or 2099, so judging them at
-# this instant renders exactly what the wall clock renders.
-_PINNED_CLOCK = datetime(2026, 12, 3, 17, 0, 0, tzinfo=UTC)
+# 2026-11-11 18:00 ET), where the per-game refusal would otherwise call the week missing.
+# RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md section 8: the switch moved from week 13 to
+# week 10. The week is read from the page's copy of the switch week and its first lock derived
+# (the switch week's Wednesday, 18:00 ET), so a moved switch needs no edit here; the copy literals
+# stay literals.
+_RETIRED_SEASON, _RETIRED_WEEK = DAY_BEFORE_RETIRED_FROM
+_RETIRED_GAME = f"{_RETIRED_SEASON}_W{_RETIRED_WEEK:02d}_DAL@NYG"
+# Week w's Wednesday is (w - 1) weeks after the week-1 Wednesday of the 2026 season, 2026-09-09.
+_RETIRED_FIRST_LOCK = datetime.combine(
+    date(2026, 9, 9) + timedelta(weeks=_RETIRED_WEEK - 1),
+    time(18, 0),
+    tzinfo=ZoneInfo("America/New_York"),
+).astimezone(UTC)
+# Thursday noon ET of the switch week. Every other fixture's lock is in 2023 or 2099, so judging
+# them at this instant renders exactly what the wall clock renders.
+_PINNED_CLOCK = _RETIRED_FIRST_LOCK + timedelta(hours=18)
 
 # The text only one /bets render carries, per state. "bets" is the render that carries none.
 _BETS_PAGE_MARKERS: dict[str, str] = {
     "not_built": "Bet list not built yet",
-    "retired": "No day-before bets from week 13 on.",
+    "retired": "No day-before bets from week 10 on.",
     "blocked": "its locked games have no list in the cache",
     "not_evaluated": "No game of this week has reached its lock.",
     "no_week": "No current week",
@@ -598,8 +608,8 @@ def test_a_retired_week_says_the_day_before_bets_are_retired(
     headliners = html[html.index('id="headliners"') :]
     note = headliners[headliners.index("data-headliner-note") :]
     note = note[: note.index("</p>")]
-    assert "Day-before bets retired from week 13." in note
-    assert 'href="/bets?season=2026&amp;week=13"' in note
+    assert "Day-before bets retired from week 10." in note
+    assert f'href="/bets?season={_RETIRED_SEASON}&amp;week={_RETIRED_WEEK}"' in note
     assert "missing" not in note
 
 

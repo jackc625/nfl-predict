@@ -79,17 +79,19 @@ from tests.unit.test_refit_decision_path import (
     write_manifest_ids,
 )
 
-# The v2 generation's ids, as an owner install on Tue 2026-12-01 would name them.
+# The v2 generation's ids, as an owner install on the switch Tuesday, Tue 2026-11-10, would name
+# them. RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md section 8: the switch moved from week
+# 13 to week 10, so the fixture install moves from Tue 2026-12-01 to Tue 2026-11-10.
 V2_IDS = ResolvedArtifacts(
-    wp="wp_20261202_030101",
-    ats="ats_20261202_030102",
-    ou="ou_20261202_030103",
-    blend="blend_20261202_030500",
+    wp="wp_20261111_030101",
+    ats="ats_20261111_030102",
+    ou="ou_20261111_030103",
+    blend="blend_20261111_030500",
     converter=MARKET_CONVERTER_ID,
 )
-# 22:00 ET on Tue 2026-12-01 is already Wed 2026-12-02 in UTC: the period start must be the ET day.
-CUTOFF = datetime(2026, 12, 2, 3, 0, tzinfo=UTC)
-INSTALL_DATE = "2026-12-01"
+# 22:00 ET on Tue 2026-11-10 is already Wed 2026-11-11 in UTC: the period start must be the ET day.
+CUTOFF = datetime(2026, 11, 11, 3, 0, tzinfo=UTC)
+INSTALL_DATE = "2026-11-10"
 # A bet-rule sha no file is written for: the record validator never reads the bet-rule file.
 UNWRITTEN_SHA = "f" * 64
 CLEAN_COMMIT = "d" * 40
@@ -259,7 +261,7 @@ def test_a_refusal_belongs_to_its_own_attempt(tmp_path: Path) -> None:
     assert retry[-1].bet_rule_path.name == f"{UNWRITTEN_SHA}.json"
 
     other = ResolvedArtifacts(
-        **{**ids_mapping(V2_IDS), "blend": "blend_20261202_040000"}
+        **{**ids_mapping(V2_IDS), "blend": "blend_20261111_040000"}
     )
     served = ledger_with_owner_install(tmp_path / "served", installed=True)
     assert append_owner_install(served, intent(ids=ids_mapping(other)))
@@ -370,10 +372,10 @@ def test_the_season_panel_starts_an_owner_generation_on_its_install_date(
     ledger = ledger_with_owner_install(tmp_path, installed=True)
     write_pairs(ledger, ats_pairs())
 
-    assert period_starts_of(ledger) == {1: date(2026, 11, 3), 2: date(2026, 12, 1)}
+    assert period_starts_of(ledger) == {1: date(2026, 11, 3), 2: date(2026, 11, 10)}
     panel, _aa_status = panel_frames(read_entries(ledger), games_frame(), ledger)
     owner = panel.loc[(panel["period_index"] == 2) & (panel["target"] == "ats")]
-    assert owner["period_label"].tolist() == ["Period 2, from Tue Dec 1"]
+    assert owner["period_label"].tolist() == ["Period 2, from Tue Nov 10"]
     assert owner["paired_games"].tolist() == [0]
 
 

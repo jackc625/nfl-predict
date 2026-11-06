@@ -136,6 +136,18 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
 
    A defective row refuses only its own game (the live-skip rule), never tomorrow's slate.
    The run prints `RUN_STATUS=` and a `SKIPPED <game>` line per dropped game.
+
+   **From 2026 week 10 the day-before system is retired (`MIDSEASON-SWITCH-RECORD.md`; moved from
+   week 13 by owner ruling on 2026-11-06, section 8).** For a slate of 2026 week 10 or later the
+   ledger write records nothing (no live row, so no shadow twin) and prints
+   `LEDGER_RETIRED= season=<s> week=<w> (MIDSEASON-SWITCH-RECORD.md)`; predictions, gold and the
+   cache are built as before. The February R6 verdict therefore grades weeks 5-9. The v2 models
+   are installed once by an owner command (`RUNBOOK.md`, "Switch day: install v2"): allowed only
+   after week 9's last lock, Sun 2026-11-08 18:00 ET, best on Tue 2026-11-10, started no later
+   than 15:00 ET and never during the 17:00-17:20 ET run. Tue 2026-11-10's 17:00 ET run has no
+   game the next day, so it takes the no-games branch (item 2): no gold build. The first v2
+   nightly gold build is Wed 2026-11-11's run, for week 10's Thursday game; from the install on,
+   the nightly gold build follows the recipe in force.
 4. **The re-fit side step (Phase 37)** -- after the run proper, its ledger write and the ledger
    sync, and BEFORE the cache rebuild, the website push and the notifications (D-15; the sync was
    moved ahead of the re-fit by owner ruling on 2026-10-21), on every run that got past
@@ -603,7 +615,7 @@ failure. The owner's setup steps, the TEST command and what each message means a
   what reached the owner. A dry run writes nothing to it.
 - **Console lines** on the daily run: `NOTIFY_FAILED=` and `NOTIFY_BETS=` (`delivered <receipt id>`
   or `failed <kind>`, then the title; `NOTIFY_BETS= none` when there is no bets push, and
-  `NOTIFY_BETS= none (day-before window retired from 2026 week 13)` for a slate of 2026 week 13 or
+  `NOTIFY_BETS= none (day-before window retired from 2026 week 10)` for a slate of 2026 week 10 or
   later, whose day-before window `MIDSEASON-SWITCH-RECORD.md` retired; the watcher check-in of such
   a run carries the token `day-before=retired` after its bets count),
   `NOTIFY_DIGEST=` (`delivered <receipt id>`, `failed <kind>` or `not a digest day`), and the

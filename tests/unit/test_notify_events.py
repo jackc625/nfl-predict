@@ -36,6 +36,7 @@ from api.cache import (
     GRADING_STATUS_PENDING,
     materialize_bet_list,
 )
+from api.cache_schema import DAY_BEFORE_RETIRED_FROM
 from api.services import DataService, clear_cache
 from forward_ledger.closing_schedule import TriggerRegistration
 from forward_ledger.runner import SettleOutcome
@@ -661,18 +662,29 @@ def test_an_unlogged_receipt_is_reported(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 # ---------------------------------------------------------------------------
-# MIDSEASON-SWITCH-RECORD.md: from 2026 week 13 the run says why no bets push went out
+# MIDSEASON-SWITCH-RECORD.md: from 2026 week 10 the run says why no bets push went out
 # ---------------------------------------------------------------------------
 
-RETIRED_BETS_LINE = "NOTIFY_BETS= none (day-before window retired from 2026 week 13)"
+# The console line is a copy literal; the weeks the cases use are read from the notifier's copy of
+# the switch week, so a moved switch needs no edit to them. RE-POINTED 2026-11-06 for
+# MIDSEASON-SWITCH-RECORD.md section 8: the switch moved from week 13 to week 10.
+RETIRED_BETS_LINE = "NOTIFY_BETS= none (day-before window retired from 2026 week 10)"
+SWITCH_SEASON, SWITCH_WEEK = DAY_BEFORE_RETIRED_FROM
 
 
 @pytest.mark.parametrize(
     ("season", "week", "expected"),
     [
-        pytest.param(2026, 13, RETIRED_BETS_LINE, id="the-switch-week"),
+        pytest.param(
+            SWITCH_SEASON, SWITCH_WEEK, RETIRED_BETS_LINE, id="the-switch-week"
+        ),
         pytest.param(2027, 1, RETIRED_BETS_LINE, id="a-later-season"),
-        pytest.param(2026, 12, "NOTIFY_BETS= none", id="the-week-before-the-switch"),
+        pytest.param(
+            SWITCH_SEASON,
+            SWITCH_WEEK - 1,
+            "NOTIFY_BETS= none",
+            id="the-week-before-the-switch",
+        ),
         # Compared as a (season, week) pair: an earlier season's week 14 is not retired.
         pytest.param(2025, 14, "NOTIFY_BETS= none", id="an-earlier-season-week-14"),
     ],

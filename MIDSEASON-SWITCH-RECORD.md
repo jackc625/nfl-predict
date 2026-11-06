@@ -1,15 +1,18 @@
-# MID-SEASON SWITCH RECORD -- the day-before system retires from 2026 week 13
+# MID-SEASON SWITCH RECORD -- the day-before system retires from 2026 week 10
 
 **Status:** FROZEN. This document and `backtest/midseason_switch_2026.py` are ONE record in two
 files, landed in ONE commit containing nothing else. This is the human-readable half; the
 constants module is the half the code reads. Every value written in both places is the same value.
+**Corrected once, 2026-11-06** (section 8): the switch moved from week 13 to week 10, by owner
+ruling, in a later commit touching only these two files whose message INVALIDATES the original
+record commit in part.
 
 **What this record is for.** Study 1a measured that the repaired v2 recipe is more accurate than
 the current recipe on the pooled 2017-2024 replay, and that neither earned any weight against the
-day-before line: every bet type earned weight 0. So from 2026 week 13 the old day-before betting
+day-before line: every bet type earned weight 0. So from 2026 week 10 the old day-before betting
 system stops recording decisions, the v1 calendar re-fit stops, and the v2 models are installed
 once, by a recorded owner command. Several frozen 2026 records assumed the old system would run to
-the Super Bowl. This record says, before week 13 begins, exactly which of their statements no
+the Super Bowl. This record says, before week 10 begins, exactly which of their statements no
 longer hold and why, so a reader in February can check that the change was decided before its
 effect existed and not chosen after.
 
@@ -28,37 +31,37 @@ LATER commit, in a test-state module, which also witnesses `models/v2_recipe.py`
 preregistration_anchor_recorded_in: tests/midseason_switch_state.py
 preregistration_anchor_slots: SWITCH_RECORD_WITNESS, SWITCH_RECORD_COMMITTED_AT, SWITCH_RECORD_DEADLINE_UTC, V2_RECIPE_FILE_WITNESS
 preregistration_paths: MIDSEASON-SWITCH-RECORD.md, backtest/midseason_switch_2026.py
-preregistration_deadline: 2026-12-01T17:00:00-05:00
+preregistration_deadline: 2026-11-10T17:00:00-05:00
 ```
 
-The deadline is Tue 2026-12-01 17:00 America/New_York (22:00 UTC), the cutoff of re-fit date 2
-(section 3). It falls after week 12's last lock (Sun 2026-11-29 18:00 ET) and before week 13's
-first lock (Wed 2026-12-02 18:00 ET), both measured on the recorded 2026 schedule
-(`data/silver/games.parquet`, read 2026-11-06). This commit's committer date must precede it, and
-this commit and the code that reads it must be on GitHub's `master` before it.
+The deadline is Tue 2026-11-10 17:00 America/New_York (22:00 UTC). It falls after week 9's last
+lock (Sun 2026-11-08 18:00 ET) and before week 10's first lock (Wed 2026-11-11 18:00 ET), both
+measured on the recorded 2026 schedule (`data/silver/games.parquet`, read 2026-11-06). The
+committer date of the commit that last changed these two files (the correction of section 8) must
+precede it, and that commit and the code that reads it must be on GitHub's `master` before it.
 
 ---
 
-## 1. What changes from 2026 week 13
+## 1. What changes from 2026 week 10
 
-**The switch is keyed on the NFL week, not the clock.** Every 2026 game of week 13 or later
-(`DAY_BEFORE_RETIRED_FROM = (2026, 13)`) is outside the old system, from Tue 2026-12-01 17:00 ET
-on. That instant falls between week 12's last lock and week 13's first, so no NFL week is decided
+**The switch is keyed on the NFL week, not the clock.** Every 2026 game of week 10 or later
+(`DAY_BEFORE_RETIRED_FROM = (2026, 10)`) is outside the old system, from Tue 2026-11-10 17:00 ET
+on. That instant falls between week 9's last lock and week 10's first, so no NFL week is decided
 by two systems.
 
-- **No live row.** No `arm="live"` row is written to the forward ledger for a 2026 game of week 13
+- **No live row.** No `arm="live"` row is written to the forward ledger for a 2026 game of week 10
   or later.
 - **So no shadow twin.** A shadow row is written only beside a new live row of the same game and
   target (`ROLLING-REFIT-PREREGISTRATION.md` section 2), so the frozen shadow arm stops after week
-  12 by itself. It is not re-pinned.
+  9 by itself. It is not re-pinned.
 - **No new arm.** This record adds no arm value of any kind.
 - **The day-before window places no bets.** The v2 models earned weight 0 on all three bet types
   (section 2), and a weight of 0 means no day-before bets for that bet type.
 
 The retirement does not depend on the install: if v2 never installs, no live row is written from
-week 13 all the same, and the current recipe earned weight 0 as well.
+week 10 all the same, and the current recipe earned weight 0 as well.
 
-**What stays as it was.** Every ledger row written before week 13 stays unchanged and keeps being
+**What stays as it was.** Every ledger row written before week 10 stays unchanged and keeps being
 graded as before. No existing row is rewritten.
 
 ## 2. Why
@@ -110,6 +113,7 @@ v2 on its own trails the line on every target: WP log loss 0.6375 vs 0.6165, ATS
   way. The day-before pricing machinery (best price across books, quarter-Kelly sizing, a weekly
   cap, the no-contradiction rule, a `market` arm, `fill-v2`, a market bet-rule kind) is therefore
   not built now.
+- **2026-11-06, the week-10 correction:** the switch moves from week 13 to week 10 (section 8).
 
 ## 3. The v1 calendar re-fit is paused
 
@@ -117,7 +121,7 @@ v2 on its own trails the line on every target: WP log loss 0.6375 vs 0.6165, ATS
 in `ROLLING-REFIT-PREREGISTRATION.md` section 4 is in force: 2026-11-03 (week 9), 2026-12-01
 (week 13), 2026-12-29 (week 17), 2027-01-26 (week 21). Date 1, 2026-11-03, ran and installed
 generation 1 (`wp_20261103_221538`, `ats_20261103_221544`, `ou_20261103_221550`,
-`blend_20261103_221911`), which decides the live rows of weeks 9-12.
+`blend_20261103_221911`), which decides the live rows of week 9, the last week before the switch.
 
 **Dates 2-4 close `not run`, paused by this record** (`REFIT_PAUSED_DATES`):
 
@@ -137,8 +141,9 @@ their install (section 4), and never re-fitted in 2026.
 
 **Why paused.** Any of these dates after the switch would retrain the old recipe and overwrite the
 v2 models. The pause holds whether or not v2 installs, and it rests on owner ruling B (2026-11-05),
-which lifted the season freeze for these changes. Re-fit date 2's cutoff is this record's deadline,
-so the pause is in force before the first paused date can fall due.
+which lifted the season freeze for these changes. This record's deadline (2026-11-10) precedes
+re-fit date 2's cutoff (2026-12-01), so the pause is in force before the first paused date can fall
+due.
 
 ## 4. The v2 install
 
@@ -170,31 +175,31 @@ edge bands: a model with weight 0 has no edge to band.
 or a refused event. `artifacts/latest.json` is written only by `models.artifacts.replace_manifest`,
 never by hand. The recorded install becomes the next generation.
 
-**When.** Only after week 12's last lock (Sun 2026-11-29 18:00 ET). While any 2026 game of weeks
-1-12 is still before its lock, the install refuses and writes nothing, so no week-12 decision can
-be stamped with a v2 model. It is one owner command; once v2 is in force, a second install
-refuses.
+**When.** Only after week 9's last lock (Sun 2026-11-08 18:00 ET). While any 2026 game of weeks
+1-9 is still before its lock, the install refuses and writes nothing, so no week-9 decision can be
+stamped with a v2 model. It is one owner command; once v2 is in force, a second install refuses.
 
 **Gold.** The same command rebuilds the shared gold matrices with the v2 feature builder, and from
 then on the nightly gold build follows the recipe in force, so the v1 models never score v2 gold.
 An install that fails after the v2 gold is built rebuilds the v1 gold before it stops.
 
-**No ledger row is decided by v2 under this record.** The install waits for week 12's last lock,
-and from week 13 no live row is written (section 1).
+**No ledger row is decided by v2 under this record.** The install waits for week 9's last lock,
+and from week 10 no live row is written (section 1).
 
 ## 5. The February readout
 
 - **The R6 money verdict** (`SEASON-VERDICT-PREREGISTRATION.md` and `backtest/verdict_test_2026.py`,
-  commit 922b010) grades the live arm over weeks 5-12 by its frozen rule, unchanged: the same test,
+  commit 922b010) grades the live arm over weeks 5-9 by its frozen rule, unchanged: the same test,
   the same three-test family, the same alpha and the same verdict words. Only the span is shorter,
-  because no live row exists after week 12.
-- **The coverage table ends at week 12** (`R6_COVERAGE_END_WEEK`) and cites this record, instead of
-  reporting weeks 13-22 as missed.
-- **A counted live row in week 13 or later refuses the run.** Such a row would mean the retirement
+  because no live row exists after week 9.
+- **The coverage table ends at week 9** (`R6_COVERAGE_END_WEEK`) and cites this record, instead of
+  reporting weeks 10-22 as missed.
+- **A counted live row in week 10 or later refuses the run.** Such a row would mean the retirement
   leaked and this record is false.
 - **The re-fit comparison** (`ROLLING-REFIT-PREREGISTRATION.md` section 11, commit e25884d) covers
-  generation 1 against generation 0 over weeks 9-12, by its frozen test, minimum count and
-  correction. No later generation decides a live row, so there is nothing else to compare.
+  generation 1 against generation 0 over week 9 only, by its frozen test, minimum count and
+  correction. Week 9 holds about 15 games, so the comparison is expected to report "too few to
+  test". No later generation decides a live row, so there is nothing else to compare.
 
 ## 6. What this record INVALIDATES
 
@@ -203,9 +208,9 @@ statements in them no longer hold:
 
 | Commit | Files | What no longer holds |
 |---|---|---|
-| `922b010b70d973a21945c15ca88067dae4149ad5` | `SEASON-VERDICT-PREREGISTRATION.md`, `backtest/verdict_test_2026.py` | In part: "the whole live 2026 season" is now weeks 5-12. Everything else in it stands. |
-| `c3a33993160769b2ab9a8c2cf7cd2a24ad19be10` | `backtest/verdict_scope_2026.py` | In part: "The verdict is the LIVE arm's: the bets the system actually recommended." no longer holds from week 13, where the system records no day-before decision. The declared weeks 5-22 stay; weeks 13-22 hold no counted row. |
-| `e25884da8356b9ec76970c4c14f87a797d2a32d7` | `ROLLING-REFIT-PREREGISTRATION.md`, `backtest/refit_preregistration_2026.py` | Section 1 (one frozen recipe for the season): from the install the serving models are `recipe-2026-v2`. Section 3 (generations): the owner install is a generation outside the cadence-date numbering. Section 4 (the calendar): dates 2-4 close `not run` (section 3 here). Section 6 (when a re-fit runs): a paused date that falls due is closed `not run`, not attempted. Section 9 (the re-measured bet rule and its EV floors): the v2 generation's bet rule has no EV floors and no edge bands. Section 11 (the comparison): limited to generation 1 against generation 0 over weeks 9-12. |
+| `922b010b70d973a21945c15ca88067dae4149ad5` | `SEASON-VERDICT-PREREGISTRATION.md`, `backtest/verdict_test_2026.py` | In part: "the whole live 2026 season" is now weeks 5-9. Everything else in it stands. |
+| `c3a33993160769b2ab9a8c2cf7cd2a24ad19be10` | `backtest/verdict_scope_2026.py` | In part: "The verdict is the LIVE arm's: the bets the system actually recommended." no longer holds from week 10, where the system records no day-before decision. The declared weeks 5-22 stay; weeks 10-22 hold no counted row. |
+| `e25884da8356b9ec76970c4c14f87a797d2a32d7` | `ROLLING-REFIT-PREREGISTRATION.md`, `backtest/refit_preregistration_2026.py` | Section 1 (one frozen recipe for the season): from the install the serving models are `recipe-2026-v2`. Section 3 (generations): the owner install is a generation outside the cadence-date numbering. Section 4 (the calendar): dates 2-4 close `not run` (section 3 here). Section 6 (when a re-fit runs): a paused date that falls due is closed `not run`, not attempted. Section 9 (the re-measured bet rule and its EV floors): the v2 generation's bet rule has no EV floors and no edge bands. Section 11 (the comparison): limited to generation 1 against generation 0 over week 9 only. |
 
 ## 7. What this record does not do
 
@@ -216,3 +221,34 @@ statements in them no longer hold:
 - No day-before pricing machinery (owner ruling 2026-11-06).
 
 Each of those is for a later record, which will name what it changes.
+
+## 8. Correction, 2026-11-06
+
+**What changed.** The switch week moves from 2026 week 13 (Tue 2026-12-01 17:00 ET) to 2026 week 10
+(Tue 2026-11-10 17:00 ET). In the constants: `DAY_BEFORE_RETIRED_FROM` (2026, 13) becomes
+(2026, 10), `R6_COVERAGE_END_WEEK` 12 becomes 9, and `PREREGISTRATION_DEADLINE_UTC`
+2026-12-01T22:00:00+00:00 becomes 2026-11-10T22:00:00+00:00. The earliest install moves from after
+Sun 2026-11-29 18:00 ET (week 12's last lock) to after Sun 2026-11-08 18:00 ET (week 9's last lock).
+Everything else stands: the paused re-fit dates, the pause ruling, the installed recipe, the earned
+weights, the Study 1a figures and the INVALIDATES list of section 6.
+
+**The ruling.** On 2026-11-06 the owner ruled to switch at week 10 instead of week 13, so the v2
+models and the early-week work start three weeks sooner.
+
+**Why.** The original record (commit `a27898aa1c1369ade3d8b47be8ab983cf16572b6`) fixed week 13 for
+two main reasons: the re-fit comparison (generation 1 against generation 0) would collect about 58
+paired games over weeks 9-12, and Tue 2026-12-01 was re-fit date 2, so the deadline put the pause in
+force exactly when it was first needed. Under the lean switch neither reason holds. The re-fit pause
+is already in force (merged on `master`) and is read from `REFIT_PAUSED_DATES` whatever the switch
+week. The comparison only judges the retired system, which decides nothing after the switch.
+
+**The accepted costs.** The re-fit comparison covers week 9 only (about 15 games) and is expected to
+report "too few to test". The frozen R6 rule grades the old live arm over weeks 5-9 only.
+
+**Measured on the recorded 2026 schedule** (`data/silver/games.parquet` through the one lock rule,
+read 2026-11-06): week 9's last lock is Sun 2026-11-08 18:00 ET and week 10's first lock is Wed
+2026-11-11 18:00 ET, so Tue 2026-11-10 17:00 ET (22:00 UTC) falls between them.
+
+**How it was made.** By one later commit touching only `MIDSEASON-SWITCH-RECORD.md` and
+`backtest/midseason_switch_2026.py`, whose message INVALIDATES
+`a27898aa1c1369ade3d8b47be8ab983cf16572b6` in part, naming the full sha.

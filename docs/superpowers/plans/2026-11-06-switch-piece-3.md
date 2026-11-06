@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.13, uv, pandas, scikit-learn (the existing v2 recipe), FastAPI + Jinja2, pytest.
 
+**Owner correction, 2026-11-06:** the switch moved from week 13 (Tue 2026-12-01) to week 10 (Tue 2026-11-10) (`MIDSEASON-SWITCH-RECORD.md` section 8, commit "record: correct the switch to 2026 week 10"); Tasks 1-10 below are the record of what was built for week 13, and Tasks 11-12 are updated for week 10, whose deadline is Tue 2026-11-10 17:00 ET.
+
 **Spec:** `C:\Users\jackc\code\nfl-predict\.planning\designs\2026-11-05-profitability-fixes-design.md` (sections 5, 6.2, 6.4, 6.5, 7 "Stage 2"), narrowed by the owner ruling below. Evidence (gitignored; read at these absolute paths): `C:\Users\jackc\code\nfl-predict\.planning\research\2026-11-05-why-not-profitable\` -- `constraints-for-midseason-changes.md` (sections a, c, d, e; cited "constraints s.x"), `code-map-model-v2.md` (cited "map"), `study-1a-report.md` (the numbers the record quotes). Line numbers below were read at master `92b2032`.
 
 **Owner ruling, 2026-11-06 (lean switch).** Study 1a gave all three bet types weight 0 and nothing is re-fitted after the switch, so the day-before window places no bets for the rest of 2026 either way. Piece 3 therefore does NOT build the day-before pricing machinery (best price, quarter-Kelly, weekly cap, the no-contradiction rule, a `market` arm, `fill-v2`, a market bet-rule kind). Piece 4 builds pricing for the early-week board it will actually price from. The key-number cover-probability converter of design 6.2 item 6 is pricing machinery too (only a bet price reads it), so it also moves to piece 4.
@@ -687,7 +689,7 @@ Run: `git -C C:\Users\jackc\Code\nfl-predict-v2 diff --name-status master...swit
 - Produces, `tests/midseason_switch_state.py` (constants only, no imports; the APPEND PROTOCOL docstring of `tests/phase38_state.py:14-22`; a comment saying how each value was measured):
   - `SWITCH_RECORD_WITNESS: dict[str, dict[str, str]]` -- for each of the two record paths, `{"commit": <40 hex, git log -1 --format=%H -- <path>>, "normalized_sha256": <sha256 of the file bytes with CRLF folded to LF>}`
   - `SWITCH_RECORD_COMMITTED_AT: str` (`git show -s --format=%cI <commit>`)
-  - `SWITCH_RECORD_DEADLINE_UTC: str = "2026-12-01T22:00:00+00:00"`
+  - `SWITCH_RECORD_DEADLINE_UTC: str = "2026-11-10T22:00:00+00:00"` (the corrected deadline; the witnessed commit is the 2026-11-06 correction, the last commit touching the two record files)
   - `V2_RECIPE_FILE_WITNESS: dict[str, dict[str, str]]` -- `models/v2_recipe.py` the same way
 - Produces, the ancestry test, copying `tests/unit/test_phase38_preregistration_ancestry.py`'s arms: the witness covers exactly the record paths and both are tracked; (iv) each file hashes to its witness; no record contains its own hash or commit; the deadline equals `PREREGISTRATION_DEADLINE_UTC` and is UTC; (i) `git log -1 -- <path>` is the witnessed commit; (ii) a strict ancestor of HEAD; (iii) it touches exactly the two record paths; (v) `%cI` equals the witness and precedes the deadline; (vi) reachable from `refs/remotes/origin/master`; the witness file's last commit descends from the record; no quiet edit, through `uninvalidating_commits_touching_the_rule` (`tests/unit/test_phase33_preregistration_ancestry.py:186-225`); `models/v2_recipe.py` hashes to its witness and its last commit is the witnessed one. No synthetic-repo controls (that helper is already controlled in the Phase 38 test).
 
@@ -724,7 +726,7 @@ Ask the owner to push, open PR B and merge it (`--admin`), outside 17:00-17:20 E
 
 ### Task 12: Switch day -- install v2 (owner command, main checkout)
 
-**Files:** none (runs the Task 5 command). Allowed: any day on or after Tue 2026-12-01 once week 12's last lock (Sun 11-29 18:00 ET) has passed, never 17:00-17:20 ET; best on Tue 12-01, started no later than 15:00 ET (the v2 gold build, about 20 minutes, training and the walk-forward, and a possible v1 gold rebuild of about 20 minutes on a refusal must all finish before 17:00), so the 17:00 run is the first on v2. It changes the live lake and `latest.json`: run it only after the owner says go on the day.
+**Files:** none (runs the Task 5 command). Allowed: only once week 9's last lock (Sun 2026-11-08 18:00 ET) has passed, never 17:00-17:20 ET; best on Tue 2026-11-10, started no later than 15:00 ET (the v2 gold build, about 20 minutes, training and the walk-forward, and a possible v1 gold rebuild of about 20 minutes on a refusal must all finish before 17:00), so the 17:00 run is the first on v2. It changes the live lake and `latest.json`: run it only after the owner says go on the day.
 
 - [ ] **Step 1: Preconditions**
 
@@ -763,7 +765,7 @@ uv run pytest tests/integration/test_live_2026_prediction_set.py tests/unit/test
 
 Expected: all PASS except `test_live_2026_prediction_set.py::test_every_live_prediction_row_is_stamped_against_its_lock` if Step 1's baseline run recorded it as already red with the same cause (it is red in the worktree for reasons unrelated to the recipe). Compare every red here with the Step 1 baseline list; never accept a red that list does not hold. `test_build_refuses_an_absolute_path_inside_the_resolved_live_lake` could not be run on v2 before the merge (its live lake was the scratch gold), so it is checked here for the first time on v2.
 
-Two nodes can only be verified after the install AND the next cache rebuild (the 17:00 run rebuilds `data/web_cache.duckdb` from the served models; before that the cache still holds what the v1 models served): run them after the Tue 12-01 17:00 run (Step 5):
+Two nodes can only be verified after the install AND the next cache rebuild (the 17:00 run rebuilds `data/web_cache.duckdb` from the served models; before that the cache still holds what the v1 models served): run them after the Tue 11-10 17:00 run (Step 5):
 
 ```bash
 uv run pytest tests/integration/test_activation_parity.py::test_part_a_cache_predictions_equal_backtest_csv tests/integration/test_activation_parity.py::test_part_b_cache_feature_importances_equal_deployed_metadata -q -p no:cacheprovider
@@ -771,8 +773,8 @@ uv run pytest tests/integration/test_activation_parity.py::test_part_a_cache_pre
 
 Expected: both PASS. `test_part_b_cache_feature_importances_equal_deployed_metadata` is RED on the main checkout today (the generation-1 v1 re-fit artifacts carry no `feature_importances`, so the cache table is empty); the v2 artifacts write them (`refit.owner_install.v2_feature_importances`), so it turns green once the cache is rebuilt from v2. If either is still red after the rebuild, stop and report.
 
-- [ ] **Step 5: After the Tue 12-01 17:00 ET run** (read `logs/daily_lock_runs.jsonl`'s last record and the run log): no failed step. Tuesday's run has no game tomorrow, so it takes the no-games branch: no gold build. It closes the paused re-fit date 2026-12-01 `not run` with `paused_by` in `ledger/refit/dates.jsonl` and rebuilds the cache.
-- [ ] **Step 5b: After the Wed 12-02 17:00 ET run** (week 13's first slate, Thursday's game; the first v2 nightly gold build and the first unplayed game through the v2 families): no failed step; the gold build used the v2 builder (212/212/211 columns, the data QA width check green); the run prints `LEDGER_RETIRED= season=2026 week=13` and `NOTIFY_BETS= none (day-before window retired from 2026 week 13)`; /bets for week 13 shows the retired message.
+- [ ] **Step 5: After the Tue 11-10 17:00 ET run** (read `logs/daily_lock_runs.jsonl`'s last record and the run log): no failed step. Tuesday's run has no game tomorrow, so it takes the no-games branch: no gold build. It rebuilds the cache. No re-fit date falls due that day: the first paused date, 2026-12-01, closes `not run` with `paused_by` in `ledger/refit/dates.jsonl` when it falls due.
+- [ ] **Step 5b: After the Wed 11-11 17:00 ET run** (week 10's first slate, Thursday's game; the first v2 nightly gold build and the first unplayed game through the v2 families): no failed step; the gold build used the v2 builder (212/212/211 columns, the data QA width check green); the run prints `LEDGER_RETIRED= season=2026 week=10` and `NOTIFY_BETS= none (day-before window retired from 2026 week 10)`; /bets for week 10 shows the retired message ("No day-before bets from week 10 on.") and the tracker heading "The retired day-before system, weeks 4-9".
 
 - [ ] **Step 6: File and report**
 
