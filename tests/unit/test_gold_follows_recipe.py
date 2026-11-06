@@ -13,14 +13,16 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
 
+from features.provenance import InformationTimeViolation
 from pipeline import steps
 from scripts import build_gold_v2 as v2
-from scripts import data_qa
+from scripts import data_qa, rebuild_gold
 from scripts.build_features import FeatureMatrixBuilder
 from scripts.build_gold_v2 import (
     RAW_ROLLING_EPA_COLUMNS,
@@ -94,6 +96,17 @@ def test_the_gold_builder_follows_the_in_force_recipe(monkeypatch):
     assert steps.gold_builder_class() is FeatureMatrixBuilderV2Live
 
 
+def test_the_gold_builder_refuses_without_a_latest_json(monkeypatch, tmp_path):
+    """No ``artifacts/latest.json``: the recipe is never guessed, so no builder is picked.
+
+    The lookup is NOT patched: an empty directory (no ``artifacts/``, no ``ledger/``) is what
+    the real ``in_force_recipe`` reads, and a fall-back to the v1 builder would return here.
+    """
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match=r"latest\.json"):
+        steps.gold_builder_class()
+
+
 def test_the_live_v2_build_adds_the_families_once(base_build_calls):
     out = FeatureMatrixBuilderV2Live().generate_feature_matrices(
         excluded_game_ids=frozenset()
@@ -135,6 +148,25 @@ def test_an_empty_live_v2_build_is_returned_as_is(monkeypatch):
     monkeypatch.setattr(v2, "load_schedules", unreachable)
 
     assert FeatureMatrixBuilderV2Live().generate_feature_matrices() == {}
+
+
+def test_the_live_v2_build_refuses_a_planted_provenance_column(
+    monkeypatch, base_build_calls
+):
+    """``check_v2_matrices`` runs on the nightly path: a provenance-named column is refused."""
+
+    def planted_generate(self, **_kwargs):
+        matrices = _three_matrices()
+        matrices["ou"] = matrices["ou"].assign(elo_information_time=0.0)
+        return matrices
+
+    monkeypatch.setattr(
+        FeatureMatrixBuilderV2, "generate_feature_matrices", planted_generate
+    )
+    with pytest.raises(InformationTimeViolation, match="information_time"):
+        FeatureMatrixBuilderV2Live().generate_feature_matrices(
+            excluded_game_ids=frozenset()
+        )
 
 
 def test_data_qa_expects_the_in_force_recipe_widths():
@@ -190,3 +222,21 @@ def test_the_v2_ladder_slot_matches_data_qa():
         *V2_DERIVED_COLUMNS,
     }
     assert slot["removed"] == ()
+
+
+def test_rebuild_gold_runs_the_pipeline_gold_step_once(monkeypatch):
+    """The recovery command is the pipeline's own gold step, whose builder follows the recipe."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "pipeline.steps.step_build_features", lambda: calls.append("built")
+    )
+    monkeypatch.setattr(sys, "argv", ["rebuild_gold"])
+
+    assert rebuild_gold.main() == 0
+    assert calls == ["built"]
+
+
+def test_the_gold_recovery_command_is_rebuild_gold():
+    """The stale-gold refusal names the recipe-following rebuild, never scripts.build_features."""
+    command = steps._BOUNDARY_RECOVERY_COMMAND[steps.ARTIFACT_BOUNDARY_GOLD]
+    assert command == "uv run python -m scripts.rebuild_gold"

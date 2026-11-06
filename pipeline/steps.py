@@ -256,10 +256,12 @@ ARTIFACT_PHASE_BOUNDARIES: tuple[str, ...] = (
 )
 
 # The recovery command each boundary's refusal names. One per boundary rather than one
-# generic line, because "rebuild something" is not an instruction.
+# generic line, because "rebuild something" is not an instruction. The gold one is
+# scripts.rebuild_gold, never scripts.build_features: that CLI always builds v1 gold, which
+# under the v2 recipe would sit under models reading other columns (MIDSEASON-SWITCH-RECORD.md).
 _BOUNDARY_RECOVERY_COMMAND: dict[str, str] = {
     ARTIFACT_BOUNDARY_DATA: "uv run python scripts/friday_pipeline.py --data-only",
-    ARTIFACT_BOUNDARY_GOLD: "uv run python -m scripts.build_features --all-seasons --save",
+    ARTIFACT_BOUNDARY_GOLD: "uv run python -m scripts.rebuild_gold",
     ARTIFACT_BOUNDARY_PREDICTIONS: (
         "uv run python scripts/friday_pipeline.py --predictions-only"
     ),

@@ -165,6 +165,10 @@ uv run python scripts/build_features.py --all-seasons
   any real `--season`/`--all-seasons` build materializes the canonical gold matrices
   (`data/gold/features_{wp,ats,ou}.parquet`). That is a GOLD REBUILD, forbidden under D-07.
   The `build_*.py --all-seasons` feeders likewise rebuild the full historical feature tables.
+  Once the v2 recipe is live (MIDSEASON-SWITCH-RECORD.md section 4), a hand-run
+  `scripts.build_features --save` writes v1 gold under the v2 models, and the daily data QA then
+  refuses on width. Rebuild gold with `uv run python -m scripts.rebuild_gold` instead: it
+  follows the in-force recipe.
 - **`--all-seasons` REPLACES gold; `--season <YEAR>` MERGES into it.** The full build
   carried every season, so its frame IS the table and is written as such -- that is the
   only mode that can change the gold schema (it is what the Phase-30 rung-3 column drop
