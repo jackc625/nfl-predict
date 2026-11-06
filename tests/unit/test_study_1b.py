@@ -106,7 +106,11 @@ def test_wp_market_log_odds_are_the_season_slope_times_the_spread():
 
 
 def _joined(n=60, seed=5):
-    """Predictions joined to lines: 2 rows of 2020, one missing early total, one no close."""
+    """Predictions joined to lines: 2 rows of 2020, one missing early total, one no close.
+
+    The spreads carry a planted move: with the model margin at early + edge, the close sits
+    at early + 0.4 x edge and the day-before line at early + 0.3 x edge. The totals carry none.
+    """
     rng = np.random.default_rng(seed)
     early = rng.normal(0, 6, n)
     edge = rng.normal(0, 2.5, n)
@@ -159,6 +163,33 @@ def test_target_verdict_counts_every_drop_and_measures_the_slippage_share():
     }
     assert (wp.close.games, wp.day_before.games) == (57, 58)
     assert wp.share_clearing_slippage is None
+
+
+@pytest.mark.parametrize(
+    ("target", "close_slope", "day_before_slope"),
+    [("ats", 0.4, 0.3), ("wp", 0.4, 0.3), ("ou", 0.0, 0.0)],
+)
+def test_target_verdict_recovers_the_planted_slopes(
+    target: str, close_slope: float, day_before_slope: float
+):
+    """Pins the direction and scale of each target's regression, not only its counts.
+
+    WP's probability is sigmoid(0.15 x margin) and its lines are 0.15 x the spreads, so in
+    log-odds its slopes equal the spreads' 0.4 and 0.3. A swapped later and early line, a raw
+    WP probability, or later WP lines left in points all land far outside the tolerance.
+    """
+    frame, margin, total = _joined()
+    predictions = {
+        "ats": margin,
+        "ou": total,
+        "wp": 1.0 / (1.0 + np.exp(-0.15 * margin)),
+    }
+    verdict, _ = target_verdict(
+        target, frame.assign(prediction=predictions[target]), {2021: 0.15}
+    )
+    assert verdict.close.info is not None and verdict.day_before.info is not None
+    assert verdict.close.info.coef == pytest.approx(close_slope, abs=0.1)
+    assert verdict.day_before.info.coef == pytest.approx(day_before_slope, abs=0.1)
 
 
 def test_report_is_ascii_and_states_each_verdict(tmp_path):
