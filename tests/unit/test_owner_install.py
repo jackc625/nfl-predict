@@ -17,6 +17,9 @@ through ``models.artifacts.replace_manifest`` -- or refuses and puts the v1 gold
   rebuilt. So does a failed v2 gold build, a dirty tree (refused before any build), a declined
   intent write, and a refused or crashed swap -- the last two appending a ``refused`` event, so
   the never-served intent never counts as a generation.
+* Review fix R1 (PR #6): a failure after ``latest.json`` names the v2 ids -- an error or an
+  interrupt -- is an install, never a refusal: ``installed`` is recorded, the v1 gold is not
+  rebuilt under the v2 models, and the v2 recipe is in force.
 
 The gold build, the clean-commit check and the blend tune are stubbed; training is real, on a
 small gold. Every artifacts dir, ledger, gold and silver store is a pytest temporary directory;
@@ -29,7 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -667,6 +670,87 @@ def test_a_crashed_swap_records_refused_too(
     assert spy.calls == [FeatureMatrixBuilderV2Live, FeatureMatrixBuilder]
     assert latest_bytes(stores) == before
     assert [g.number for g in installed_generations(stores.ledger)] == [0, 1]
+
+
+def _swap_lands_then_raises(
+    failure: BaseException,
+) -> Callable[[Mapping[str, str], Path], None]:
+    """The real ``replace_manifest``, then *failure*: a crash after latest.json was written."""
+    real_replace_manifest = owner_install.replace_manifest
+
+    def landing_then_raising(mapping: Mapping[str, str], artifacts_dir: Path) -> None:
+        real_replace_manifest(mapping, artifacts_dir)
+        raise failure
+
+    return landing_then_raising
+
+
+def _assert_the_landed_swap_is_installed(stores: InstallStores, spy: GoldSpy) -> None:
+    """Recorded as installed, the v2 ids served, no v1 gold restore, the v2 recipe in force."""
+    events = read_owner_installs(stores.ledger)
+    assert [e["event"] for e in events] == ["install_intent", "installed"]
+    intent, installed = events
+    assert installed["install_date"] == intent["install_date"] == INSTALL_DATE
+    assert installed["after_ids"] == intent["ids"]
+    latest = json.loads((stores.artifacts / "latest.json").read_text())
+    assert {key: latest[key] for key in ("wp", "ats", "ou", "blend")} == {
+        key: intent["ids"][key] for key in ("wp", "ats", "ou", "blend")
+    }
+    assert spy.calls == [FeatureMatrixBuilderV2Live]
+    assert in_force_recipe(stores.artifacts, stores.ledger) == INSTALLED_RECIPE
+
+
+def test_an_error_after_the_swap_landed_is_an_install_not_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review fix R1: latest.json names the v2 ids, so the v2 models serve whatever failed after
+    the write. Recording ``refused`` would hide a served generation (every later
+    ``in_force_recipe`` raises) and rebuilding the v1 gold would feed it to the v2 models."""
+    stores = build_stores(tmp_path)
+    spy = GoldSpy()
+    monkeypatch.setattr(
+        owner_install,
+        "replace_manifest",
+        _swap_lands_then_raises(RuntimeError("planted failure after the write")),
+    )
+
+    outcome = run_install(stores, spy, monkeypatch, TuneStub())
+
+    _assert_the_landed_swap_is_installed(stores, spy)
+    assert read_owner_installs(stores.ledger)[0]["ids"] == outcome.ids
+
+
+def test_an_interrupt_after_the_swap_landed_is_an_install_and_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review fix R1: an interrupt after the write still records the install, then propagates."""
+    stores = build_stores(tmp_path)
+    spy = GoldSpy()
+    monkeypatch.setattr(
+        owner_install, "replace_manifest", _swap_lands_then_raises(KeyboardInterrupt())
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_install(stores, spy, monkeypatch, TuneStub())
+
+    _assert_the_landed_swap_is_installed(stores, spy)
+
+
+def test_the_manifest_serves_only_exactly_the_intended_pointers(tmp_path: Path) -> None:
+    """Never raises: an absent or unparseable manifest proves nothing was swapped."""
+    pointers = {key: V2_IDS[key] for key in ("wp", "ats", "ou", "blend")}
+    latest = tmp_path / "latest.json"
+    assert owner_install._manifest_serves(tmp_path, pointers) is False
+
+    latest.write_text("{not json", encoding="ascii")
+    assert owner_install._manifest_serves(tmp_path, pointers) is False
+
+    latest.write_text(json.dumps({**pointers, "wp": "wp_older"}), encoding="ascii")
+    assert owner_install._manifest_serves(tmp_path, pointers) is False
+
+    latest.write_text(json.dumps({**pointers, "extra": "kept"}), encoding="ascii")
+    assert owner_install._manifest_serves(tmp_path, pointers) is True
+    assert owner_install._manifest_serves(tmp_path, {}) is False
 
 
 # ---------------------------------------------------------------------------

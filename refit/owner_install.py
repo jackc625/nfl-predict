@@ -32,17 +32,28 @@ WHAT ONE CALL DOES
 
 A REFUSAL PUTS THE V1 GOLD BACK
 -------------------------------
-Any exception from the v2 gold build until ``replace_manifest`` returns -- a refusal, a crash, an
-interrupt -- rebuilds the v1 gold (``FeatureMatrixBuilder``) and is re-raised, so the v1 models in
-force never score v2 gold. ``latest.json`` is unchanged: it is only written by ``replace_manifest``.
-Artifact directories a stopped attempt saved stay on disk unserved; nothing here deletes anything.
+Any exception from the v2 gold build until ``latest.json`` names the v2 ids -- a refusal, a crash,
+an interrupt -- rebuilds the v1 gold (``FeatureMatrixBuilder``) and is re-raised, so the v1 models
+in force never score v2 gold. ``latest.json`` is unchanged: it is only written by
+``replace_manifest``. Artifact directories a stopped attempt saved stay on disk unserved; nothing
+here deletes anything.
 
 A FAILED SWAP IS RECORDED AS REFUSED
 ------------------------------------
-Every failure after the intent is written and before ``replace_manifest`` returns appends a
+Every failure after the intent is written and before ``latest.json`` names the v2 ids appends a
 ``refused`` event with the intent's ``install_date`` (the class name only, never exception text),
 so the never-served intent never counts as a generation (``refit.generations``). ``install_date``
 is computed once per run, the ET calendar date of the install instant.
+
+A FAILURE AFTER THE WRITE IS AN INSTALL, NOT A REFUSAL
+------------------------------------------------------
+``replace_manifest`` writes ``latest.json`` before it returns, so an exception or an interrupt can
+arrive after the write landed. Whenever ``latest.json`` names every v2 pointer
+(:func:`_manifest_serves`), the v2 models are serving: the ``installed`` event is appended (never
+``refused``, which would hide a served generation and make every later ``in_force_recipe`` raise),
+and the v1 gold is NOT rebuilt (the v2 gold on disk is the gold the served models read). An
+exception is logged and the install returns its outcome; an interrupt (a ``BaseException`` that
+is not an ``Exception``) is re-raised after the event is appended.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -51,6 +62,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -566,6 +578,41 @@ def _append_refused(
     return written
 
 
+def _append_installed(
+    ledger_dir: Path, install_date: str, ids: Mapping[str, str]
+) -> None:
+    """Record that the swap wrote; a declined write is logged (the intent names the served ids)."""
+    installed = {
+        "event": "installed",
+        "install_date": install_date,
+        "after_ids": dict(ids),
+    }
+    if not append_owner_install(ledger_dir, installed):
+        logger.warning(
+            "The installed event was not written; the intent already names the served ids"
+        )
+
+
+def _manifest_serves(artifacts_dir: Path, pointers: Mapping[str, str]) -> bool:
+    """True only when ``latest.json`` names every one of *pointers* with exactly its id.
+
+    Only the swap writes the v2 ids, so a manifest naming them proves the swap landed, whatever
+    failed after its write. Never raises: it is asked inside exception handlers, where a new
+    exception would replace the failure the owner must see. An absent, unreadable or unparseable
+    manifest is False, and so are empty *pointers* (nothing intended is nothing served).
+    """
+    if not pointers:
+        return False
+    try:
+        manifest = json.loads((Path(artifacts_dir) / "latest.json").read_text())
+    # Broad on purpose: whatever stops the read, the manifest proves no swap (the contract above).
+    except Exception:  # noqa: BLE001 - an unreadable manifest is False, never an error
+        return False
+    if not isinstance(manifest, dict):
+        return False
+    return all(manifest.get(key) == value for key, value in pointers.items())
+
+
 def _swap_in_v2(
     *,
     artifacts_dir: Path,
@@ -576,8 +623,13 @@ def _swap_in_v2(
     now: datetime,
     install_date: str,
     commit: str,
+    intended_pointers: dict[str, str],
 ) -> InstallOutcome:
-    """Steps 4-10 on the v2 gold: train, save, tune, refuse or record, intent, swap."""
+    """Steps 4-11 on the v2 gold: train, save, tune, refuse or record, intent, swap, installed.
+
+    *intended_pointers* is filled with the four manifest pointers just before the swap, so the
+    caller can tell a swap that landed from one that never wrote.
+    """
     digest = gold_generation_key(gold_dir)
     history_digest = gold_history_content_sha256(gold_dir)
     trained = train_v2_models(gold_dir, games, now)
@@ -640,10 +692,24 @@ def _swap_in_v2(
         )
         raise InstallRefused(msg)
 
+    pointers = {key: ids[key] for key in BUNDLE_MANIFEST_KEYS}
+    intended_pointers.update(pointers)
+    outcome = InstallOutcome(ids=ids, bet_rule_sha256=sha, blend_weights=weights)
     try:
-        pointers = {key: ids[key] for key in BUNDLE_MANIFEST_KEYS}
         replace_manifest(pointers, artifacts_dir)
     except BaseException as failure:
+        if _manifest_serves(artifacts_dir, pointers):
+            # The write landed and something after it failed: the v2 models serve, so this is
+            # an install, never a refusal (a refused event would hide a served generation).
+            _append_installed(ledger_dir, install_date, ids)
+            if not isinstance(failure, Exception):
+                raise
+            logger.error(
+                "The swap wrote latest.json and then failed; the install stands",
+                exception_class=type(failure).__name__,
+                error=str(failure),
+            )
+            return outcome
         recorded = _append_refused(ledger_dir, install_date, failure)
         if not isinstance(failure, Exception):
             raise
@@ -660,7 +726,8 @@ def _swap_in_v2(
             f"{type(failure).__name__}: {failure}.{unrecorded}"
         )
         raise InstallRefused(msg) from failure
-    return InstallOutcome(ids=ids, bet_rule_sha256=sha, blend_weights=weights)
+    _append_installed(ledger_dir, install_date, ids)
+    return outcome
 
 
 def _restore_v1_gold(
@@ -714,6 +781,8 @@ def run_owner_install(
         InstallRefused: a precondition, the code commit, the tuned weights, the intent write or
             the swap refused; ``latest.json`` was not written.
         ValueError: *now_utc* is naive.
+        BaseException: an interrupt after ``latest.json`` named the v2 ids propagates, with the
+            ``installed`` event appended and the v2 gold kept (module docstring).
     """
     now = _as_utc(now_utc)
     install_date = now.astimezone(lock_rule.ET).date().isoformat()
@@ -728,6 +797,7 @@ def run_owner_install(
         msg = f"clean_code_commit: {problem}"
         raise InstallRefused(msg)
 
+    intended_pointers: dict[str, str] = {}
     try:
         build_gold(FeatureMatrixBuilderV2Live)
         outcome = _swap_in_v2(
@@ -739,19 +809,19 @@ def run_owner_install(
             now=now,
             install_date=install_date,
             commit=commit,
+            intended_pointers=intended_pointers,
         )
     except BaseException as failure:
+        if _manifest_serves(artifacts, intended_pointers):
+            # The v2 models serve and the v2 gold is on disk: a v1 rebuild would feed them the
+            # wrong gold, so nothing is restored.
+            logger.error(
+                "The owner install stopped after latest.json named the v2 ids; the v2 gold stays",
+                exception_class=type(failure).__name__,
+            )
+            raise
         _restore_v1_gold(build_gold, failure)
         raise
 
-    installed = {
-        "event": "installed",
-        "install_date": install_date,
-        "after_ids": dict(outcome.ids),
-    }
-    if not append_owner_install(ledger, installed):
-        logger.warning(
-            "The installed event was not written; the intent already names the served ids"
-        )
     logger.info("Installed the v2 models", ids=outcome.ids, install_date=install_date)
     return outcome
