@@ -15,8 +15,11 @@ WHAT ONE CALL DOES
    2002 that kicked off strictly before the install instant and has a final score. No search.
 5. **The three artifacts are saved**; WP with ``preprocessing=model``, as the live WP is saved, so
    serving reads one object.
-6. **The blend is tuned** (:func:`tune_v2_blend`): the v2 walk-forward at the install instant and
-   ``refit.remeasure.tune_generation_blend``, called as ``backtest/study_1a.py`` calls them.
+6. **The blend is tuned** (:func:`tune_v2_blend`): the v2 walk-forward, the extended corpus and
+   the converter's extended slopes, all at the install instant and taken as ``backtest/study_1a.py``
+   takes them; the weights are then fitted by ``refit.remeasure.tune_generation_blend`` (the live
+   re-fit's ``backtest.tune.run_blend_tuning``, which writes the blend artifact), not by the
+   ``MarketBlender().tune_weights`` call Study 1a's ``_decision_tests`` makes.
 7. **The tuned weights must equal Study 1a's earned weights** (``V2_EARNED_WEIGHTS``, 0 / 0 / 0).
    Any other weight is a new finding for the owner to rule on, never something to install.
 8. **The bet-rule record** (:func:`v2_bet_rule_payload`): no EV floor and no edge band, because a
@@ -53,6 +56,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
@@ -120,6 +124,7 @@ __all__ = [
     "train_v2_models",
     "tune_v2_blend",
     "v2_bet_rule_payload",
+    "v2_feature_importances",
     "v2_model_metadata",
 ]
 
@@ -277,6 +282,34 @@ def _best_params(target: str, pipeline: Pipeline) -> dict[str, float]:
     return {"alpha": float(final.alpha)}
 
 
+def v2_feature_importances(target: str, model: Pipeline) -> dict[str, float]:
+    """``{input: |coefficient|}`` of a fitted v2 pipeline, keyed by ``V2_INPUTS[target]``.
+
+    The inputs are standardised before the linear model, so the absolute coefficients are
+    comparable across inputs. WP's logistic regression has one row of coefficients (the home-win
+    class); ridge has a flat vector. This is the ``feature_importances`` mapping
+    ``api.cache._load_feature_importances`` serves to the model-insights page.
+
+    Raises:
+        ValueError: the fitted model has a different number of coefficients than the recipe has
+            inputs (the imputer dropped an all-missing input), so no name can be trusted.
+    """
+    inputs = V2_INPUTS[target]
+    coefficients = np.asarray(model.named_steps["model"].coef_, dtype=float)
+    if coefficients.ndim == 2:
+        coefficients = coefficients[0]
+    if coefficients.shape != (len(inputs),):
+        msg = (
+            f"the fitted {target} model has {coefficients.size} coefficients for the "
+            f"{len(inputs)} recipe inputs {list(inputs)}; an all-missing input was dropped"
+        )
+        raise ValueError(msg)
+    return {
+        name: abs(float(value))
+        for name, value in zip(inputs, coefficients, strict=True)
+    }
+
+
 def v2_model_metadata(
     target: str,
     *,
@@ -284,17 +317,32 @@ def v2_model_metadata(
     training_rows: int,
     gold_generation_digest: str,
     commit: str,
+    feature_importances: Mapping[str, float],
 ) -> dict[str, object]:
     """The ``metadata.json`` of one v2 artifact.
 
-    It carries what ``models.artifacts.replace_manifest`` validates (``target``, the gold digest)
-    and what ``backtest.tune.read_source_recipes`` reads (``best_params``, ``exclude_groups``), and
-    names the recipe under ``v2_recipe`` -- never under a ledger stamp column's name.
+    It carries what ``models.artifacts.replace_manifest`` validates (``target``, the gold digest),
+    what ``backtest.tune.read_source_recipes`` reads (``best_params``, ``exclude_groups``) and what
+    ``api.cache._load_feature_importances`` serves (``feature_importances``, from
+    :func:`v2_feature_importances`), and names the recipe under ``v2_recipe`` -- never under a
+    ledger stamp column's name.
+
+    Raises:
+        ValueError: *feature_importances* is not keyed by exactly the target's recipe inputs.
     """
+    if set(feature_importances) != set(V2_INPUTS[target]):
+        msg = (
+            f"the {target} feature importances name {sorted(feature_importances)}, not the "
+            f"recipe inputs {list(V2_INPUTS[target])}"
+        )
+        raise ValueError(msg)
     estimator = build_v2_estimator(target)
     return {
         "target": target,
         "feature_names": list(V2_INPUTS[target]),
+        "feature_importances": {
+            name: float(feature_importances[name]) for name in V2_INPUTS[target]
+        },
         "v2_recipe": INSTALLED_RECIPE,
         "cutoff_utc": _as_utc(cutoff_utc).isoformat(),
         "training_rows": int(training_rows),
@@ -323,8 +371,11 @@ def tune_v2_blend(
     """Tune the v2 generation's blend: the v2 walk-forward, then the per-generation blend tune.
 
     The walk-forward, the extended corpus and the converter's extended slopes are taken as
-    ``backtest/study_1a.py`` takes them, at the install instant; the blend is written into
-    *artifacts_dir*, bound to ``MARKET_CONVERTER_ID``, its provenance naming *model_ids*.
+    ``backtest/study_1a.py`` takes them, at the install instant. The weights are fitted by
+    ``refit.remeasure.tune_generation_blend`` (``backtest.tune.run_blend_tuning``, the live
+    re-fit's blend tune), not by Study 1a's ``MarketBlender().tune_weights`` call in
+    ``_decision_tests``; the blend is written into *artifacts_dir*, bound to
+    ``MARKET_CONVERTER_ID``, its provenance naming *model_ids*.
     """
     predictions = walk_forward_v2(gold_dir, games, cutoff_utc)
     corpus = extended_corpus(silver_dir, games, cutoff_utc)
@@ -424,6 +475,7 @@ def _save_v2_models(
             training_rows=rows,
             gold_generation_digest=gold_generation_digest,
             commit=commit,
+            feature_importances=v2_feature_importances(target, model),
         )
         directory = save_model_artifact(
             model,

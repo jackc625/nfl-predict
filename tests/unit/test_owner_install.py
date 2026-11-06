@@ -36,17 +36,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pytest
 
 import utils.game_lock as lock_rule
+from api.cache import CACHE_SCHEMA, _load_feature_importances
 from backtest.midseason_switch_2026 import INSTALLED_RECIPE, RECORD_PATH
 from backtest.refit_preregistration_2026 import MARKET_CONVERTER_ID, REFIT_RECIPE_ID
 from backtest.weekly_bet_list import load_bet_rule_record
 from forward_ledger.canonical import IMMUTABLE_COLUMNS_V1
 from models.artifacts import load_model_artifact
-from models.v2_recipe import V2_INPUTS, V2_TARGETS
+from models.v2_recipe import V2_INPUTS, V2_TARGETS, build_v2_estimator
 from refit import owner_install
 from refit.generations import (
     in_force_edge_thresholds,
@@ -57,6 +59,7 @@ from refit.owner_install import (
     InstallRefused,
     install_preconditions,
     v2_bet_rule_payload,
+    v2_feature_importances,
     v2_model_metadata,
 )
 from refit.records import read_owner_installs, write_bet_rule_record
@@ -298,6 +301,7 @@ def test_v2_metadata_names_the_fixed_inputs_and_no_stamp_keys() -> None:
         training_rows=6600,
         gold_generation_digest="g",
         commit=CLEAN_COMMIT,
+        feature_importances=dict.fromkeys(V2_INPUTS["ou"], 0.5),
     )
     assert meta["feature_names"] == list(V2_INPUTS["ou"])
     assert "recipe_id" not in meta and "arm" not in meta
@@ -319,9 +323,59 @@ def test_v2_metadata_names_the_fixed_inputs_and_no_stamp_keys() -> None:
         training_rows=1,
         gold_generation_digest="g",
         commit=CLEAN_COMMIT,
+        feature_importances=dict.fromkeys(V2_INPUTS["wp"], 0.5),
     )
     assert wp["best_params"] == {"C": 1.0}
     assert wp["label"] == "home_win"
+
+
+def fitted_v2(target: str) -> Any:
+    """The target's v2 recipe fitted on a small synthetic frame of its own inputs."""
+    rng = np.random.default_rng(11)
+    inputs = list(V2_INPUTS[target])
+    frame = pd.DataFrame(rng.normal(size=(200, len(inputs))), columns=pd.Index(inputs))
+    if target == "wp":
+        label = (frame[inputs[0]] + rng.normal(scale=0.5, size=200) > 0).astype(int)
+    else:
+        label = 3.0 * frame[inputs[0]] - frame[inputs[1]] + rng.normal(size=200)
+    return build_v2_estimator(target).fit(frame, label)
+
+
+def test_v2_importances_are_the_absolute_standardised_coefficients() -> None:
+    for target in V2_TARGETS:
+        model = fitted_v2(target)
+        importances = v2_feature_importances(target, model)
+        coefficients = np.ravel(model.named_steps["model"].coef_)
+        assert list(importances) == list(V2_INPUTS[target]), target
+        assert list(importances.values()) == [abs(float(c)) for c in coefficients]
+        assert all(value >= 0.0 for value in importances.values())
+    # WP keeps the home-win row of its one-row coefficient matrix.
+    wp = fitted_v2("wp")
+    assert wp.named_steps["model"].coef_.shape == (1, len(V2_INPUTS["wp"]))
+
+
+def test_v2_importances_refuse_a_dropped_input() -> None:
+    inputs = list(V2_INPUTS["ou"])
+    frame = pd.DataFrame(
+        np.random.default_rng(3).normal(size=(50, len(inputs))),
+        columns=pd.Index(inputs),
+    )
+    frame["wind_mph"] = np.nan  # the median imputer drops an all-missing column
+    model = build_v2_estimator("ou").fit(frame, frame[inputs[0]])
+    with pytest.raises(ValueError, match="all-missing input was dropped"):
+        v2_feature_importances("ou", model)
+
+
+def test_v2_metadata_refuses_importances_not_keyed_by_the_inputs() -> None:
+    with pytest.raises(ValueError, match="recipe inputs"):
+        v2_model_metadata(
+            "wp",
+            cutoff_utc=CUT,
+            training_rows=1,
+            gold_generation_digest="g",
+            commit=CLEAN_COMMIT,
+            feature_importances={"elo_diff": 1.0},
+        )
 
 
 def test_the_v2_bet_rule_parses_with_no_floors_and_no_bands(tmp_path: Path) -> None:
@@ -427,6 +481,32 @@ def test_the_saved_models_are_the_fixed_recipe_trained_once(
     )
     assert wp["metadata"]["preprocessing_is_model"] is True
     assert wp["preprocessing"] is wp["model"]
+
+
+def test_the_saved_models_carry_the_importances_the_cache_serves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model-insights page reads ``feature_importances`` from each served metadata.json."""
+    stores = build_stores(tmp_path)
+    outcome = run_install(stores, GoldSpy(), monkeypatch, TuneStub())
+
+    conn = duckdb.connect()
+    conn.execute(CACHE_SCHEMA)
+    rows = _load_feature_importances(conn, stores.artifacts, dict(outcome.ids))
+    assert rows == sum(len(V2_INPUTS[target]) for target in V2_TARGETS)
+    for target in V2_TARGETS:
+        loaded = load_model_artifact(
+            target, version=outcome.ids[target], artifacts_dir=stores.artifacts
+        )
+        expected = v2_feature_importances(target, loaded["model"])
+        assert loaded["metadata"]["feature_importances"] == expected
+        served = dict(
+            conn.execute(
+                "SELECT feature_name, importance FROM feature_importances WHERE target = ?",
+                [target],
+            ).fetchall()
+        )
+        assert served == expected, target
 
 
 def test_a_nonzero_tuned_weight_refuses_and_restores_the_v1_gold(

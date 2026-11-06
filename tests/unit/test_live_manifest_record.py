@@ -32,7 +32,7 @@ from typing import Any
 from backtest.midseason_switch_2026 import INSTALLED_RECIPE
 from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
 from models.artifacts import _atomic_write_json
-from models.v2_recipe import V2_TARGETS
+from models.v2_recipe import V2_INPUTS, V2_TARGETS
 from refit.generations import Generation, installed_generations
 from refit.owner_install import (
     SWITCH_RECORD_PATHS,
@@ -264,6 +264,7 @@ def test_v2_metadata_with_a_wrong_input_list_is_a_problem(tmp_path: Path) -> Non
             training_rows=100,
             gold_generation_digest="e" * 64,
             commit=CLEAN_COMMIT,
+            feature_importances=dict.fromkeys(V2_INPUTS[target], 0.5),
         )
         assert refit_metadata_problems(metadata, v2_generation) == [], target
 
