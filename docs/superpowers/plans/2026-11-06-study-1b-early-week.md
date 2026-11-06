@@ -23,7 +23,7 @@
 3. **Which inputs are rebuilt.** Of the v2 inputs only QB, the market rating, the league scoring level and wind can change between the early capture and the lock. They are rebuilt; wind is unknown on Tuesday, so it is left blank and the recipe's median imputer fills it. Elo, success rate, opponent-adjusted EPA, pace and home field rest only on finished games. A per-game check (each team's previous game ended by the early capture) confirms that; a game failing it is left out and counted.
 4. **QB as of the early capture** is the team's latest primary passer. The 2002-2024 depth charts are keyed by week with no publication time, so they are never read. This is conservative: the live arm will see Tuesday's charts.
 5. **WP:** no early moneyline exists for 2020-2024, so its early, day-before and close market log-odds all come from the spread through the converter's prior-only season slope (log-odds = slope x spread). 2020 has no prior slope and is left out, as in Study 1a.
-6. Week 1 and the postseason are included; the 7-day window keeps two-week lookahead boards out.
+6. Week 1 and the postseason are included; the 7-day window keeps two-week lookahead boards out. Amended 2026-11-06 during execution: no postseason game has an early capture (the 2020-2023 playoffs are absent from odds_timeline and the 2024 wild-card captures predate the floor), so the verdict covers the regular season only; the report states the count.
 
 ## File structure
 
