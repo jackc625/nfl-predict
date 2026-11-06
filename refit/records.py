@@ -12,22 +12,28 @@ Phase 34 private backup carries it and the ledger stays self-contained. The reco
   ``closed`` event of a pre-registered re-fit date (:func:`append_date_event` names the fields);
 * the A/A week (:data:`AA_WEEKS_FILENAME`): one week's A/A result, ``clean`` or not;
 * the bet rule (:data:`BET_RULES_DIRNAME`): each generation's re-measured numbers, one
-  content-addressed, write-once JSON named by its sha256.
+  content-addressed, write-once JSON named by its sha256;
+* the owner install (:data:`OWNER_INSTALLS_FILENAME`): every ``install_intent``, ``installed``
+  and ``refused`` event of an owner-run install outside the cadence dates
+  (MIDSEASON-SWITCH-RECORD.md section 4; :func:`append_owner_install` names the fields).
 
 APPEND-ONLY, THROUGH THE WRITE SINK
 -----------------------------------
 Each record is one JSON line appended through ``data.write_sink.append_jsonl``, so a dry run
 records the intended write and persists nothing, and the test-write guard sees every write. Every
-cadence-date event and every bet-rule file is flushed and fsynced: the ``install_intent`` and the
-bet rule before the install's ``latest.json`` swap can follow them, matching that manifest's own
-fsync, and the ``attempt`` and ``closed`` events because the decision path reads the same file.
+cadence-date event, owner-install event and bet-rule file is flushed and fsynced: the
+``install_intent`` and the bet rule before the install's ``latest.json`` swap can follow them,
+matching that manifest's own fsync, and every other event because the decision path reads the
+same file.
 
 ONE RULE, ENFORCED BOTH WAYS
 ----------------------------
 Each record file has one private validator. The writer refuses a record it names a problem in
-(``ValueError``, nothing written); the reader refuses a stored line it names a problem in
-(:class:`RefitRecordFormatError` naming the file, the 1-based line and the field). A well-formed
-JSON line with a missing or out-of-vocabulary field is never read as a valid record.
+(``ValueError``, nothing written; the owner-install writer raises :class:`RefitRecordFormatError`
+instead, the one error its owner command and every generation reader name); the reader refuses a
+stored line it names a problem in (:class:`RefitRecordFormatError` naming the file, the 1-based
+line and the field). A well-formed JSON line with a missing or out-of-vocabulary field is never
+read as a valid record.
 
 A MALFORMED RECORD IS NEVER READ AS "NO RECORDS"
 ------------------------------------------------
@@ -40,8 +46,9 @@ deletes.
 
 ONE STORED BET-RULE PATH
 ------------------------
-An ``install_intent`` stores ``bet_rule_path`` as the ledger-relative POSIX text built by
-:func:`bet_rule_relpath`, and only :func:`bet_rule_record_path` joins a ledger dir to it.
+An ``install_intent`` -- a cadence date's or an owner install's -- stores ``bet_rule_path`` as the
+ledger-relative POSIX text built by :func:`bet_rule_relpath`, and only :func:`bet_rule_record_path`
+joins a ledger dir to it.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -56,7 +63,7 @@ import re
 import subprocess
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -73,12 +80,15 @@ __all__ = [
     "CLOSED_STATUSES",
     "DATES_FILENAME",
     "DATE_EVENTS",
+    "OWNER_INSTALLS_FILENAME",
+    "OWNER_INSTALL_EVENTS",
     "REFIT_CODE_PATHS",
     "REFIT_DIRNAME",
     "SHADOW_HOLES_FILENAME",
     "RefitRecordFormatError",
     "append_aa_record",
     "append_date_event",
+    "append_owner_install",
     "append_record",
     "attempt_lock",
     "bet_rule_record_path",
@@ -87,6 +97,7 @@ __all__ = [
     "read_aa_records",
     "read_bet_rule_record",
     "read_date_events",
+    "read_owner_installs",
     "read_records",
     "record_shadow_holes",
     "refit_dir",
@@ -99,6 +110,7 @@ REFIT_DIRNAME: str = "refit"
 SHADOW_HOLES_FILENAME: str = "shadow_holes.jsonl"
 DATES_FILENAME: str = "dates.jsonl"
 AA_WEEKS_FILENAME: str = "aa_weeks.jsonl"
+OWNER_INSTALLS_FILENAME: str = "owner_installs.jsonl"
 BET_RULES_DIRNAME: str = "bet_rules"
 # The private backup ignores ``*.lock``.
 ATTEMPT_LOCK_FILENAME: str = "attempt.lock"
@@ -107,6 +119,9 @@ ATTEMPT_LOCK_FILENAME: str = "attempt.lock"
 DATE_EVENTS: tuple[str, ...] = ("attempt", "install_intent", "closed")
 ATTEMPT_OUTCOMES: tuple[str, ...] = ("installed", "refused", "crashed")
 CLOSED_STATUSES: tuple[str, ...] = ("ran", "ran late", "not run")
+
+# The closed vocabulary of an owner-install event.
+OWNER_INSTALL_EVENTS: tuple[str, ...] = ("install_intent", "installed", "refused")
 
 # The code paths whose uncommitted change marks a re-fit's code commit ``+dirty``: every tracked
 # path that produces or loads the training data. ``ratings`` is the Elo engine every Elo feature
@@ -141,6 +156,8 @@ _DIRTY_SUFFIX: str = "+dirty"
 _GIT_TIMEOUT_SECONDS: int = 30
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _CODE_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}(\+dirty)?$")
+# An owner install runs only from a clean commit: no ``+dirty`` and never unknown.
+_CLEAN_CODE_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 # Keys every cadence-date event carries, then the keys each event type adds.
 _DATE_EVENT_COMMON_KEYS: tuple[str, ...] = (
@@ -167,6 +184,25 @@ _DATE_EVENT_KEYS: dict[str, tuple[str, ...]] = {
 }
 _AA_RECORD_KEYS: tuple[str, ...] = ("season", "week", "clean")
 
+# Keys each owner-install event carries besides ``event``, and the five ids an intent names.
+_OWNER_INSTALL_KEYS: dict[str, tuple[str, ...]] = {
+    "install_intent": (
+        "install_date",
+        "cutoff_utc",
+        "ruling",
+        "recipe",
+        "ids",
+        "bet_rule_path",
+        "bet_rule_sha256",
+        "code_commit",
+        "gold_generation_digest",
+        "before_ids",
+    ),
+    "installed": ("install_date", "after_ids"),
+    "refused": ("install_date", "check", "exception_class"),
+}
+_INSTALL_ID_KEYS: tuple[str, ...] = ("wp", "ats", "ou", "blend", "converter")
+
 _TORN_LAST_LINE_REPAIR: str = "a torn last line is a crash mid-append: copy the file aside, then delete that one line"
 _DAMAGED_LINE_ADVICE: str = (
     "a bad line that ends in a newline is damage, not a torn append: compare the file with "
@@ -179,6 +215,8 @@ _LINE_END_BYTES: tuple[bytes, ...] = (b"\n", b"\r")
 
 class RefitRecordFormatError(Exception):
     """A Phase 37 record file holds a bad line or a bet-rule file that no longer hashes to its name.
+
+    Also raised, with no file named, for an owner-install event its writer refuses.
 
     Inherits bare ``Exception`` (the ``data.graded_weeks`` rule): an unreadable record must never
     be degraded into "no records".
@@ -428,8 +466,8 @@ def _date_identity_problem(event: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _install_intent_problem(event: Mapping[str, Any]) -> str | None:
-    """The bet-rule path and code-commit forms an ``install_intent`` must hold."""
+def _bet_rule_path_problem(event: Mapping[str, Any]) -> str | None:
+    """Whether an install intent stores the one bet-rule path convention for its sha256."""
     sha = event["bet_rule_sha256"]
     try:
         expected = bet_rule_relpath(sha)
@@ -441,6 +479,14 @@ def _install_intent_problem(event: Mapping[str, Any]) -> str | None:
             f"field 'bet_rule_path' value {stored!r} is not the one stored convention "
             f"bet_rule_relpath(bet_rule_sha256) = {expected!r}"
         )
+    return None
+
+
+def _install_intent_problem(event: Mapping[str, Any]) -> str | None:
+    """The bet-rule path and code-commit forms an ``install_intent`` must hold."""
+    problem = _bet_rule_path_problem(event)
+    if problem is not None:
+        return problem
     commit = event["code_commit"]
     if commit is not None and not (
         isinstance(commit, str) and _CODE_COMMIT_PATTERN.match(commit)
@@ -556,6 +602,148 @@ def read_aa_records(ledger_dir: Path | str) -> list[dict[str, Any]]:
     """
     return _read_validated(
         refit_dir(ledger_dir) / AA_WEEKS_FILENAME, _aa_record_problem
+    )
+
+
+# ---------------------------------------------------------------------------
+# Owner installs (MIDSEASON-SWITCH-RECORD.md section 4)
+# ---------------------------------------------------------------------------
+
+
+def _iso_date_problem(field: str, value: object) -> str | None:
+    """Whether *value* is exactly an ISO calendar date (``YYYY-MM-DD``)."""
+    try:
+        parsed = date.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.isoformat() != value:
+        return f"field {field!r} value {value!r} is not an ISO date (YYYY-MM-DD)"
+    return None
+
+
+def _utc_instant_problem(field: str, value: object) -> str | None:
+    """Whether *value* is the ISO text of a UTC instant (an offset of zero, never naive)."""
+    try:
+        parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.utcoffset() != timedelta(0):
+        return f"field {field!r} value {value!r} is not the ISO text of a UTC instant"
+    return None
+
+
+def _text_problem(event: Mapping[str, Any], fields: Iterable[str]) -> str | None:
+    """The first of *fields* that is not a non-empty string."""
+    for field in fields:
+        value = event[field]
+        if not isinstance(value, str) or not value:
+            return f"field {field!r} value {value!r} is not a non-empty string"
+    return None
+
+
+def _install_ids_problem(ids: object) -> str | None:
+    """Whether *ids* names the five ids an install serves (the converter may be None)."""
+    if not isinstance(ids, Mapping):
+        return f"field 'ids' value {ids!r} is not a mapping"
+    for key in _INSTALL_ID_KEYS:
+        value = ids.get(key)
+        if key == "converter" and value is None and key in ids:
+            continue
+        if not isinstance(value, str) or not value:
+            return f"field 'ids' names no id for {key!r}"
+    return None
+
+
+def _clean_commit_problem(commit: object) -> str | None:
+    """Whether *commit* is 40 lowercase hex: an owner install never runs from a dirty tree."""
+    if isinstance(commit, str) and _CLEAN_CODE_COMMIT_PATTERN.fullmatch(commit):
+        return None
+    return (
+        f"field 'code_commit' value {commit!r} is not 40 lowercase hex; an owner install "
+        "names a clean commit, never None and never '+dirty'"
+    )
+
+
+def _owner_install_problem(event: Mapping[str, Any]) -> str | None:
+    """The first problem with an owner-install event, or None when it is valid."""
+    problem = _missing_key_problem(event, ("event",)) or _vocabulary_problem(
+        "event", event["event"], OWNER_INSTALL_EVENTS
+    )
+    if problem is not None:
+        return problem
+    kind = event["event"]
+    problem = _missing_key_problem(
+        event, _OWNER_INSTALL_KEYS[kind]
+    ) or _iso_date_problem("install_date", event["install_date"])
+    if problem is not None or kind != "install_intent":
+        return problem
+    return (
+        _utc_instant_problem("cutoff_utc", event["cutoff_utc"])
+        or _text_problem(event, ("ruling", "recipe", "gold_generation_digest"))
+        or _install_ids_problem(event["ids"])
+        or _bet_rule_path_problem(event)
+        or _clean_commit_problem(event["code_commit"])
+    )
+
+
+def append_owner_install(ledger_dir: Path | str, event: Mapping[str, Any]) -> bool:
+    """Append one owner-install event to ``<ledger>/refit/owner_installs.jsonl``.
+
+    Field names (``refit.generations`` reads them; every event is stamped ``recorded_at_utc``):
+
+    * every event: ``event`` (one of :data:`OWNER_INSTALL_EVENTS`) and ``install_date`` (the ET
+      calendar date of the install, ISO);
+    * ``install_intent`` adds ``cutoff_utc`` (the training cutoff, the install instant, ISO UTC),
+      ``ruling`` (the record that sanctions the install), ``recipe`` (the recipe its generation
+      serves), ``ids`` (wp, ats, ou, blend, converter), ``bet_rule_path`` (exactly
+      ``bet_rule_relpath(bet_rule_sha256)``), ``bet_rule_sha256``, ``code_commit`` (40 lowercase
+      hex: never ``+dirty``, never None), ``gold_generation_digest`` and ``before_ids``;
+    * ``installed`` adds ``after_ids``;
+    * ``refused`` adds ``check`` and ``exception_class``. The owner command records one only when
+      the swap did not write, so it proves its own attempt's ids were never served.
+
+    Every event is appended durably (flush + fsync), as a cadence-date event is: the
+    ``install_intent`` must precede the ``latest.json`` swap on disk, and every decision run reads
+    this file once an owner generation is in force.
+
+    Returns:
+        The sink's answer: False means it declined and nothing was written, so the caller must not
+        swap ``latest.json`` (``replace_manifest`` does not consult the sink).
+
+    Raises:
+        RefitRecordFormatError: the event names a problem (an unknown event, a missing key, a
+            malformed date or cutoff, another bet-rule path form, a commit that is not clean), or
+            the file ends in a torn line; nothing is written.
+    """
+    problem = _owner_install_problem(event)
+    if problem is not None:
+        msg = f"refusing an owner-install event: {problem}"
+        raise RefitRecordFormatError(msg)
+    return append_record(
+        ledger_dir,
+        OWNER_INSTALLS_FILENAME,
+        event,
+        kind=_RECORD_KIND,
+        durable=True,
+    )
+
+
+def read_owner_installs(
+    ledger_dir: Path | str, *, skip_torn_tail: bool = False
+) -> list[dict[str, Any]]:
+    """Every owner-install event, in file order; ``[]`` when the file is absent.
+
+    Args:
+        skip_torn_tail: Leave out (and log) an unterminated, unparseable last line, exactly as
+            :func:`read_date_events` does; only the live decision path passes True.
+
+    Raises:
+        RefitRecordFormatError: a line is not JSON, or names a problem the writer would refuse.
+    """
+    return _read_validated(
+        refit_dir(ledger_dir) / OWNER_INSTALLS_FILENAME,
+        _owner_install_problem,
+        skip_torn_tail=skip_torn_tail,
     )
 
 

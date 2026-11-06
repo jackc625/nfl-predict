@@ -960,15 +960,120 @@ def assert_serving_stamp(artifacts_root: Path, verdict_path: Path) -> None:
         )
 
 
+def assert_v2_serving_honours_the_exclusion(
+    artifacts_root: Path, verdict_path: Path
+) -> None:
+    """The v2 form of :func:`assert_serving_stamp`: no served input is a verdict-excluded column.
+
+    The v2 recipe never excludes by group: each target reads its six fixed inputs
+    (``models.v2_recipe.V2_INPUTS``), and its metadata records ``exclude_groups == []``. So the
+    ratified exclusion holds at serving when every served artifact is the v2 recipe, its written
+    input list is exactly ``V2_INPUTS[target]``, and none of those inputs belongs to a group the
+    verdict excludes (``backtest.signal_lift.excluded_columns``, the group predicate the
+    exclusion itself uses). Every file and key is checked before it is read.
+    """
+    from backtest.midseason_switch_2026 import INSTALLED_RECIPE
+    from backtest.signal_lift import excluded_columns
+    from models.v2_recipe import V2_INPUTS
+
+    assert verdict_path.is_file(), f"{verdict_path} is missing; there is no verdict"
+    verdict_groups = tomllib.loads(verdict_path.read_text(encoding="utf-8"))[
+        "excluded_groups"
+    ]
+    latest = json.loads((artifacts_root / "latest.json").read_text(encoding="utf-8"))
+    for target in _SERVING_TARGETS:
+        directory = artifacts_root / latest[target]
+        metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
+        inputs = list(V2_INPUTS[target])
+        assert metadata.get("v2_recipe") == INSTALLED_RECIPE, (
+            f"{directory} is not the v2 recipe"
+        )
+        assert metadata.get("exclude_groups") == [], (
+            f"{directory} stamps exclude_groups {metadata.get('exclude_groups')!r}"
+        )
+        written = json.loads(
+            (directory / "feature_list.json").read_text(encoding="utf-8")
+        )
+        assert written == inputs, f"{directory} serves {written}, not {inputs}"
+        leaked = excluded_columns(
+            pd.DataFrame(columns=pd.Index(inputs)), verdict_groups
+        )
+        assert leaked == [], f"{directory} serves verdict-excluded inputs {leaked}"
+
+
 def test_the_serving_models_carry_the_ratified_exclusion() -> None:
     """The models ``latest.json`` serves today were written with the ratified exclusion.
 
     Read at run time, so it follows every swap (a Phase 37 re-fit writes the same two keys in
     refit/training.py). An absent ``artifacts/`` tree FAILS this test; it never skips.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: once the owner install serves the v2
+    recipe (``tests.live_manifest_record.production_serves_v2``), whose fixed inputs carry no
+    group exclusion, the same property is checked by
+    :func:`assert_v2_serving_honours_the_exclusion`; under v1 the stamp check is unchanged.
     """
+    from tests.live_manifest_record import production_serves_v2
+
+    if production_serves_v2():
+        assert_v2_serving_honours_the_exclusion(
+            REPO_ROOT / "artifacts", REPO_ROOT / "config" / "group_gate_verdict.toml"
+        )
+        return
     assert_serving_stamp(
         REPO_ROOT / "artifacts", REPO_ROOT / "config" / "group_gate_verdict.toml"
     )
+
+
+def _plant_v2_serving_tree(root: Path, wp_inputs: list[str]) -> tuple[Path, Path]:
+    """A served v2 tree (WP reading *wp_inputs*) and a verdict excluding three groups."""
+    from backtest.midseason_switch_2026 import INSTALLED_RECIPE
+    from models.v2_recipe import V2_INPUTS
+
+    ids = {target: f"{target}_20261201_000000" for target in _SERVING_TARGETS}
+    artifacts = _write_artifacts_tree(
+        root / "artifacts",
+        {**ids, "blend": "blend_20261201_000000"},
+        {
+            version: {
+                "target": target,
+                "v2_recipe": INSTALLED_RECIPE,
+                "exclude_groups": [],
+            }
+            for target, version in ids.items()
+        },
+    )
+    for target, version in ids.items():
+        inputs = wp_inputs if target == "wp" else list(V2_INPUTS[target])
+        (artifacts / version / "feature_list.json").write_text(
+            json.dumps(inputs), encoding="utf-8"
+        )
+    verdict = root / "group_gate_verdict.toml"
+    verdict.write_text(
+        'excluded_groups = ["injury", "situational", "snap"]\n', encoding="utf-8"
+    )
+    return artifacts, verdict
+
+
+def test_the_v2_serving_check_passes_the_fixed_inputs_and_catches_a_leak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CONTROL for the v2 branch: the fixed inputs pass; an excluded-group input fails.
+
+    The leak is planted in the recipe AND the written list, so the failure is the
+    excluded-group check itself, not the input-list equality before it.
+    """
+    from models.v2_recipe import V2_INPUTS
+
+    clean = list(V2_INPUTS["wp"])
+    assert_v2_serving_honours_the_exclusion(
+        *_plant_v2_serving_tree(tmp_path / "ok", clean)
+    )
+    leaked = [*clean[:-1], "away_availability_fraction"]
+    monkeypatch.setitem(V2_INPUTS, "wp", tuple(leaked))
+    with pytest.raises(AssertionError, match="verdict-excluded"):
+        assert_v2_serving_honours_the_exclusion(
+            *_plant_v2_serving_tree(tmp_path / "leak", leaked)
+        )
 
 
 _PLANTED_GROUPS = ["injury", "situational", "snap"]

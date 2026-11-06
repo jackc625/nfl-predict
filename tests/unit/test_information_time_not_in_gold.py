@@ -209,12 +209,23 @@ class TestTheOneAdmittedDatetimeIsDecidedAndPinned:
         """Why it is not retired HERE: this plan asserts the width pin and re-pins nothing.
 
         Recorded as an assertion so the reasoning cannot rot into a comment nobody checks.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the width pin is the one of the
+        recipe in force, ``expected_gold_widths(in_force_recipe(...))``; v1 and v2 gold both
+        carry the build clock, so the arithmetic holds under either.
         """
-        from scripts.data_qa import GOLD_FEATURE_MATRICES
+        from forward_ledger.store import LEDGER_DIR
+        from refit.generations import in_force_recipe
+        from scripts.data_qa import expected_gold_widths
 
         clock = BUILD_CLOCK_COLUMNS[0]
-        for matrix, pinned in GOLD_FEATURE_MATRICES.items():
-            frame = _load(matrix)
+        # Loaded first: a checkout without gold skips before the recipe in force is read.
+        frames = {matrix: _load(matrix) for matrix in GOLD_MATRICES}
+        pin = expected_gold_widths(
+            in_force_recipe(REPO_ROOT / "artifacts", REPO_ROOT / LEDGER_DIR)
+        )
+        for matrix, frame in frames.items():
+            pinned = pin[matrix]
             assert clock in frame.columns
             assert len(frame.columns) == pinned
             assert len(frame.columns) - 1 != pinned, "the arithmetic below is wrong"

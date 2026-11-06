@@ -134,8 +134,20 @@ def test_the_check_flags_an_unnarrowed_source() -> None:
     assert seasons_outside(_weather(), "season", {2025}) == {2024}
 
 
+def _v1_recipe_in_force(monkeypatch) -> None:
+    """The v1 recipe in force, so the gold build picks today's builder (the one patched below)."""
+    monkeypatch.setattr(
+        "refit.generations.in_force_recipe", lambda *_a, **_k: "recipe-2026-refit-v1"
+    )
+
+
 def test_the_daily_build_step_is_full_history_and_saves(monkeypatch) -> None:
-    """The step passes no season or week, and writes the matrices it built."""
+    """The step passes no season or week, and writes the matrices it built.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the gold builder now follows the recipe
+    in force (``pipeline.steps.gold_builder_class``), which reads ``artifacts/latest.json``; the
+    v1 recipe is pinned in force so the patched ``FeatureMatrixBuilder`` is the builder used.
+    """
     from pipeline import steps
 
     calls: dict[str, object] = {}
@@ -150,6 +162,7 @@ def test_the_daily_build_step_is_full_history_and_saves(monkeypatch) -> None:
             calls["save"] = (feature_matrices, args, kwargs)
 
     monkeypatch.setattr(bf_mod, "FeatureMatrixBuilder", _RecordingBuilder)
+    _v1_recipe_in_force(monkeypatch)
     steps.step_build_features()
 
     args, kwargs = calls["generate"]
@@ -205,7 +218,11 @@ def test_a_history_build_keeps_its_label_dtypes() -> None:
 
 
 def test_a_refused_historical_game_is_passed_as_history_not_served(monkeypatch) -> None:
-    """33.2 review C1 CR-06: excluded games outside tonight's slate are HISTORY refusals."""
+    """33.2 review C1 CR-06: excluded games outside tonight's slate are HISTORY refusals.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the gold builder now follows the recipe
+    in force; the v1 recipe is pinned in force so the patched ``FeatureMatrixBuilder`` is used.
+    """
     from pipeline import live_skip, steps
 
     calls: dict[str, object] = {}
@@ -219,6 +236,7 @@ def test_a_refused_historical_game_is_passed_as_history_not_served(monkeypatch) 
             calls["save"] = kwargs
 
     monkeypatch.setattr(bf_mod, "FeatureMatrixBuilder", _RecordingBuilder)
+    _v1_recipe_in_force(monkeypatch)
     live_skip.reset_excluded_games()
     live_skip.exclude_games({"2011_W02_BUF@KC", "2026_W03_LA@DEN"})
     try:

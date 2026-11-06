@@ -63,6 +63,16 @@ covers every 2026 gold row from that week on, so it keeps holding -- and keeps c
 after each nightly rebuild adds a week. Weeks 1 and 2 feed every later window, so an imputed
 early value would surface in the week-3 cells.
 
+ONCE THE V2 RECIPE IS IN FORCE, GOLD KEEPS THE CLIPPED LEVEL
+-----------------------------------------------------------
+RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the owner install puts v2 gold in production
+together with the v2 models (``tests.live_manifest_record.production_serves_v2``). The v2 builder
+keeps the same per-season winsorization but makes the z-score the identity, so a v2 gold Elo cell
+equals the snapshot value clipped to the prior seasons' 1st/99th percentiles (measured on the v2
+gold of 2026-11-06: deviation exactly 0.0 on all eight columns of the three matrices). The
+recomputation then stops after the clip (``z_score=False``): no window, so no row is out of scope.
+While the v1 recipe is in force every comparison below is unchanged.
+
 Parquet is read DIRECTLY with pandas; nothing here goes through ``data.storage``, which opens
 the DuckDB store first. ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -84,6 +94,7 @@ from forward_ledger.store import (
     read_entries,
     verify_chain,
 )
+from tests.live_manifest_record import production_serves_v2
 from tests.phase33_state import (
     LIVE_ACCEPTANCE_CHECKED_GAME_IDS,
     LIVE_ACCEPTANCE_DERIVED_ELO_COLUMNS,
@@ -184,6 +195,8 @@ def recompute_live_elo(
     snapshots: pd.DataFrame,
     locks: pd.Series,
     season: int,
+    *,
+    z_score: bool = True,
 ) -> Recomputation:
     """Recompute *season*'s gold Elo z-scores from the snapshot table alone.
 
@@ -192,9 +205,12 @@ def recompute_live_elo(
         snapshots: The Elo snapshot table.
         locks: Each *season* game's lock, ``game_id``-indexed (``utils.game_lock.lock_frame``).
         season: The season to recompute.
+        z_score: False for the v2 recipe, whose gold keeps the clipped level: the values stop
+            after the clip and no row is out of scope (RE-POINTED 2026-11-06 for
+            MIDSEASON-SWITCH-RECORD.md).
 
     Returns:
-        The recomputed z-scores and the out-of-scope rows, by column.
+        The recomputed z-scores (or v2 clipped levels) and the out-of-scope rows, by column.
     """
     joined = gold[["game_id", "season"]].merge(
         _snapshot_side(snapshots), on="game_id", how="left", validate="one_to_one"
@@ -218,6 +234,10 @@ def recompute_live_elo(
             if lower < upper:
                 column_values = column_values.clip(lower=lower, upper=upper)
         raw = column_values.to_numpy()
+        if not z_score:
+            values[column] = raw
+            out_of_scope[column] = ()
+            continue
 
         scored = np.full(len(raw), np.nan)
         unscorable: list[str] = []
@@ -233,6 +253,19 @@ def recompute_live_elo(
 
     frame = pd.DataFrame(values, index=pd.Index(game_ids, name="game_id"))
     return Recomputation(values=frame, out_of_scope=out_of_scope)
+
+
+def recompute_for_the_recipe_in_force(
+    gold: pd.DataFrame, snapshots: pd.DataFrame, locks: pd.Series, season: int
+) -> Recomputation:
+    """:func:`recompute_live_elo` for the recipe production serves (v1 z-scores, v2 levels).
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: under the v1 recipe this is exactly
+    ``recompute_live_elo(...)``; under the installed v2 recipe it stops after the clip.
+    """
+    return recompute_live_elo(
+        gold, snapshots, locks, season, z_score=not production_serves_v2()
+    )
 
 
 def worst_deviation(
@@ -280,7 +313,7 @@ def recomputed(
     gold: dict[str, pd.DataFrame], snapshots: pd.DataFrame, season_locks: pd.Series
 ) -> dict[str, Recomputation]:
     return {
-        matrix: recompute_live_elo(
+        matrix: recompute_for_the_recipe_in_force(
             frame, snapshots, season_locks, LIVE_ACCEPTANCE_SEASON
         )
         for matrix, frame in gold.items()
@@ -370,6 +403,12 @@ def test_gold_equals_the_recomputed_value(
     matrix: str,
     column: str,
 ) -> None:
+    """Every in-scope live gold Elo cell equals the snapshot-derived value.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the derived value is the recipe in
+    force's (``recompute_for_the_recipe_in_force``): the v1 z-score, unchanged, or the v2
+    clipped level once the v2 recipe is installed.
+    """
     out_of_scope = set(recomputed[matrix].out_of_scope[column])
     rows = [g for g in _checked_rows(gold[matrix]) if g not in out_of_scope]
     assert rows, f"{matrix}.{column}: no in-scope live row to compare"
@@ -410,7 +449,7 @@ def test_the_comparison_is_invariant_to_the_row_order_of_both_frames(
 ) -> None:
     shuffled_gold = gold["wp"].sample(frac=1.0, random_state=20260928)
     shuffled_snapshots = snapshots.sample(frac=1.0, random_state=20260926)
-    again = recompute_live_elo(
+    again = recompute_for_the_recipe_in_force(
         shuffled_gold, shuffled_snapshots, season_locks, LIVE_ACCEPTANCE_SEASON
     )
     pd.testing.assert_frame_equal(
@@ -434,7 +473,7 @@ def test_a_planted_one_point_elo_shift_fails_the_comparison(
     planted = snapshots.copy()
     planted.loc[planted["game_id"] == planted_game, "home_elo_pre"] += 1.0
     assert int((planted["home_elo_pre"] != snapshots["home_elo_pre"]).sum()) == 1
-    shifted = recompute_live_elo(
+    shifted = recompute_for_the_recipe_in_force(
         gold["wp"], planted, season_locks, LIVE_ACCEPTANCE_SEASON
     )
     worst, _game = worst_deviation(gold["wp"], shifted, "home_elo", [planted_game])

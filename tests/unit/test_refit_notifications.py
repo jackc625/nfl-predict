@@ -21,6 +21,7 @@ import httpx
 import pytest
 
 import scripts.daily_lock_pipeline as daily
+from backtest.midseason_switch_2026 import REFIT_PAUSE_RULING
 from notify import digest, digest_sections
 from notify.end_of_run import notify_end_of_run
 from notify.events import PRIORITY_NORMAL, PRIORITY_TOP
@@ -640,6 +641,15 @@ def test_each_outcome_line() -> None:
         "Model re-fit 1 (due Tue Nov 3): not run; the next date arrived first."
     ]
     assert _lines([_date_event("install_intent")]) == []
+
+
+def test_a_paused_close_reads_paused() -> None:
+    # MIDSEASON-SWITCH-RECORD.md section 3: a close carrying paused_by says the record paused it.
+    paused = _date_event("closed", 2, status="not run", paused_by=REFIT_PAUSE_RULING)
+
+    assert _lines([paused]) == [
+        "Model re-fit 2 (due Tue Dec 1): not run; paused by the mid-season switch record."
+    ]
 
 
 def test_waiting_line() -> None:

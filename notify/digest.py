@@ -22,6 +22,16 @@ The cache is CURRENT for this run when its per-week ``bet_list_populated_at`` ma
 own freshness rule, D31-29) is at or after the run's start. An absent or older cache gives a stale
 notice and ``bets unknown``: a missing list is never rendered as zero bets (RESEARCH Pitfall 11).
 
+A RETIRED WEEK: NEITHER "UNKNOWN" NOR "0 BETS" (MIDSEASON-SWITCH-RECORD.md)
+--------------------------------------------------------------------------
+From the 2026 week-13 switch on the day-before system decides nothing, so such a week has no list
+BY DESIGN and never gets a populated-at marker. Read as above, every one of those weeks would say
+``bets unknown`` and describe pick times for games nobody picks. So a week at or after
+``api.cache_schema.DAY_BEFORE_RETIRED_FROM`` -- compared as a ``(season, week)`` pair, so every
+later season is retired and an earlier season's week 13-18 is not -- says :data:`RETIRED_LINE`, the
+subject reads ``no day-before bets``, and a game line names no pick time: it reads
+:data:`STATE_RETIRED`, or ``not predicted`` for a game the run left without a prediction.
+
 UPSTREAM DATA CHANGES AND CORRECTED GRADES (D-03, D-21)
 --------------------------------------------------------
 After the season-to-date block comes the week's closing section (SPEC R4 item 7, D-23: skipped or
@@ -65,6 +75,7 @@ from typing import TYPE_CHECKING, Any
 import duckdb
 
 from api.cache import ARM_LIVE
+from api.cache_schema import DAY_BEFORE_RETIRED_FROM
 from api.presentation import et_timestamp_label, last_week_display
 from api.services import DataService, clear_cache
 from data.sealed_probe_log import latest_entry
@@ -92,13 +103,16 @@ if (
 
 __all__ = [
     "LOAD_SCHEDULE",
+    "RETIRED_LINE",
     "SCHEDULE_UNREADABLE_LINE",
     "SCHEDULE_UNREADABLE_TITLE",
     "STALE_NOTICE",
+    "SWITCH_WEEK_LABEL",
     "WEB_CACHE_PATH",
     "ZERO_BETS_LINE",
     "DigestInputs",
     "collect_digest_inputs",
+    "day_before_retired",
     "digest_subject",
     "digest_week_for_run",
     "open_cache_service",
@@ -129,10 +143,18 @@ SCHEDULE_UNREADABLE_LINE = (
     "The recorded schedule could not be read, so the games of this week are not listed."
 )
 
+# MIDSEASON-SWITCH-RECORD.md: the week from which the day-before system decides nothing, as the run
+# messages and the email name it, and what a week at or after it says instead of "bets unknown".
+# Like STALE_NOTICE, RETIRED_LINE has no character HTML escapes, so both parts read it the same.
+SWITCH_WEEK_LABEL = f"{DAY_BEFORE_RETIRED_FROM[0]} week {DAY_BEFORE_RETIRED_FROM[1]}"
+RETIRED_LINE = f"No day-before bets: retired at the {SWITCH_WEEK_LABEL} switch."
+RETIRED_BETS_LABEL = "no day-before bets"
+
 STATE_BET = "bet"
 STATE_NO_BET = "no bet"
 STATE_NOT_PREDICTED = "not predicted"
 STATE_NOT_SHOWN = "result not shown -- the web cache is not current"
+STATE_RETIRED = "no day-before bet"
 
 # The forward record's two classes, verdict record first, with /bets' own section headings.
 _TRACKER_CLASS_ORDER: tuple[str, ...] = ("forward_realized", "pre_verdict")
@@ -184,6 +206,9 @@ class DigestInputs:
             None renders no section.
         refit: :func:`notify.digest_sections.refit_section`'s output (Phase 37, SPEC R14, D-16):
             one line per cadence-date outcome since the previous digest; None renders no section.
+        day_before_retired: True when the digest week is at or after the switch week
+            (:func:`day_before_retired`): the bets read :data:`RETIRED_LINE`, never ``bets
+            unknown`` or ``0 bets``.
     """
 
     run_date_et: date
@@ -203,6 +228,19 @@ class DigestInputs:
     data_changes: dict[str, Any] | None = None
     closing: dict[str, Any] | None = None
     refit: dict[str, Any] | None = None
+    day_before_retired: bool = False
+
+
+def day_before_retired(season: int | None, week: int | None) -> bool:
+    """Whether *season* / *week* is at or after the switch week that retired the day-before system.
+
+    A ``(season, week)`` pair compared against ``api.cache_schema.DAY_BEFORE_RETIRED_FROM``, never
+    the clock (MIDSEASON-SWITCH-RECORD.md keys the switch on the NFL week): every later season's
+    week is retired, an earlier season's week 13-18 is not. An unknown week is not retired.
+    """
+    if season is None or week is None:
+        return False
+    return (season, week) >= DAY_BEFORE_RETIRED_FROM
 
 
 def _week_of_day(schedule: pd.DataFrame, day: date) -> tuple[int, int] | None:
@@ -316,11 +354,16 @@ def _game_states(
     season: int | None,
     week: int | None,
     current: bool,
+    retired: bool,
     bet_game_ids: set[str],
     row_game_ids: set[str],
     now: datetime,
 ) -> list[dict[str, Any]]:
-    """Every game of the week in one state (SPEC R4 item 3; the discretion block's stale rule)."""
+    """Every game of the week in one state (SPEC R4 item 3; the discretion block's stale rule).
+
+    In a *retired* week no game is picked, so no state names a pick time or a bet result: a game
+    reads ``not predicted`` when the run left it without a prediction, else :data:`STATE_RETIRED`.
+    """
     if schedule is None or season is None or week is None:
         return []
     unpredicted = set(report.unpredicted_game_ids or ())
@@ -331,7 +374,9 @@ def _game_states(
     ):
         game_id = str(game_value)
         lock = game_lock(kickoff, game_id=game_id)
-        if current and game_id in bet_game_ids:
+        if retired:
+            state = STATE_NOT_PREDICTED if game_id in unpredicted else STATE_RETIRED
+        elif current and game_id in bet_game_ids:
             state = STATE_BET
         elif current and game_id in row_game_ids:
             state = STATE_NO_BET
@@ -447,6 +492,9 @@ def collect_digest_inputs(
         label_prefix: Prepended to the subject and heading.
     """
     season, week = _digest_week(report, schedule, service)
+    # A week the day-before system no longer serves has no list and no marker by design
+    # (MIDSEASON-SWITCH-RECORD.md): it reads "retired", never "bets unknown".
+    retired = day_before_retired(season, week)
     cutoff = digest_sections.previous_digest_cutoff(notifications, report.run_date_et)
     populated_at: str | None = None
     current = False
@@ -482,6 +530,7 @@ def collect_digest_inputs(
         season=season,
         week=week,
         current=current,
+        retired=retired,
         bet_game_ids={str(row["game_id"]) for row in bets},
         row_game_ids=row_game_ids,
         now=now,
@@ -504,6 +553,7 @@ def collect_digest_inputs(
         data_changes=_data_change_section(season, service, cutoff),
         closing=digest_sections.closing_section(cutoff),
         refit=digest_sections.refit_section(cutoff),
+        day_before_retired=retired,
     )
 
 
@@ -514,7 +564,12 @@ def _week_label(inputs: DigestInputs) -> str:
 
 
 def _bets_label(inputs: DigestInputs) -> str:
-    """``3 bets`` / ``1 bet`` / ``0 bets`` only when the cache is current, else ``bets unknown``."""
+    """``3 bets`` / ``1 bet`` / ``0 bets`` only when the cache is current, else ``bets unknown``.
+
+    A retired week reads ``no day-before bets`` first: it has no list by design, not an unknown one.
+    """
+    if inputs.day_before_retired:
+        return RETIRED_BETS_LABEL
     if not inputs.cache_current:
         return "bets unknown"
     count = len(inputs.bets)
@@ -553,6 +608,7 @@ def render_digest(inputs: DigestInputs) -> EmailMessage:
         "populated_label": et_timestamp_label(inputs.cache_populated_at)
         or "not recorded",
         "stale_notice": STALE_NOTICE,
+        "retired_line": RETIRED_LINE,
         "zero_bets_line": ZERO_BETS_LINE,
         "schedule_unreadable_line": SCHEDULE_UNREADABLE_LINE,
     }

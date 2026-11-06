@@ -39,7 +39,8 @@ import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -2066,6 +2067,10 @@ def test_the_selector_still_renders_in_the_off_season_state(tmp_path: Path) -> N
 
 _REPLAY_HEADING = "Backtest replay -- reconstructed after the fact"
 _FORWARD_HEADING = "Forward record -- recommended before kickoff"
+# The forward heading once the current slate reaches the 2026 week-13 switch
+# (MIDSEASON-SWITCH-RECORD.md): the forward record is then the retired day-before system's. Before
+# it, _FORWARD_HEADING above stands unchanged; the caption below is the same either side.
+_RETIRED_FORWARD_HEADING = "The retired day-before system, weeks 4-12"
 _REPLAY_CAPTION = (
     "These bets were never recommended in advance. They were reconstructed from historical "
     "data to show how the selection rule would have behaved. Do not read them as a track record."
@@ -4689,3 +4694,337 @@ def test_templates_ascii_only() -> None:
         "components/_provenance_badge.html",
     ):
         (templates_dir / relative).read_text(encoding="utf-8").encode("ascii")
+
+
+# ---------------------------------------------------------------------------
+# The day-before system retires from 2026 week 13 (MIDSEASON-SWITCH-RECORD.md, switch Task 8)
+# ---------------------------------------------------------------------------
+#
+# From the switch week the daily run writes no day-before row (switch Task 7), so a week-13 game
+# passes its lock with nothing in the bet list BY DESIGN. Read by the per-game refusal, that is a
+# failed insertion and the page would say "This week's list is missing". These tests build exactly
+# that cache -- the week scheduled, its per-game locks stamped, the bet list empty -- with the clock
+# after the week's first lock, and check the page says the system is retired instead.
+
+_SWITCH_SEASON = 2026
+_RETIRED_HEADING = "No day-before bets from week 13 on."
+_RETIRED_BODY = (
+    "The day-before system was retired at the 2026 week 13 switch: the new model is more accurate "
+    "than the old one but earned no weight against the betting line, so this window places no "
+    "bets."
+)
+# Each week's games and their 18:00 ET (EST, UTC-5) locks, the day before kickoff. The lock days
+# are the record's: week 12's Thanksgiving game locks Wed 2026-11-25 and week 13's Thursday game
+# Wed 2026-12-02. The matchups are fixture labels, not the published schedule.
+_SWITCH_WEEK_GAMES: dict[int, dict[str, datetime]] = {
+    12: {
+        "2026_W12_GB@DET": datetime(2026, 11, 25, 23, 0, tzinfo=UTC),
+        "2026_W12_KC@BUF": datetime(2026, 11, 28, 23, 0, tzinfo=UTC),
+    },
+    13: {
+        "2026_W13_DAL@NYG": datetime(2026, 12, 2, 23, 0, tzinfo=UTC),
+        "2026_W13_SF@SEA": datetime(2026, 12, 5, 23, 0, tzinfo=UTC),
+    },
+    14: {
+        "2026_W14_MIA@NYJ": datetime(2026, 12, 9, 23, 0, tzinfo=UTC),
+        "2026_W14_LAR@ARI": datetime(2026, 12, 12, 23, 0, tzinfo=UTC),
+    },
+}
+# Thursday noon ET: the week's first game is past its lock, the rest are still ahead of theirs.
+_AFTER_FIRST_LOCK = timedelta(hours=18)
+
+
+def _pin_the_coverage_clock(monkeypatch: pytest.MonkeyPatch, now: datetime) -> None:
+    """Judge the /bets per-game coverage at *now* instead of the wall clock.
+
+    ``_bet_week_coverage`` takes the instant as a parameter for tests; the context builder passes
+    none, so the module attribute it calls is replaced by the same function with *now* bound.
+    """
+    import api.routes.pages as pages_module
+
+    monkeypatch.setattr(
+        pages_module,
+        "_bet_week_coverage",
+        partial(pages_module._bet_week_coverage, now=now),
+    )
+
+
+def _switch_week_cache(
+    tmp_path: Path,
+    week: int,
+    *,
+    slate_week: int,
+    season: int = _SWITCH_SEASON,
+    games: dict[str, datetime] | None = None,
+) -> Path:
+    """A cache scheduling *season* *week* with NO bet-list row, its slate at *slate_week*.
+
+    The games default to the 2026 switch fixtures; another season passes its own.
+    """
+    from api.cache import CURRENT_SLATE_KEY, format_current_slate
+
+    if games is None:
+        games = _SWITCH_WEEK_GAMES[week]
+    db_path = _blocked_cache(
+        tmp_path,
+        f"switch_{season}_week_{week}_slate_{slate_week}",
+        bet_rows=[],
+        freeze_weeks=[
+            {
+                "game_id": game_id,
+                "season": season,
+                "week": week,
+                "game_freeze_ts": lock,
+            }
+            for game_id, lock in games.items()
+        ],
+        week_rows=[
+            {"game_id": game_id, "season": season, "week": week} for game_id in games
+        ],
+        stamp=None,
+    )
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+            [
+                CURRENT_SLATE_KEY,
+                format_current_slate(season, slate_week),
+                datetime(2026, 11, 20, 12, 0),
+            ],
+        )
+    finally:
+        conn.close()
+    return db_path
+
+
+def _first_lock_passed(monkeypatch: pytest.MonkeyPatch, week: int) -> None:
+    """Pin the coverage clock just after *week*'s first lock."""
+    first_lock = min(_SWITCH_WEEK_GAMES[week].values())
+    _pin_the_coverage_clock(monkeypatch, first_lock + _AFTER_FIRST_LOCK)
+
+
+def _switch_week_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    week: int,
+    *,
+    slate_week: int | None = None,
+) -> str:
+    """GET /bets for 2026 *week* after its first lock, from a cache with no row for the week.
+
+    The current slate is the shown week unless *slate_week* says otherwise.
+    """
+    db_path = _switch_week_cache(
+        tmp_path, week, slate_week=week if slate_week is None else slate_week
+    )
+    _first_lock_passed(monkeypatch, week)
+    with contextmanager(_client)(db_path) as client:
+        response = client.get(f"/bets?season={_SWITCH_SEASON}&week={week}")
+    assert response.status_code == 200
+    return response.text
+
+
+@pytest.fixture()
+def week13_page_html(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """/bets for 2026 week 13, the switch week, after its first lock with no ledger row."""
+    return _switch_week_page(tmp_path, monkeypatch, 13)
+
+
+@pytest.fixture()
+def week12_page_html(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """/bets for 2026 week 12, the week before the switch, built the same way."""
+    return _switch_week_page(tmp_path, monkeypatch, 12)
+
+
+def test_week_13_after_its_first_lock_reads_retired_not_missing(
+    week13_page_html: str,
+) -> None:
+    """Review Focus 5: a retired week is said to be retired, never refused as a missing list."""
+    assert _RETIRED_HEADING in week13_page_html
+    assert _RETIRED_BODY in week13_page_html
+    assert "This week's list is missing" not in week13_page_html
+    # The refusal renders through {{ }}, which escapes its apostrophe, so the literal above alone
+    # could never match it; the escaped form is the one a refused week actually carries.
+    assert _HARD_BLOCK_MESSAGE not in week13_page_html
+    assert _FORWARD_WITHHELD_MESSAGE not in week13_page_html
+    # Neither the missing-game box, the pending line, nor the not-evaluated state: the week's
+    # games are not owed a list, so none is named as lacking one.
+    assert "data-missing-games" not in week13_page_html
+    assert "data-pending-games" not in week13_page_html
+    assert "Not evaluated yet" not in week13_page_html
+    # Nothing was evaluated, so no record of suppressed candidates is claimed.
+    assert "Suppressed candidates" not in week13_page_html
+    assert "The retired day-before system, weeks 4-12" in week13_page_html
+    assert _FORWARD_HEADING not in week13_page_html
+
+
+def test_week_12_is_unchanged(week12_page_html: str) -> None:
+    """The week before the switch keeps its pre-switch render: here, the per-game refusal."""
+    assert _RETIRED_HEADING not in week12_page_html
+    assert _HARD_BLOCK_MESSAGE in week12_page_html, (
+        "the fixture did not reach the refusal, so the week-13 test proves nothing"
+    )
+    assert _FORWARD_HEADING in week12_page_html
+    assert _RETIRED_FORWARD_HEADING not in week12_page_html
+
+
+def test_a_week_after_the_switch_week_is_retired_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """From week 13 ON: week 14 reads retired as well."""
+    html = _switch_week_page(tmp_path, monkeypatch, 14)
+
+    assert _RETIRED_HEADING in html
+    assert _HARD_BLOCK_MESSAGE not in html
+
+
+def test_the_tracker_heading_follows_the_current_slate_not_the_week_shown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the slate at week 13, week 12 keeps its own render but the forward record is retired.
+
+    The heading names whose record the forward section is, which depends on where the season is,
+    not on which week the reader selected.
+    """
+    html = _switch_week_page(tmp_path, monkeypatch, 12, slate_week=13)
+
+    assert _HARD_BLOCK_MESSAGE in html
+    assert _RETIRED_HEADING not in html
+    assert _RETIRED_FORWARD_HEADING in html
+    assert _FORWARD_HEADING not in html
+
+
+@pytest.mark.parametrize(
+    ("week", "retired", "missing"),
+    [
+        (12, False, ["2026_W12_GB@DET"]),
+        (13, True, []),
+        (14, True, []),
+    ],
+)
+def test_the_context_clears_the_refusal_only_from_the_switch_week(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    week: int,
+    retired: bool,
+    missing: list[str],
+) -> None:
+    """``day_before_retired`` is decided in the context builder for the week shown.
+
+    When it holds, neither verdict stands and no game is named: the per-game coverage itself is
+    unchanged (its structural guard pins its sources), only the context stops reading it as owed.
+    """
+    from api.routes.pages import _build_bets_context
+
+    db_path = _switch_week_cache(tmp_path, week, slate_week=week)
+    _first_lock_passed(monkeypatch, week)
+    clear_cache()
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        context = _build_bets_context(
+            DataService(conn),
+            _SWITCH_SEASON,
+            week,
+            None,  # pyright: ignore[reportArgumentType]
+        )
+    finally:
+        conn.close()
+
+    assert context["day_before_retired"] is retired
+    assert context["bets_blocked"] is (not retired)
+    assert context["week_not_evaluated"] is False
+    assert context["missing_games"] == missing
+    pending = (
+        [] if retired else [g for g in _SWITCH_WEEK_GAMES[week] if g not in missing]
+    )
+    assert context["pending_games"] == pending
+
+
+# A 2025 replay week of 13 or later is NOT retired: the switch is keyed on (season, week), so a
+# regression to ``week >= 13`` alone would hide 2021-2025 replay weeks 13-18 behind the retired
+# message. Fixture labels and their 18:00 ET (EST, UTC-5) locks, the day before kickoff.
+_REPLAY_SEASON = 2025
+_REPLAY_WEEK_GAMES: dict[int, dict[str, datetime]] = {
+    14: {
+        "2025_W14_DAL@DET": datetime(2025, 12, 3, 23, 0, tzinfo=UTC),
+        "2025_W14_CHI@GB": datetime(2025, 12, 6, 23, 0, tzinfo=UTC),
+    },
+    17: {
+        "2025_W17_DAL@WAS": datetime(2025, 12, 24, 23, 0, tzinfo=UTC),
+        "2025_W17_NE@NYJ": datetime(2025, 12, 27, 23, 0, tzinfo=UTC),
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("season", "week", "retired"),
+    [
+        (2025, 13, False),
+        (2025, 14, False),
+        (2025, 17, False),
+        (2025, 18, False),
+        (2026, 12, False),
+        (2026, 13, True),
+    ],
+)
+def test_the_switch_is_keyed_on_the_season_and_the_week(
+    season: int, week: int, retired: bool
+) -> None:
+    """Only 2026 week 13 and later is retired; a 2025 replay week 13-18 is not."""
+    from api.routes.pages import _day_before_retired
+
+    assert _day_before_retired(season, week) is retired
+
+
+def test_a_2025_replay_week_after_13_keeps_its_pre_switch_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(2025, 14) with the slate at (2025, 17): not retired, and the forward heading stands."""
+    games = _REPLAY_WEEK_GAMES[14]
+    db_path = _switch_week_cache(
+        tmp_path, 14, slate_week=17, season=_REPLAY_SEASON, games=games
+    )
+    _pin_the_coverage_clock(monkeypatch, min(games.values()) + _AFTER_FIRST_LOCK)
+    with contextmanager(_client)(db_path) as client:
+        response = client.get(f"/bets?season={_REPLAY_SEASON}&week=14")
+    assert response.status_code == 200
+    html = response.text
+
+    assert _RETIRED_HEADING not in html
+    assert _RETIRED_BODY not in html
+    assert _FORWARD_HEADING in html
+    assert _RETIRED_FORWARD_HEADING not in html
+
+
+def test_a_2025_week_17_slate_keeps_the_forward_heading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The (2025, 17) slate's own week: not retired, and the tracker is the forward record."""
+    from api.routes.pages import _build_bets_context
+
+    games = _REPLAY_WEEK_GAMES[17]
+    db_path = _switch_week_cache(
+        tmp_path, 17, slate_week=17, season=_REPLAY_SEASON, games=games
+    )
+    _pin_the_coverage_clock(monkeypatch, min(games.values()) + _AFTER_FIRST_LOCK)
+    clear_cache()
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        context = _build_bets_context(
+            DataService(conn),
+            _REPLAY_SEASON,
+            17,
+            None,  # pyright: ignore[reportArgumentType]
+        )
+    finally:
+        conn.close()
+    assert context["day_before_retired"] is False
+    assert context["forward_record_retired"] is False
+
+    with contextmanager(_client)(db_path) as client:
+        response = client.get(f"/bets?season={_REPLAY_SEASON}&week=17")
+    assert response.status_code == 200
+    assert _FORWARD_HEADING in response.text
+    assert _RETIRED_FORWARD_HEADING not in response.text
+    assert _RETIRED_HEADING not in response.text

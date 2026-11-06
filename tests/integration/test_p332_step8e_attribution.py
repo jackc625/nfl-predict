@@ -36,7 +36,7 @@ from features.team_form import (
     OFFENSE_ONLY_METRICS,
     offense_only_gold_columns,
 )
-from scripts.data_qa import GOLD_FEATURE_MATRICES
+from scripts.data_qa import expected_gold_widths
 from scripts.fingerprint_gold import (
     FINGERPRINT_DIR,
     PHASE332_OFFENSE_ONLY_STEP,
@@ -310,12 +310,20 @@ class TestTheLiveGold:
         -- is asserted against its two fingerprint DOCUMENTS in
         ``test_each_width_fell_by_exactly_eight_and_rows_held``, which no later rung can
         move, and ``tests/unit/test_data_qa_gold_width.py`` owns the live pin.
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the pin is the one of the recipe
+        in force, ``expected_gold_widths(in_force_recipe(...))``. The owner install moves the
+        live width to the v2 pin, the same kind of legitimate later move.
         """
+        from forward_ledger.store import LEDGER_DIR
+        from refit.generations import in_force_recipe
+
+        pin = expected_gold_widths(in_force_recipe(Path("artifacts"), LEDGER_DIR))
         measured = {
             matrix: pd.read_parquet(GOLD_DIR / f"{matrix}.parquet").shape[1]
-            for matrix in GOLD_FEATURE_MATRICES
+            for matrix in pin
         }
-        assert measured == dict(GOLD_FEATURE_MATRICES)
+        assert measured == pin
 
 
 @pytest.mark.skipif(

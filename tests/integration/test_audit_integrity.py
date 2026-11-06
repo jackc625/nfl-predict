@@ -36,6 +36,7 @@ from scripts.data_qa import (
     GOLD_FEATURE_MATRICES,
     GOLD_LAST_COMPLETE_SEASON,
     DataQualityMonitor,
+    expected_gold_widths,
 )
 from utils.team_data import get_all_teams
 
@@ -55,6 +56,15 @@ def monitor() -> DataQualityMonitor:
 def gold_result(monitor: DataQualityMonitor) -> dict:
     """The gold-layer integrity result computed once against on-disk data."""
     return monitor.check_gold_integrity()
+
+
+@pytest.fixture(scope="module")
+def expected_widths() -> dict[str, int]:
+    """The gold widths of the recipe in force: what on-disk gold must match (the switch)."""
+    from forward_ledger.store import LEDGER_DIR
+    from refit.generations import in_force_recipe
+
+    return expected_gold_widths(in_force_recipe(Path("artifacts"), LEDGER_DIR))
 
 
 @pytest.fixture(scope="module")
@@ -124,13 +134,20 @@ class TestCanonicalAbbreviations:
 class TestGoldIntegrity:
     """AUDIT-02: gold matrices load with expected schema width and non-empty rows."""
 
-    def test_all_three_matrices_have_expected_columns_and_rows(self, gold_result: dict):
+    def test_all_three_matrices_have_expected_columns_and_rows(
+        self, gold_result: dict, expected_widths: dict[str, int]
+    ):
         """features_wp/ats/ou load with the GOLD_FEATURE_MATRICES widths and >0 rows.
 
         Widths are 194/195/194 after the Phase 28 snap/injury/spot widening (the
         expected counts are read from GOLD_FEATURE_MATRICES, not hardcoded here).
+
+        RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the expected counts are the
+        pin of the recipe in force, ``expected_gold_widths(in_force_recipe(...))`` -- the v1
+        pin ``GOLD_FEATURE_MATRICES`` until the owner install puts the v2 recipe in force,
+        ``GOLD_FEATURE_MATRICES_V2`` after it -- the widths ``check_gold_integrity`` expects.
         """
-        for table, expected_columns in GOLD_FEATURE_MATRICES.items():
+        for table, expected_columns in expected_widths.items():
             check = gold_result["checks"][table]
             assert check["status"] == "pass", check
             assert check["column_count"] == expected_columns, (
@@ -198,7 +215,7 @@ def _tag(status: str) -> str:
 
 @pytest.mark.integration
 def test_emit_audit_integrity_diagnostic(
-    gold_result: dict, abbrev_result: dict
+    gold_result: dict, abbrev_result: dict, expected_widths: dict[str, int]
 ) -> None:
     """Write the AUDIT-02 findings to outputs/diagnostics/audit_integrity.md.
 
@@ -206,6 +223,9 @@ def test_emit_audit_integrity_diagnostic(
     pass/fail per check, the team-set verification result, the confirmed 2025
     coverage, and the stale ``16 if week <= 18`` completeness assumption noted
     as a finding (D-10 capture, not fixed). ASCII tags only, no emoji.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the "expected" column count is
+    the pin of the recipe in force, the one ``check_gold_integrity`` judged against.
     """
     lines: list[str] = []
     lines.append("# AUDIT-02 Integrity Diagnostic")
@@ -232,7 +252,7 @@ def test_emit_audit_integrity_diagnostic(
         "|--------|--------|------|------------------------|-------------|"
         "------------------|"
     )
-    for table, expected_columns in GOLD_FEATURE_MATRICES.items():
+    for table, expected_columns in expected_widths.items():
         check = gold_result["checks"][table]
         lines.append(
             f"| `{table}` | {_tag(check['status'])} | {check['row_count']} | "

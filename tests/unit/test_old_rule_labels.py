@@ -180,6 +180,13 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "editing it in place would destroy that evidence. It reports no model accuracy or "
         "betting result."
     ),
+    "MIDSEASON-SWITCH-RECORD.md": (
+        "A sealed record of the 2026 mid-season switch, written before week 13 and witnessed in "
+        "a later commit by tests/midseason_switch_state.py; editing it in place would destroy "
+        "that evidence. The Study 1a replay figures it quotes come from walk-forward folds on "
+        "the corrected and repaired gold and rest on no pre-fix model, so the old-rule addendum "
+        "does not describe it."
+    ),
     "SEASON-VERDICT-PREREGISTRATION.md": (
         "A sealed pre-registration of how the 2026 forward profit verdict is judged, written "
         "before the later 2026 results existed and checked by "
@@ -270,6 +277,7 @@ class TestTheReadoutSetIsAPartition:
         "sealed",
         [
             "COLD-START-PREREGISTRATION.md",
+            "MIDSEASON-SWITCH-RECORD.md",
             "PROFITABILITY-PREREGISTRATION.md",
             "ROLLING-REFIT-PREREGISTRATION.md",
             "SEASON-VERDICT-PREREGISTRATION.md",

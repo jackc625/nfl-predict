@@ -20315,3 +20315,62 @@ ROW19_CHAIN_FIT_BIAS_2026: tuple[tuple[str, float], ...] = (
 
 #: The corrective commit that repointed the live 2026 bet rule to the row-19 re-measure.
 ROW19_BET_RULE_CORRECTIVE_COMMIT_SHA: str = "83453c6cfc0a7405b0076b99c78492f72e5b1301"
+
+# ---------------------------------------------------------------------------
+# THE MID-SEASON SWITCH'S GOLD RUNG (MIDSEASON-SWITCH-RECORD.md section 4; switch piece 3,
+# Task 4), 2026-11-06.
+#
+# APPENDED 2026-11-06. Nothing above this line was edited. The v2 recipe's models read 24
+# gold columns the v1 gold does not carry, and every model reads its columns BY NAME, so the
+# nightly gold build follows the recipe in force (pipeline.steps.gold_builder_class) and data
+# QA expects that recipe's widths (scripts.data_qa.expected_gold_widths). This is the ladder
+# rung the v2 gold stands on: the final v1 widths of P332_19_RUNG9_GOLD_WIDTH_DELTA plus the 24
+# NAMED columns, on every matrix. The `rung` id "10-switch-v2" orders it after rung 9
+# (tests/unit/test_data_qa_gold_width.ladder_order).
+#
+# A RUNG PRODUCTION REACHES ONLY AT THE OWNER INSTALL. The widths were MEASURED on the study's
+# v2 gold read through save_feature_matrices, the writer the nightly build uses (it drops no
+# v2 column and drops weather_condition as it does today); production gold is rebuilt to them
+# only when the install puts recipe-2026-v2 in force. Until then production gold stays at
+# widths_before, which is why the width tests compare production gold with the widths of the
+# recipe in force rather than with this rung's widths_after.
+# ---------------------------------------------------------------------------
+
+#: The v2 gold-width pin delta (Plan 33.2-12 <owned_protocol_gold_width_pin> P3 shape).
+P332_SWITCH_V2_GOLD_WIDTH_DELTA: dict[str, object] = {
+    "rung": "10-switch-v2",
+    "plan": "switch piece 3, Task 4",
+    "added": (
+        "home_off_rolling_epa_per_play",
+        "home_off_rolling_pass_epa_per_play",
+        "home_off_rolling_rush_epa_per_play",
+        "home_def_rolling_epa_per_play",
+        "home_def_rolling_pass_epa_per_play",
+        "home_def_rolling_rush_epa_per_play",
+        "away_off_rolling_epa_per_play",
+        "away_off_rolling_pass_epa_per_play",
+        "away_off_rolling_rush_epa_per_play",
+        "away_def_rolling_epa_per_play",
+        "away_def_rolling_pass_epa_per_play",
+        "away_def_rolling_rush_epa_per_play",
+        "home_mkt_rating",
+        "away_mkt_rating",
+        "mkt_rating_diff",
+        "mkt_total_sum",
+        "mkt_rating_coverage",
+        "league_points_level",
+        "success_rate_net",
+        "opp_adj_epa_net",
+        "qb_value_diff",
+        "off_epa_sum",
+        "def_epa_sum",
+        "pace_sum",
+    ),
+    "removed": (),
+    "widths_before": (188, 188, 187),
+    "widths_after": (212, 212, 211),
+    "measured_at": (
+        "2026-11-06, the study's v2 gold read through save_feature_matrices "
+        "(switch piece 3, Task 4)"
+    ),
+}

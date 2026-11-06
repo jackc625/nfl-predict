@@ -55,6 +55,9 @@ uv run python scripts/build_features.py --all-seasons
   contextual / weather feature tables, then the Gold matrices
   `data/gold/features_wp.parquet`, `data/gold/features_ats.parquet`,
   `data/gold/features_ou.parquet`.
+- **Once the v2 recipe is live** (MIDSEASON-SWITCH-RECORD.md section 4), the last line above
+  writes v1 gold under the v2 models, and the daily data QA then refuses on width. Rebuild gold
+  with `uv run python -m scripts.rebuild_gold` instead: it follows the in-force recipe.
 
 > Note: `build_elo.py` and `build_team_form.py` accept `--all-seasons` (and
 > `--current` for the current season). **`build_elo.py` requires `--full-rebuild`

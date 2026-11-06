@@ -165,6 +165,10 @@ uv run python scripts/build_features.py --all-seasons
   any real `--season`/`--all-seasons` build materializes the canonical gold matrices
   (`data/gold/features_{wp,ats,ou}.parquet`). That is a GOLD REBUILD, forbidden under D-07.
   The `build_*.py --all-seasons` feeders likewise rebuild the full historical feature tables.
+  Once the v2 recipe is live (MIDSEASON-SWITCH-RECORD.md section 4), a hand-run
+  `scripts.build_features --save` writes v1 gold under the v2 models, and the daily data QA then
+  refuses on width. Rebuild gold with `uv run python -m scripts.rebuild_gold` instead: it
+  follows the in-force recipe.
 - **`--all-seasons` REPLACES gold; `--season <YEAR>` MERGES into it.** The full build
   carried every season, so its frame IS the table and is written as such -- that is the
   only mode that can change the gold schema (it is what the Phase-30 rung-3 column drop
@@ -472,6 +476,11 @@ uv run python scripts/fingerprint_gold.py --out outputs/fingerprints/after.json
 uv run python scripts/fingerprint_gold.py --compare outputs/fingerprints/before.json outputs/fingerprints/after.json --attribute-rung 2
 ```
 
+- **Once the v2 recipe is live** (MIDSEASON-SWITCH-RECORD.md section 4), the
+  `scripts/build_features.py --all-seasons` line above writes v1 gold under the v2 models, and
+  the daily data QA then refuses on width. Rebuild with `uv run python -m scripts.rebuild_gold`
+  instead: it follows the in-force recipe.
+
 - **Succeeded when:** the attribution judge EXITS 0 -- every moved column is attributed to the
   rung's one named cause and `unattributed` is empty. Judge by the exit code, not by reading
   the printed report, and do not pipe the command through anything that masks `$?`. Exit 1 is
@@ -658,6 +667,9 @@ ledger steps are in `PIPELINE.md`. Every command runs in PowerShell from the rep
     written once and named by its own hash;
   - `ledger/refit/shadow_holes.jsonl` -- the frozen-arm holes (a live row written without a
     shadow twin, with the reason);
+  - `ledger/refit/owner_installs.jsonl` -- the owner install of the v2 models
+    (`MIDSEASON-SWITCH-RECORD.md` section 4): its `install_intent`, then `installed` or
+    `refused` (see "Switch day: install v2" below);
   - `ledger/refit/attempt.lock` -- held while a re-fit attempt runs; never backed up.
 
   Every record file is append-only (a bet-rule file is written once and never rewritten) and is
@@ -1357,6 +1369,126 @@ wrong bypass value instead of none; it must be refused the same way.
 
 ---
 
+## Switch day: install v2
+
+Added 2026-11-06 for `MIDSEASON-SWITCH-RECORD.md` section 4; it is an operating procedure, not a
+result. **Verification basis:** verified on fixtures by `tests/unit/test_owner_install.py`; the real
+install happens once.
+
+### What it does
+
+One owner command installs the repaired v2 models, once. In order, it:
+
+1. refuses if the v2 recipe is already in force, or if any 2026 game of weeks 1-12 is still before
+   its lock (so no week-12 decision can be stamped with a v2 model);
+2. refuses if the code it runs has uncommitted changes (the install record names the commit);
+3. rebuilds the shared gold matrices (`data/gold/features_{wp,ats,ou}.parquet`) as v2 gold;
+4. trains the three v2 models once, on every finished game from 2002 that kicked off before this
+   moment, and saves them under `artifacts/`;
+5. tunes their blend and refuses unless every tuned weight is Study 1a's earned weight, 0;
+6. writes the v2 bet-rule record under `ledger/refit/bet_rules/` (no EV floors, no edge bands);
+7. records `install_intent` in `ledger/refit/owner_installs.jsonl`, swaps `artifacts/latest.json`
+   (the four pointers, in one write, through `models.artifacts.replace_manifest`), then records
+   `installed`.
+
+From then on the daily gold build follows the v2 recipe by itself. Never hand-edit
+`artifacts/latest.json`, and never run `scripts.build_features --save` once v2 is live: it writes v1
+gold. `uv run python -m scripts.rebuild_gold` rebuilds gold for whichever recipe is in force.
+
+### When it may run
+
+- Only after week 12's last lock, Sun 2026-11-29 18:00 ET. Before that it refuses and writes
+  nothing.
+- Never so that it overlaps the 17:00-17:20 ET daily run: both write the gold matrices. Read the ET
+  time with PowerShell `Get-Date`.
+- Best on Tue 2026-12-01, started no later than 15:00 ET, so the 17:00 ET run that evening is the
+  first on v2. The latest start is 15:00 ET because everything must finish before 17:00 ET: the v2
+  gold build (about 20 minutes), training and the walk-forward, and, if the install refuses, a
+  v1 gold rebuild (about 20 minutes more).
+- From the main checkout with PR A merged, and with no modified or untracked file under the code
+  paths (`git status --porcelain` shows none under `refit`, `models`, `scripts`, `pipeline` and the
+  other paths in `refit.records.REFIT_CODE_PATHS`). Write down the bytes of `artifacts/latest.json`
+  first, so you can confirm afterwards whether it changed.
+
+### The command, launched detached
+
+```powershell
+uv run python -m scripts.install_v2
+```
+
+The gold build alone takes about 20 minutes, and a long job run in the foreground of a Claude Code
+session can be stopped for memory. So launch it detached, from the repository root, and wait on its
+process id:
+
+```powershell
+New-Item -ItemType Directory -Force outputs\switch_install | Out-Null
+$p = Start-Process -FilePath uv -ArgumentList 'run','python','-m','scripts.install_v2' -WorkingDirectory $PWD -RedirectStandardOutput "$PWD\outputs\switch_install\install.log" -RedirectStandardError "$PWD\outputs\switch_install\install.err" -PassThru -WindowStyle Hidden
+$p.Id
+$p.WaitForExit(); $p.ExitCode
+Get-Content outputs\switch_install\install.log
+```
+
+From a Claude Code session, wait with a Monitor until-loop on `Get-Process -Id <id>` instead of
+`WaitForExit`, then read the two files.
+
+### What success prints
+
+Exit code 0, and in `install.log`:
+
+```
+INSTALLED= wp=<id> ats=<id> ou=<id> blend=<id> converter=<id>
+BET_RULE_SHA256= <sha256>
+BLEND_WEIGHTS= wp=0.0 ats=0.0 ou=0.0
+```
+
+`artifacts/latest.json` now names the three new v2 model ids and the new blend, and
+`ledger/refit/owner_installs.jsonl` ends with an `install_intent` and then an `installed` event, both
+carrying the install's ET calendar date. The install is the next generation (generation 2).
+
+### What a refusal means
+
+Exit code 2 and `INSTALL_REFUSED= <reason>`. `artifacts/latest.json` is unchanged. If the refusal
+came after the v2 gold build began, the command rebuilt the v1 gold before it stopped, so the next
+daily run's data check passes with the v1 models. The models and blend a stopped attempt saved stay
+in `artifacts/`, unserved; leave them there. What to do depends on the reason:
+
+- **A week-1-12 game still locks later**: wait until after Sun 2026-11-29 18:00 ET.
+- **The v2 recipe is already in force**: nothing to do; v2 installs once.
+- **`clean_code_commit`**: the code has uncommitted changes. Never install from it; get back to the
+  merged commit, then run it again.
+- **The tuned blend weights are not the earned weights**: stop. A nonzero tuned weight is a new
+  finding, and installing it is an owner decision. Never re-run to get past it.
+- **The install intent was not written**, **`bundle_validation`** or **`swap`**: stop and report the
+  reason. For the last two a `refused` event was recorded after the intent, so that attempt never
+  counts as a generation; the message says so if that record could not be written.
+- **"the v1 gold rebuild then failed"**: the gold may still be v2 while the v1 models serve. Run
+  `uv run python -m scripts.rebuild_gold` before the next 17:00 ET run, then report.
+
+Any other ending (a Python traceback in `install.err`, exit code 1) is a crash: the same v1 gold
+rebuild ran and `latest.json` is unchanged, unless the crash came after the swap wrote. If
+`latest.json` already names the ids of the last `install_intent` in
+`ledger/refit/owner_installs.jsonl`, the swap happened and v2 is in force; otherwise it did not.
+
+### The checks after it
+
+After a successful install, run the five deliberate tripwires and the bounded gate:
+
+```powershell
+uv run pytest "tests/integration/test_gate_baseline_byte_identity.py::TestTheRegeneratedBaselineIsByteIdenticalToTheCommittedOne::test_the_generated_block_equals_the_committed_block_byte_for_byte" "tests/integration/test_gold_rebuild_attribution.py::TestThePhase31Rung3IsTheFullRebuildOfTheVerdictPopulation::test_no_NON_CLOCK_column_moved_in_a_protected_season" "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_every_data_column_reproduces_its_pre_resync_digest_exactly" "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_the_moved_set_is_exactly_the_build_clock" "tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore_all_fields" -q -p no:cacheprovider
+uv run pytest tests/integration/test_phase33_expected_failure_set.py -q -p no:cacheprovider
+```
+
+The five must fail, each with an `AssertionError`, and the gate run must have no failure. A crash
+in either (a `KeyError`, an `AttributeError`) means stop and report.
+
+Then confirm the gold carries every input the served models read. It must print three `True`:
+
+```powershell
+uv run python -c "import json,pandas as pd; m=json.load(open('artifacts/latest.json')); [print(t, set(json.load(open(f'artifacts/{m[t]}/feature_list.json'))) <= set(pd.read_parquet(f'data/gold/features_{t}.parquet').columns)) for t in ('wp','ats','ou')]"
+```
+
+---
+
 ## Season close (February 2027): the binding readout
 
 Added 2026-10-21 (Phase 38), after the old-rule addendum at the end of this file was written; it is
@@ -1404,14 +1536,15 @@ uv run python -m scripts.season_readout --binding
 ```
 
 It takes no output-path option: the document always lands at `docs/records/SEASON-2026-READOUT.md`
-under the repository root. On success it prints `BINDING_WRITTEN= <path>` and one
-`VERDICT_<TARGET>= <word>` line per target, and exits 0.
+under the repository root. On success it prints `BINDING_WRITTEN= <path>`, the `COVERAGE_END=`
+line and one `VERDICT_<TARGET>= <word>` line per target, and exits 0.
 
 ### If it refuses
 
-Before computing or writing anything it checks nine conditions, numbered 0 to 8, in the order
-below, and stops at the first one that is not met. It then prints `BINDING_REFUSED= <sentence>`
-naming that condition and exits 3. Nothing is written. What to do depends on which one it names.
+Before computing or writing anything it checks nine numbered conditions, 0 to 8, with the switch
+check right after 0, in the order below, and stops at the first one that is not met. It then
+prints `BINDING_REFUSED= <sentence>` naming that condition and exits 3. Nothing is written. What to
+do depends on which one it names.
 
 **Restore the ledger first.**
 
@@ -1420,6 +1553,18 @@ naming that condition and exits 3. Nothing is written. What to do depends on whi
    check, so this is what stops the one run being spent on it. Never run the binding run while
    `ledger/` is moved aside (step 2 of "Restore the ledger from the private backup" above): finish
    the restore, confirm `uv run python -m scripts.verify_ledger` passes, then run it again.
+
+**Then the switch check -- stop and investigate.** Under `MIDSEASON-SWITCH-RECORD.md` the
+day-before system decides nothing from week 13, so the coverage the run reports ends at week 12
+(`R6_COVERAGE_END_WEEK`): the document's coverage section says so in one sentence, the run prints
+`COVERAGE_END= week=12 reason=MIDSEASON-SWITCH-RECORD.md`, and weeks 13-22 are never reported as
+missed. Right after condition 0, any counted live-arm row in week 13 or later, a bet or a no-bet,
+refuses with "a counted live row in week <w> is after the switch (MIDSEASON-SWITCH-RECORD.md):
+<game_id>". Such a row means the retirement leaked and the record is false; waiting never clears
+it, so take it to the owner. Condition 3 below still waits for the Super Bowl. Last, after
+condition 8 and before anything is written, a section of the document holding a non-ASCII
+character refuses, naming the section and the character's code point (for example U+2014); find
+what put it there before trying again.
 
 **Wait for the next 17:00 ET daily run, then try again.** These clear on their own once the daily
 run has graded the bets and recorded the scores:
@@ -1446,8 +1591,9 @@ run), the Super Bowl bets stay ungraded for good and refusal 1 never clears by w
 3. Publish and check it: `uv run python -m scripts.sync_ledger`, then
    `uv run python -m scripts.verify_ledger`. Re-enable the tasks, then run the binding run again.
 
-Waiting only ever clears refusal 2 for a week-22 game. Once the Super Bowl is scored, an unscored
-game of an earlier week is not waited for: the run infers it was never played and voids its bets
+Refusal 2 only waits while no later week of the season is scored. Once one is (by February, the
+Super Bowl), an unscored game of weeks 5-12 is not waited for, week 12 included although coverage
+ends there: the run infers it was never played and voids its bets
 (each listed by name in the document's void-bets list). Refusal 2 also has a second form that does
 NOT clear by waiting: "game(s) inferred not played carry a graded counted bet". A graded bet means
 the game's final score existed and silver has since lost it (an ingest gap or an upstream

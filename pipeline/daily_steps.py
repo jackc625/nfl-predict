@@ -46,6 +46,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from backtest.midseason_switch_2026 import DAY_BEFORE_RETIRED_FROM, RECORD_PATH
 from pipeline.steps import (
     PipelinePhase,
     StepDefinition,
@@ -643,7 +644,20 @@ def recommend_slate(slate: DailySlate) -> None:
     named as the repository carrying ``ledger-anchor``, so a store shorter than its anchor is
     refused rather than restarted (34-REVIEW CR-01). Both branches share the late-publish refusal
     below.
+
+    RETIRED FROM 2026 WEEK 13 (``MIDSEASON-SWITCH-RECORD.md``): a slate at or after
+    ``DAY_BEFORE_RETIRED_FROM`` is decided by nobody. The step prints ``LEDGER_RETIRED=`` and
+    returns FIRST -- before the passed-lock refusal, the runner and the old writer -- so it writes
+    no live row (and so no shadow twin), no bet list and no skip record. The cutover switch is
+    left ON on purpose: turning it off would send rows to the old writer and stop the web cache
+    reading the ledger.
     """
+    if (slate.season, slate.week) >= DAY_BEFORE_RETIRED_FROM:
+        print(  # noqa: T201 -- the daily run's console contract says why nothing was decided
+            f"LEDGER_RETIRED= season={slate.season} week={slate.week} ({RECORD_PATH})"
+        )
+        return
+
     from backtest.weekly_bet_list import (
         PublishDeadlinePassedError,
         generate_weekly_bet_list,

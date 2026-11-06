@@ -29,6 +29,7 @@ from api.cache_schema import (
     ARM_LIVE,
     BACKTEST_SEASON_RANGE_KEY,
     BETTING_SEASON_RANGE_KEY,
+    DAY_BEFORE_RETIRED_FROM,
     PROVENANCE_BACKTEST_REPLAY,
     REFIT_PANEL_SEASON,
     REPLAY_VALIDATION_TYPE_SEASONS,
@@ -593,6 +594,17 @@ def _graded_outcomes_by_class(rows: list[dict[str, Any]]) -> dict[str, list[str]
     return by_class
 
 
+def _day_before_retired(season: int | None, week: int | None) -> bool:
+    """Whether *season* / *week* is at or after the switch week that retired the day-before system.
+
+    A comparison of week identifiers against ``DAY_BEFORE_RETIRED_FROM``, never of the clock: the
+    switch is keyed on the NFL week (MIDSEASON-SWITCH-RECORD.md). An unknown week is not retired.
+    """
+    if season is None or week is None:
+        return False
+    return (season, week) >= DAY_BEFORE_RETIRED_FROM
+
+
 def _build_bets_context(
     service: DataService,
     season: int | None,
@@ -613,6 +625,19 @@ def _build_bets_context(
     # of reads (33.2 review C2 CR-02). See _bet_week_coverage for why each game is judged against
     # its own lock rather than the week against its latest one.
     freshness = _bet_week_coverage(service, season, week)
+    # From the 2026 week-13 switch on the day-before system writes no row
+    # (MIDSEASON-SWITCH-RECORD.md), so a game of such a week past its lock with no list is the
+    # retirement, not a failed insertion, and one before its lock is not awaiting one. No game is
+    # owed a list, so none is named: emptying both lists clears the refusal and the not-evaluated
+    # verdict, which are read off them. Decided HERE, not in _bet_week_coverage, whose verdict
+    # stays the schedule-and-rows check its structural guard pins.
+    day_before_retired = _day_before_retired(season, week)
+    if day_before_retired:
+        freshness = freshness._replace(missing_games=[], pending_games=[])
+    # The forward record is the retired system's once the SEASON has reached the switch week --
+    # the stamped current slate, the week /bets opens on -- whichever week the reader has selected.
+    slate = service.get_current_slate()
+    forward_record_retired = slate is not None and _day_before_retired(*slate)
     bet_list_available = service.bet_list_table_exists()
     tracker_blocks = service.get_bet_tracker_blocks()
     # Last week's stored actual vs expected (SPEC R5, D-08). ``week - 1`` selects the previous week
@@ -649,6 +674,12 @@ def _build_bets_context(
         # week that admitted nothing, and the page says so rather than reporting a missing table
         # as a modelling result (plan 31-15, UI-SPEC E2 empty).
         "bet_list_available": bet_list_available,
+        # The selected week is at or after the switch: the page says the day-before system is
+        # retired, ahead of every per-game verdict below (which are all cleared for such a week).
+        "day_before_retired": day_before_retired,
+        # The current slate has reached the switch: the forward tracker is headed as the retired
+        # day-before system's record.
+        "forward_record_retired": forward_record_retired,
         "bet_list_populated_at": freshness.populated_at,
         # The hard-block (D31-27), SCOPED and now PER GAME (33.2 review C2 CR-02). It fires only
         # when games of the week have passed their lock and NONE has a list -- the failed
@@ -700,6 +731,7 @@ def _build_bets_context(
 # This Week headliner area names one of them, so the two pages can be checked to agree on a week.
 HEADLINER_STATES: tuple[str, ...] = (
     "not_built",
+    "retired",
     "blocked",
     "not_evaluated",
     "no_week",
@@ -717,13 +749,16 @@ def _headliner_state(bets_context: dict[str, Any]) -> str:
     """Which render /bets makes for a week, decided in pages/bets.html's own precedence.
 
     The order is the template's: a missing TABLE first (the only state that names an action the
-    reader can take), then the per-game refusal, then a week whose locks are all ahead, then no
-    current week, then a week that admitted nothing. Deciding it here in any other order would let
-    / and /bets describe the same week two ways; tests/api/test_this_week_headliner.py renders
-    /bets for each state and checks the two agree.
+    reader can take), then a week the retired day-before system no longer serves, then the
+    per-game refusal, then a week whose locks are all ahead, then no current week, then a week
+    that admitted nothing. Deciding it here in any other order would let / and /bets describe the
+    same week two ways; tests/api/test_this_week_headliner.py renders /bets for each state and
+    checks the two agree.
     """
     if not bets_context["bet_list_available"]:
         return "not_built"
+    if bets_context["day_before_retired"]:
+        return "retired"
     if bets_context["bets_blocked"]:
         return "blocked"
     if bets_context["week_not_evaluated"]:

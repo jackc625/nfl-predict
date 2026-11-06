@@ -1117,6 +1117,95 @@ def test_recommend_switch_on_uses_runner(monkeypatch, tmp_path):
     assert "2026_W03_LAC@BUF" in str(refused.value)
 
 
+# ---------------------------------------------------------------------------
+# The day-before system retires from 2026 week 13 (MIDSEASON-SWITCH-RECORD.md)
+# ---------------------------------------------------------------------------
+
+
+def _slate_in(season: int, week: int) -> DailySlate:
+    """The two Sunday fixture games, a month ahead, relabelled into *season* week *week*."""
+    slate = _slate(30)
+    slate.schedule["season"] = season
+    slate.schedule["week"] = week
+    return slate
+
+
+def _spy_on_the_writers(monkeypatch) -> dict[str, list[tuple]]:
+    """Replace every writer ``recommend_slate`` can reach with a recorder; return the calls.
+
+    The runner (the ledger and its shadow twin), the old writer (``outputs/bet_list``) and the
+    passed-lock refusal (a skip record). With all three stood in for, even a regression writes
+    nothing real: the worktree's ``data/`` folders are the live lake.
+    """
+    from backtest import weekly_bet_list
+    from forward_ledger import runner
+
+    calls: dict[str, list[tuple]] = {}
+
+    def _recorder(name: str, result: object = None):
+        def _record(*args, **kwargs):
+            calls.setdefault(name, []).append((args, kwargs))
+            return result
+
+        return _record
+
+    nothing_decided = runner.RecordOutcome(0, 0, 0, (), False, None, None)
+    monkeypatch.setattr(
+        runner,
+        "record_forward_slate",
+        _recorder("record_forward_slate", nothing_decided),
+    )
+    monkeypatch.setattr(
+        weekly_bet_list,
+        "generate_weekly_bet_list",
+        _recorder("generate_weekly_bet_list"),
+    )
+    monkeypatch.setattr(
+        live_skip, "refuse_passed_locks", _recorder("refuse_passed_locks")
+    )
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("season", "week"),
+    [pytest.param(2026, 13, id="2026-w13"), pytest.param(2027, 1, id="2027-w1")],
+)
+def test_a_week_13_slate_records_nothing(monkeypatch, tmp_path, capsys, season, week):
+    """From 2026 week 13 on, the decision step writes nothing and says why.
+
+    No live ledger row (so no shadow twin), no old-writer bet list and no passed-lock skip
+    record: the step returns before any of them. A later season is still retired.
+    """
+    _cut_over(monkeypatch)
+    slate = _slate_in(season, week)
+    _recommend_env(monkeypatch, tmp_path, slate)
+    calls = _spy_on_the_writers(monkeypatch)
+
+    daily_steps.recommend_slate(slate)
+
+    assert calls == {}
+    assert (slate.appended_rows, slate.shadow_holes) == ([], [])
+    assert (
+        f"LEDGER_RETIRED= season={season} week={week} (MIDSEASON-SWITCH-RECORD.md)"
+        in capsys.readouterr().out
+    )
+
+
+def test_a_week_12_slate_still_records(monkeypatch, tmp_path, capsys):
+    """The last day-before week still decides through the runner, as before the switch."""
+    _cut_over(monkeypatch)
+    slate = _slate_in(2026, 12)
+    _recommend_env(monkeypatch, tmp_path, slate)
+    calls = _spy_on_the_writers(monkeypatch)
+
+    daily_steps.recommend_slate(slate)
+
+    assert len(calls["record_forward_slate"]) == 1
+    assert len(calls["refuse_passed_locks"]) == 1
+    assert "generate_weekly_bet_list" not in calls
+    assert "LEDGER_RETIRED=" not in capsys.readouterr().out
+
+
 def _no_games_env(monkeypatch, tmp_path) -> list[str]:
     """A run date whose tomorrow has no game; returns the ordered record of what happened."""
     from forward_ledger import runner

@@ -93,8 +93,10 @@ are any; D-14 labels that stretch as such, and the week-7 dress rehearsal is nev
 one ``Period N, from Tue Nov 3`` row per installed generation N >= 1 -- from the moment it is
 installed, so a generation with no completed pair yet is a row with 0 paired games and NULL
 figures, never "no re-fit yet" -- and a season-to-date row over every paired game since the first
-re-fit. A period starts on its cadence date (the date its install intent names). The panel is
-accuracy only: no betting return per arm, so frozen-arm bets never look like bets.
+re-fit. A period starts on its cadence date (the date its install intent names); an owner install
+(MIDSEASON-SWITCH-RECORD.md section 4), which has no cadence date, starts on the ET calendar day of
+its training cutoff, the install instant. The panel is accuracy only: no betting return per arm,
+so frozen-arm bets never look like bets.
 
 Batch code: the comparison CLI (``scripts/compare_refit_arms.py``) and the cache build
 (``forward_ledger.cache_sources``) import it. No module under ``api/`` may import it, so the
@@ -116,6 +118,7 @@ from typing import Any, cast
 import pandas as pd
 from scipy import stats
 
+import utils.game_lock as lock_rule
 from api.cache import (
     BET_STATUS_LIVE,
     GRADING_STATUS_LOSS,
@@ -716,13 +719,33 @@ def _short_date(day: date) -> str:
     return f"{_WEEKDAYS[day.weekday()]} {_MONTHS[day.month - 1]} {day.day}"
 
 
+def _owner_period_start(generation: Generation) -> date:
+    """The ET calendar day of an owner install's training cutoff (its install instant).
+
+    Raises:
+        ValueError: the generation carries no cutoff (never guessed).
+    """
+    if generation.cutoff_utc is None:
+        msg = (
+            f"generation {generation.number} names no cadence date and no install cutoff; "
+            "a period start is never guessed"
+        )
+        raise ValueError(msg)
+    return generation.cutoff_utc.astimezone(lock_rule.ET).date()
+
+
 def _period_starts(
     installs: Sequence[Generation], date_events: Sequence[Mapping[str, Any]]
 ) -> dict[int, date]:
-    """Generation number -> its cadence date, read from the date events its install names.
+    """Generation number -> the day its period starts.
+
+    A cadence generation starts on its cadence date, read from the date events its install names;
+    an owner install, which has no cadence date (``list_week`` None), starts on the ET calendar day
+    of its training cutoff.
 
     Raises:
-        ValueError: an installed generation's cadence date has no event (never guessed).
+        ValueError: a cadence generation's date has no event, or an owner install has no cutoff
+            (never guessed).
     """
     dates: dict[tuple[int | None, int | None], str] = {
         (int(event["list_week"]), int(event["date_index"])): str(event["date"])
@@ -730,6 +753,9 @@ def _period_starts(
     }
     starts: dict[int, date] = {}
     for generation in installs:
+        if generation.list_week is None:
+            starts[generation.number] = _owner_period_start(generation)
+            continue
         key = (generation.list_week, generation.date_index)
         if key not in dates:
             msg = (
@@ -806,7 +832,8 @@ def period_summary(
         date_events: The cadence-date events (``refit.records.read_date_events``).
 
     Raises:
-        ValueError: an installed generation's cadence date has no event.
+        ValueError: a cadence generation's date has no event, or an owner install has no
+            cutoff.
     """
     rows = paired.frame.to_dict("records")
     installs = sorted(

@@ -49,6 +49,11 @@ GOLD = Path("data/gold")
 DOCUMENT = Path("docs/records/PRECOVERAGE-SCAN.md")
 BEFORE_SECTION = "## Before rung 8"
 AFTER_SECTION = "## After rung 8"
+#: RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the section scanned against the v2 gold
+#: the owner install puts in production. It is read only while the v2 recipe is in force
+#: (``tests.live_manifest_record.production_serves_v2``); under v1 it is skipped and the latest
+#: OTHER section is read, exactly as before.
+V2_SWITCH_SECTION = "## After the v2 switch (recipe-2026-v2)"
 
 needs_gold = pytest.mark.skipif(
     not all((GOLD / f"{m}.parquet").is_file() for m in scan.GOLD_MATRICES),
@@ -89,15 +94,31 @@ def _latest_section() -> tuple[str, str]:
 
     Matched as a heading at the start of a line, so prose that merely names a section cannot
     be mistaken for it.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: the v2-switch section is the latest
+    section only while the v2 recipe is in force, and every other section only while v1 is;
+    the body ends at the next section heading, so a v1 read never takes in the v2 section's
+    machine lines.
     """
+    from tests.live_manifest_record import production_serves_v2
+
     assert DOCUMENT.is_file(), (
         f"{DOCUMENT} is missing: the before-state was never published"
     )
     text = DOCUMENT.read_text(encoding="utf-8")
     headings = list(_SECTION_HEADING.finditer(text))
     assert headings, "the document carries no Before/After scan section"
-    last = headings[-1]
-    return last.group(0).strip(), text[last.start() :]
+    serves_v2 = production_serves_v2()
+    in_force = [
+        h for h in headings if (h.group(0).strip() == V2_SWITCH_SECTION) == serves_v2
+    ]
+    assert in_force, (
+        f"the document carries no scan section for the recipe in force (v2: {serves_v2})"
+    )
+    last = in_force[-1]
+    following = [h.start() for h in headings if h.start() > last.start()]
+    end = following[0] if following else len(text)
+    return last.group(0).strip(), text[last.start() : end]
 
 
 def _recorded(body: str, key: str) -> int:

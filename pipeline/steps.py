@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import pandas as pd
 
+    from scripts.build_features import FeatureMatrixBuilder
+
 # ---------------------------------------------------------------------------
 # Enums and data classes
 # ---------------------------------------------------------------------------
@@ -254,10 +256,12 @@ ARTIFACT_PHASE_BOUNDARIES: tuple[str, ...] = (
 )
 
 # The recovery command each boundary's refusal names. One per boundary rather than one
-# generic line, because "rebuild something" is not an instruction.
+# generic line, because "rebuild something" is not an instruction. The gold one is
+# scripts.rebuild_gold, never scripts.build_features: that CLI always builds v1 gold, which
+# under the v2 recipe would sit under models reading other columns (MIDSEASON-SWITCH-RECORD.md).
 _BOUNDARY_RECOVERY_COMMAND: dict[str, str] = {
     ARTIFACT_BOUNDARY_DATA: "uv run python scripts/friday_pipeline.py --data-only",
-    ARTIFACT_BOUNDARY_GOLD: "uv run python -m scripts.build_features --all-seasons --save",
+    ARTIFACT_BOUNDARY_GOLD: "uv run python -m scripts.rebuild_gold",
     ARTIFACT_BOUNDARY_PREDICTIONS: (
         "uv run python scripts/friday_pipeline.py --predictions-only"
     ),
@@ -846,17 +850,59 @@ def build_and_save_gold(
     (``FeatureMatrixBuilder.save_feature_matrices(history_refused=...)``). Before this, the
     build was written in replace mode and the refused game silently vanished from training.
 
+    THE BUILDER FOLLOWS THE RECIPE IN FORCE (MIDSEASON-SWITCH-RECORD.md section 4). The models
+    read gold columns BY NAME, so v2 gold under v1 models would silently corrupt every
+    prediction; :func:`gold_builder_class` builds v2 gold only while the v2 recipe is in force.
+
     Args:
         serve_game_ids: The games this run is about to predict (the daily slate).
         unplayed_through_lock: The slate's lock. An unplayed game whose lock is later is
             left out of the build: its Elo row exists only for the week's ranking (review
             WR-08). None (the Friday registry) builds every game that has an Elo row.
     """
-    from pipeline import live_skip
+    _build_and_save_gold_with(
+        gold_builder_class(),
+        serve_game_ids,
+        unplayed_through_lock=unplayed_through_lock,
+    )
+
+
+def gold_builder_class() -> "type[FeatureMatrixBuilder]":
+    """The gold builder of the recipe in force: the v2 builder under the installed v2 recipe.
+
+    The recipe is read from the generation ``artifacts/latest.json`` names
+    (``refit.generations.in_force_recipe``), so the gold the nightly build writes and the models
+    that score it always share one recipe. Every other recipe keeps today's builder.
+
+    Raises:
+        FileNotFoundError: there is no ``artifacts/latest.json``; the recipe is never guessed.
+        UnknownGenerationError: ``latest.json`` names ids no generation produced.
+        RefitRecordFormatError: the generation records cannot be read.
+    """
+    from backtest.midseason_switch_2026 import INSTALLED_RECIPE
+    from forward_ledger.store import LEDGER_DIR
+    from refit.generations import in_force_recipe
+
+    if in_force_recipe(Path("artifacts"), LEDGER_DIR) == INSTALLED_RECIPE:
+        from scripts.build_gold_v2 import FeatureMatrixBuilderV2Live
+
+        return FeatureMatrixBuilderV2Live
     from scripts.build_features import FeatureMatrixBuilder
 
+    return FeatureMatrixBuilder
+
+
+def _build_and_save_gold_with(
+    builder_class: "type[FeatureMatrixBuilder]",
+    serve_game_ids: frozenset[str],
+    *,
+    unplayed_through_lock: datetime | None,
+) -> None:
+    """:func:`build_and_save_gold`'s build and save, with *builder_class* building the gold."""
+    from pipeline import live_skip
+
     excluded = live_skip.excluded_games()
-    builder = FeatureMatrixBuilder()
+    builder = builder_class()
     matrices = builder.generate_feature_matrices(
         excluded_game_ids=excluded, unplayed_through_lock=unplayed_through_lock
     )
