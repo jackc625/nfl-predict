@@ -11,21 +11,33 @@ and ``canon_v = 1`` stay untouched, and so does every existing chain hash (must-
 
 WHERE THE GENERATIONS COME FROM (ROLLING-REFIT-PREREGISTRATION.md section 3)
 -----------------------------------------------------------------------------
-:func:`installed_generations` reads ``ledger/refit/dates.jsonl`` (``refit.records``):
+:func:`installed_generations` reads ``ledger/refit/dates.jsonl`` and
+``ledger/refit/owner_installs.jsonl`` (``refit.records``):
 
 * generation 0 is the pin (``forward_ledger.shadow.SHADOW_PIN``), its recipe and chain-fit record;
-* generation N is the ids named by the last ``install_intent`` of the N-th cadence date, in date
-  order, whose last install intent COUNTS. It counts when the date closed ``ran`` or ``ran late``,
-  or when the date is still open and no ``refused`` attempt follows that intent. An ``installed``
-  or a ``crashed`` attempt after it, or no attempt at all, does not stop it counting, because a
-  crash can come after the swap wrote ``latest.json`` (research Pitfall 2); the only refusal an
-  intent's own attempt records after it is raised before the swap writes, so a ``refused`` attempt
-  after the intent proves those ids were never served;
-* a date closed ``not run`` consumes no number.
+* a cadence date whose last ``install_intent`` COUNTS is one install. It counts when the date
+  closed ``ran`` or ``ran late``, or when the date is still open and no ``refused`` attempt
+  follows that intent. An ``installed`` or a ``crashed`` attempt after it, or no attempt at all,
+  does not stop it counting, because a crash can come after the swap wrote ``latest.json``
+  (research Pitfall 2); the only refusal an intent's own attempt records after it is raised before
+  the swap writes, so a ``refused`` attempt after the intent proves those ids were never served;
+* a date closed ``not run`` consumes no number;
+* an owner install (MIDSEASON-SWITCH-RECORD.md section 4; its section 6 INVALIDATES this
+  section for it, since an owner install has no cadence date) is one install per owner
+  ``install_intent`` that COUNTS. The same rule holds: it counts unless a
+  ``refused`` event of its own attempt -- one with its ``install_date``, before the next intent --
+  follows it. A refusal belongs to the attempt the latest intent opened, so it never stops an
+  earlier intent counting, and an ``installed`` event ends that attempt;
+* generation N is the N-th install in date order: a cadence install on its cadence date, an
+  owner install on its ``install_date``, and on one day the cadence install first. Numbering
+  therefore continues past the cadence generations: with generation 1 installed on the first
+  cadence date, the first owner install is generation 2.
 
 Generation N's bet rule is resolved ONLY by ``refit.records.bet_rule_record_path(ledger_dir,
 intent["bet_rule_sha256"])`` -- the one join of the stored path convention -- never by joining the
-stored ``bet_rule_path`` text.
+stored ``bet_rule_path`` text. A cadence generation is stamped ``recipe-2026-refit-v1``; an owner
+generation serves the recipe its record names, carries no cadence date and carries its training
+cutoff.
 
 THE ROW MAPPING, IN ORDER
 -------------------------
@@ -43,6 +55,8 @@ THE GENERATION IN FORCE
 :func:`in_force_generation` maps the ids a decision was resolved with (``latest.json``, read once)
 to exactly one generation. The pin's ids are generation 0 without reading any record, so a
 generation-0 decision depends on nothing it did not depend on before Phase 37 (D-04).
+:func:`in_force_recipe` is that generation's recipe: the nightly gold build follows it, so the
+models in force and the gold they score always share one recipe.
 
 THE WEBSITE'S EDGE BANDS (D-36)
 -------------------------------
@@ -70,6 +84,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -82,6 +97,7 @@ from refit.records import (
     RefitRecordFormatError,
     bet_rule_record_path,
     read_date_events,
+    read_owner_installs,
 )
 
 if TYPE_CHECKING:
@@ -98,6 +114,7 @@ __all__ = [
     "generation_zero_ids",
     "in_force_edge_thresholds",
     "in_force_generation",
+    "in_force_recipe",
     "installed_generations",
 ]
 
@@ -117,6 +134,11 @@ _INTENT_ID_KEYS: tuple[str, ...] = ("wp", "ats", "ou", "blend", "converter")
 _COUNTING_CLOSED_STATUSES: frozenset[str] = frozenset({"ran", "ran late"})
 _NOT_RUN: str = "not run"
 _REFUSED: str = "refused"
+_INSTALL_INTENT: str = "install_intent"
+
+# Where an install comes from; on one day a cadence install sorts before an owner install.
+_CADENCE: int = 0
+_OWNER: int = 1
 
 
 class UnknownGenerationError(Exception):
@@ -135,11 +157,15 @@ class Generation:
         number: 0 for the pin, N for the N-th counted install.
         ids: The five ids (wp, ats, ou, blend, converter) the generation decides with.
         recipe: The recipe id its live rows are stamped with (``recipe-2026-row19-v1`` for
-            generation 0, ``recipe-2026-refit-v1`` for every re-fit generation).
+            generation 0, ``recipe-2026-refit-v1`` for every cadence re-fit generation, the
+            recipe its record names for an owner install).
         bet_rule_path: The bet-rule record it decides with: the pin's chain-fit record for
             generation 0, ``<ledger>/refit/bet_rules/<sha256>.json`` for generation N.
-        date_index: The cadence date's 1-based index (None for generation 0).
-        list_week: The cadence date list's A/A week (None for generation 0).
+        date_index: The cadence date's 1-based index (None for generation 0 and an owner
+            install).
+        list_week: The cadence date list's A/A week (None for generation 0 and an owner install).
+        cutoff_utc: An owner install's training cutoff, the install instant (tz-aware UTC);
+            None for generation 0 and a cadence generation, whose cutoff is its cadence date's.
     """
 
     number: int
@@ -148,6 +174,7 @@ class Generation:
     bet_rule_path: Path
     date_index: int | None
     list_week: int | None
+    cutoff_utc: datetime | None = None
 
 
 def generation_zero_ids() -> ResolvedArtifacts:
@@ -166,17 +193,18 @@ def _generation_zero() -> Generation:
     )
 
 
-def _intent_ids(intent: Mapping[str, Any]) -> ResolvedArtifacts:
-    """The five ids an ``install_intent`` names, refused by name when one is missing."""
-    ids = intent["ids"]
+def _intent_ids(ids: object, source: str) -> ResolvedArtifacts:
+    """The five ids an ``install_intent`` names, refused by name when one is missing.
+
+    Args:
+        ids: The intent's ``ids`` value.
+        source: Which intent, for the refusal (``the install_intent of cadence date ...``).
+    """
     missing = [
         key for key in _INTENT_ID_KEYS if not isinstance(ids, Mapping) or key not in ids
     ]
-    if missing:
-        msg = (
-            f"the install_intent of cadence date {intent['date']} (list week "
-            f"{intent['list_week']}, index {intent['date_index']}) names no id for {missing}"
-        )
+    if missing or not isinstance(ids, Mapping):
+        msg = f"{source} names no id for {missing}"
         raise RefitRecordFormatError(msg)
     return ResolvedArtifacts(
         wp=str(ids["wp"]),
@@ -208,44 +236,104 @@ def _counting_intent(events: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] |
     return None if refused_after else events[last]
 
 
+def _counting_owner_intents(
+    events: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Every owner ``install_intent`` that counts, in file order.
+
+    An intent opens an attempt; the attempt's ``installed`` or ``refused`` event (one with the
+    intent's ``install_date``) ends it. A ``refused`` one proves that attempt's ids were never
+    served, so its intent does not count; it says nothing about an earlier intent. An intent whose
+    attempt records nothing (a crash, possibly after the swap wrote) still counts.
+    """
+    counting: list[Mapping[str, Any]] = []
+    open_attempt: Mapping[str, Any] | None = None
+    for event in events:
+        if event["event"] == _INSTALL_INTENT:
+            open_attempt = event
+            counting.append(event)
+        elif (
+            open_attempt is not None
+            and event["install_date"] == open_attempt["install_date"]
+        ):
+            if event["event"] == _REFUSED:
+                # The open attempt's intent is the last one appended.
+                counting.pop()
+            open_attempt = None
+    return counting
+
+
+def _cadence_generation(
+    number: int, intent: Mapping[str, Any], ledger_dir: Path | str
+) -> Generation:
+    """Generation *number*: the ids a counting cadence-date intent names."""
+    source = (
+        f"the install_intent of cadence date {intent['date']} (list week "
+        f"{intent['list_week']}, index {intent['date_index']})"
+    )
+    return Generation(
+        number=number,
+        ids=_intent_ids(intent["ids"], source),
+        recipe=REFIT_RECIPE_ID,
+        bet_rule_path=bet_rule_record_path(ledger_dir, intent["bet_rule_sha256"]),
+        date_index=int(intent["date_index"]),
+        list_week=int(intent["list_week"]),
+    )
+
+
+def _owner_generation(
+    number: int, intent: Mapping[str, Any], ledger_dir: Path | str
+) -> Generation:
+    """Generation *number*: the ids, recipe and cutoff a counting owner intent names."""
+    return Generation(
+        number=number,
+        ids=_intent_ids(
+            intent["ids"], f"the owner install_intent of {intent['install_date']}"
+        ),
+        recipe=str(intent["recipe"]),
+        bet_rule_path=bet_rule_record_path(ledger_dir, intent["bet_rule_sha256"]),
+        date_index=None,
+        list_week=None,
+        cutoff_utc=datetime.fromisoformat(str(intent["cutoff_utc"])),
+    )
+
+
 def installed_generations(
     ledger_dir: Path | str, *, skip_torn_tail: bool = False
 ) -> tuple[Generation, ...]:
     """Generation 0 and every counted install, in number order (section 3's rule).
 
+    Cadence installs and owner installs are numbered together, in date order; on one day a
+    cadence install comes first.
+
     Args:
-        skip_torn_tail: Read ``dates.jsonl`` leaving out a torn last line
-            (``refit.records.read_date_events``); the live decision path's read only.
+        skip_torn_tail: Read ``dates.jsonl`` and ``owner_installs.jsonl`` leaving out a torn last
+            line (``refit.records``); the live decision path's read only.
 
     Raises:
-        RefitRecordFormatError: a ``dates.jsonl`` line is malformed, or an intent lacks an id.
+        RefitRecordFormatError: a record line is malformed, or an intent lacks an id.
     """
     by_date: dict[tuple[int, int], list[Mapping[str, Any]]] = {}
     for event in read_date_events(ledger_dir, skip_torn_tail=skip_torn_tail):
         key = (int(event["list_week"]), int(event["date_index"]))
         by_date.setdefault(key, []).append(event)
 
-    ordered = sorted(
-        by_date.values(),
-        key=lambda events: (str(events[0]["date"]), events[0]["date_index"]),
-    )
-    generations = [_generation_zero()]
-    for events in ordered:
+    # (day, source, order within the source) -> the counting intent.
+    installs: list[tuple[tuple[str, int, int], Mapping[str, Any]]] = []
+    for events in by_date.values():
         intent = _counting_intent(events)
-        if intent is None:
-            continue
-        generations.append(
-            Generation(
-                number=len(generations),
-                ids=_intent_ids(intent),
-                recipe=REFIT_RECIPE_ID,
-                bet_rule_path=bet_rule_record_path(
-                    ledger_dir, intent["bet_rule_sha256"]
-                ),
-                date_index=int(intent["date_index"]),
-                list_week=int(intent["list_week"]),
-            )
-        )
+        if intent is not None:
+            day_key = (str(intent["date"]), _CADENCE, int(intent["date_index"]))
+            installs.append((day_key, intent))
+    owner_events = read_owner_installs(ledger_dir, skip_torn_tail=skip_torn_tail)
+    for position, intent in enumerate(_counting_owner_intents(owner_events)):
+        installs.append(((str(intent["install_date"]), _OWNER, position), intent))
+    installs.sort(key=lambda install: install[0])
+
+    generations = [_generation_zero()]
+    for (_day, source, _order), intent in installs:
+        build = _cadence_generation if source == _CADENCE else _owner_generation
+        generations.append(build(len(generations), intent, ledger_dir))
     return tuple(generations)
 
 
@@ -276,8 +364,9 @@ def in_force_generation(
     """The generation the ids *resolved* (read once from ``latest.json``) decide under.
 
     The pin's ids are generation 0 without reading any record (D-04). A torn last line of
-    ``dates.jsonl`` is left out and logged (WR-A02): a crash mid-append on the re-fit side never
-    stands between a game and its lock (D-15); damage on any other line still raises.
+    ``dates.jsonl`` or ``owner_installs.jsonl`` is left out and logged (WR-A02): a crash
+    mid-append on the re-fit side never stands between a game and its lock (D-15); damage on any
+    other line still raises.
 
     Raises:
         UnknownGenerationError: the ids are neither pinned nor an installed generation's.
@@ -289,6 +378,23 @@ def in_force_generation(
     return generation_for_ids(
         resolved, installed_generations(ledger_dir, skip_torn_tail=True)
     )
+
+
+def in_force_recipe(artifacts_dir: Path | str, ledger_dir: Path | str) -> str:
+    """The recipe of the generation ``latest.json`` names: what the nightly gold build follows.
+
+    Args:
+        artifacts_dir: The artifacts directory whose ``latest.json`` is read once.
+        ledger_dir: The forward ledger directory holding ``refit/``.
+
+    Raises:
+        FileNotFoundError: *artifacts_dir* holds no ``latest.json`` (or not the blend it names);
+            the recipe in force is never guessed.
+        UnknownGenerationError: ``latest.json`` names ids no generation produced.
+        RefitRecordFormatError: the generation records cannot be read.
+    """
+    resolved = resolve_production_artifacts(Path(artifacts_dir))
+    return in_force_generation(resolved, ledger_dir).recipe
 
 
 def _generation_edge_thresholds(generation: Generation) -> EdgeThresholds | None:
