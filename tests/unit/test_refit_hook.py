@@ -13,6 +13,8 @@ WHAT IS PROVEN (D-15, D-17, D-37, SPEC R9, R10, P4, research Pitfalls 1 and 2)
   cutoff, the next date closes an older open one ``not run``.
 * Catch-up and recovery: every A/A week evaluated in a run is on the outcome, and a date whose
   swap a crash interrupted is closed on the next run without re-training.
+* The mid-season switch (``MIDSEASON-SWITCH-RECORD.md`` section 3): each paused date, the last
+  one included, closes ``not run`` once with ``paused_by`` when it falls due, and nothing trains.
 
 Every ledger, artifacts dir, gold and silver here is a pytest temporary fixture. The captured code
 commit is pinned to a clean fixture value by one autouse fixture, so no test depends on whether the
@@ -26,7 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,7 @@ import pytest
 import refit.integrity
 import refit.records
 import refit.witness
+from backtest.midseason_switch_2026 import REFIT_PAUSE_RULING, REFIT_PAUSED_DATES
 from backtest.refit_preregistration_2026 import REFIT_RECIPE_ID
 from backtest.weekly_bet_list import load_bet_rule_record
 from forward_ledger.schema import ARM_LIVE
@@ -93,6 +96,8 @@ NOV3 = datetime(2026, 11, 3, 22, 5, tzinfo=UTC)
 NOV4 = datetime(2026, 11, 4, 22, 5, tzinfo=UTC)
 NOV10 = datetime(2026, 11, 10, 22, 5, tzinfo=UTC)
 DEC1 = datetime(2026, 12, 1, 22, 5, tzinfo=UTC)
+DEC29 = datetime(2026, 12, 29, 22, 5, tzinfo=UTC)
+JAN26 = datetime(2027, 1, 26, 22, 5, tzinfo=UTC)
 
 FIRST_CUTOFF: str = "2026-11-03T22:00:00+00:00"
 
@@ -408,7 +413,15 @@ def test_a_retry_after_refusal_keeps_the_cutoff(tmp_path: Path) -> None:
     assert kinds(world.ledger)[-1] == ("closed", "ran late")
 
 
-def test_the_next_date_closes_the_older(tmp_path: Path) -> None:
+def test_the_next_date_closes_the_older(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A due date closes an older open date ``not run``, then is attempted itself.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: 2026-12-01 is now a paused date, so this
+    test of the attempt mechanics clears the paused dates; the pause has its own tests below.
+    """
+    monkeypatch.setattr("refit.hook.REFIT_PAUSED_DATES", ())
     world = build_world(tmp_path)
     record_clean_week(world.ledger)
     fakes = Fakes(world, check_error=IntegrityRefusal("scores_frame", "planted"))
@@ -442,7 +455,15 @@ def test_a_busy_lock_records_nothing(tmp_path: Path) -> None:
     assert fakes.calls == []
 
 
-def test_one_record_per_passed_date(tmp_path: Path) -> None:
+def test_one_record_per_passed_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every passed date has exactly one close, and no future date has any record.
+
+    RE-POINTED 2026-11-06 for MIDSEASON-SWITCH-RECORD.md: 2026-12-01 is now a paused date, so this
+    test of the attempt mechanics clears the paused dates; the pause has its own tests below.
+    """
+    monkeypatch.setattr("refit.hook.REFIT_PAUSED_DATES", ())
     world = build_world(tmp_path)
     record_clean_week(world.ledger)
     fakes = Fakes(world, check_error=IntegrityRefusal("scores_frame", "planted"))
@@ -461,6 +482,114 @@ def test_one_record_per_passed_date(tmp_path: Path) -> None:
     future = {s.date.index for s in statuses if s.date.cutoff_utc > DEC1}
     assert future == {3, 4}
     assert not any(e["date_index"] in future for e in read_date_events(world.ledger))
+
+
+# ---------------------------------------------------------------------------
+# The mid-season switch pauses dates 2-4 (MIDSEASON-SWITCH-RECORD.md section 3)
+# ---------------------------------------------------------------------------
+
+
+def date_one_ran(root: Path) -> tuple[World, Fakes]:
+    """The state the pause meets: list 8 in force and its date 1 ran on Tue Nov 3.
+
+    The returned fakes' call list is emptied, so any call they record is the pause's.
+    """
+    world = build_world(root)
+    record_clean_week(world.ledger)
+    fakes = Fakes(world)
+    assert side_step(world, fakes.steps(), NOV3).status == "ran"
+    fakes.calls.clear()
+    return world, fakes
+
+
+def closes_of(ledger: Path, day: str) -> list[dict[str, Any]]:
+    """Every ``closed`` event of the cadence date *day* (ISO), in file order."""
+    return [
+        event
+        for event in read_date_events(ledger)
+        if event["event"] == "closed" and event["date"] == day
+    ]
+
+
+def test_a_paused_due_date_closes_not_run_and_nothing_trains(tmp_path: Path) -> None:
+    world, fakes = date_one_ran(tmp_path)
+    latest = sha256_of(world.artifacts / "latest.json")
+    generations = len(installed_generations(world.ledger))
+
+    # A lock_passed run, which would refresh the schedule before an attempt.
+    outcome = side_step(
+        world,
+        fakes.steps(),
+        DEC1,
+        schedule_refreshed=False,
+        refresh_schedule=lambda: fakes.calls.append("refresh"),
+    )
+
+    (closed,) = closes_of(world.ledger, "2026-12-01")
+    assert closed["status"] == "not run"
+    assert closed["paused_by"] == REFIT_PAUSE_RULING
+    assert (closed["before_ids"], closed["after_ids"]) == (None, None)
+    assert closed["closed_at_utc"] == DEC1.isoformat()
+    assert fakes.calls == [], "a paused date refreshed, built or trained"
+    assert [a for a in attempts(world.ledger) if a["date"] == "2026-12-01"] == []
+    assert (outcome.status, outcome.closed_not_run) == ("not_due", ("2026-12-01",))
+    assert (outcome.wrote_records, outcome.next_date) == (True, "2026-12-29")
+    assert sha256_of(world.artifacts / "latest.json") == latest
+    assert len(installed_generations(world.ledger)) == generations
+
+
+def test_a_paused_date_is_closed_once(tmp_path: Path) -> None:
+    world, fakes = date_one_ran(tmp_path)
+    side_step(world, fakes.steps(), DEC1)
+
+    outcome = side_step(world, fakes.steps(), DEC1 + timedelta(days=1))
+
+    assert [
+        (event["status"], event.get("paused_by"))
+        for event in closes_of(world.ledger, "2026-12-01")
+    ] == [("not run", REFIT_PAUSE_RULING)]
+    assert (outcome.status, outcome.wrote_records) == ("not_due", False)
+
+
+def test_the_last_paused_date_closes_when_due(tmp_path: Path) -> None:
+    # Review Focus 3: the frozen trigger leaves the last date due until a record closes it.
+    world, fakes = date_one_ran(tmp_path)
+
+    for now in (DEC1, DEC29, JAN26):
+        assert side_step(world, fakes.steps(), now).status == "not_due"
+
+    assert {
+        day: [event["paused_by"] for event in closes_of(world.ledger, day)]
+        for day in REFIT_PAUSED_DATES
+    } == {day: [REFIT_PAUSE_RULING] for day in REFIT_PAUSED_DATES}
+    statuses = date_statuses(cadence_dates(8), read_date_events(world.ledger))
+    assert [s.status for s in statuses] == ["ran", "not run", "not run", "not run"]
+    assert fakes.calls == []
+    later = side_step(world, fakes.steps(), JAN26 + timedelta(days=7))
+    assert (later.status, later.wrote_records, later.next_date) == (
+        "not_due",
+        False,
+        None,
+    )
+
+
+def test_a_paused_date_the_runs_skipped_past_still_names_the_pause(
+    tmp_path: Path,
+) -> None:
+    # No run between Dec 1 and Dec 29: the trigger lists Dec 1 among the older open dates, and
+    # its close names the pause like every paused date's close (the record's REFIT_PAUSE_RULING).
+    world, fakes = date_one_ran(tmp_path)
+
+    outcome = side_step(world, fakes.steps(), DEC29)
+
+    assert outcome.closed_not_run == ("2026-12-01", "2026-12-29")
+    for day in ("2026-12-01", "2026-12-29"):
+        (closed,) = closes_of(world.ledger, day)
+        assert (closed["status"], closed["paused_by"]) == (
+            "not run",
+            REFIT_PAUSE_RULING,
+        )
+    assert fakes.calls == []
 
 
 # ---------------------------------------------------------------------------

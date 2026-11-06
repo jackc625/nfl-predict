@@ -162,6 +162,15 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
    backed up by the next run's sync. A `lock_passed`
    run on a day a re-fit is due runs the attempt too, so its check-in lands after 18:30 ET and
    the watcher alerts that evening.
+
+   **Paused for the rest of 2026 (`MIDSEASON-SWITCH-RECORD.md` section 3).** The 4-weekly re-fit
+   is paused for its remaining 2026 dates, 2026-12-01, 2026-12-29 and 2027-01-26
+   (`REFIT_PAUSED_DATES` in `backtest/midseason_switch_2026.py`), because any of them would
+   retrain the old recipe and overwrite the v2 models. When one falls due, the side step closes it
+   `not run`, once, with `paused_by` naming the ruling, and prints `REFIT= not_due`: no schedule
+   refresh, no gold build, no training, and `artifacts/latest.json` is not touched. The Saturday
+   email reads "not run; paused by the mid-season switch record." The v2 models are trained once,
+   at their owner install, and never re-fitted in 2026.
 5. **The website push (Phase 36)** -- after the ledger sync, the re-fit side step and its cache
    rebuild, and before the phone pushes, every
    run that did not fail pushes the dashboard to Vercel (a run that failed records "not pushed"

@@ -8,21 +8,31 @@ the attempt lock it, in order:
 
 1. closes a date whose install a crash interrupted after the swap (``refit.swap.pending_install``),
    without re-training (research Pitfall 2);
-2. on a run that made no schedule refresh of its own (``lock_passed``) with an A/A week or a date
-   due, refreshes the schedule once, so the A/A completeness rule and the attempt read today's
-   schedule;
+2. on a run that made no schedule refresh of its own (``lock_passed``) with an A/A week or an
+   unpaused date due, refreshes the schedule once, so the A/A completeness rule and the attempt
+   read today's schedule;
 3. before any date list is in force, evaluates every A/A week whose evaluation instant has passed
    and has no record, in order, recording each, until the trigger stops asking (D-02);
-4. closes every older open date the trigger names ``not run``;
-5. attempts the one due date (:func:`attempt_date`): the code commit is captured once, the
-   schedule refresh on a run that made none, the date's first-attempt eligibility snapshot (R10),
-   then the recipe fingerprint (P4), the A/A proof, the D-37 build, training, the re-measure, the
-   integrity checks and the swap.
+4. closes every older open date the trigger names ``not run``, and a due date the mid-season
+   switch record pauses too (see below);
+5. attempts the one due date that is not paused (:func:`attempt_date`): the code commit is
+   captured once, the schedule refresh on a run that made none, the date's first-attempt
+   eligibility snapshot (R10), then the recipe fingerprint (P4), the A/A proof, the D-37 build,
+   training, the re-measure, the integrity checks and the swap.
 
 THE TRIGGER IS CALENDAR-ONLY
 ----------------------------
 Whether anything is due comes from ``refit.cadence.decide``: the frozen date lists, the clock and the
 records. Nothing here reads a metric. A day with nothing to do takes no lock and writes no file.
+
+THE MID-SEASON SWITCH PAUSES THE REMAINING DATES
+------------------------------------------------
+``MIDSEASON-SWITCH-RECORD.md`` section 3 pauses the dates in ``REFIT_PAUSED_DATES``. The frozen
+trigger still names such a date due (``refit.cadence`` is not edited); this step closes it
+``not run`` once, with ``paused_by`` = ``REFIT_PAUSE_RULING``, and never attempts it: no schedule
+refresh, no build, no training, no swap. A paused date the trigger lists among the older open dates
+(no run reached it on its own day) carries ``paused_by`` the same way. The outcome is the idle
+``not_due``.
 
 EVERY OUTCOME IS A RECORD; A REFUSAL IS A RESULT
 ------------------------------------------------
@@ -48,6 +58,7 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
+from backtest.midseason_switch_2026 import REFIT_PAUSE_RULING, REFIT_PAUSED_DATES
 from backtest.neutral_hfa_cold_start_constants import EDGE_TIER_THRESHOLDS_BY_TARGET
 from backtest.refit_preregistration_2026 import (
     MARKET_CONVERTER_ID,
@@ -143,7 +154,7 @@ class RefitOutcome:
         recovered_close: ``(date ISO, "ran" | "ran late", swap day ISO)`` when this run began by
             closing a date whose swap an earlier run's crash interrupted; the status and the ET
             day are the swap's (the models serve from the run after that day).
-        closed_not_run: The dates this run closed ``not run``, ISO.
+        closed_not_run: The dates this run closed ``not run``, ISO (a paused date included).
         wrote_records: True when the run appended any record.
         after_ids: The five ids serving after an install or a recovered close.
     """
@@ -305,6 +316,24 @@ def _closed_event(
         "before_ids": None if before is None else dict(before),
         "after_ids": None if after is None else dict(after),
     }
+
+
+def _paused(cadence_date: CadenceDate) -> bool:
+    """Whether ``MIDSEASON-SWITCH-RECORD.md`` section 3 pauses *cadence_date*.
+
+    Reads the module-level name at call time, so a test can patch ``REFIT_PAUSED_DATES`` here.
+    """
+    return cadence_date.date.isoformat() in REFIT_PAUSED_DATES
+
+
+def _not_run_event(cadence_date: CadenceDate, *, closed_at: datetime) -> dict[str, Any]:
+    """A ``not run`` close; a paused date's close also names the ruling that paused it."""
+    event = _closed_event(
+        cadence_date, _NOT_RUN, closed_at=closed_at, before=None, after=None
+    )
+    if _paused(cadence_date):
+        event["paused_by"] = REFIT_PAUSE_RULING
+    return event
 
 
 def _own_events(
@@ -681,7 +710,9 @@ def _run_locked(
     recovered = _recover_pending_install(ledger, artifacts, now_utc)
     if not schedule_refreshed and refresh_schedule is not None:
         pending = _decide(ledger, now_utc)
-        if pending.aa_week_due is not None or pending.due is not None:
+        # A paused date is closed below, never attempted, so it needs no refresh.
+        attempt_due = pending.due is not None and not _paused(pending.due)
+        if pending.aa_week_due is not None or attempt_due:
             # A run that made no refresh of its own (lock_passed) refreshes ONCE, before the
             # A/A evaluation: the first record of a week is binding, and its completeness must
             # be judged on today's schedule, never the previous day's (WR-C03).
@@ -690,14 +721,16 @@ def _run_locked(
     aa_results = _evaluate_due_aa_weeks(ledger, silver_dir, now_utc)
 
     decision = _decide(ledger, now_utc)
-    for cadence_date in decision.close_not_run:
+    due = decision.due
+    not_run = decision.close_not_run
+    if due is not None and _paused(due):
+        # MIDSEASON-SWITCH-RECORD.md section 3: the paused date closes not run and nothing trains.
+        not_run, due = (*not_run, due), None
+    for cadence_date in not_run:
         records.append_date_event(
-            ledger,
-            _closed_event(
-                cadence_date, _NOT_RUN, closed_at=now_utc, before=None, after=None
-            ),
+            ledger, _not_run_event(cadence_date, closed_at=now_utc)
         )
-    closed_not_run = tuple(d.date.isoformat() for d in decision.close_not_run)
+    closed_not_run = tuple(d.date.isoformat() for d in not_run)
     wrote = recovered is not None or bool(aa_results) or bool(closed_not_run)
     shared: dict[str, Any] = {
         "aa_results": aa_results,
@@ -707,9 +740,9 @@ def _run_locked(
         "closed_not_run": closed_not_run,
     }
 
-    if decision.due is not None:
+    if due is not None:
         attempted = attempt_date(
-            decision.due,
+            due,
             run_date_et=run_date_et,
             now_utc=now_utc,
             slate=slate,

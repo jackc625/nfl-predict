@@ -45,7 +45,9 @@ After the closing section, the email lists one line per cadence date whose LATES
 was recorded since the previous delivered digest, plus one waiting line per unclean A/A week of
 ``ledger/refit/aa_weeks.jsonl`` recorded since then. "Since" is decided for every record of both
 files by its ``recorded_at_utc``, the one key ``refit.records.append_record`` stamps on every line.
-Nothing to list is no section at all; a record file that cannot be read is named.
+Nothing to list is no section at all; a record file that cannot be read is named. A ``not run``
+close carrying ``paused_by`` (``MIDSEASON-SWITCH-RECORD.md`` section 3) reads as paused by the
+mid-season switch record, never as "the next date arrived first".
 
 Seams read at call time, so no test reads the real config files: :data:`PROBE_LOG_PATH` and
 :data:`MANIFEST_DIR` (None = ``data.upstream_live.LIVE_MANIFEST_DIR``) and :data:`REFIT_LEDGER_DIR`;
@@ -482,6 +484,9 @@ def _refit_date_line(event: Mapping[str, Any]) -> str:
     )
     if event["event"] == "closed":
         if event["status"] == "not run":
+            if event.get("paused_by") is not None:
+                # MIDSEASON-SWITCH-RECORD.md section 3 paused the date; it was never attempted.
+                return f"{prefix} not run; paused by the mid-season switch record."
             return f"{prefix} not run; the next date arrived first."
         closed = _instant(event["closed_at_utc"])
         if closed is None:
