@@ -62,3 +62,43 @@ def test_too_few_rows_or_mismatched_lengths_raise():
         information_beyond_line(x, x, x)
     with pytest.raises(ValueError):
         information_beyond_line(np.ones(5), np.ones(4), np.ones(5))
+
+
+def test_line_regression_matches_a_reference_fit():
+    rng = np.random.default_rng(21)
+    line = rng.normal(0, 6, 60)
+    model = line + rng.normal(0, 2, 60)
+    outcome = line + 0.2 * (model - line) + rng.normal(0, 10, 60)
+    x = np.column_stack([np.ones(60), model - line])
+    y = outcome - line
+    beta, *_ = np.linalg.lstsq(x, y, rcond=None)
+    resid = y - x @ beta
+    se = np.sqrt(np.diag(resid @ resid / 58 * np.linalg.inv(x.T @ x)))
+    r = information_beyond_line(outcome, line, model)
+    assert r.coef == pytest.approx(beta[1], rel=1e-9)
+    assert r.se == pytest.approx(se[1], rel=1e-9)
+
+
+def test_perfect_fit_is_refused():
+    rng = np.random.default_rng(5)
+    model = rng.normal(0, 3, 50)
+    with pytest.raises(ValueError):
+        information_beyond_line(model, np.zeros(50), model)
+
+
+def test_constant_model_minus_line_is_refused():
+    rng = np.random.default_rng(6)
+    line = rng.normal(0, 6, 50)
+    outcome = line + rng.normal(0, 13, 50)
+    with pytest.raises(ValueError):
+        information_beyond_line(outcome, line, line + 1.0)
+
+
+def test_negative_planted_slope_is_not_significant():
+    rng = np.random.default_rng(9)
+    line = rng.normal(0, 6, 4000)
+    edge = rng.normal(0, 2, 4000)
+    outcome = line - 0.5 * edge + rng.normal(0, 13, 4000)
+    r = information_beyond_line(outcome, line, line + edge)
+    assert r.coef < 0
+    assert r.p_one_sided > 0.95
