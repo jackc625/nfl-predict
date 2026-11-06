@@ -15,7 +15,7 @@ from features.qb_v2 import QBTrackerV2
 from scripts import build_gold_v2 as v2
 from scripts.build_features import FeatureMatrixBuilder
 from scripts.build_gold_v2 import (
-    RAW_WINDOWED_EPA_COLUMNS,
+    RAW_ROLLING_EPA_COLUMNS,
     V2_DERIVED_COLUMNS,
     FeatureMatrixBuilderV2,
     add_v2_derived_columns,
@@ -155,11 +155,11 @@ def test_v2_builder_swaps_in_the_repaired_pieces_and_skips_normalization():
 
 def test_v2_builder_keeps_the_raw_windowed_epa_the_live_merge_drops(monkeypatch):
     def live_merge(self, combined, *_args):
-        dropped = combined.drop(columns=list(RAW_WINDOWED_EPA_COLUMNS))
+        dropped = combined.drop(columns=list(RAW_ROLLING_EPA_COLUMNS))
         return dropped.assign(home_off_rolling_opp_adj_epa_per_play=0.3)
 
     monkeypatch.setattr(FeatureMatrixBuilder, "_merge_opponent_adjusted", live_merge)
-    raw = {name: float(i) for i, name in enumerate(RAW_WINDOWED_EPA_COLUMNS, start=1)}
+    raw = {name: float(i) for i, name in enumerate(RAW_ROLLING_EPA_COLUMNS, start=1)}
     combined = pd.DataFrame({"game_id": [GAME_ID], **{k: [v] for k, v in raw.items()}})
 
     out = FeatureMatrixBuilderV2()._merge_opponent_adjusted(

@@ -7,7 +7,7 @@ reuses its builder through a SUBCLASS that changes three seams:
   ``qb_tracker`` the replacement-level tracker (``features.qb_v2``);
 * ``normalize_combined_features`` is the identity, so gold keeps raw levels (Elo points,
   success rates, mph) instead of per-season z-scores;
-* ``_merge_opponent_adjusted`` keeps the six raw windowed EPA columns the live merge drops.
+* ``_merge_opponent_adjusted`` keeps the six raw rolling EPA columns (the live team-form rolling averages, untouched by the v2 window) the live merge drops.
 
 ``generate_feature_matrices`` RETURNS the matrices and writes nothing; it runs under a
 ``RecordingSink`` and the build refuses if any storage primitive asked to write. Two v2-only
@@ -67,10 +67,11 @@ logger = get_logger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT_DIR = Path("outputs/gold_v2")
 TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
+# 2001 cannot join (silver starts in 2002), so 2002 has no market prior.
 NFLVERSE_SEASONS: tuple[int, ...] = tuple(range(2001, 2027))
 
-#: The six raw windowed EPA columns the live opponent-adjusted merge drops; v2 keeps them.
-RAW_WINDOWED_EPA_COLUMNS: tuple[str, ...] = tuple(
+#: The six raw rolling EPA columns (live team-form averages, untouched by the v2 window) the live opponent-adjusted merge drops; v2 keeps them.
+RAW_ROLLING_EPA_COLUMNS: tuple[str, ...] = tuple(
     f"{venue}_{side}_rolling_{metric}"
     for venue in ("home", "away")
     for side in ("off", "def")
@@ -127,10 +128,8 @@ class FeatureMatrixBuilderV2(FeatureMatrixBuilder):
         target_season: int | None,
         target_week: int | None,
     ) -> pd.DataFrame:
-        """The live merge, then the raw windowed EPA columns it dropped merged back."""
-        present = [
-            c for c in RAW_WINDOWED_EPA_COLUMNS if c in combined_features.columns
-        ]
+        """The live merge, then the raw rolling EPA columns it dropped merged back."""
+        present = [c for c in RAW_ROLLING_EPA_COLUMNS if c in combined_features.columns]
         stash = combined_features.loc[:, ["game_id", *present]]
         merged = super()._merge_opponent_adjusted(
             combined_features,

@@ -86,18 +86,18 @@ def test_only_lines_kicked_off_by_the_lock_are_read():
     later = _game(2024, 2, "BUF", "MIA", lock_utc + pd.Timedelta(seconds=1))
     games = pd.DataFrame([early, at_lock, later, target])
 
-    def frame(later_spread):
+    def frame(later_spread, own_spread):
         return pd.DataFrame(
             [
                 _nfl(2024, 1, "BUF", "DEN", 3.0),
                 _nfl(2024, 2, "KC", "DEN", -2.0),
                 _nfl(2024, 2, "BUF", "MIA", later_spread),
-                _nfl(2024, 3, "BUF", "KC", 50.0),
+                _nfl(2024, 3, "BUF", "KC", own_spread),
             ]
         )
 
-    base = market_ratings(games, frame(4.0)).set_index("game_id")
-    moved = market_ratings(games, frame(50.0)).set_index("game_id")
+    base = market_ratings(games, frame(4.0, 3.0)).set_index("game_id")
+    moved = market_ratings(games, frame(50.0, 50.0)).set_index("game_id")
     gid = target["game_id"]
     assert not np.isnan(base.loc[gid, "mkt_rating_diff"])
     assert base.loc[gid, "mkt_rating_diff"] == moved.loc[gid, "mkt_rating_diff"]

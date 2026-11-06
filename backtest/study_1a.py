@@ -34,7 +34,7 @@ import json
 import math
 import os
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -60,6 +60,7 @@ from models.market_probability import (
     load_market_probability_artifact,
 )
 from models.v2_trainer import walk_forward_v2
+from refit.records import code_commit
 from refit.remeasure import extended_corpus, extended_slopes, walk_forward_predictions
 from utils.game_id_utils import create_standard_game_id
 from utils.paths import reject_data_path
@@ -77,6 +78,7 @@ __all__ = [
     "Study1aResult",
     "VariantScores",
     "close_lines",
+    "context_notes",
     "earned_weight",
     "install_verdict",
     "live_artifacts_dir",
@@ -186,6 +188,10 @@ class Study1aResult:
         current_weights: The current models' earned weight per target (the weights that apply
             when v2 does not go in).
         counts: Games counted and excluded, by name.
+        applied_weights: The weights that apply after the verdict: v2's earned weights if v2
+            goes in, else the current models'. ``weights`` is kept unchanged beside it.
+        code_commit: The code's commit (``+dirty`` marks an uncommitted change), or None.
+        v2_gold_manifest: The contents of the v2 gold's ``manifest.json``, or None.
     """
 
     generation_cutoff_utc: str
@@ -194,6 +200,9 @@ class Study1aResult:
     weights: dict[str, float]
     current_weights: dict[str, float]
     counts: dict[str, int]
+    applied_weights: dict[str, float] = field(default_factory=dict)
+    code_commit: str | None = None
+    v2_gold_manifest: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +443,14 @@ def _refuse_shared_gold(v2_gold_dir: Path, live_gold_dir: Path) -> None:
         raise ValueError(msg)
 
 
+def _read_manifest(v2_gold_dir: Path) -> dict[str, Any] | None:
+    """The v2 gold's ``manifest.json`` contents, or None when the build left none."""
+    path = v2_gold_dir / "manifest.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def run_study_1a(
     v2_gold_dir: Path,
     silver_dir: Path,
@@ -518,13 +535,20 @@ def run_study_1a(
         variant: {t: scores[t][variant].losses.pooled for t in TARGETS}
         for variant in VARIANTS
     }
+    install = install_verdict(pooled["current"], pooled["v2"])
+    v2_weights = {t: scores[t]["v2"].earned_weight for t in TARGETS}
+    current_weights = {t: scores[t]["current"].earned_weight for t in TARGETS}
+    applied = v2_weights if install else current_weights
     return Study1aResult(
         generation_cutoff_utc=generation_cutoff.isoformat(),
         scores=scores,
-        install=install_verdict(pooled["current"], pooled["v2"]),
-        weights={t: scores[t]["v2"].earned_weight for t in TARGETS},
-        current_weights={t: scores[t]["current"].earned_weight for t in TARGETS},
+        install=install,
+        weights=v2_weights,
+        current_weights=current_weights,
         counts=counts,
+        applied_weights=applied,
+        code_commit=code_commit(_PROJECT_ROOT),
+        v2_gold_manifest=_read_manifest(Path(v2_gold_dir)),
     )
 
 
@@ -559,8 +583,57 @@ def _weight_phrase(scores: VariantScores) -> str:
     )
 
 
+def _tests(result: Study1aResult) -> list[tuple[str, str, VariantScores]]:
+    """Every (target, variant) decision test, in report order."""
+    return [(t, v, result.scores[t][v]) for t in TARGETS for v in VARIANTS]
+
+
+def _weeks_line(result: Study1aResult) -> str:
+    """The finished 2026 games, reported only: which variant is better, per target."""
+    parts = []
+    for t in TARGETS:
+        cur = result.scores[t]["current"].losses.weeks_2026
+        new = result.scores[t]["v2"].losses.weeks_2026
+        if cur is None or new is None:
+            parts.append(f"{_SHORT_NAME[t]} n/a")
+            continue
+        verdict = "worse" if new > cur else "better" if new < cur else "level"
+        parts.append(
+            f"{_SHORT_NAME[t]} {verdict} ({_loss_text(t, new)} vs {_loss_text(t, cur)})"
+        )
+    games = result.scores[TARGETS[0]]["v2"].losses.weeks_2026_games
+    return (
+        f"On the {games} finished {REFIT_SEASON} games (reported only, never a veto) v2 vs "
+        "current is " + "; ".join(parts) + "."
+    )
+
+
+def _line_trail_line(result: Study1aResult) -> str:
+    """v2's loss against the betting line's own loss on the decision-time games."""
+    parts = []
+    for t in TARGETS:
+        test = result.scores[t]["v2"].decision
+        if test.model_loss is None or test.market_loss is None:
+            parts.append(f"{_SHORT_NAME[t]} n/a")
+            continue
+        gap = "trails" if test.model_loss > test.market_loss else "beats"
+        parts.append(
+            f"{_SHORT_NAME[t]} {_METRIC[t]} {_loss_text(t, test.model_loss)} for v2 vs "
+            f"{_loss_text(t, test.market_loss)} for the line ({gap})"
+        )
+    return (
+        "Against the day-before line itself, on the decision-time games: "
+        + "; ".join(parts)
+        + "."
+    )
+
+
 def summary_lines(result: Study1aResult) -> list[str]:
-    """The plain-English summary: the verdict, one line per target, what it means for bets."""
+    """The plain-English summary, at most eight lines.
+
+    The verdict, one line per target, the finished-2026 and against-the-line comparisons, and
+    what it means for bets.
+    """
     pooled = {
         t: {v: result.scores[t][v].losses.pooled for v in VARIANTS} for t in TARGETS
     }
@@ -589,31 +662,94 @@ def summary_lines(result: Study1aResult) -> list[str]:
             f"{_SHORT_NAME[t]}: v2 earns {_weight_phrase(result.scores[t]['v2'])}; the current "
             f"model earns {_weight_phrase(result.scores[t]['current'])}."
         )
+    lines.append(_weeks_line(result))
+    lines.append(_line_trail_line(result))
     applied, weights = (
         ("v2", result.weights)
         if result.install
         else ("current", result.current_weights)
     )
-    lines.append(
-        f"For betting: after the switch the {applied} models run, so their weights apply. A "
-        "weight of 0 means this bet type places no day-before bets after the switch."
+    outcome = "; ".join(
+        f"{_SHORT_NAME[t]} places no day-before bets"
+        if weights[t] <= 0.0
+        else f"{_SHORT_NAME[t]} bets with the model at weight {weights[t]:.2f} against "
+        "the market"
+        for t in TARGETS
     )
     lines.append(
-        "So: "
-        + "; ".join(
-            f"{_SHORT_NAME[t]} places no day-before bets"
-            if weights[t] <= 0.0
-            else f"{_SHORT_NAME[t]} bets with the model at weight {weights[t]:.2f} against "
-            "the market"
-            for t in TARGETS
-        )
-        + "."
-    )
-    lines.append(
-        "Weights are judged against the day-before line (2020-2024 Friday consensus plus the "
-        "2026 live captures); the nflverse close below is for reference only."
+        f"For betting: after the switch the {applied} models run, so their weights apply "
+        f"(a weight of 0 means no day-before bets for that bet type). So: {outcome}."
     )
     return lines
+
+
+def _passing_tests_note(result: Study1aResult) -> str:
+    """How many of the information tests pass, and which passes were given no weight."""
+    tests = _tests(result)
+    passed = [
+        (t, v, s)
+        for t, v, s in tests
+        if s.decision.info is not None
+        and s.decision.info.coef > 0
+        and s.decision.info.p_one_sided < WEIGHT_ALPHA
+    ]
+    total = len(tests)
+    if not passed:
+        return f"None of the {total} information tests passes, so no weight is earned."
+    names = "; ".join(
+        f"the {v} {_SHORT_NAME[t]} model ({_info_text(s.decision)})"
+        for t, v, s in passed
+    )
+    zero = [
+        f"the {v} {_SHORT_NAME[t]} model's fitted blend weight was {s.tuned_weight:.2f}"
+        for t, v, s in passed
+        if s.tuned_weight <= 0.0
+    ]
+    tail = f" but {'; '.join(zero)} (the blend fit chose 0)" if zero else ""
+    return (
+        f"{len(passed)} of the {total} information tests passes: {names};{tail}. That is "
+        f"weak evidence ({len(passed)} of {total} tests)."
+    )
+
+
+def _lean_note(result: Study1aResult) -> str:
+    """Whether v2 still leans home on ATS: the game-weighted mean residual, both variants."""
+
+    def pooled_residual(variant: str) -> float:
+        losses = result.scores["ats"][variant].losses
+        seasons = [s for s in INSTALL_SEASONS if s in losses.games_by_season]
+        games = sum(losses.games_by_season[s] for s in seasons)
+        total = sum(
+            losses.residual_by_season[s] * losses.games_by_season[s] for s in seasons
+        )
+        return total / games if games else math.nan
+
+    def weeks_residual(variant: str) -> float:
+        return result.scores["ats"][variant].losses.residual_by_season.get(
+            REFIT_SEASON, math.nan
+        )
+
+    return (
+        "The home lean on ATS (game-weighted mean residual, prediction minus result, "
+        f"{INSTALL_SEASONS[0]}-{INSTALL_SEASONS[-1]}): v2 {pooled_residual('v2'):+.2f} points "
+        f"vs current {pooled_residual('current'):+.2f}; {REFIT_SEASON} weeks "
+        f"{weeks_residual('v2'):+.2f} vs {weeks_residual('current'):+.2f}. Where v2 is "
+        "positive it still leans home: the existing after-the-fact lean correction must not "
+        "be dropped on the assumption that v2 fixed it."
+    )
+
+
+def context_notes(result: Study1aResult) -> list[str]:
+    """The caveats that follow the summary (not part of its eight-line limit)."""
+    return [
+        "Caveat on the install margin: the v2 inputs were fixed before the replay but were "
+        "informed by the audit's measurements on the same 2017-2024 seasons, so a small "
+        "optimistic bias in v2's install margin is possible.",
+        _passing_tests_note(result),
+        _lean_note(result),
+        "Weights are judged against the day-before line (2020-2024 Friday consensus plus the "
+        "2026 live captures); the nflverse close below is for reference only.",
+    ]
 
 
 def _table(header: list[str], rows: list[list[str]]) -> list[str]:
@@ -771,6 +907,7 @@ def render_report(result: Study1aResult) -> str:
         "",
         *[f"- {line}" for line in summary_lines(result)],
         "",
+        *[f"{note}\n" for note in context_notes(result)],
         f"Replay cutoff (UTC): {result.generation_cutoff_utc}. Walk-forward folds: one per "
         f"season {INSTALL_SEASONS[0]}-{INSTALL_SEASONS[-1]}, then one per finished "
         f"{REFIT_SEASON} week. 'Current' is the live recipe re-fitted at every fold on the "

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from backtest.market_info import InfoResult
@@ -13,8 +14,10 @@ from backtest.study_1a import (
     MarketTest,
     Study1aResult,
     VariantScores,
+    context_notes,
     earned_weight,
     install_verdict,
+    summary_lines,
     write_report,
 )
 
@@ -87,3 +90,76 @@ def test_report_is_ascii_and_states_the_verdict(tmp_path: Path):
     assert text.isascii()
     assert "v2 does NOT go in" in text
     assert json.loads((tmp_path / "study_1a.json").read_text())["weights"]["ou"] == 0.12
+
+
+def test_summary_stays_within_eight_lines_and_keeps_the_verdict_phrase():
+    for install in (True, False):
+        lines = summary_lines(
+            fake_result(install=install, weights={"wp": 0.0, "ats": 0.0, "ou": 0.0})
+        )
+        assert len(lines) <= 8
+        assert all(line.isascii() for line in lines)
+        assert ("v2 goes in" in lines[0]) is install
+        assert ("v2 does NOT go in" in lines[0]) is not install
+
+
+def test_summary_reports_the_2026_games_and_the_line_comparison():
+    lines = summary_lines(
+        fake_result(install=False, weights={"wp": 0.0, "ats": 0.0, "ou": 0.0})
+    )
+    text = "\n".join(lines)
+    assert "On the 121 finished 2026 games (reported only, never a veto)" in text
+    assert "WP level (0.6400 vs 0.6400)" in text
+    assert "for v2 vs" in text and "for the line (trails)" in text
+
+
+def test_notes_report_passing_tests_the_lean_and_the_optimism_caveat():
+    notes = "\n".join(
+        context_notes(
+            fake_result(install=True, weights={"wp": 0.0, "ats": 0.0, "ou": 0.0})
+        )
+    )
+    assert "small optimistic bias" in notes
+    assert "None of the 6 information tests passes" in notes
+    assert "after-the-fact lean correction must not be dropped" in notes
+    assert "v2 +0.70 points vs current +0.70" in notes
+
+    passing = fake_result(install=True, weights={"wp": 0.0, "ats": 0.0, "ou": 0.4})
+    text = "\n".join(context_notes(passing))
+    assert "2 of the 6 information tests passes" in text
+    assert "weak evidence (2 of 6 tests)" in text
+
+
+def test_the_fitted_weight_zero_is_named_when_a_test_passes():
+    result = fake_result(install=True, weights={"wp": 0.0, "ats": 0.0, "ou": 0.0})
+    scores = result.scores["ou"]["current"]
+    passing = VariantScores(
+        losses=scores.losses,
+        decision=_market_test(InfoResult(0.131, 0.07, 0.034, 1406)),
+        tuned_weight=0.0,
+        earned_weight=0.0,
+        close=scores.close,
+    )
+    result.scores["ou"]["current"] = passing
+    text = "\n".join(context_notes(result))
+    assert "1 of the 6 information tests passes" in text
+    assert "the blend fit chose 0" in text
+
+
+def test_the_json_carries_the_applied_weights_and_provenance(tmp_path: Path):
+    base = fake_result(install=True, weights={"wp": 0.0, "ats": 0.0, "ou": 0.12})
+    result = replace(
+        base,
+        applied_weights=dict(base.weights),
+        code_commit="abc1234",
+        v2_gold_manifest={"rows": 6499},
+    )
+    write_report(result, tmp_path)
+    data = json.loads((tmp_path / "study_1a.json").read_text())
+    assert (
+        data["applied_weights"]
+        == data["weights"]
+        == {"wp": 0.0, "ats": 0.0, "ou": 0.12}
+    )
+    assert data["code_commit"] == "abc1234"
+    assert data["v2_gold_manifest"] == {"rows": 6499}

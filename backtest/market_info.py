@@ -23,7 +23,6 @@ _MIN_ROWS = 3
 _MAX_ITER = 100
 _TOL = 1e-10
 _PERFECT_FIT_RTOL = 1e-20
-_PERFECT_FIT_RTOL = 1e-20
 
 
 @dataclass(frozen=True)

@@ -118,3 +118,32 @@ def test_walk_forward_never_trains_on_a_game_it_predicts(tmp_path, monkeypatch):
         "fold",
         "fold_cutoff_utc",
     ]
+
+
+def test_every_fit_runs_inside_the_pinned_thread_pool(tmp_path, monkeypatch):
+    gold_dir, games = _tiny_world(tmp_path)
+    state = {"pinned": False, "fits": 0, "unpinned_fits": 0, "limit": None}
+    real_fit = trainer.fit_v2
+
+    class _Pin:
+        def __init__(self, limit):
+            state["limit"] = limit
+
+        def __enter__(self):
+            state["pinned"] = True
+
+        def __exit__(self, *exc):
+            state["pinned"] = False
+
+    def checking_fit(target, train):
+        state["fits"] += 1
+        state["unpinned_fits"] += 0 if state["pinned"] else 1
+        return real_fit(target, train)
+
+    monkeypatch.setattr(trainer, "pinned_thread_pool", _Pin)
+    monkeypatch.setattr(trainer, "fit_v2", checking_fit)
+    walk_forward_v2(gold_dir, games, datetime(2026, 9, 1, tzinfo=UTC))
+
+    assert state["fits"] > 0
+    assert state["unpinned_fits"] == 0
+    assert state["limit"] == trainer.THREAD_LIMIT

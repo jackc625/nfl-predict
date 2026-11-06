@@ -15,7 +15,9 @@ import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
+from backtest.refit_preregistration_2026 import THREAD_LIMIT
 from forward_ledger.settle import realized_values_from_scores
+from models.train import pinned_thread_pool
 from models.v2_recipe import (
     V2_INPUTS,
     V2_LABEL,
@@ -23,7 +25,7 @@ from models.v2_recipe import (
     V2_TRAIN_START,
     build_v2_estimator,
 )
-from refit.remeasure import fold_specs
+from refit.remeasure import FoldSpec, fold_specs
 from refit.training import eligible_rows
 
 __all__ = ["fit_v2", "predict_v2", "walk_forward_v2"]
@@ -71,40 +73,54 @@ def walk_forward_v2(
     specs = fold_specs(games, generation_cutoff)
     labels = realized_values_from_scores(games)
     predictions: dict[str, pd.DataFrame] = {}
-    for target in V2_TARGETS:
-        gold = pd.read_parquet(Path(gold_dir) / f"features_{target}.parquet")
-        gold_ids = gold["game_id"].astype(str)
-        frames: list[pd.DataFrame] = []
-        for fold in specs:
-            rows = gold.loc[gold_ids.isin(fold.predict_game_ids)].copy()
-            if rows.empty:
-                continue
-            rows["game_id"] = rows["game_id"].astype(str)
-            rows = rows.sort_values(_ROW_ORDER, kind="mergesort").reset_index(drop=True)
-            eligible = eligible_rows(gold, games, fold.cutoff_utc, target).frame
-            train = eligible.loc[eligible["season"].astype(int) >= V2_TRAIN_START]
-            seen = set(train["game_id"].astype(str)) & set(rows["game_id"])
-            if seen:
-                msg = f"{target} fold {fold.label} would predict {sorted(seen)[:10]}, trained on"
-                raise ValueError(msg)
-            model = fit_v2(target, train)
-            frames.append(
-                pd.DataFrame(
-                    {
-                        "game_id": rows["game_id"],
-                        "season": rows["season"].astype(int),
-                        "week": rows["week"].astype(int),
-                        "prediction": predict_v2(target, model, rows),
-                        "actual": [labels[target][gid] for gid in rows["game_id"]],
-                        "fold": fold.label,
-                        "fold_cutoff_utc": pd.Timestamp(fold.cutoff_utc),
-                    }
-                )
+    with pinned_thread_pool(THREAD_LIMIT):
+        for target in V2_TARGETS:
+            predictions[target] = _walk_forward_target(
+                target, gold_dir, games, specs, labels
             )
-        frame = pd.concat(frames, ignore_index=True)
-        repeated = sorted(frame.loc[frame["game_id"].duplicated(), "game_id"])
-        if repeated:
-            msg = f"{target} predicted {repeated[:10]} in more than one fold"
-            raise ValueError(msg)
-        predictions[target] = frame
     return predictions
+
+
+def _walk_forward_target(
+    target: str,
+    gold_dir: Path,
+    games: pd.DataFrame,
+    specs: tuple[FoldSpec, ...],
+    labels: dict[str, dict[str, float]],
+) -> pd.DataFrame:
+    """One target's out-of-sample predictions over every fold."""
+    gold = pd.read_parquet(Path(gold_dir) / f"features_{target}.parquet")
+    gold_ids = gold["game_id"].astype(str)
+    frames: list[pd.DataFrame] = []
+    for fold in specs:
+        rows = gold.loc[gold_ids.isin(fold.predict_game_ids)].copy()
+        if rows.empty:
+            continue
+        rows["game_id"] = rows["game_id"].astype(str)
+        rows = rows.sort_values(_ROW_ORDER, kind="mergesort").reset_index(drop=True)
+        eligible = eligible_rows(gold, games, fold.cutoff_utc, target).frame
+        train = eligible.loc[eligible["season"].astype(int) >= V2_TRAIN_START]
+        seen = set(train["game_id"].astype(str)) & set(rows["game_id"])
+        if seen:
+            msg = f"{target} fold {fold.label} would predict {sorted(seen)[:10]}, trained on"
+            raise ValueError(msg)
+        model = fit_v2(target, train)
+        frames.append(
+            pd.DataFrame(
+                {
+                    "game_id": rows["game_id"],
+                    "season": rows["season"].astype(int),
+                    "week": rows["week"].astype(int),
+                    "prediction": predict_v2(target, model, rows),
+                    "actual": [labels[target][gid] for gid in rows["game_id"]],
+                    "fold": fold.label,
+                    "fold_cutoff_utc": pd.Timestamp(fold.cutoff_utc),
+                }
+            )
+        )
+    frame = pd.concat(frames, ignore_index=True)
+    repeated = sorted(frame.loc[frame["game_id"].duplicated(), "game_id"])
+    if repeated:
+        msg = f"{target} predicted {repeated[:10]} in more than one fold"
+        raise ValueError(msg)
+    return frame
