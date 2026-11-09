@@ -123,8 +123,11 @@ def _is_price(value: int | None) -> bool:
 
 
 def _is_fresh(quote: Quote, captured_at: datetime) -> bool:
-    """Whether the bookmaker's own time shows the quote is recent enough to be a price."""
-    if quote.last_update is None or pd.isna(quote.last_update):
+    """Whether the bookmaker's own time shows the quote is recent enough to be a price.
+
+    A missing time read from a DataFrame arrives as NaT, which compares false below.
+    """
+    if quote.last_update is None:
         return False
     return captured_at - quote.last_update <= timedelta(hours=QUOTE_MAX_AGE_HOURS)
 
