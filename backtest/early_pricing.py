@@ -9,7 +9,9 @@ WHICH QUOTES MAY BE THE PRICE. Picking the best of several quotes actively picks
 quote has to earn its place first: a regulated book, both prices present, a bookmaker time no more
 than ``QUOTE_MAX_AGE_HOURS`` before the board was read, and a line the key-number table can price.
 A quote with no bookmaker time cannot be shown to be fresh, so it is not usable. A time later than
-the read is the bookmaker's clock running ahead, not staleness, so it is.
+the read is the bookmaker's clock running ahead, not staleness, so it is. Finally, a quote further
+than ``MAX_QUOTE_DISTANCE_POINTS`` from the median of those is dropped, so one book's wrong number
+can neither move the consensus nor be chosen as a large fake edge.
 
 THE SCALE. ``up`` means over, or the home side covering. A spread ``line`` is on the ledger's
 scale, positive when the home team is favoured, which is the same scale as the model's margin and
@@ -37,6 +39,7 @@ from backtest.early_arm_2026 import (
     BOOK_LABEL_PREFIX,
     EXPECTED_MOVE_SLOPE,
     KELLY_FRACTION,
+    MAX_QUOTE_DISTANCE_POINTS,
     MIN_BOOKS,
     PER_GAME_CAP,
     PER_WEEK_CAP,
@@ -141,7 +144,7 @@ def usable_quotes(quotes: Sequence[Quote], captured_at: datetime) -> list[Quote]
 
     Returns:
         The usable quotes, in their original order. ``price_target`` also drops any whose line
-        the key-number table cannot price, which needs the table.
+        the key-number table cannot price, and any far from the others.
     """
     return [
         quote
@@ -156,6 +159,18 @@ def usable_quotes(quotes: Sequence[Quote], captured_at: datetime) -> list[Quote]
 def _line_inside_table(line: float, table: KeyNumberTable) -> bool:
     """Whether the table can price this line. False for NaN, and for a fabricated 0.0 total."""
     return table.low < line < table.low + len(table.factors) - 1
+
+
+def _quotes_near_the_median(quotes: Sequence[Quote]) -> list[Quote]:
+    """The quotes within ``MAX_QUOTE_DISTANCE_POINTS`` of these quotes' median line."""
+    if not quotes:
+        return []
+    center = median(quote.line for quote in quotes)
+    return [
+        quote
+        for quote in quotes
+        if abs(quote.line - center) <= MAX_QUOTE_DISTANCE_POINTS
+    ]
 
 
 def _value_quote(
@@ -212,7 +227,8 @@ def price_target(
 
     Returns:
         The priced side, or a rejection code: ``missing_snapshot`` with fewer than ``MIN_BOOKS``
-        usable quotes, ``no_bet_side`` when the model equals the consensus.
+        quotes left once the unusable and the far ones are dropped, ``no_bet_side`` when the
+        model equals the consensus.
 
     Raises:
         KeyError: When ``target`` has no early arm.
@@ -224,11 +240,12 @@ def price_target(
         msg = f"model_value must be a finite number, got {model_value!r}"
         raise ValueError(msg)
 
-    priceable = [
+    inside_table = [
         quote
         for quote in usable_quotes(quotes, captured_at)
         if _line_inside_table(quote.line, table)
     ]
+    priceable = _quotes_near_the_median(inside_table)
     if len(priceable) < MIN_BOOKS:
         return "missing_snapshot"
 

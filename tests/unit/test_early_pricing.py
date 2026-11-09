@@ -24,6 +24,7 @@ from backtest import early_pricing
 from backtest.early_arm_2026 import (
     EXPECTED_MOVE_SLOPE,
     KEY_NUMBER_TABLES_PATH,
+    MAX_QUOTE_DISTANCE_POINTS,
     QUOTE_MAX_AGE_HOURS,
     REGULATED_BOOKS,
 )
@@ -210,6 +211,128 @@ def test_a_model_value_that_is_not_a_number_is_refused(model_value: float) -> No
 
 
 # ---------------------------------------------------------------------------
+# A quote far from the others
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("far_line", "model_value"),
+    [(38.5, 53.0), (50.5, 36.0)],
+)
+def test_a_far_book_is_never_chosen_and_the_consensus_comes_from_the_others(
+    far_line: float, model_value: float
+) -> None:
+    """The far book holds the best number for the side, and the four-book median is not 44.5."""
+    quotes = [
+        q("draftkings", line=44.0),
+        q("fanduel", line=44.5),
+        q("betmgm", line=45.0),
+        q("betrivers", line=far_line),
+    ]
+    priced = priced_side("ou", model_value, quotes)
+    assert priced.sportsbook != "betrivers"
+    assert priced.consensus == 44.5
+
+
+@pytest.mark.parametrize(
+    ("line", "model_value"),
+    [
+        (44.5 + MAX_QUOTE_DISTANCE_POINTS, 36.0),
+        (44.5 - MAX_QUOTE_DISTANCE_POINTS, 53.0),
+    ],
+)
+def test_a_quote_exactly_at_the_distance_limit_stays(
+    line: float, model_value: float
+) -> None:
+    """The book at the limit holds the best number for the side, so being chosen proves it stayed."""
+    quotes = [q("draftkings"), q("fanduel"), q("betmgm", line=line)]
+    assert priced_side("ou", model_value, quotes).sportsbook == "betmgm"
+
+
+@pytest.mark.parametrize(
+    ("line", "model_value"),
+    [
+        (44.5 + MAX_QUOTE_DISTANCE_POINTS + 0.25, 36.0),
+        (44.5 - MAX_QUOTE_DISTANCE_POINTS - 0.25, 53.0),
+    ],
+)
+def test_a_quote_just_past_the_distance_limit_is_dropped(
+    line: float, model_value: float
+) -> None:
+    quotes = [q("draftkings"), q("fanduel"), q("betmgm", line=line)]
+    priced = priced_side("ou", model_value, quotes)
+    assert priced.sportsbook != "betmgm"
+    assert priced.consensus == 44.5
+
+
+def test_two_books_four_points_apart_are_no_market() -> None:
+    """The median sits 2.0 from each, so both drop."""
+    quotes = [q("draftkings", line=44.5), q("fanduel", line=48.5)]
+    assert (
+        price_target("ou", 53.0, quotes, TABLES["ou"], captured_at=NOW)
+        == "missing_snapshot"
+    )
+
+
+def test_a_lone_survivor_of_the_distance_rule_is_no_market() -> None:
+    quotes = [
+        q("draftkings", line=40.5),
+        q("fanduel", line=44.5),
+        q("betmgm", line=48.5),
+    ]
+    assert (
+        price_target("ou", 53.0, quotes, TABLES["ou"], captured_at=NOW)
+        == "missing_snapshot"
+    )
+
+
+@pytest.mark.parametrize(
+    "quotes",
+    [[], [q("bovada"), q("betonlineag")]],
+    ids=["no_quotes", "no_usable_quotes"],
+)
+def test_nothing_to_take_a_median_of_is_no_market(quotes: list[Quote]) -> None:
+    assert (
+        price_target("ou", 53.0, quotes, TABLES["ou"], captured_at=NOW)
+        == "missing_snapshot"
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "model_value", "good_line", "bad_line"),
+    [("ats", 6.0, 3.5, 0.0), ("ou", 46.5, 44.5, 30.5)],
+    ids=["spread_with_a_zero_line", "total_far_below_the_rest"],
+)
+def test_the_measured_outliers_no_longer_make_an_edge(
+    target: str, model_value: float, good_line: float, bad_line: float
+) -> None:
+    """These two boards priced at EV +0.2025 and +0.6546 at the bad book before the rule."""
+    quotes = [
+        q("betmgm", line=good_line),
+        q("betrivers", line=good_line),
+        q("draftkings", line=good_line),
+        q("fanduel", line=bad_line),
+    ]
+    priced = priced_side(target, model_value, quotes)
+    assert priced.sportsbook != "fanduel"
+    assert priced.line == good_line
+    assert priced.ev < 0
+
+
+def test_a_recorded_wrong_way_spread_is_never_the_price() -> None:
+    """FanDuel's NE@DET at -1.5 against about +1.5, on the boards of 2026-11-05 to 2026-11-08."""
+    quotes = [
+        q("betmgm", line=1.5),
+        q("betrivers", line=1.5),
+        q("draftkings", line=1.5),
+        q("fanduel", line=-1.5),
+    ]
+    priced = priced_side("ats", 4.0, quotes)
+    assert priced.sportsbook != "fanduel"
+    assert priced.consensus == 1.5
+
+
+# ---------------------------------------------------------------------------
 # The side, the expected close and the chances
 # ---------------------------------------------------------------------------
 
@@ -238,10 +361,14 @@ def test_a_model_below_the_spread_takes_the_away_side() -> None:
 
 
 def test_the_consensus_is_the_median_and_sets_the_expected_close() -> None:
+    """RE-POINTED 2026-11-09 for backtest/early_arm_2026.py: the top book moves from 47.0 to 45.5.
+
+    47.0 is now further than MAX_QUOTE_DISTANCE_POINTS from the median and would be dropped.
+    """
     quotes = [
         q("draftkings", line=44.0),
         q("fanduel", line=44.5),
-        q("betmgm", line=47.0),
+        q("betmgm", line=45.5),
     ]
     priced = priced_side("ou", 53.0, quotes)
     assert priced.consensus == 44.5
