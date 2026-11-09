@@ -28,7 +28,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -37,6 +37,7 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LinearRegression, LogisticRegression
 
 from backtest.diagnose import score_deployed_artifacts
+from backtest.early_arm_2026 import EARLY_RECIPE, FILL_V2_ID
 from backtest.recipe_registry import RECIPE_REGISTRY
 from backtest.weekly_bet_list import build_weekly_decision_bundle
 from forward_ledger.artifacts_copy import (
@@ -53,6 +54,7 @@ from forward_ledger.replay import (
 )
 from forward_ledger.repro_key import ReproKey
 from forward_ledger.schema import (
+    ARM_EARLY,
     ARM_LIVE,
     ARM_SHADOW,
     LEDGER_ROW_KEY,
@@ -148,7 +150,9 @@ class FixtureSeason:
 def _train_models() -> dict[str, tuple[Any, Any]]:
     """Tiny real models over two features: WP logistic + isotonic, ATS/OU linear."""
     rng = np.random.default_rng(34_17)
-    features = pd.DataFrame(rng.uniform(-2.0, 2.0, size=(200, 2)), columns=FEATURES)
+    features = pd.DataFrame(
+        rng.uniform(-2.0, 2.0, size=(200, 2)), columns=pd.Index(FEATURES)
+    )
     margin = 4.0 * features["f1"] - 2.0 * features["f2"] + rng.normal(0.0, 3.0, 200)
     total = 45.0 + 3.0 * features["f2"] + rng.normal(0.0, 4.0, 200)
     wins = (margin > 0).astype(int)
@@ -266,7 +270,12 @@ def _write_silver(silver: Path) -> None:
 
 
 def _immutable_rows(stamped: pd.DataFrame) -> list[dict[str, Any]]:
-    return stamped[list(IMMUTABLE_COLUMNS_V1)].to_dict(orient="records")
+    return cast(
+        "list[dict[str, Any]]",
+        cast("pd.DataFrame", stamped[list(IMMUTABLE_COLUMNS_V1)]).to_dict(
+            orient="records"
+        ),
+    )
 
 
 def build_fixture_season(root: Path) -> FixtureSeason:
@@ -315,7 +324,7 @@ def build_fixture_season(root: Path) -> FixtureSeason:
                 bundle.frame["target"] == SHADOW_TARGET
             )
             shadow = stamp_ledger_rows(
-                bundle.frame[mask],
+                cast("pd.DataFrame", bundle.frame[mask]),
                 resolved=bundle.resolved,
                 repro=REPRO,
                 snapshot_digest=digest,
@@ -495,6 +504,40 @@ def test_verdict_row_without_snapshot_fails(ledger: Path) -> None:
     assert result.status == "fail"
     assert result.reason is not None
     assert "snapshot" in result.reason
+
+
+def test_an_early_row_is_reported_not_replayable(ledger: Path) -> None:
+    """An early row is priced by its own rule, which this engine does not re-derive.
+
+    Its stamped snapshot is deliberately absent here: replay must report the row without opening
+    it, where a row sent down the normal path would fail as a missing snapshot.
+    """
+    template = next(
+        entry.immutable
+        for entry in read_entries(ledger)
+        if entry.kind == ENTRY_KIND_ROW
+    )
+    early = {
+        **template,
+        "game_id": "2026_11_KC_BUF",
+        "week": 11,
+        "eligibility_label": "book:fanduel",
+        "arm": ARM_EARLY,
+        "recipe_id": EARLY_RECIPE,
+        "fill_convention_id": FILL_V2_ID,
+        "decision_snapshot_digest": "e" * 64,
+        "verdict_scope": VERDICT_SCOPE_PRE_VERDICT,
+        "regime_label": None,
+    }
+    assert commit_changes(ledger, new_rows=[early]).wrote
+
+    results = _by_key(replay_ledger(ledger))
+
+    assert results[_key(early)].status == "not_replayable"
+    assert "early" in str(results[_key(early)].reason)
+    others = [result for key, result in results.items() if key != _key(early)]
+    assert others
+    assert all(result.status == "pass" for result in others)
 
 
 def test_closing_columns_do_not_affect_replay(ledger: Path) -> None:

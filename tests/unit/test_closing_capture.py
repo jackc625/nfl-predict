@@ -20,6 +20,7 @@ import pytest
 
 from backtest.ou_ev_chain import american_to_implied
 from backtest.selector_strategies import ATSStrategy, OUStrategy, WPStrategy
+from forward_ledger import closing as closing_module
 from forward_ledger.canonical import ENTRY_KIND_ROW
 from forward_ledger.closing import (
     CLOSING_WINDOW,
@@ -380,6 +381,111 @@ def test_no_bet_side_reason() -> None:
     update = updates[_key(immutable)]
     assert update["closing_null_reason"] == "no_bet_side"
     assert all(update[name] is None for name in BET_LIST_CLOSING_COLUMNS[:-1])
+
+
+# ---------------------------------------------------------------------------
+# The early-week arm closes at the bet's own book (backtest/early_arm_2026.py)
+# ---------------------------------------------------------------------------
+
+
+def _early(
+    target: str, bet_side: str | None, label: str | None = "book:fanduel"
+) -> dict[str, Any]:
+    """An early-arm row priced at the book *label* names."""
+    return _immutable(target, bet_side, arm="early", eligibility_label=label)
+
+
+def test_an_early_row_reads_its_own_book_at_the_close() -> None:
+    """DraftKings ranks first in ``fill-v1`` and captured later; the bet was at FanDuel."""
+    immutable = _early("ou", "over")
+    odds = _odds(
+        _capture(KICKOFF - timedelta(minutes=5), "draftkings", total=46.0),
+        _capture(KICKOFF - timedelta(minutes=20), "fanduel", total=47.5),
+    )
+
+    updates = finalize_closing([_entry(immutable)], _games(), odds, [], _strategies())
+
+    update = updates[_key(immutable)]
+    assert update["closing_sportsbook"] == "fanduel"
+    assert update["closing_line"] == 47.5
+    assert update["forward_clv"] == pytest.approx(3.0)
+    assert update["closing_null_reason"] is None
+
+
+def test_an_early_row_whose_book_has_no_close_is_no_closing_market() -> None:
+    """Another book closed; this bet's did not. Never read from the other book."""
+    immutable = _early("ats", "home_cover")
+    odds = _odds(_capture(KICKOFF - timedelta(minutes=5), "draftkings", spread=9.0))
+
+    updates = finalize_closing([_entry(immutable)], _games(), odds, [], _strategies())
+
+    update = updates[_key(immutable)]
+    assert update["closing_null_reason"] == "no_closing_market"
+    assert all(update[name] is None for name in BET_LIST_CLOSING_COLUMNS[:-1])
+    assert_closing_transition(dict.fromkeys(BET_LIST_CLOSING_COLUMNS), update)
+
+
+def test_the_named_book_must_itself_carry_the_market() -> None:
+    """FanDuel captured, but with no total; DraftKings's total is not FanDuel's close."""
+    close = KICKOFF - timedelta(minutes=5)
+    odds = _odds(
+        _capture(close, "draftkings", total=46.0),
+        _capture(close, "fanduel", total=float("nan")),
+    )
+
+    row, reason = select_closing_capture(
+        GAME, KICKOFF, odds, "ou", "over", sportsbook="fanduel"
+    )
+
+    assert row is None
+    assert reason == "no_closing_market"
+
+
+def test_a_live_row_keeps_the_fill_v1_book_order() -> None:
+    """The arm decides, not the label: a live row is never read from a book it names."""
+    immutable = _immutable("ou", "over", eligibility_label="book:fanduel")
+    instant = KICKOFF - timedelta(minutes=10)
+    odds = _odds(
+        _capture(instant, "fanduel", total=47.5),
+        _capture(instant, "draftkings", total=46.0),
+    )
+
+    updates = finalize_closing([_entry(immutable)], _games(), odds, [], _strategies())
+
+    assert updates[_key(immutable)]["closing_sportsbook"] == "draftkings"
+
+
+@pytest.mark.parametrize("label", ["no_subpopulation", "fanduel", "book:", None])
+def test_an_early_row_naming_no_book_is_left_unfinalized_and_logged(
+    label: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed label is a defect to surface, never a reason to read another book."""
+    recorded: list[tuple[str, dict[str, Any]]] = []
+
+    class _Recorder:
+        def error(self, event: str, **fields: Any) -> None:
+            recorded.append((event, fields))
+
+    monkeypatch.setattr(closing_module, "logger", _Recorder())
+    immutable = _early("ou", "over", label)
+    odds = _odds(_capture(KICKOFF - timedelta(minutes=5), "draftkings"))
+
+    updates = finalize_closing([_entry(immutable)], _games(), odds, [], _strategies())
+
+    assert updates == {}
+    ((event, fields),) = recorded
+    assert "early" in event
+    assert fields["key"] == list(_key(immutable))
+    assert fields["eligibility_label"] == label
+
+
+def test_an_early_row_with_no_bet_side_is_no_bet_side_whatever_its_label() -> None:
+    immutable = _early("ou", None, None)
+    odds = _odds(_capture(KICKOFF - timedelta(minutes=5)))
+
+    updates = finalize_closing([_entry(immutable)], _games(), odds, [], _strategies())
+
+    assert updates[_key(immutable)]["closing_null_reason"] == "no_bet_side"
 
 
 # ---------------------------------------------------------------------------

@@ -192,6 +192,21 @@ def test_shadow_rows_excluded_from_forward_blocks() -> None:
     assert (blocks[_VERDICT].wins, blocks[_VERDICT].losses) == (0, 1)
 
 
+def test_an_early_row_never_enters_a_forward_block() -> None:
+    """An early-arm row is its own experiment: in no forward block, and off the result strip."""
+    rows = [_row("A", GRADING_STATUS_WIN), _row("E", GRADING_STATUS_WIN, arm="early")]
+    frame = pd.DataFrame(rows)
+
+    assert aggregate_all_blocks(frame)[0].bets_graded == 1
+
+    # Every real early row is pre_verdict: it must not open a pre-verdict block either.
+    real_shape = pd.DataFrame(
+        [*rows, _row("F", GRADING_STATUS_WIN, arm="early", verdict_scope="pre_verdict")]
+    )
+    assert set(_blocks_by_pair(real_shape)) == {_VERDICT}
+    assert list(graded_outcome_rows(real_shape)["game_id"]) == ["A"]
+
+
 def test_corrected_outcome_counted() -> None:
     """A win with an in-force correction to loss counts as a loss at the corrected payout."""
     frame = pd.DataFrame(
@@ -261,8 +276,10 @@ def test_old_rows_without_verdict_scope_unchanged() -> None:
     assert blocks == aggregate_all_blocks(without_columns)
     by_pair = {(b.provenance, b.validation_type): b for b in blocks}
     assert set(by_pair) == {_CLEAN, _VERDICT}
-    assert (by_pair[_VERDICT].wins, by_pair[_VERDICT].losses) == (1, 1)
-    assert by_pair[_VERDICT].pushes == 1
+    verdict = by_pair[_VERDICT]
+    assert isinstance(verdict, TrackerBlock)
+    assert (verdict.wins, verdict.losses) == (1, 1)
+    assert verdict.pushes == 1
 
 
 def test_graded_outcome_rows_match_the_tracker() -> None:
@@ -301,6 +318,7 @@ def test_graded_outcome_rows_match_the_tracker() -> None:
 
     # For every block the tracker publishes, its counts are the counts of that class's strip rows.
     for block in aggregate_all_blocks(frame, corrections=corrections):
+        assert isinstance(block, TrackerBlock)
         in_class = rows[
             (rows["provenance"] == block.provenance)
             & (rows["validation_type"] == block.validation_type)

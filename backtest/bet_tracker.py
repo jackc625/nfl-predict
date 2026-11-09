@@ -61,6 +61,7 @@ from typing import Any, ClassVar, cast
 import pandas as pd
 
 from api.cache import (
+    ARM_EARLY,
     ARM_SHADOW,
     BET_GRADED_OUTCOMES_COLUMNS,
     BET_TRACKER_BLOCK_COLUMNS,
@@ -373,8 +374,9 @@ def prepare_tracker_rows(
     :func:`graded_outcome_rows` returns its graded rows, so the tiles and the ``/bets`` result
     strip are drawn from one frame by construction and cannot disagree. Three things happen:
 
-    * a ``shadow``-arm forward row is DROPPED -- the frozen shadow arm (Phase 37) is not the live
-      record and never enters a forward block;
+    * a ``shadow``-arm or ``early``-arm forward row is DROPPED -- neither the frozen shadow arm
+      (Phase 37) nor the early-week arm (``backtest/early_arm_2026.py``) is the live record, and
+      neither ever enters a forward block;
     * a forward row whose ``verdict_scope`` is ``pre_verdict`` is grouped under the display-only
       class ``VALIDATION_TYPE_PRE_VERDICT``. Its STORED ``validation_type`` (``forward_realized``
       on a migrated row, immutable and chained) is never rewritten in the caller's frame -- the
@@ -400,9 +402,9 @@ def prepare_tracker_rows(
     is_forward = prepared["provenance"] == PROVENANCE_FORWARD
 
     if "arm" in prepared.columns:
-        shadow = is_forward & (prepared["arm"] == ARM_SHADOW)
-        prepared = cast(pd.DataFrame, prepared.loc[~shadow].copy())
-        is_forward = is_forward[~shadow]
+        other_arm = is_forward & prepared["arm"].isin([ARM_SHADOW, ARM_EARLY])
+        prepared = cast(pd.DataFrame, prepared.loc[~other_arm].copy())
+        is_forward = is_forward[~other_arm]
 
     if "verdict_scope" in prepared.columns:
         pre_verdict = is_forward & (

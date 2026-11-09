@@ -7,10 +7,12 @@ is the only production code that sets them (an AST scan in
 ``tests/unit/test_ledger_stamping_site.py`` holds that; the migration may set them only NULL plus
 its reviewed D-14 ``arm`` / ``verdict_scope`` / ``regime_label`` labels):
 
-  * ``arm`` -- ``live`` for every row this phase writes (Phase 37 writes ``shadow``);
+  * ``arm`` -- ``live`` for every row this phase writes (Phase 37 writes ``shadow``, and the
+    early-week arm ``early``);
   * ``model_artifact_id`` / ``blend_id`` -- from the ids the decision was SCORED by, resolved once
     (Plan 34-05), never re-read here, so a ``latest.json`` swap mid-run cannot mis-stamp a row;
-  * ``recipe_id`` / ``fill_convention_id`` -- the in-force recipe and ``fill-v1``;
+  * ``recipe_id`` / ``fill_convention_id`` -- the in-force recipe and ``fill-v1`` (the early-week
+    arm passes ``recipe-2026-v2`` and ``fill-v2``);
   * ``upstream_capture_key`` / ``gold_generation_key`` / ``odds_snapshot_digest`` -- the
     reproduction key (``forward_ledger.repro_key``);
   * ``decision_snapshot_digest`` -- the stored decision-input snapshot (``forward_ledger.snapshots``);
@@ -25,10 +27,10 @@ THE REFUSALS
   * no resolved ids (the bundle found no ``latest.json``) -> ``MissingStampError``: a stamp is
     never invented;
   * scoring ids the in-force recipe entry does not list -> :class:`RecipeArtifactMismatchError`: a
-    row may only claim a recipe that actually produced its models (T-34-27). For the Phase 37
-    re-fit recipe (``forward_ledger.declarations.RefitRecipe``, D-20), which lists no ids of its
-    own, the scoring ids must be exactly one installed generation's ids (``registered_ids``,
-    T-37-30);
+    row may only claim a recipe that actually produced its models (T-34-27). For a recipe that
+    lists no ids of its own (``forward_ledger.declarations.RefitRecipe``: the Phase 37 re-fit
+    recipe, D-20, and the early-week arm's ``recipe-2026-v2``), the scoring ids must be exactly one
+    installed generation's ids (``registered_ids``, T-37-30);
   * an unregistered recipe or fill id -> the declarations module's named refusals;
   * no verdict-scope declaration while the ledger already holds verdict rows ->
     ``VerdictScopeUndeclaredError``. Before the first verdict row a missing declaration honestly
@@ -94,8 +96,9 @@ def _require_recipe_artifacts(
 ) -> None:
     """Refuse unless every id that scored the decision is the recipe's own.
 
-    A Phase 34 registry entry lists its ids; the re-fit recipe lists none, so its scoring ids must
-    equal one installed generation's ids in *registered_ids*.
+    A Phase 34 registry entry lists its ids; a ``RefitRecipe`` (the re-fit recipe, or the early-week
+    arm's ``recipe-2026-v2``) lists none, so its scoring ids must equal one installed generation's
+    ids in *registered_ids*.
     """
     entry = resolve_recipe(recipe_id)
     if isinstance(entry, RefitRecipe):
@@ -166,9 +169,10 @@ def stamp_ledger_rows(
         ledger_has_verdict_rows: Whether the ledger already holds any ``verdict`` row.
         recipe_id: The recipe to stamp (the generation-0 pointer by default).
         fill_convention_id: The fill convention to stamp (``fill-v1`` by default).
-        arm: ``live`` (Phase 34) or ``shadow`` (Phase 37).
-        registered_ids: Every installed re-fit generation's ids; read only when *recipe_id* is
-            the re-fit recipe, whose rows must be scored by exactly one of them.
+        arm: ``live`` (Phase 34), ``shadow`` (Phase 37) or ``early`` (the early-week arm).
+        registered_ids: Every installed re-fit generation's ids; read only when *recipe_id* is a
+            ``RefitRecipe`` (the re-fit recipe or ``recipe-2026-v2``), whose rows must be scored
+            by exactly one of them.
 
     Returns:
         The stamped copy; *frame* is not modified.
@@ -178,8 +182,8 @@ def stamp_ledger_rows(
             is empty.
         InvalidArmError: *arm* is outside ``ARMS``.
         UnknownRecipeError, UnknownFillConventionError: an id does not resolve.
-        RecipeArtifactMismatchError: a scoring id is not the recipe entry's own, or a re-fit
-            recipe's scoring ids are no installed generation's.
+        RecipeArtifactMismatchError: a scoring id is not the recipe entry's own, or a
+            ``RefitRecipe``'s scoring ids are no installed generation's.
         VerdictScopeUndeclaredError: no declaration although verdict rows already exist.
     """
     if resolved is None:
