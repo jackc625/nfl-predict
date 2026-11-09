@@ -5,7 +5,8 @@ series of tz-aware instants in place of the day-before lock rule. The rule's own
 ``utils.game_lock.lock_frame`` refuses repeated ids and null kickoffs; a supplied series
 skips that frame, so the same refusals are made here, once, for both modules. Each one
 closes a silent leak: a repeated id can hand a game a neighbour's later lock, and a null
-instant sorts after every game end, so the game reads its whole season.
+instant sorts after every game end, so the game reads its whole season. A naive instant
+names no moment at all, so it is refused too.
 
 ASCII only, no emoji.
 """
@@ -26,7 +27,7 @@ def check_supplied_locks(locks: pd.Series, game_ids: Iterable[object]) -> None:
 
     Refused, each message naming the count and the first ten ids: an id of ``game_ids``
     absent from ``locks.index``, an id named more than once in ``locks.index``, and a null
-    instant anywhere in ``locks``.
+    or naive instant anywhere in ``locks``.
     """
     wanted = pd.Index(list(game_ids))
     named = pd.Index(locks.index)
@@ -47,4 +48,16 @@ def check_supplied_locks(locks: pd.Series, game_ids: Iterable[object]) -> None:
         raise ValueError(
             f"locks hold no instant for {len(empty)} game(s), "
             f"first ten: {_first_ten(empty)}"
+        )
+    naive = pd.Index(
+        [
+            game_id
+            for game_id, instant in locks.items()
+            if pd.Timestamp(instant).tzinfo is None
+        ]
+    )
+    if len(naive):
+        raise ValueError(
+            f"locks carry no timezone for {len(naive)} game(s), "
+            f"first ten: {_first_ten(naive)}"
         )

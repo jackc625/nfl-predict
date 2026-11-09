@@ -224,3 +224,26 @@ def test_a_fold_with_no_supplied_rows_is_never_fitted(tmp_path, monkeypatch):
         gold_dir, games, datetime(2026, 9, 1, tzinfo=UTC), prediction_rows=rows
     )
     assert fits == ["wp", "ats", "ou"]
+
+
+def test_a_target_with_no_supplied_rows_returns_an_empty_frame(tmp_path):
+    gold_dir, games = _tiny_world(tmp_path)
+    rows = {
+        t: pd.read_parquet(gold_dir / f"features_{t}.parquet").query("season == 2024")
+        for t in ("wp", "ats", "ou")
+    }
+    rows["ats"] = rows["ats"].iloc[0:0]
+    out = walk_forward_v2(
+        gold_dir, games, datetime(2026, 9, 1, tzinfo=UTC), prediction_rows=rows
+    )
+    assert out["ats"].empty
+    assert list(out["ats"].columns) == [
+        "game_id",
+        "season",
+        "week",
+        "prediction",
+        "actual",
+        "fold",
+        "fold_cutoff_utc",
+    ]
+    assert not out["ou"].empty
