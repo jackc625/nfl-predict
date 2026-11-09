@@ -37,8 +37,9 @@ file's conventions plus this one.
 
 THE CHOSEN BOOK IS ``eligibility_label``. Each early row stores the book it was priced at in that
 ledger column, as ``book:<key>`` (``BOOK_LABEL_PREFIX``), and so does its decision snapshot. On
-the other arms the column always reads ``no_subpopulation``; it is covered by the hash chain and
-already reaches the cache, while a new column would have needed a new chain version.
+the other arms the column never names a book (it reads ``no_subpopulation`` or is NULL); it is
+covered by the hash chain and already reaches the cache, while a new column would have needed a
+new chain version.
 
 Stated plainly because it is easy to forget later in the season: EDITING THIS FILE AFTER WEEK 11'S
 FIRST DECISION DOES NOT FIX A BUG -- IT DESTROYS THE EVIDENCE. A value that is wrong here is wrong
