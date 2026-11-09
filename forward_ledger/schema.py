@@ -9,11 +9,12 @@ them, and ``api/`` never imports this package (D-18) -- the dependency runs one 
 THE ROW KEY
 -----------
 ``LEDGER_ROW_KEY = (game_id, season, week, target, arm)`` identifies a forward ledger row, defined
-here ONCE. ``arm`` is in the key so a ``live`` and a ``shadow`` row for the same game, week and
-target are two rows, never one silently overwriting the other (34-RESEARCH Pitfall 7). Every key
-derivation over forward rows -- the store, first-pick-stands, graded weeks, corrections, the cache
-join -- uses this tuple. ``backtest.weekly_bet_list.BET_LIST_ROW_KEY`` stays the four-tuple for the
-regenerable REPLAY store in ``outputs/bet_list/``, whose rows have no arm: a different store.
+here ONCE. ``arm`` is in the key so rows of different arms (``live``, ``shadow``, ``early``) for
+the same game, week and target stay separate rows, never one silently overwriting another
+(34-RESEARCH Pitfall 7). Every key derivation over forward rows -- the store, first-pick-stands,
+graded weeks, corrections, the cache join -- uses this tuple.
+``backtest.weekly_bet_list.BET_LIST_ROW_KEY`` stays the four-tuple for the regenerable REPLAY store
+in ``outputs/bet_list/``, whose rows have no arm: a different store.
 
 CHECKED AT IMPORT
 -----------------
@@ -31,6 +32,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 from api.cache import (
+    ARM_EARLY,
     ARM_LIVE,
     ARM_SHADOW,
     ARMS,
@@ -40,6 +42,7 @@ from api.cache import (
     BET_LIST_GRADING_COLUMNS,
     BET_LIST_IMMUTABLE_COLUMNS,
     CLOSING_NULL_REASONS,
+    EARLY_ARM_FROM,
     REGIME_LABEL_BOOTSTRAP,
     VERDICT_SCOPE_PRE_VERDICT,
     VERDICT_SCOPE_VERDICT,
@@ -49,6 +52,7 @@ from forward_ledger.canonical import IMMUTABLE_COLUMNS_V1
 
 __all__ = [
     "ARMS",
+    "ARM_EARLY",
     "ARM_LIVE",
     "ARM_SHADOW",
     "BET_LIST_CLOSING_COLUMNS",
@@ -57,6 +61,7 @@ __all__ = [
     "BET_LIST_GRADING_COLUMNS",
     "BET_LIST_IMMUTABLE_COLUMNS",
     "CLOSING_NULL_REASONS",
+    "EARLY_ARM_FROM",
     "LEDGER_ROW_KEY",
     "REGIME_LABEL_BOOTSTRAP",
     "VERDICT_SCOPES",

@@ -33,6 +33,7 @@ from api.cache_schema import (
     _CURRENT_SLATE_SEPARATOR,  # noqa: F401
     _REPLAY_CLEAN_HOLDOUT_SEASON,
     _REPLAY_CONTAMINATED_SEASONS,
+    ARM_EARLY,  # noqa: F401
     ARM_LIVE,  # noqa: F401
     ARM_SHADOW,  # noqa: F401
     ARMS,  # noqa: F401
@@ -56,6 +57,7 @@ from api.cache_schema import (
     CURRENT_SLATE_KEY,
     DATA_FORMAT_VERSION,
     DATA_FORMAT_VERSION_KEY,
+    EARLY_ARM_FROM,  # noqa: F401
     FORWARD_VERDICT_DECLARED_KEY,
     FORWARD_VERDICT_SEASON_KEY,
     FORWARD_VERDICT_START_WEEK_KEY,

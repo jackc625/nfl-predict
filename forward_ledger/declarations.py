@@ -10,8 +10,11 @@ Three committed records, each refused by name when it does not resolve:
     declaration is NEVER read as a default scope: a verdict computed against a scope nobody
     declared is the after-the-fact rule choice the pre-registration exists to forbid;
   * the recipe registry (LDGR-03) -- ``backtest.recipe_registry.RECIPE_REGISTRY``, and beside it
-    the Phase 37 re-fit recipe (D-20) -- ``backtest.refit_preregistration_2026.REFIT_RECIPE_ID``;
-  * the fill conventions (LDGR-11) -- ``backtest.fill_conventions.REGISTERED_FILL_CONVENTIONS``.
+    the Phase 37 re-fit recipe (D-20) -- ``backtest.refit_preregistration_2026.REFIT_RECIPE_ID``
+    -- and the early-week arm's v2 recipe -- ``backtest.early_arm_2026.EARLY_RECIPE``;
+  * the fill conventions (LDGR-11) -- ``backtest.fill_conventions.REGISTERED_FILL_CONVENTIONS``,
+    and the early-week arm's ``backtest.early_arm_2026.FILL_V2_ID``, registered in that record
+    because ``backtest/fill_conventions.py`` is frozen.
 
 WHY THE DECLARATION PINS NO RECIPE SET
 --------------------------------------
@@ -26,7 +29,8 @@ generation is stamped with (``recipe-2026-refit-v1``) is defined in Phase 37's o
 :func:`resolve_recipe` looks the registry up first and only then that record, returning a
 :class:`RefitRecipe`. A re-fit recipe lists no artifact ids of its own: each generation's ids are
 named by the generation records under ``ledger/refit/`` (``refit.generations``), and the stamping
-site checks a row's ids against them.
+site checks a row's ids against them. The early-week arm's v2 recipe (``recipe-2026-v2``) resolves
+last, in the same shape, for the same reason: the recorded owner install names its ids.
 
 WHEN A ROW LEARNS ITS LABEL (34-RESEARCH Pitfall 13)
 ----------------------------------------------------
@@ -120,11 +124,14 @@ class UnknownFillConventionError(Exception):
 
 @dataclass(frozen=True)
 class RefitRecipe:
-    """The Phase 37 re-fit recipe (D-20): one id for every re-fit generation.
+    """A recipe whose artifact ids are named by generation records, not listed by the recipe.
+
+    Two records resolve to this shape: the Phase 37 re-fit recipe (D-20), one id for every re-fit
+    generation, and the early-week arm's v2 recipe.
 
     Attributes:
-        recipe_id: ``recipe-2026-refit-v1``.
-        fill_convention_id: The fill convention the record names (``fill-v1``).
+        recipe_id: ``recipe-2026-refit-v1`` or ``recipe-2026-v2``.
+        fill_convention_id: The fill convention the record names (``fill-v1`` or ``fill-v2``).
     """
 
     recipe_id: str
@@ -212,10 +219,10 @@ def verdict_scope_label(season: int, week: int, scope: VerdictScope | None) -> s
 
 
 def resolve_recipe(recipe_id: str | None) -> RecipeEntry | RefitRecipe:
-    """The committed record for *recipe_id*: the Phase 34 registry first, then the re-fit recipe.
+    """The committed record for *recipe_id*: the registry, the re-fit recipe, the early-arm recipe.
 
     Raises:
-        UnknownRecipeError: *recipe_id* is missing or resolves in neither record.
+        UnknownRecipeError: *recipe_id* is missing or resolves in none of the three records.
     """
     from backtest.recipe_registry import RECIPE_REGISTRY
 
@@ -231,10 +238,16 @@ def resolve_recipe(recipe_id: str | None) -> RecipeEntry | RefitRecipe:
         return RefitRecipe(
             recipe_id=REFIT_RECIPE_ID, fill_convention_id=FILL_CONVENTION_ID
         )
+
+    from backtest.early_arm_2026 import EARLY_RECIPE, FILL_V2_ID
+
+    if recipe_id == EARLY_RECIPE:
+        return RefitRecipe(recipe_id=EARLY_RECIPE, fill_convention_id=FILL_V2_ID)
     msg = (
         f"recipe_id {recipe_id!r} does not resolve in the committed recipe registry "
-        f"{sorted(RECIPE_REGISTRY)} nor as the Phase 37 re-fit recipe {REFIT_RECIPE_ID!r}; a "
-        "row is never stamped with an unregistered recipe."
+        f"{sorted(RECIPE_REGISTRY)}, nor as the Phase 37 re-fit recipe {REFIT_RECIPE_ID!r}, nor "
+        f"as the early-week arm's recipe {EARLY_RECIPE!r}; a row is never stamped with an "
+        "unregistered recipe."
     )
     raise UnknownRecipeError(msg)
 
@@ -242,16 +255,20 @@ def resolve_recipe(recipe_id: str | None) -> RecipeEntry | RefitRecipe:
 def resolve_fill_convention(fill_id: str | None) -> str:
     """Return *fill_id* when it is a registered fill convention.
 
+    ``fill-v2`` is registered in ``backtest/early_arm_2026.py``, not in the frozen
+    ``backtest/fill_conventions.py``, so the accepted ids are that file's tuple plus this one.
+
     Raises:
         UnknownFillConventionError: *fill_id* is missing or not registered.
     """
+    from backtest.early_arm_2026 import FILL_V2_ID
     from backtest.fill_conventions import REGISTERED_FILL_CONVENTIONS
 
-    if fill_id is None or fill_id not in REGISTERED_FILL_CONVENTIONS:
+    registered = (*REGISTERED_FILL_CONVENTIONS, FILL_V2_ID)
+    if fill_id is None or fill_id not in registered:
         msg = (
             f"fill convention id {fill_id!r} is not a registered convention "
-            f"{REGISTERED_FILL_CONVENTIONS}; a row without a resolvable fill id is refused "
-            "(LDGR-11)."
+            f"{registered}; a row without a resolvable fill id is refused (LDGR-11)."
         )
         raise UnknownFillConventionError(msg)
     return fill_id

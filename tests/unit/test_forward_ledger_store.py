@@ -352,6 +352,32 @@ def test_live_and_shadow_both_persist(tmp_path: Path) -> None:
     assert by_key[key_of(shadow)].immutable["arm"] == "shadow"
 
 
+def test_an_early_row_and_a_live_row_are_two_keys(tmp_path: Path) -> None:
+    """One game's early decision and live decision are two rows, stamped with their own ids."""
+    live = make_row(arm="live")
+    early = make_row(
+        arm="early",
+        recipe_id="recipe-2026-v2",
+        fill_convention_id="fill-v2",
+        eligibility_label="book:fanduel",
+        verdict_scope="pre_verdict",
+    )
+    assert key_of(live) != key_of(early)
+
+    result = append_rows(tmp_path, [live, early])
+
+    assert result.appended_rows == 2
+    entries = read_entries(tmp_path)
+    assert len(entries) == 2
+    by_key = {tuple(e.immutable[n] for n in LEDGER_ROW_KEY): e for e in entries}
+    assert by_key[key_of(live)].immutable["recipe_id"] == "recipe-2026-row19-v1"
+    stored = by_key[key_of(early)].immutable
+    assert stored["arm"] == "early"
+    assert stored["recipe_id"] == "recipe-2026-v2"
+    assert stored["fill_convention_id"] == "fill-v2"
+    assert stored["eligibility_label"] == "book:fanduel"
+
+
 @pytest.mark.parametrize("arm", [None, "other"])
 def test_null_and_unknown_arm_refused(tmp_path: Path, arm: str | None) -> None:
     with pytest.raises(InvalidArmError, match="arm"):
@@ -374,10 +400,15 @@ def test_unknown_recipe_refused(tmp_path: Path) -> None:
 
 
 def test_missing_fill_id_refused(tmp_path: Path) -> None:
+    """A row without a resolvable fill id is refused.
+
+    RE-POINTED 2026-11-09 for backtest/early_arm_2026.py: ``fill-v2`` is now registered, so the
+    unregistered id this refuses is ``fill-v3``.
+    """
     with pytest.raises(MissingStampError, match="fill_convention_id"):
         append_rows(tmp_path, [make_row(fill_convention_id=None)])
-    with pytest.raises(UnknownFillConventionError, match="fill-v2"):
-        append_rows(tmp_path, [make_row(fill_convention_id="fill-v2")])
+    with pytest.raises(UnknownFillConventionError, match="fill-v3"):
+        append_rows(tmp_path, [make_row(fill_convention_id="fill-v3")])
     assert not ledger_path(tmp_path).exists()
 
 

@@ -826,12 +826,16 @@ def test_shim_still_refuses_an_unknown_gap(tmp_path: pathlib.Path) -> None:
 
 
 def test_arm_vocabulary() -> None:
-    """``arm`` is a closed two-word vocabulary, named apart from ``status``'s ``'live'``.
+    """``arm`` is a closed vocabulary, named apart from ``status``'s ``'live'``.
 
     ``BET_STATUS_LIVE`` means "a bet was placed"; ``ARM_LIVE`` means "the production arm decided
     this row". Same word, different column (34-RESEARCH Pitfall 1).
+
+    RE-POINTED 2026-11-09 for backtest/early_arm_2026.py: the closed vocabulary was two words
+    (``live``, ``shadow``); the early-week arm adds ``early``.
     """
     from api.cache import (
+        ARM_EARLY,
         ARM_LIVE,
         ARM_SHADOW,
         ARMS,
@@ -843,8 +847,8 @@ def test_arm_vocabulary() -> None:
     )
     from forward_ledger.schema import LEDGER_ROW_KEY
 
-    assert ARMS == ("live", "shadow")
-    assert (ARM_LIVE, ARM_SHADOW) == ("live", "shadow")
+    assert ARMS == ("live", "shadow", "early")
+    assert (ARM_LIVE, ARM_SHADOW, ARM_EARLY) == ("live", "shadow", "early")
     assert LEDGER_ROW_KEY == ("game_id", "season", "week", "target", "arm")
     assert VERDICT_SCOPES == (VERDICT_SCOPE_PRE_VERDICT, VERDICT_SCOPE_VERDICT)
     assert VERDICT_SCOPES == ("pre_verdict", "verdict")

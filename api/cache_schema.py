@@ -179,7 +179,8 @@ VALIDATION_TYPE_FORWARD_REALIZED = "forward_realized"
 VALIDATION_TYPE_PRE_VERDICT = "pre_verdict"
 
 # The CLOSED ``arm`` vocabulary (LDGR-02). Every row this phase writes is ``ARM_LIVE``; only the
-# Phase-37 frozen shadow arm writes ``ARM_SHADOW``.
+# Phase-37 frozen shadow arm writes ``ARM_SHADOW``, and only the early-week arm
+# (``backtest/early_arm_2026.py``) writes ``ARM_EARLY``.
 #
 # NAMED ``ARM_*`` AND NOT ``*_LIVE`` ON PURPOSE: ``BET_STATUS_LIVE`` (below) is ALSO the string
 # ``"live"`` but means something unrelated -- "a bet was placed" in the ``status`` column. A
@@ -187,13 +188,19 @@ VALIDATION_TYPE_PRE_VERDICT = "pre_verdict"
 # ``LIVE`` alone would invite exactly that confusion (34-RESEARCH Pitfall 1).
 ARM_LIVE = "live"
 ARM_SHADOW = "shadow"
-ARMS: tuple[str, ...] = (ARM_LIVE, ARM_SHADOW)
+ARM_EARLY = "early"
+ARMS: tuple[str, ...] = (ARM_LIVE, ARM_SHADOW, ARM_EARLY)
 
 # The (season, week) from which the day-before system decides nothing (MIDSEASON-SWITCH-RECORD.md
 # section 1): /bets says such a week is retired instead of refusing it for having no list. This is
 # the PAGE'S OWN COPY of ``backtest.midseason_switch_2026.DAY_BEFORE_RETIRED_FROM``, because api/
 # may not import the record; ``tests/unit/test_switch_week_copies.py`` pins the two equal.
 DAY_BEFORE_RETIRED_FROM: tuple[int, int] = (2026, 10)
+
+# The first (season, week) the early-week arm decides. This is the PAGE'S OWN COPY of
+# ``backtest.early_arm_2026.EARLY_FROM``, because api/ may not import the record;
+# ``tests/unit/test_early_arm_record.py`` pins the two equal.
+EARLY_ARM_FROM: tuple[int, int] = (2026, 11)
 
 # The contaminated replay window (2021-2024 were burned across Phases 26/27) and the single
 # unburned clean-holdout season this milestone spends exactly once.
