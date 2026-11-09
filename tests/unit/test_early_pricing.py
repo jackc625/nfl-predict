@@ -392,11 +392,14 @@ def test_two_books_left_by_the_range_check_are_held_to_the_same_limit() -> None:
 
 
 def test_three_books_wider_than_the_limit_still_price() -> None:
-    """The two-quote rule is for exactly two: with three, the median can say which is wrong."""
+    """The two-quote rule is for exactly two: with three, the median can say which is wrong.
+
+    The widest pair is listed first, so a rule looking at the first two would refuse this board.
+    """
     quotes = [
         q("draftkings", line=44.0),
-        q("fanduel", line=45.5),
         q("betmgm", line=47.0),
+        q("fanduel", line=45.5),
     ]
     assert priced_side("ou", 53.0, quotes).consensus == 45.5
 
