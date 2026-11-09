@@ -194,9 +194,23 @@ that fires once a DAY (Plan 33.2-28; until then it fired once a week, on Friday)
    `scripts/capture_early_lines.py` requests the WHOLE upcoming board (no kickoff window, so next
    week's games are included) and appends one JSON line -- the capture instant, the credits read
    before it and the raw board from every book -- to `data/bronze/early_lines/early_lines.jsonl`.
-   It records early-week prices for the planned earlier-betting study; nothing on the decision
-   path reads that file. It prints `EARLY_LINES= captured|skipped|failed ...` and never changes
-   the exit code. Its credit rule is in "Odds API credit budget" below.
+   It records early-week prices; only the early-week step (item 7) reads that file. It prints
+   `EARLY_LINES= captured|skipped|failed ...` and never changes the exit code. Its credit rule is
+   in "Odds API credit budget" below.
+7. **The early-week bets step (owner ruling 2026-11-09)** -- right after the early-lines capture
+   (item 6) and under the same condition. `pipeline.early_week.run_early_week` decides an NFL week
+   once, on the ET day after the last game before that week (from 2026 week 11, usually a Tuesday).
+   On any other day it does nothing. It decides the week's spreads and totals at the best regulated
+   book on the board and writes them to the ledger under the arm `early`, or skips the week by
+   name and writes nothing. It prints `EARLY_BETS= decided|skipped|not_due ...`, or
+   `EARLY_BETS= failed <Class>` when the step itself raised, and never changes the exit code. Rows
+   it wrote are synced at once (a second `LEDGER_SYNC=` line on a day that had already synced) and
+   the web cache is rebuilt (`WEB_CACHE_AFTER_EARLY=`), so they are anchored and on the site before
+   the website push and the notifications. Its live bets go out in one more push of the `bets`
+   class, one line each, for example `Totals: NE @ DET under 44.5 -105 at fanduel, 1.40 units`,
+   titled `<n> early-week bet(s): <season> week <week>` (console line `NOTIFY_EARLY_BETS=`); a week
+   with no bets sends nothing. A step that raised sends one normal-priority
+   `FAILED: early-week bets`. No later run retries a week that was missed on its day.
 
 `--date YYYY-MM-DD` runs as of another ET day; `--dry-run` runs the schedule refresh and
 the collection stage under a recording write sink, writing nothing (it stops before the

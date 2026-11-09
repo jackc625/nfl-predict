@@ -108,6 +108,11 @@ class RunReport:
         refit_error_location: Which re-fit record could not be read, when that is what
             escaped (``RefitRecordFormatError.location``: a path and a line number, never
             record content), so the push names the record to repair (WR-C05).
+        early_board_captured: True when today's early-lines capture recorded a board.
+        early_ran: True when the early-week step ran and returned, whatever its outcome.
+        early_rows: The rows the early-week step newly wrote to the ledger, exactly as written:
+            live and declined alike (the push keeps the live ones).
+        early_error: The class name of an exception that escaped the early-week step, if any.
     """
 
     run_date_et: date
@@ -143,6 +148,10 @@ class RunReport:
     refit: RefitOutcome | None = None
     refit_error: str | None = None
     refit_error_location: str | None = None
+    early_board_captured: bool = False
+    early_ran: bool = False
+    early_rows: list[dict[str, Any]] = field(default_factory=list)
+    early_error: str | None = None
 
     def record_exception(self, exc: BaseException) -> None:
         """Note the exception that stopped the run: its class, its first line, a Ctrl+C."""

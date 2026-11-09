@@ -32,6 +32,7 @@ from notify.log import read_notifications
 from notify.report import STATUS_RUN_FAILED, RunReport
 from pipeline import daily_steps, live_skip
 from pipeline.daily_steps import DailySlate, slate_lock
+from scripts.capture_early_lines import EarlyLinesOutcome
 from tests.unit.test_notify_transport import (
     DUMMY_PING_URL,
     DUMMY_PING_UUID,
@@ -1984,3 +1985,176 @@ def test_a_raising_notifier_never_masks_the_run(monkeypatch, tmp_path, capsys):
     with pytest.raises(ValueError, match="the run's own failure"):
         daily.run_daily(RUN_DATE, start=_start(), dry_run=False)
     assert "NOTIFY= failed RuntimeError" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# The early-week side step (owner ruling 2026-11-09): after the board capture, never fatal
+# ---------------------------------------------------------------------------
+
+ONE_EARLY_ROW = {"game_id": "2026_W11_NE@DET", "status": "live"}
+
+
+def _early_step_records(monkeypatch, order: list[str], *, rows=()) -> None:
+    """A capture that captured and an early step returning *rows*, both noted in *order*."""
+
+    def _capture(_report):
+        order.append("board")
+        return EarlyLinesOutcome("captured", None, 5, 400)
+
+    def _early(_report):
+        order.append("early")
+        return SimpleNamespace(appended_rows=tuple(rows))
+
+    monkeypatch.setattr(daily, "EARLY_LINES", _capture)
+    monkeypatch.setattr(daily, "EARLY_BETS", _early)
+
+
+def _record_the_early_rebuild(monkeypatch, order: list[str]) -> None:
+    import pipeline.steps as steps_mod
+
+    monkeypatch.setattr(
+        steps_mod, "step_populate_web_cache", lambda: order.append("cache")
+    )
+
+
+def test_the_early_step_runs_after_the_board_capture_on_a_no_games_day(
+    monkeypatch, tmp_path, capsys
+):
+    """With no new row the step syncs and rebuilds nothing, and the report says it ran."""
+    order = _no_games_env(monkeypatch, tmp_path)
+    seen = _seen_reports(monkeypatch)
+    _early_step_records(monkeypatch, order)
+    _record_the_early_rebuild(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert order == ["no_games", "board", "early"]
+    assert "WEB_CACHE_AFTER_EARLY=" not in capsys.readouterr().out
+    (report,) = seen
+    assert report.early_board_captured is True
+    assert report.early_ran is True
+    assert report.early_rows == []
+    assert report.early_error is None
+
+
+def test_a_failed_early_step_never_changes_the_exit_code(monkeypatch, tmp_path, capsys):
+    _no_games_env(monkeypatch, tmp_path)
+    seen = _seen_reports(monkeypatch)
+
+    def _broken(_report):
+        raise RuntimeError("https://api.example/odds?apiKey=secret")
+
+    monkeypatch.setattr(daily, "EARLY_BETS", _broken)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    out = capsys.readouterr().out
+    assert "EARLY_BETS= failed RuntimeError" in out
+    assert "apiKey=secret" not in out
+    (report,) = seen
+    assert report.early_error == "RuntimeError"
+    assert report.early_ran is False
+
+
+def test_new_early_rows_are_synced_and_the_cache_rebuilt(monkeypatch, tmp_path, capsys):
+    """A slate day synced before the re-fit already, so the early rows bring a second sync."""
+    from forward_ledger import runner
+
+    _cut_over(monkeypatch)
+    order: list[str] = []
+    _two_step_slate_env(monkeypatch, tmp_path, export=lambda: None, order=order)
+    monkeypatch.setattr(
+        runner, "settle_ledger", lambda **_k: runner.SettleOutcome(False, 0, 0, 0, 0)
+    )
+    monkeypatch.setattr(
+        runner, "sync_after_run", lambda **_k: order.append("sync") or None
+    )
+    seen = _seen_reports(monkeypatch)
+    _early_step_records(monkeypatch, order, rows=[ONE_EARLY_ROW])
+    _record_the_early_rebuild(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert order == ["recommend", "sync", "board", "early", "sync", "cache"]
+    assert "WEB_CACHE_AFTER_EARLY= rebuilt" in capsys.readouterr().out
+    (report,) = seen
+    assert report.early_rows == [ONE_EARLY_ROW]
+
+
+@pytest.mark.parametrize(
+    ("switch_on", "expected"),
+    [
+        pytest.param(
+            False,
+            ["no_games", "board", "early", "sync", "cache"],
+            id="switch-off-the-one-sync-follows-the-rows",
+        ),
+        pytest.param(
+            True,
+            ["settle", "sync", "no_games", "board", "early", "sync", "cache"],
+            id="switch-on-a-second-sync-follows-the-rows",
+        ),
+    ],
+)
+def test_a_no_games_day_syncs_after_the_early_rows_are_written(
+    monkeypatch, tmp_path, capsys, switch_on, expected
+):
+    """Whatever ran before it, a sync follows the rows, before the cache and the push.
+
+    With the cutover switch on, as in production, the no-games branch has already synced before
+    the re-fit side step, so the early rows bring a second sync there too.
+    """
+    _cut_over(monkeypatch, on=switch_on)
+    order = _no_games_env(monkeypatch, tmp_path)
+    _early_step_records(monkeypatch, order, rows=[ONE_EARLY_ROW])
+    _record_the_early_rebuild(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert order == expected
+    assert "WEB_CACHE_AFTER_EARLY= rebuilt" in capsys.readouterr().out
+
+
+def test_a_dry_run_makes_no_early_decision(monkeypatch, tmp_path):
+    order = _no_games_env(monkeypatch, tmp_path)
+    _early_step_records(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=True) == 0
+
+    assert "early" not in order
+
+
+def test_an_offseason_day_makes_no_early_decision(monkeypatch, tmp_path):
+    order: list[str] = []
+    start = _arrange_offseason(monkeypatch, tmp_path)
+    _early_step_records(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=start, dry_run=False) == 0
+
+    assert order == []
+
+
+def test_a_skipped_board_capture_is_passed_on(monkeypatch, tmp_path):
+    """Through the real seam: ``run_early_week`` is told no board was captured today."""
+    from pipeline import early_week
+
+    _no_games_env(monkeypatch, tmp_path)
+    seen = _seen_reports(monkeypatch)
+    calls: list[tuple[date, bool]] = []
+    monkeypatch.setattr(
+        daily,
+        "EARLY_LINES",
+        lambda _report: EarlyLinesOutcome("skipped", "credit_reserve", 0, 3),
+    )
+    monkeypatch.setattr(daily, "EARLY_BETS", daily._run_early_bets)
+    monkeypatch.setattr(
+        early_week,
+        "run_early_week",
+        lambda run_date, *, board_captured: calls.append((run_date, board_captured)),
+    )
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert calls == [(RUN_DATE, False)]
+    (report,) = seen
+    assert report.early_board_captured is False
