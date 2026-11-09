@@ -15,6 +15,11 @@ by the code the ledger already trusts. The result stays in memory: an early boar
 silver ``odds_snapshot``. ``spread`` leaves that transform positive when the home team is favoured,
 which is the scale ``Quote.line`` is on, so it is copied unchanged.
 
+NO INVENTED PRICE. The shared transform and ``OddsSchema`` both default a price they do not have to
+-110. An early row claims a real quote, so ``board_odds`` closes both routes without touching the
+live ingest: it works on a copy of the board with every spreads or totals market missing a price
+removed, and it keeps every quote column present so the schema's default never applies.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -51,6 +56,9 @@ _QUOTE_COLUMNS: Mapping[str, tuple[str, str, str]] = {
     "ats": ("spread", "spread_ju_home", "spread_ju_away"),
     "ou": ("total", "total_over_ju", "total_under_ju"),
 }
+
+# The board markets those columns are read from.
+_QUOTED_MARKETS: frozenset[str] = frozenset({"spreads", "totals"})
 
 
 @dataclass(frozen=True)
@@ -146,6 +154,39 @@ def latest_board(path: Path) -> EarlyBoard | None:
     return boards[-1] if boards else None
 
 
+def _every_outcome_priced(market: Mapping[str, Any]) -> bool:
+    """Whether every outcome of *market* has a price; one may lack the key or hold None."""
+    return all(
+        outcome.get("price") is not None for outcome in market.get("outcomes", [])
+    )
+
+
+def _without_unpriced_markets(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A copy of *events* holding no quoted market with a price missing. *events* is unchanged.
+
+    The shared transform writes -110 for an outcome with no price, so the market is removed
+    first. The book then simply has no such market, instead of an invented price.
+    """
+    return [
+        {
+            **event,
+            "bookmakers": [
+                {
+                    **book,
+                    "markets": [
+                        market
+                        for market in book.get("markets", [])
+                        if market.get("key") not in _QUOTED_MARKETS
+                        or _every_outcome_priced(market)
+                    ],
+                }
+                for book in event.get("bookmakers", [])
+            ],
+        }
+        for event in events
+    ]
+
+
 def board_odds(
     board: EarlyBoard, week_games: pd.DataFrame, ingester: OddsDataIngester
 ) -> pd.DataFrame:
@@ -167,13 +208,19 @@ def board_odds(
         for game_id, lock in lock_rule.lock_frame(week_games).items()
     }
     transformed = ingester.transform_odds_data(
-        board.events,
+        _without_unpriced_markets(board.events),
         schedule=week_games,
         locks=locks,
         captured_at=board.captured_at,
         capture_kind="decision",
     )
-    return ingester.validate_odds_data(transformed)
+    # OddsSchema gives a juice column that no row has its -110 default. Present but blank, it
+    # stays blank, whatever the rest of the board holds.
+    every_quote_column = transformed.columns.union(
+        [column for columns in _QUOTE_COLUMNS.values() for column in columns],
+        sort=False,
+    )
+    return ingester.validate_odds_data(transformed.reindex(columns=every_quote_column))
 
 
 def _line_of(value: Any) -> float:

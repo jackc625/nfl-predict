@@ -12,6 +12,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 from datetime import UTC, date, datetime
@@ -30,7 +31,7 @@ from backtest.early_board import (
     quotes_for,
     read_board_for_run,
 )
-from backtest.early_pricing import Quote
+from backtest.early_pricing import Quote, usable_quotes
 from scripts.ingest_odds import OddsDataIngester
 
 
@@ -417,6 +418,96 @@ def test_a_book_without_the_market_has_no_prices_and_no_line() -> None:
     assert type(quotes["fanduel"].price_up) is int
     assert type(quotes["fanduel"].price_down) is int
     assert (quotes["fanduel"].price_up, quotes["fanduel"].price_down) == (-105, -115)
+
+
+def _with_unpriced_outcome(
+    book: dict[str, Any], market_key: str, missing: str
+) -> dict[str, Any]:
+    """*book* with the first outcome of one market lacking its price, as ``key`` or ``none``."""
+    market = next(found for found in book["markets"] if found["key"] == market_key)
+    if missing == "key":
+        del market["outcomes"][0]["price"]
+    else:
+        market["outcomes"][0]["price"] = None
+    return book
+
+
+def _book_quote(odds: pd.DataFrame, target: str, sportsbook: str) -> Quote:
+    """One book's quote for the game."""
+    return next(
+        quote
+        for quote in quotes_for(odds, target)[GAME]
+        if quote.sportsbook == sportsbook
+    )
+
+
+_HOW_A_PRICE_GOES_MISSING = pytest.mark.parametrize("missing", ["key", "none"])
+# Alone, no row on the board has the market's columns, which is when OddsSchema's -110 applies.
+_WHO_ELSE_IS_ON_THE_BOARD = pytest.mark.parametrize(
+    "alone", [True, False], ids=["alone", "beside_another_book"]
+)
+
+
+@_HOW_A_PRICE_GOES_MISSING
+@_WHO_ELSE_IS_ON_THE_BOARD
+def test_a_spread_missing_a_price_is_no_market_and_the_total_is_untouched(
+    missing: str, alone: bool
+) -> None:
+    broken = _with_unpriced_outcome(_book("betmgm"), "spreads", missing)
+    books = [broken] if alone else [_book("fanduel"), broken]
+    odds = board_odds(_board(*books), GAMES, INGESTER)
+
+    spread = _book_quote(odds, "ats", "betmgm")
+    assert spread.price_up is None and spread.price_down is None
+    assert math.isnan(spread.line)
+    assert usable_quotes([spread], READ_AT) == []
+
+    total = _book_quote(odds, "ou", "betmgm")
+    assert (total.line, total.price_up, total.price_down) == (47.5, -108, -112)
+
+
+@_HOW_A_PRICE_GOES_MISSING
+@_WHO_ELSE_IS_ON_THE_BOARD
+def test_a_total_missing_a_price_is_no_market_and_the_spread_is_untouched(
+    missing: str, alone: bool
+) -> None:
+    broken = _with_unpriced_outcome(_book("betmgm"), "totals", missing)
+    books = [broken] if alone else [_book("fanduel"), broken]
+    odds = board_odds(_board(*books), GAMES, INGESTER)
+
+    total = _book_quote(odds, "ou", "betmgm")
+    assert total.price_up is None and total.price_down is None
+    assert math.isnan(total.line)
+    assert usable_quotes([total], READ_AT) == []
+
+    spread = _book_quote(odds, "ats", "betmgm")
+    assert (spread.line, spread.price_up, spread.price_down) == (3.5, -105, -115)
+
+
+def test_another_books_market_survives_a_neighbours_missing_price() -> None:
+    broken = _with_unpriced_outcome(_book("betmgm"), "spreads", "key")
+    odds = board_odds(_board(_book("fanduel"), broken), GAMES, INGESTER)
+    spread = _book_quote(odds, "ats", "fanduel")
+    assert (spread.line, spread.price_up, spread.price_down) == (3.5, -105, -115)
+
+
+@_HOW_A_PRICE_GOES_MISSING
+def test_the_board_itself_is_left_as_it_was_read(missing: str) -> None:
+    board = _board(
+        _book("fanduel"), _with_unpriced_outcome(_book("betmgm"), "spreads", missing)
+    )
+    as_read = copy.deepcopy(board.events)
+    board_odds(board, GAMES, INGESTER)
+    assert board.events == as_read
+
+
+def test_a_side_no_book_offers_stays_blank_and_never_takes_the_schema_default() -> None:
+    over_only = _book()
+    totals = over_only["markets"][1]
+    totals["outcomes"] = [totals["outcomes"][0]]
+    quote = _only_quote(_board(over_only), "ou")
+    assert (quote.line, quote.price_up, quote.price_down) == (47.5, -108, None)
+    assert usable_quotes([quote], READ_AT) == []
 
 
 def test_a_book_seen_twice_keeps_only_its_freshest_row() -> None:
