@@ -54,6 +54,7 @@ from api.cache_schema import (
     BETTING_SIM_PROVENANCE_KEY,
     BETTING_SIM_VALIDATION_TYPE_KEY,
     CURRENT_SLATE_KEY,
+    EARLY_ARM_SUMMARY_KEY,
     FORWARD_VERDICT_DECLARED_KEY,
     FORWARD_VERDICT_SEASON_KEY,
     FORWARD_VERDICT_START_WEEK_KEY,
@@ -1177,6 +1178,18 @@ class DataService:
             "season": int(meta[FORWARD_VERDICT_SEASON_KEY]),
             "start_week": int(meta[FORWARD_VERDICT_START_WEEK_KEY]),
         }
+
+    def get_early_arm_summary(self) -> dict[str, Any] | None:
+        """Return the early-week arm's record as cache population stamped it, or None.
+
+        One ``cache_meta`` value parsed back; every figure was worked out at cache build by
+        ``backtest.early_arm_report`` (UIAP-01). None when the cache carries no stamp or an
+        unreadable one, and the page then shows ``--`` for every figure.
+        """
+        decoded = _parse_json_or_default(
+            self.get_cache_meta().get(EARLY_ARM_SUMMARY_KEY), None
+        )
+        return decoded if isinstance(decoded, dict) else None
 
     def get_bet_list_corrections(
         self, season: int | None, week: int | None

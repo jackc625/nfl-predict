@@ -70,7 +70,7 @@ from api.cache import (
     materialize_bet_week_freeze,
     stamp_forward_verdict_context,
 )
-from api.cache_schema import DAY_BEFORE_RETIRED_FROM
+from api.cache_schema import DAY_BEFORE_RETIRED_FROM, EARLY_ARM_FROM
 from api.dependencies import templates as app_templates
 from api.services import DataService, clear_cache
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
@@ -5059,3 +5059,423 @@ def test_a_2025_week_17_slate_keeps_the_forward_heading(
     assert _FORWARD_HEADING in response.text
     assert _RETIRED_FORWARD_HEADING not in response.text
     assert _RETIRED_HEADING not in response.text
+
+
+# ---------------------------------------------------------------------------
+# The early-week arm's section (backtest/early_arm_2026.py, early-week bets Task 10)
+# ---------------------------------------------------------------------------
+#
+# From 2026 week 11 the early arm's own bets sit under the retired day-before message. Each cache
+# below is built through populate_cache with the production tracker producers, so the page is
+# tested against the shape production builds. Copy literals stay literals, as the design contract
+# above: a silent edit to either side fails.
+
+_EARLY_SEASON, _EARLY_WEEK = EARLY_ARM_FROM
+_EARLY_HEADING = "Early-week bets (paper)"
+_EARLY_CAPTION = (
+    "Placed on the Tuesday before the games, at the best price among DraftKings, FanDuel, BetMGM "
+    "and BetRivers when the line was read. Paper only."
+)
+_EARLY_NOT_DECIDED = "Not decided yet. These bets are decided by the Tuesday run."
+_EARLY_NONE_CLEARED_END = (
+    "bets were checked on Tuesday and none cleared the sportsbook's cut."
+)
+_EARLY_SUMMARY = {
+    "bets": 8,
+    "graded": 6,
+    "wins": 3,
+    "losses": 2,
+    "pushes": 1,
+    "flat_return": -0.0528,
+    "closing_bets": 5,
+    "mean_clv": 0.75,
+    "closing_share": 0.8333333333333334,
+}
+_EARLY_EMPTY_SUMMARY = {
+    "bets": 0,
+    "graded": 0,
+    "wins": 0,
+    "losses": 0,
+    "pushes": 0,
+    "flat_return": None,
+    "closing_bets": 0,
+    "mean_clv": None,
+    "closing_share": None,
+}
+
+
+def _early_row(
+    game_id: str,
+    target: str = "ou",
+    *,
+    week: int = _EARLY_WEEK,
+    bet_side: str = "under",
+    line: float = 47.5,
+    book: str = "fanduel",
+    price: float = -108.0,
+    grading_status: str = GRADING_STATUS_PENDING,
+) -> dict[str, Any]:
+    """One placed early-arm row, as the ledger holds it."""
+    row = _graded_row(game_id, grading_status, pair=_FORWARD_CLASS, week=week)
+    row.update(
+        {
+            "season": _EARLY_SEASON,
+            "target": target,
+            "arm": "early",
+            "verdict_scope": "pre_verdict",
+            "bet_side": bet_side,
+            "line": line,
+            "slipped_line": line,
+            "selected_odds": price,
+            "eligibility_label": f"book:{book}",
+            "per_bet_ev": 0.0312,
+            "stake_units": 1.25,
+        }
+    )
+    return row
+
+
+def _declined_early_row(game_id: str, *, week: int = _EARLY_WEEK) -> dict[str, Any]:
+    """One early-arm row that was priced and declined."""
+    row = _suppressed_row(game_id, "ou", "ev_below_floor", week=week)
+    row.update(
+        {
+            "season": _EARLY_SEASON,
+            "arm": "early",
+            "verdict_scope": "pre_verdict",
+            "provenance": "forward",
+            "validation_type": "forward_realized",
+        }
+    )
+    return row
+
+
+def _early_client(
+    tmp_path: Path,
+    name: str,
+    rows: list[dict[str, Any]],
+    *,
+    weeks: tuple[int, ...] = (_EARLY_WEEK,),
+    summary: dict[str, Any] | None = None,
+) -> Any:
+    """A client over a cache built through populate_cache, with *weeks* of 2026 scheduled."""
+    from api.cache import populate_cache
+
+    clear_cache()
+    bet_list = pd.DataFrame(rows, columns=pd.Index(BET_LIST_COLUMNS))
+    schedule = pd.DataFrame(
+        [
+            {
+                "game_id": f"{_EARLY_SEASON}_W{week:02d}_AAA@BBB",
+                "season": _EARLY_SEASON,
+                "week": week,
+                "game_freeze_ts": _LEDGER_LOCK,
+            }
+            for week in weeks
+        ]
+    )
+    db_path = tmp_path / f"{name}.duckdb"
+    populate_cache(
+        db_path=db_path,
+        artifacts_dir=tmp_path / "artifacts",
+        outputs_dir=tmp_path / "outputs",
+        gold_dir=tmp_path / "gold",
+        silver_dir=tmp_path / "silver",
+        bet_list_df=bet_list,
+        bet_tracker_df=to_tracker_frame(aggregate_all_blocks(bet_list)),
+        bet_schedule_df=schedule,
+        bet_graded_outcomes_df=graded_outcome_rows(bet_list),
+        early_arm_summary=summary,
+    )
+    return contextmanager(_client)(db_path)
+
+
+def _early_section(body: str) -> str:
+    """The rendered early-week section alone."""
+    start = body.index("<section data-early-week")
+    return body[start : body.index("</section>", start)]
+
+
+def _early_figures(section: str) -> list[tuple[str, str]]:
+    """The record row's (label, value) pairs, in page order."""
+    return re.findall(
+        r"data-early-figure-label>([^<]+)</p>\s*<p [^>]*data-early-figure-value>([^<]*)</p>",
+        section,
+    )
+
+
+def test_the_early_section_shows_book_line_price_and_stake(tmp_path: Path) -> None:
+    rows = [
+        _early_row(
+            "2026_W11_KC@BUF",
+            "ats",
+            bet_side="home_cover",
+            line=3.5,
+            book="draftkings",
+            price=-105.0,
+        ),
+        _early_row(
+            "2026_W11_DAL@PHI",
+            "ou",
+            bet_side="over",
+            line=44.5,
+            book="betmgm",
+            price=102.0,
+        ),
+    ]
+    with _early_client(tmp_path, "early_rows", rows) as client:
+        response = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}")
+
+    assert response.status_code == 200
+    body = response.text
+    assert body.index(_RETIRED_HEADING) < body.index(_EARLY_HEADING), (
+        "the early section does not sit under the retired message"
+    )
+    section = _early_section(body)
+    assert _EARLY_HEADING in section
+    assert _EARLY_CAPTION in section
+    assert sorted(re.findall(r"data-early-pick>([^<]*)<", section)) == [
+        "BUF -3.5",
+        "Over 44.5",
+    ]
+    by_pick = re.findall(
+        r"data-early-pick>([^<]*)<.*?data-early-line>([^<]*)<.*?data-early-ev>([^<]*)<"
+        r".*?data-early-stake>([^<]*)<.*?data-early-book>([^<]*)<.*?data-early-price>([^<]*)<",
+        section,
+        re.S,
+    )
+    assert sorted(by_pick) == [
+        ("BUF -3.5", "-3.5", "+3.12%", "1.25", "DraftKings", "-105"),
+        ("Over 44.5", "44.5", "+3.12%", "1.25", "BetMGM", "+102"),
+    ]
+    # R8: every displayed row carries its honesty label, here the never-counted class.
+    assert section.count('data-validation-type="pre_verdict"') == 2
+    assert _EARLY_NOT_DECIDED not in section
+    assert _EARLY_NONE_CLEARED_END not in section
+
+
+def test_a_book_with_no_display_name_shows_its_key(tmp_path: Path) -> None:
+    rows = [_early_row("2026_W11_KC@BUF", book="caesars")]
+    with _early_client(tmp_path, "early_raw_book", rows) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    assert re.findall(r"data-early-book>([^<]*)<", _early_section(body)) == ["caesars"]
+
+
+def test_the_section_survives_the_week_selector_swap(tmp_path: Path) -> None:
+    rows = [_early_row("2026_W11_KC@BUF", book="betrivers")]
+    with _early_client(tmp_path, "early_fragment", rows) as client:
+        fragment = client.get(
+            f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}",
+            headers={"HX-Request": "true"},
+        ).text
+
+    assert "<html" not in fragment
+    assert re.findall(r"data-early-book>([^<]*)<", _early_section(fragment)) == [
+        "BetRivers"
+    ]
+
+
+def test_a_week_with_no_early_bets_says_how_many_were_checked(tmp_path: Path) -> None:
+    rows = [
+        _declined_early_row("2026_W11_KC@BUF"),
+        _declined_early_row("2026_W11_DAL@PHI"),
+        _declined_early_row("2026_W11_SF@SEA"),
+    ]
+    with _early_client(tmp_path, "early_checked", rows) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    section = _early_section(body)
+    assert f"No early-week bets this week. 3 {_EARLY_NONE_CLEARED_END}" in section
+    assert _EARLY_NOT_DECIDED not in section
+    assert "data-early-pick" not in section
+
+
+def test_a_week_with_no_early_rows_is_not_decided_yet(tmp_path: Path) -> None:
+    with _early_client(tmp_path, "early_undecided", []) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    section = _early_section(body)
+    assert _EARLY_NOT_DECIDED in section
+    assert _EARLY_NONE_CLEARED_END not in section
+
+
+def test_only_the_shown_weeks_early_rows_count(tmp_path: Path) -> None:
+    """Another week's bets and declines, and another arm's declines, are not this week's."""
+    next_week = _EARLY_WEEK + 1
+    live_arm_decline = _declined_early_row("2026_W11_DAL@PHI")
+    live_arm_decline["arm"] = "live"
+    rows = [
+        live_arm_decline,
+        _early_row("2026_W12_KC@BUF", week=next_week),
+        _declined_early_row("2026_W12_SF@SEA", week=next_week),
+    ]
+    with _early_client(
+        tmp_path, "early_weeks", rows, weeks=(_EARLY_WEEK, next_week)
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    section = _early_section(body)
+    assert _EARLY_NOT_DECIDED in section
+    assert "data-early-pick" not in section
+
+
+def test_week_10_shows_no_early_section(tmp_path: Path) -> None:
+    """The arm starts at week 11: an early row of week 10, were one to exist, is not shown."""
+    week_ten = EARLY_ARM_FROM[1] - 1
+    rows = [_early_row("2026_W10_KC@BUF", week=week_ten)]
+    with _early_client(
+        tmp_path, "early_week_ten", rows, weeks=(week_ten,), summary=_EARLY_SUMMARY
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={week_ten}").text
+
+    assert _RETIRED_HEADING in body
+    assert _EARLY_HEADING not in body
+    assert "data-early-week" not in body
+
+
+def test_an_earlier_seasons_week_11_is_not_open(tmp_path: Path) -> None:
+    """(2023, 11): the start is keyed on the season and the week, never the week alone."""
+    from api.routes.pages import _build_bets_context
+
+    rows = [_early_row("2026_W11_KC@BUF")]
+    with _early_client(tmp_path, "early_old_season", rows, summary=_EARLY_SUMMARY):
+        pass
+    probe = duckdb.connect(str(tmp_path / "early_old_season.duckdb"), read_only=True)
+    try:
+        clear_cache()
+        context = _build_bets_context(DataService(probe), 2023, 11, None)  # pyright: ignore[reportArgumentType]
+    finally:
+        probe.close()
+
+    assert context["early_arm_open"] is False
+    assert context["early_bets"] == []
+    assert context["early_declined"] == 0
+    assert context["early_summary"] is None
+
+
+def test_early_rows_stay_out_of_the_retired_tracker(tmp_path: Path) -> None:
+    """A graded early win is in the early record, and in no tile or mark of the tracker."""
+    retired_loss = _forward_row(
+        "2026_W09_DAL@PHI", 9, "loss", verdict_scope="pre_verdict"
+    )
+    early_win = _early_row("2026_W11_KC@BUF", grading_status="win")
+    summary = {**_EARLY_EMPTY_SUMMARY, "bets": 1, "graded": 1, "wins": 1}
+    with _early_client(
+        tmp_path,
+        "early_tracker",
+        [retired_loss, early_win],
+        weeks=(9, _EARLY_WEEK),
+        summary=summary,
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    retired = _tracker_sections(body)["forward:pre_verdict"]
+    assert '<span aria-hidden="true">0-1-0</span>' in retired
+    assert retired.count("data-result-mark") == 1
+    assert "data-early-week" not in retired
+    assert dict(_early_figures(_early_section(body)))["Record"] == "1-0-0"
+    assert "Suppressed candidates" not in body
+
+
+def test_the_record_shows_closing_value_beside_the_return(tmp_path: Path) -> None:
+    rows = [_early_row("2026_W11_KC@BUF")]
+    with _early_client(
+        tmp_path, "early_record", rows, summary=_EARLY_SUMMARY
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    assert _early_figures(_early_section(body)) == [
+        ("Closing-line value (points)", "+0.75"),
+        ("Return (flat, units)", "-0.053"),
+        ("Record", "3-2-1"),
+        ("Closing share", "83%"),
+    ]
+
+
+def test_a_figure_with_nothing_behind_it_renders_as_two_dashes(tmp_path: Path) -> None:
+    with _early_client(
+        tmp_path, "early_none", [], summary=_EARLY_EMPTY_SUMMARY
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    assert _early_figures(_early_section(body)) == [
+        ("Closing-line value (points)", "--"),
+        ("Return (flat, units)", "--"),
+        ("Record", "0-0-0"),
+        ("Closing share", "--"),
+    ]
+
+
+def test_a_cache_with_no_stamped_record_renders_two_dashes(tmp_path: Path) -> None:
+    """A cache built before the stamp existed still serves the page."""
+    with _early_client(tmp_path, "early_unstamped", []) as client:
+        response = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}")
+
+    assert response.status_code == 200
+    figures = _early_figures(_early_section(response.text))
+    assert [value for _, value in figures] == ["--", "--", "--", "--"]
+
+
+def test_the_early_section_carries_no_outcome_colour(tmp_path: Path) -> None:
+    """Colour on /bets is the tracker's alone, so a losing return here stays monochrome."""
+    rows = [_early_row("2026_W11_KC@BUF")]
+    with _early_client(
+        tmp_path, "early_colour", rows, summary=_EARLY_SUMMARY
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    for classes in _class_attributes(_early_section(body)):
+        for forbidden in ("green", "red", "amber"):
+            assert forbidden not in classes, f"{forbidden} in {classes}"
+
+
+def test_the_stamped_record_reads_back_as_written(tmp_path: Path) -> None:
+    with _early_client(tmp_path, "early_getter", [], summary=_EARLY_SUMMARY):
+        pass
+    probe = duckdb.connect(str(tmp_path / "early_getter.duckdb"), read_only=True)
+    try:
+        clear_cache()
+        assert DataService(probe).get_early_arm_summary() == _EARLY_SUMMARY
+    finally:
+        probe.close()
+
+
+def test_a_cache_with_no_stamped_record_reads_as_none(tmp_path: Path) -> None:
+    with _early_client(tmp_path, "early_no_getter", []):
+        pass
+    probe = duckdb.connect(str(tmp_path / "early_no_getter.duckdb"), read_only=True)
+    try:
+        clear_cache()
+        assert DataService(probe).get_early_arm_summary() is None
+    finally:
+        probe.close()
+
+
+def test_an_early_only_week_opens_bets_and_shows_the_early_section(
+    tmp_path: Path,
+) -> None:
+    """No slate stamped, and week 11 holds only early rows: a bare /bets opens on week 11.
+
+    ``get_latest_built_bet_week`` carries no arm filter, which is what lets an early-only week
+    count as built. No live-arm row exists in the fixture to do it instead.
+    """
+    rows = [_early_row("2026_W11_KC@BUF", book="fanduel")]
+    with _early_client(
+        tmp_path, "early_only_week", rows, weeks=(10, _EARLY_WEEK, 12)
+    ) as client:
+        body = client.get("/bets").text
+
+    assert f"Live bets -- {_EARLY_SEASON} Week {_EARLY_WEEK}" in body
+    assert re.findall(r"data-early-book>([^<]*)<", _early_section(body)) == ["FanDuel"]
+
+
+def test_the_early_component_is_ascii() -> None:
+    component = (
+        Path(__file__).resolve().parents[2]
+        / "web"
+        / "templates"
+        / "components"
+        / "_early_week_bets.html"
+    )
+    component.read_text(encoding="utf-8").encode("ascii")

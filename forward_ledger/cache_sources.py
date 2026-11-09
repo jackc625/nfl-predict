@@ -78,6 +78,7 @@ from backtest.bet_tracker import (
     to_tracker_frame,
 )
 from backtest.bet_week_results import aggregate_bet_weeks
+from backtest.early_arm_report import early_arm_summary
 from backtest.weekly_bet_list import (
     DEFAULT_BET_LIST_DIR,
     build_bet_week_schedule,
@@ -172,6 +173,8 @@ class BetCacheSources:
         corrections: The in-force corrections (``BET_LIST_CORRECTIONS_COLUMNS``); empty when off.
         graded_outcomes: The result strip's rows (``BET_GRADED_OUTCOMES_COLUMNS``).
         verdict_context: ``{"declared", "season", "start_week"}`` for the 2026 forward verdict.
+        early_arm_summary: The early-week arm's record for /bets
+            (``backtest.early_arm_report``), from the same rows and corrections as the tracker.
         week_results: Last week's actual vs expected rows (``BET_WEEK_RESULTS_COLUMNS``), one per
             season, week and counting class, aggregated from the same rows and corrections as
             the tracker (SPEC R5). Defaults to an empty frame with those columns.
@@ -192,6 +195,7 @@ class BetCacheSources:
     corrections: pd.DataFrame
     graded_outcomes: pd.DataFrame
     verdict_context: dict[str, Any]
+    early_arm_summary: dict[str, Any]
     week_results: pd.DataFrame = field(default_factory=_empty_week_results)
     refit_panel: pd.DataFrame = field(default_factory=_empty_refit_panel)
     refit_aa_status: pd.DataFrame = field(default_factory=_empty_refit_aa_status)
@@ -344,6 +348,7 @@ def read_bet_cache_sources(
             corrections=_empty_corrections(),
             graded_outcomes=graded_outcome_rows(today.bet_list),
             verdict_context=dict(_UNDECLARED),
+            early_arm_summary=early_arm_summary(today.bet_list, None),
             week_results=aggregate_bet_weeks(today.bet_list),
         )
 
@@ -361,6 +366,7 @@ def read_bet_cache_sources(
         corrections=corrections,
         graded_outcomes=graded_outcome_rows(union, corrections=corrections),
         verdict_context=_verdict_context(),
+        early_arm_summary=early_arm_summary(union, corrections),
         week_results=aggregate_bet_weeks(union, corrections=corrections),
         refit_panel=refit_panel,
         refit_aa_status=refit_aa_status,

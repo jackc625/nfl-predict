@@ -26,10 +26,13 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse, Response
 
 from api.cache_schema import (
+    ARM_EARLY,
     ARM_LIVE,
     BACKTEST_SEASON_RANGE_KEY,
     BETTING_SEASON_RANGE_KEY,
+    BOOK_LABEL_PREFIX,
     DAY_BEFORE_RETIRED_FROM,
+    EARLY_ARM_FROM,
     PROVENANCE_BACKTEST_REPLAY,
     REFIT_PANEL_SEASON,
     REPLAY_VALIDATION_TYPE_SEASONS,
@@ -605,6 +608,48 @@ def _day_before_retired(season: int | None, week: int | None) -> bool:
     return (season, week) >= DAY_BEFORE_RETIRED_FROM
 
 
+# The display name of each book the early-week arm may price at. A key not listed here shows as
+# itself, so a book added later is visible rather than blank.
+_EARLY_BOOK_NAMES: dict[str, str] = {
+    "betmgm": "BetMGM",
+    "betrivers": "BetRivers",
+    "draftkings": "DraftKings",
+    "fanduel": "FanDuel",
+}
+
+
+def _early_book_name(eligibility_label: str | None) -> str:
+    """The name of the book an early row's label points at, for display."""
+    key = (eligibility_label or "").removeprefix(BOOK_LABEL_PREFIX)
+    return _EARLY_BOOK_NAMES.get(key, key)
+
+
+def _early_arm_context(
+    service: DataService, season: int | None, week: int | None
+) -> dict[str, Any]:
+    """The early-week section's template values, read from the cache for a week the arm decides.
+
+    Keyed on the NFL week, like the retirement above. An unknown week is not open, and a week
+    before the arm reads nothing: with season and week both None the getters carry no week filter.
+    """
+    if season is None or week is None or (season, week) < EARLY_ARM_FROM:
+        return {
+            "early_arm_open": False,
+            "early_bets": [],
+            "early_declined": 0,
+            "early_summary": None,
+        }
+    return {
+        "early_arm_open": True,
+        "early_bets": [
+            {**bet, "book_name": _early_book_name(bet["eligibility_label"])}
+            for bet in service.get_bet_list(season, week, arm=ARM_EARLY) or []
+        ],
+        "early_declined": len(service.get_suppressed_bets(season, week, arm=ARM_EARLY)),
+        "early_summary": service.get_early_arm_summary(),
+    }
+
+
 def _build_bets_context(
     service: DataService,
     season: int | None,
@@ -720,6 +765,8 @@ def _build_bets_context(
         "replay_old_rule_scope": DataService.old_rule_scope(
             _replay_tracker_seasons(tracker_blocks)
         ),
+        # The early-week arm's own section, shown under the retired message from 2026 week 11.
+        **_early_arm_context(service, season, week),
     }
 
 

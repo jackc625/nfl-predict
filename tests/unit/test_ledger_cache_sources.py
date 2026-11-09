@@ -388,6 +388,47 @@ def test_graded_outcomes_from_the_same_union(
     assert not off.graded_outcomes["corrected"].any()
 
 
+def test_the_early_arm_summary_is_built_from_the_union_and_its_corrections(
+    tmp_path: Path, switch_on: None, undeclared: None
+) -> None:
+    """A corrected early row in the ledger reaches the summary at its in-force grade."""
+    dirs = _dirs(tmp_path)
+    _write_outputs(dirs["output_dir"], _replay_rows())
+    rows = _build_ledger(dirs["ledger_dir"])
+    early = make_row(
+        game_id="2026_11_KC_BUF",
+        week=11,
+        arm="early",
+        recipe_id="recipe-2026-v2",
+        fill_convention_id="fill-v2",
+        eligibility_label="book:fanduel",
+        verdict_scope="pre_verdict",
+    )
+    append_rows(dirs["ledger_dir"], [early])
+    apply_updates(dirs["ledger_dir"], grading_updates={key_of(early): _WIN})
+    _correct_to_loss(dirs["ledger_dir"], early)
+
+    summary = read_bet_cache_sources(**dirs).early_arm_summary
+
+    assert len(rows) == 3, "the three live-arm rows are not what this test separates"
+    assert (summary["bets"], summary["graded"]) == (1, 1)
+    assert (summary["wins"], summary["losses"]) == (0, 1)
+    assert summary["flat_return"] == pytest.approx(-1.0)
+
+
+def test_the_early_arm_summary_is_empty_with_the_switch_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cutover, "FORWARD_ROWS_GO_TO_LEDGER", False)
+    dirs = _dirs(tmp_path)
+    _write_outputs(dirs["output_dir"], _replay_rows())
+
+    summary = read_bet_cache_sources(**dirs).early_arm_summary
+
+    assert summary["bets"] == 0
+    assert summary["flat_return"] is None and summary["mean_clv"] is None
+
+
 def _calls(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     names: set[str] = set()

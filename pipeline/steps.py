@@ -1356,6 +1356,7 @@ def populate_web_cache_unlocked() -> None:
         bet_corrections_df=sources.corrections,
         bet_graded_outcomes_df=sources.graded_outcomes,
         forward_verdict_context=sources.verdict_context,
+        early_arm_summary=sources.early_arm_summary,
         bet_week_results_df=sources.week_results,
         edge_thresholds_by_target=edge_thresholds,
         decided_edge_thresholds_by_game=sources.decided_edge_thresholds,

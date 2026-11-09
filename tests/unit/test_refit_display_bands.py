@@ -301,7 +301,11 @@ def test_cached_band_follows_the_generation(tmp_path: Path) -> None:
 def test_the_manual_rebuild_resolves_from_its_own_artifacts_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A custom-directory rebuild can never band with production's generation (T-37-71)."""
+    """A custom-directory rebuild can never band with production's generation (T-37-71).
+
+    RE-POINTED 2026-11-09 for backtest/early_arm_2026.py: the rebuild now also hands over the
+    early arm's record, so the stand-in sources carry that field too.
+    """
     resolved_with: list[tuple[Path, Path]] = []
     populated: list[dict[str, Any]] = []
     sentinel = {"ats": (0.9, 0.5), "ou": None, "wp": (0.05, 0.02)}
@@ -322,6 +326,7 @@ def test_the_manual_rebuild_resolves_from_its_own_artifacts_dir(
         refit_aa_status=None,
         decided_edge_thresholds={},
         refit_panel_failure=None,
+        early_arm_summary=None,
     )
     monkeypatch.setattr(
         populate_cache_script, "read_bet_cache_sources", lambda *a, **kw: sources

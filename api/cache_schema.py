@@ -202,6 +202,11 @@ DAY_BEFORE_RETIRED_FROM: tuple[int, int] = (2026, 10)
 # ``tests/unit/test_early_arm_record.py`` pins the two equal.
 EARLY_ARM_FROM: tuple[int, int] = (2026, 11)
 
+# An early row's ``eligibility_label`` is this prefix plus the key of the book it was priced at.
+# The PAGE'S OWN COPY of ``backtest.early_arm_2026.BOOK_LABEL_PREFIX``, for the same reason;
+# ``tests/unit/test_early_arm_record.py`` pins the two equal.
+BOOK_LABEL_PREFIX: str = "book:"
+
 # The contaminated replay window (2021-2024 were burned across Phases 26/27) and the single
 # unburned clean-holdout season this milestone spends exactly once.
 _REPLAY_CONTAMINATED_SEASONS: frozenset[int] = frozenset({2021, 2022, 2023, 2024})
@@ -406,6 +411,10 @@ BETTING_SIM_VALIDATION_TYPE_KEY = "betting_sim_validation_type"
 # WR-D05); the value is the exception class. The rest of the cache is built as usual, and the
 # Season page says the comparison is not available instead of showing an empty panel.
 REFIT_PANEL_FAILED_KEY = "refit_panel_failed"
+
+# The early-week arm's record on /bets, stamped at cache build as one JSON value so the page
+# computes nothing (``backtest.early_arm_report``). Absent on a cache built before the stamp.
+EARLY_ARM_SUMMARY_KEY = "early_arm_summary"
 
 # The PREFIX of the cache_meta keys stamping when a week's bet list was last materialized. It is
 # a prefix and not a key: see ``bet_list_populated_at_key``.

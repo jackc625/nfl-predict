@@ -45,6 +45,10 @@ def test_the_page_copy_of_the_start_week_agrees() -> None:
     assert api.cache_schema.EARLY_ARM_FROM == record.EARLY_FROM
 
 
+def test_the_page_copy_of_the_book_label_prefix_agrees() -> None:
+    assert api.cache_schema.BOOK_LABEL_PREFIX == record.BOOK_LABEL_PREFIX
+
+
 def test_the_ledger_schema_re_exports_the_arm_and_the_start_week() -> None:
     assert forward_ledger.schema.ARM_EARLY == "early"
     assert forward_ledger.schema.ARM_EARLY in forward_ledger.schema.ARMS
