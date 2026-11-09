@@ -37,12 +37,14 @@ file's conventions plus this one.
 
 A QUOTE FAR FROM THE OTHERS IS NOT A PRICE. A quote more than ``MAX_QUOTE_DISTANCE_POINTS`` from
 the median line of its game's usable quotes is dropped before the consensus is taken, so it can
-neither move the consensus nor be the best price. This is a data-integrity rule, added 2026-11-09
-by the controller under the plan's review focus 1 (a stale or outlying quote becoming the best
-price). On the four recorded boards of 2026-11-05 to 2026-11-08, regulated books only, 99% of
-quotes sat within 1.0 point of their game's median. The top of the tail was FanDuel's NE@DET at
--1.5 against about +1.5 on three straight days, which would have been priced as a large fake edge
-into an append-only ledger.
+neither move the consensus nor be the best price. When exactly two quotes remain, they must be
+within that distance of each other or the game has no market, because with two quotes there is no
+telling which is wrong. This is a data-integrity rule, added 2026-11-09 by the controller under
+the plan's review focus 1 (a stale or outlying quote becoming the best price). On the four
+recorded boards of 2026-11-05 to 2026-11-08, regulated books only, 99% of quotes sat within 1.0
+point of their game's median. The top of the tail was FanDuel's NE@DET at -1.5 against about +1.5
+on three straight days, which would have been priced as a large fake edge into an append-only
+ledger.
 
 THE CHOSEN BOOK IS ``eligibility_label``. Each early row stores the book it was priced at in that
 ledger column, as ``book:<key>`` (``BOOK_LABEL_PREFIX``), and so does its decision snapshot. On
