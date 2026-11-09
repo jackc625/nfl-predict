@@ -35,6 +35,15 @@ read, with no slippage added. It is registered HERE because ``backtest/fill_conv
 frozen and is never edited; ``forward_ledger.declarations.resolve_fill_convention`` accepts that
 file's conventions plus this one.
 
+A QUOTE FAR FROM THE OTHERS IS NOT A PRICE. A quote more than ``MAX_QUOTE_DISTANCE_POINTS`` from
+the median line of its game's usable quotes is dropped before the consensus is taken, so it can
+neither move the consensus nor be the best price. This is a data-integrity rule, added 2026-11-09
+by the controller under the plan's review focus 1 (a stale or outlying quote becoming the best
+price). On the four recorded boards of 2026-11-05 to 2026-11-08, regulated books only, 99% of
+quotes sat within 1.0 point of their game's median. The top of the tail was FanDuel's NE@DET at
+-1.5 against about +1.5 on three straight days, which would have been priced as a large fake edge
+into an append-only ledger.
+
 THE CHOSEN BOOK IS ``eligibility_label``. Each early row stores the book it was priced at in that
 ledger column, as ``book:<key>`` (``BOOK_LABEL_PREFIX``), and so does its decision snapshot. On
 the other arms the column never names a book (it reads ``no_subpopulation`` or is NULL); it is
@@ -77,6 +86,7 @@ __all__ = [
     "KELLY_FRACTION",
     "KEY_NUMBER_FIT_SEASONS",
     "KEY_NUMBER_TABLES_PATH",
+    "MAX_QUOTE_DISTANCE_POINTS",
     "MIN_BOOKS",
     "PER_GAME_CAP",
     "PER_WEEK_CAP",
@@ -126,6 +136,10 @@ MIN_BOOKS: int = 2
 # A quote older than this when the board is read cannot be the best price: best-price selection
 # actively picks outliers, and stale quotes are the likeliest outliers.
 QUOTE_MAX_AGE_HOURS: int = 6
+
+# A quote further than this from the median line of its game's usable quotes is dropped before the
+# consensus is taken. A quote exactly this far away stays.
+MAX_QUOTE_DISTANCE_POINTS: float = 1.5
 
 
 # ---------------------------------------------------------------------------
