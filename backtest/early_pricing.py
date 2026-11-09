@@ -11,7 +11,8 @@ than ``QUOTE_MAX_AGE_HOURS`` before the board was read, and a line the key-numbe
 A quote with no bookmaker time cannot be shown to be fresh, so it is not usable. A time later than
 the read is the bookmaker's clock running ahead, not staleness, so it is. Finally, a quote further
 than ``MAX_QUOTE_DISTANCE_POINTS`` from the median of those is dropped, so one book's wrong number
-can neither move the consensus nor be chosen as a large fake edge.
+can neither move the consensus nor be chosen as a large fake edge. Two quotes left further apart
+than that are no market at all, because with two there is no telling which is wrong.
 
 THE SCALE. ``up`` means over, or the home side covering. A spread ``line`` is on the ledger's
 scale, positive when the home team is favoured, which is the same scale as the model's margin and
@@ -173,6 +174,18 @@ def _quotes_near_the_median(quotes: Sequence[Quote]) -> list[Quote]:
     ]
 
 
+def _two_quotes_disagree(quotes: Sequence[Quote]) -> bool:
+    """Whether exactly two quotes are left and are too far apart to tell which one is wrong.
+
+    The median of two quotes is their midpoint, so the distance rule cannot drop either until
+    they are twice ``MAX_QUOTE_DISTANCE_POINTS`` apart. This holds the pair to the limit itself.
+    """
+    return (
+        len(quotes) == 2
+        and abs(quotes[0].line - quotes[1].line) > MAX_QUOTE_DISTANCE_POINTS
+    )
+
+
 def _value_quote(
     quote: Quote,
     *,
@@ -227,8 +240,8 @@ def price_target(
 
     Returns:
         The priced side, or a rejection code: ``missing_snapshot`` with fewer than ``MIN_BOOKS``
-        quotes left once the unusable and the far ones are dropped, ``no_bet_side`` when the
-        model equals the consensus.
+        quotes left once the unusable and the far ones are dropped, or with exactly two left that
+        are too far apart; ``no_bet_side`` when the model equals the consensus.
 
     Raises:
         KeyError: When ``target`` has no early arm.
@@ -246,7 +259,7 @@ def price_target(
         if _line_inside_table(quote.line, table)
     ]
     priceable = _quotes_near_the_median(inside_table)
-    if len(priceable) < MIN_BOOKS:
+    if len(priceable) < MIN_BOOKS or _two_quotes_disagree(priceable):
         return "missing_snapshot"
 
     consensus = median(quote.line for quote in priceable)

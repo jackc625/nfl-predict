@@ -332,6 +332,109 @@ def test_a_recorded_wrong_way_spread_is_never_the_price() -> None:
     assert priced.consensus == 1.5
 
 
+def test_two_books_too_far_apart_are_no_market() -> None:
+    """DraftKings +1.5 against FanDuel -1.5: with two quotes, nothing says which is wrong.
+
+    The median of two quotes is their midpoint, so each is 1.5 from it and the distance rule
+    alone keeps both.
+    """
+    quotes = [q("draftkings", line=1.5), q("fanduel", line=-1.5)]
+    assert (
+        price_target("ats", 4.0, quotes, TABLES["ats"], captured_at=NOW)
+        == "missing_snapshot"
+    )
+
+
+def test_two_books_just_past_the_limit_are_no_market() -> None:
+    quotes = [
+        q("draftkings", line=44.0),
+        q("fanduel", line=44.0 + MAX_QUOTE_DISTANCE_POINTS + 0.25),
+    ]
+    assert (
+        price_target("ou", 53.0, quotes, TABLES["ou"], captured_at=NOW)
+        == "missing_snapshot"
+    )
+
+
+@pytest.mark.parametrize(
+    "gap", [MAX_QUOTE_DISTANCE_POINTS, 1.0], ids=["exactly_at_the_limit", "one_point"]
+)
+def test_two_books_close_enough_still_price(gap: float) -> None:
+    quotes = [q("draftkings", line=44.0), q("fanduel", line=44.0 + gap)]
+    assert priced_side("ou", 53.0, quotes).consensus == 44.0 + gap / 2
+
+
+def test_two_books_left_by_the_distance_drop_are_held_to_the_same_limit() -> None:
+    """The median is 45.25: 40.0 and 50.0 drop, and 44.0 and 46.5 are left 2.5 apart."""
+    quotes = [
+        q("betmgm", line=40.0),
+        q("draftkings", line=44.0),
+        q("fanduel", line=46.5),
+        q("betrivers", line=50.0),
+    ]
+    assert (
+        price_target("ou", 53.0, quotes, TABLES["ou"], captured_at=NOW)
+        == "missing_snapshot"
+    )
+
+
+def test_two_books_left_by_the_range_check_are_held_to_the_same_limit() -> None:
+    """0.0 goes to the range check, which leaves 44.5 and 46.5, 2.0 apart."""
+    quotes = [
+        q("betmgm", line=0.0),
+        q("draftkings", line=44.5),
+        q("fanduel", line=46.5),
+    ]
+    assert (
+        price_target("ou", 53.0, quotes, TABLES["ou"], captured_at=NOW)
+        == "missing_snapshot"
+    )
+
+
+def test_three_books_wider_than_the_limit_still_price() -> None:
+    """The two-quote rule is for exactly two: with three, the median can say which is wrong."""
+    quotes = [
+        q("draftkings", line=44.0),
+        q("fanduel", line=45.5),
+        q("betmgm", line=47.0),
+    ]
+    assert priced_side("ou", 53.0, quotes).consensus == 45.5
+
+
+# ---------------------------------------------------------------------------
+# The table's range comes before the distance rule
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_line", [0.0, 120.0, 130.5, -3.0])
+def test_every_book_on_a_line_the_table_cannot_price_is_no_market(
+    bad_line: float,
+) -> None:
+    """The books agree, so the distance rule keeps them; only the range check stops a raise."""
+    quotes = [q("draftkings", line=bad_line), q("fanduel", line=bad_line)]
+    assert (
+        price_target("ou", 53.0, quotes, TABLES["ou"], captured_at=NOW)
+        == "missing_snapshot"
+    )
+
+
+def test_a_line_the_table_cannot_price_never_counts_in_the_first_median() -> None:
+    """Counted, the first median is 44.25, 46.0 is 1.75 from it and drops, and 44.25 is the consensus.
+
+    Left out, the median is 44.5 and 46.0 is exactly at the limit, so it stays and is the best
+    number for the under.
+    """
+    quotes = [
+        q("betmgm", line=0.0),
+        q("draftkings", line=44.0),
+        q("fanduel", line=44.5),
+        q("betrivers", line=46.0),
+    ]
+    priced = priced_side("ou", 36.0, quotes)
+    assert priced.consensus == 44.5
+    assert priced.sportsbook == "betrivers"
+
+
 # ---------------------------------------------------------------------------
 # The side, the expected close and the chances
 # ---------------------------------------------------------------------------
