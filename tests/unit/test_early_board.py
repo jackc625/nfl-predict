@@ -23,6 +23,7 @@ import pandas as pd
 import pytest
 
 import utils.game_lock as lock_rule
+from backtest import early_board
 from backtest.early_board import (
     EarlyBoard,
     board_odds,
@@ -370,6 +371,108 @@ def test_a_capture_time_with_no_zone_is_refused(tmp_path: Path) -> None:
     _write_records(path, _record("2026-11-17T22:00:00", "naive"))
     with pytest.raises(ValueError, match="NO timezone"):
         read_board_for_run(path, date(2026, 11, 17))
+
+
+# ---------------------------------------------------------------------------
+# A torn line: one capture cut off mid-write must not fail every later decision day
+# ---------------------------------------------------------------------------
+
+_TUESDAY = date(2026, 11, 17)
+_TORN = '{"captured_at_utc": "2026-11-17T23:00:00+00:00", "board": [{"id": "to'
+
+
+def _record_line(captured_at_utc: str, marker: str) -> str:
+    return json.dumps(_record(captured_at_utc, marker))
+
+
+def _write_raw_lines(path: Path, *lines: str | bytes) -> None:
+    """Each line as given, ended with a newline, so a torn or undecodable one can be planted."""
+    with path.open("wb") as handle:
+        for line in lines:
+            handle.write(
+                (line.encode("utf-8") if isinstance(line, str) else line) + b"\n"
+            )
+
+
+def test_a_torn_line_in_the_middle_is_skipped(tmp_path: Path) -> None:
+    path = tmp_path / "early_lines.jsonl"
+    _write_raw_lines(
+        path,
+        _record_line("2026-11-17T14:00:00+00:00", "morning"),
+        _TORN,
+        _record_line("2026-11-17T22:00:00+00:00", "evening"),
+    )
+
+    board = read_board_for_run(path, _TUESDAY)
+
+    assert board is not None
+    assert board.events == [{"id": "evening"}]
+
+
+def test_a_torn_line_at_the_end_leaves_the_boards_before_it(tmp_path: Path) -> None:
+    path = tmp_path / "early_lines.jsonl"
+    _write_raw_lines(path, _record_line("2026-11-17T14:00:00+00:00", "morning"), _TORN)
+
+    board = read_board_for_run(path, _TUESDAY)
+    latest = latest_board(path)
+
+    assert board is not None and latest is not None
+    assert board.events == latest.events == [{"id": "morning"}]
+
+
+def test_todays_only_board_torn_leaves_no_board(tmp_path: Path) -> None:
+    """Which the run reports as the ordinary no_board skip, and that skip pushes."""
+    path = tmp_path / "early_lines.jsonl"
+    _write_raw_lines(path, _record_line("2026-11-16T22:00:00+00:00", "monday"), _TORN)
+
+    assert read_board_for_run(path, _TUESDAY) is None
+
+
+@pytest.mark.parametrize(
+    "line",
+    [b"\xff\xfe not utf-8", "[1, 2]", "{}", '{"board": []}', "42"],
+    ids=["undecodable", "a_list", "empty_object", "no_capture_time", "a_number"],
+)
+def test_a_line_that_is_no_board_at_all_is_skipped_the_same_way(
+    tmp_path: Path, line: str | bytes
+) -> None:
+    path = tmp_path / "early_lines.jsonl"
+    _write_raw_lines(path, line, _record_line("2026-11-17T22:00:00+00:00", "evening"))
+
+    board = read_board_for_run(path, _TUESDAY)
+
+    assert board is not None
+    assert board.events == [{"id": "evening"}]
+
+
+def test_a_skipped_line_is_logged_with_its_line_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logged: list[tuple[str, dict[str, Any]]] = []
+
+    class _Recorder:
+        """Stands in for the module's structlog logger, which caches on first use."""
+
+        def warning(self, event: str, **fields: Any) -> None:
+            logged.append((event, fields))
+
+    monkeypatch.setattr(early_board, "logger", _Recorder())
+    path = tmp_path / "early_lines.jsonl"
+    _write_raw_lines(
+        path,
+        _record_line("2026-11-17T14:00:00+00:00", "morning"),
+        "",
+        _TORN,
+        _record_line("2026-11-17T22:00:00+00:00", "evening"),
+    )
+
+    read_board_for_run(path, _TUESDAY)
+
+    ((_event, fields),) = logged
+    assert fields["line_number"] == 3, (
+        "the warning must name the file's own line number"
+    )
+    assert fields["path"] == path.as_posix()
 
 
 # ---------------------------------------------------------------------------

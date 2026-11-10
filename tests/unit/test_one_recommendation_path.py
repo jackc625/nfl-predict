@@ -39,6 +39,10 @@ assertion below therefore compares MODULE PATHS.
 Selectors (``-k``): step_imports, facade_chain, only_facade, importers, retired_artifact,
 not_vacuous, dead_cluster.
 
+RE-POINTED 2026-11-09 for backtest/early_arm_2026.py: ``backtest/early_decide.py`` joins the pinned
+importers of the decision engine. It takes ``SelectionResult`` from the module that defines it, for
+the one mapping every arm's rows go through; it decides nothing with the selector.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -120,6 +124,7 @@ _PRODUCTION_PACKAGES: tuple[str, ...] = (
 # a new path, and a departed one means this list has become a licence nobody is using.
 _DECISION_ENGINE_IMPORTERS: frozenset[str] = frozenset(
     {
+        "backtest/early_decide.py",
         "backtest/ou_monetization.py",
         "backtest/profitability_2025.py",
         "backtest/weekly_bet_list.py",

@@ -41,6 +41,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import argparse
+import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -72,7 +73,7 @@ from backtest.study_1b_inputs import EarlyInputs, build_early_inputs
 from backtest.weekly_bet_list import DecisionBundle
 from data.schemas import LIVE_ODDS_CAPTURE_KEY
 from data.storage import load_dataframe
-from data.upstream_pin import digest_file, load_schedules
+from data.upstream_pin import load_schedules
 from features.elo_features import assert_no_provisional_training_rows
 from forward_ledger.canonical import ENTRY_KIND_ROW
 from forward_ledger.runner import RecordOutcome, record_early_week
@@ -408,6 +409,15 @@ def _week_rows(games: pd.DataFrame, season: int, week: int) -> pd.DataFrame:
     return games.loc[(games["season"] == season) & (games["week"] == week)]
 
 
+def _record_sha256(path: Path) -> str:
+    """The sha256 of a text file as git holds it, with CRLF normalized to LF.
+
+    core.autocrlf checks the record out with CRLF while git stores LF, so a hash of the bytes on
+    disk would make a later comparison with git show an edit nobody made.
+    """
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def run_early_week(run_date_et: date, *, board_captured: bool) -> EarlyWeekResult:
     """Decide the NFL week due on *run_date_et*, or skip it by name (see the module docstring).
 
@@ -467,7 +477,7 @@ def run_early_week(run_date_et: date, *, board_captured: bool) -> EarlyWeekResul
         gold_dir=week_decision.gold_dir,
         decided_at=week_decision.decided_at,
         publish_by=min(week_decision.locks.values()),
-        meta_extra={"early_arm_record_sha256": digest_file(Path(RECORD_PATH))},
+        meta_extra={"early_arm_record_sha256": _record_sha256(Path(RECORD_PATH))},
         ledger_dir=LEDGER_DIR,
         artifacts_dir=ARTIFACTS_DIR,
         repo_dir=Path(),

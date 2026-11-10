@@ -7,7 +7,10 @@ day the run missed is not made up later: the next day no week is due.
 
 READING THE BOARD. ``scripts/capture_early_lines.py`` appends one JSON line per capture to
 ``early_lines.jsonl``. The run reads the last line captured on its own ET date, so it can never be
-priced from another day's board.
+priced from another day's board. A line that cannot be read as a board, such as one torn by a
+crash mid-write, is skipped with a warning naming its line number, because one torn line must not
+fail every later decision day. If that leaves no board for today, the run skips the week as
+``no_board``.
 
 FROM BOARD TO QUOTES. The board goes through the same transform and validation as a live decision
 capture, so it is matched to schedule games, sided by team name and refused past each game's lock
@@ -38,9 +41,12 @@ import pandas as pd
 import utils.game_lock as lock_rule
 from backtest.early_arm_2026 import EARLY_FROM
 from backtest.early_pricing import Quote
+from utils.logging_config import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the run hands in its own ingester
     from scripts.ingest_odds import OddsDataIngester
+
+logger = get_logger(__name__)
 
 __all__ = [
     "EarlyBoard",
@@ -116,21 +122,33 @@ def early_week_due(games: pd.DataFrame, run_date_et: date) -> tuple[int, int] | 
 
 
 def _read_boards(path: Path) -> list[EarlyBoard]:
-    """Every recorded board, in the order captured. No file yet means no boards."""
+    """Every readable recorded board, in the order captured. No file yet means no boards.
+
+    A line that is not a board is skipped with a warning naming its line number, never raised:
+    JSON a write tore off, a multi-byte character cut in half (both ``ValueError``), or a value
+    without a capture time or a board. Bytes, so a stray byte cannot fail the decode of the whole
+    file. A capture time with no timezone stays a refusal: that is a defect, not a torn write.
+    """
     if not path.exists():
         return []
-    records = [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    return [
-        EarlyBoard(
-            captured_at=_require_aware(record["captured_at_utc"]),
-            events=record["board"],
+    boards: list[EarlyBoard] = []
+    for line_number, raw_line in enumerate(path.read_bytes().splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        try:
+            record = json.loads(raw_line)
+            captured_at_utc, events = record["captured_at_utc"], record["board"]
+        except (ValueError, KeyError, TypeError):
+            logger.warning(
+                "Skipping an unreadable early-lines record",
+                path=path.as_posix(),
+                line_number=line_number,
+            )
+            continue
+        boards.append(
+            EarlyBoard(captured_at=_require_aware(captured_at_utc), events=events)
         )
-        for record in records
-    ]
+    return boards
 
 
 def read_board_for_run(path: Path, run_date_et: date) -> EarlyBoard | None:

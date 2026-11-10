@@ -342,6 +342,20 @@ def test_a_board_from_another_day_is_no_board(world: World) -> None:
     assert world.calls == []
 
 
+def test_todays_board_torn_mid_write_is_no_board(world: World) -> None:
+    """One torn line never raises: with no other board today, the week skips as no_board."""
+    world.lines_path.write_text(
+        '{"captured_at_utc": "2026-11-17T21:40:00+00:00", "board": [{"id"',
+        encoding="utf-8",
+    )
+
+    result = early_week.run_early_week(TUESDAY, board_captured=True)
+
+    assert result.outcome == early_week.OUTCOME_SKIPPED
+    assert result.reason == "no_board"
+    assert world.calls == []
+
+
 def test_old_models_skip_the_week(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -587,9 +601,35 @@ def test_the_steps_run_in_order(world: World) -> None:
 
 
 def test_the_record_gets_the_record_files_sha(world: World) -> None:
+    """RE-POINTED 2026-11-09 for backtest/early_arm_2026.py: the hash is of the text as git holds it.
+
+    The bytes on disk are CRLF in a core.autocrlf checkout, so they are normalized to LF first.
+    """
     early_week.run_early_week(TUESDAY, board_captured=True)
 
-    expected = hashlib.sha256(Path(RECORD_PATH).read_bytes()).hexdigest()
+    expected = hashlib.sha256(
+        Path(RECORD_PATH).read_bytes().replace(b"\r\n", b"\n")
+    ).hexdigest()
+    assert world.recorded[0]["meta_extra"] == {"early_arm_record_sha256": expected}
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_the_record_hash_does_not_depend_on_line_endings(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, newline: str
+) -> None:
+    """core.autocrlf is true, so a checkout holds CRLF while git holds LF.
+
+    Hashing the bytes as they sit on disk would make a later comparison with git show an edit
+    that nobody made.
+    """
+    text = "first line\nsecond line\n"
+    record_copy = tmp_path / "record_copy.py"
+    record_copy.write_bytes(text.replace("\n", newline).encode("ascii"))
+    monkeypatch.setattr(early_week, "RECORD_PATH", str(record_copy))
+
+    early_week.run_early_week(TUESDAY, board_captured=True)
+
+    expected = hashlib.sha256(text.encode("ascii")).hexdigest()
     assert world.recorded[0]["meta_extra"] == {"early_arm_record_sha256": expected}
 
 

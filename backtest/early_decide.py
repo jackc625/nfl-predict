@@ -35,6 +35,7 @@ from typing import Any, cast
 import pandas as pd
 
 from api.cache import RUN_MODE_FORWARD
+from backtest.bet_selector import SelectionResult
 from backtest.early_arm_2026 import EARLY_TARGETS, EV_FLOOR
 from backtest.early_pricing import (
     PricedSide,
@@ -45,12 +46,8 @@ from backtest.early_pricing import (
     price_target,
     quarter_kelly_fraction,
 )
-
-# SelectionResult comes through the facade: tests/unit/test_one_recommendation_path.py pins the exact
-# set of modules importing backtest.bet_selector, and this module uses only that result dataclass.
 from backtest.weekly_bet_list import (
     DEFAULT_BANKROLL,
-    SelectionResult,
     WeeklyChainFit,
     records_to_bet_list_frame,
 )
