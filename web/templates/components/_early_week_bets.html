@@ -1,9 +1,10 @@
 {# The early-week arm's section on /bets (backtest/early_arm_2026.py). Paper only.
 
-   Pass: early_bets, early_declined, early_summary, from pages._early_arm_context. Every number is
-   read from the cache as stored: the per-cent figures are the same fraction-to-percent render the
-   ranked list applies (UIAP-01). Three states: the week's bets, a decided week with none, and a
-   week the Tuesday run has not reached.
+   Pass: early_bets, early_declined, early_no_decision, early_summary, from
+   pages._early_arm_context. Every number is read from the cache as stored: the per-cent figures
+   are the same fraction-to-percent render the ranked list applies (UIAP-01). Four states: the
+   week's bets, a decided week with none, a week whose first game kicked off with no decision
+   made, and a week the Tuesday run has not reached.
 
    THE SLIP IS THE RANKED LIST'S SLIP, in its grid and its classes, with the book and the price in
    the column that holds the capture time there. This file adds no utility class of its own: the
@@ -85,14 +86,17 @@
   </ol>
   {% elif early_declined %}
   <p class="text-sm text-muted">No early-week bets this week. {{ early_declined }} bets were checked on Tuesday and none cleared the sportsbook's cut.</p>
+  {% elif early_no_decision %}
+  <p class="text-sm text-muted">No early-week decision was made for this week.</p>
   {% else %}
   <p class="text-sm text-muted">Not decided yet. These bets are decided by the Tuesday run.</p>
   {% endif %}
 
-  <div class="mt-4 flex flex-wrap gap-2" data-early-record>
+  <p class="label mt-4" data-early-record-label>Season to date</p>
+  <div class="mt-1 flex flex-wrap gap-2" data-early-record>
     {{ early_figure("Closing-line value (points)", "--" if _mean_clv is none else "%+.2f"|format(_mean_clv)) }}
     {{ early_figure("Return (flat, units)", "--" if _flat_return is none else "%+.3f"|format(_flat_return)) }}
     {{ early_figure("Record", "--" if _wins is none else _wins ~ "-" ~ _summary.get("losses") ~ "-" ~ _summary.get("pushes")) }}
-    {{ early_figure("Closing share", "--" if _closing_share is none else "%.0f%%"|format(_closing_share * 100)) }}
+    {{ early_figure("Closing share of settled bets", "--" if _closing_share is none else "%.0f%%"|format(_closing_share * 100)) }}
   </div>
 </section>

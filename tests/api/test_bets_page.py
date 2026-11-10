@@ -5077,6 +5077,10 @@ _EARLY_CAPTION = (
     "and BetRivers when the line was read. Paper only."
 )
 _EARLY_NOT_DECIDED = "Not decided yet. These bets are decided by the Tuesday run."
+_EARLY_NO_DECISION = "No early-week decision was made for this week."
+# The week's first kickoff as the cache stores it: predictions.game_date, a naive Eastern wall clock.
+_EARLY_FIRST_KICKOFF = datetime(2026, 11, 19, 20, 15)
+_EARLY_FIRST_KICKOFF_UTC = _EARLY_FIRST_KICKOFF.replace(tzinfo=_ET).astimezone(UTC)
 _EARLY_NONE_CLEARED_END = (
     "bets were checked on Tuesday and none cleared the sportsbook's cut."
 )
@@ -5157,8 +5161,13 @@ def _early_client(
     *,
     weeks: tuple[int, ...] = (_EARLY_WEEK,),
     summary: dict[str, Any] | None = None,
+    first_kickoff: datetime | None = None,
 ) -> Any:
-    """A client over a cache built through populate_cache, with *weeks* of 2026 scheduled."""
+    """A client over a cache built through populate_cache, with *weeks* of 2026 scheduled.
+
+    *first_kickoff* stores one prediction row for the week, the only place the cache holds a
+    kickoff.
+    """
     from api.cache import populate_cache
 
     clear_cache()
@@ -5187,6 +5196,21 @@ def _early_client(
         bet_graded_outcomes_df=graded_outcome_rows(bet_list),
         early_arm_summary=summary,
     )
+    if first_kickoff is not None:
+        conn = duckdb.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO predictions (game_id, season, week, game_date) "
+                "VALUES (?, ?, ?, ?)",
+                [
+                    f"{_EARLY_SEASON}_W{_EARLY_WEEK:02d}_AAA@BBB",
+                    _EARLY_SEASON,
+                    _EARLY_WEEK,
+                    first_kickoff,
+                ],
+            )
+        finally:
+            conn.close()
     return contextmanager(_client)(db_path)
 
 
@@ -5300,6 +5324,75 @@ def test_a_week_with_no_early_rows_is_not_decided_yet(tmp_path: Path) -> None:
     assert _EARLY_NONE_CLEARED_END not in section
 
 
+def _pin_the_early_clock(monkeypatch: pytest.MonkeyPatch, now: datetime) -> None:
+    """Judge the early section at *now*; the context builder passes no instant of its own."""
+    import api.routes.pages as pages_module
+
+    monkeypatch.setattr(
+        pages_module,
+        "_early_arm_context",
+        partial(pages_module._early_arm_context, now=now),
+    )
+
+
+def test_a_skipped_week_says_no_decision_was_made_once_the_first_game_has_kicked_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At the kickoff instant itself the game has kicked off."""
+    _pin_the_early_clock(monkeypatch, _EARLY_FIRST_KICKOFF_UTC)
+    with _early_client(
+        tmp_path, "early_skipped", [], first_kickoff=_EARLY_FIRST_KICKOFF
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    section = _early_section(body)
+    assert _EARLY_NO_DECISION in section
+    assert _EARLY_NOT_DECIDED not in section
+
+
+def test_before_the_first_kickoff_a_week_with_no_rows_keeps_the_existing_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_the_early_clock(monkeypatch, _EARLY_FIRST_KICKOFF_UTC - timedelta(seconds=1))
+    with _early_client(
+        tmp_path, "early_before_kickoff", [], first_kickoff=_EARLY_FIRST_KICKOFF
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    section = _early_section(body)
+    assert _EARLY_NOT_DECIDED in section
+    assert _EARLY_NO_DECISION not in section
+
+
+def test_a_week_with_no_stored_kickoff_keeps_the_existing_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No prediction row means no kickoff to read, so the page makes no claim about one."""
+    _pin_the_early_clock(monkeypatch, _EARLY_FIRST_KICKOFF_UTC)
+    with _early_client(tmp_path, "early_no_kickoff", []) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    section = _early_section(body)
+    assert _EARLY_NOT_DECIDED in section
+    assert _EARLY_NO_DECISION not in section
+
+
+def test_a_decided_week_never_says_no_decision_was_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A week the run decided keeps its own line after kickoff, bets or none."""
+    _pin_the_early_clock(monkeypatch, _EARLY_FIRST_KICKOFF_UTC + timedelta(days=2))
+    declined = [_declined_early_row("2026_W11_KC@BUF")]
+    with _early_client(
+        tmp_path, "early_declined_past", declined, first_kickoff=_EARLY_FIRST_KICKOFF
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    section = _early_section(body)
+    assert f"No early-week bets this week. 1 {_EARLY_NONE_CLEARED_END}" in section
+    assert _EARLY_NO_DECISION not in section
+
+
 def test_only_the_shown_weeks_early_rows_count(tmp_path: Path) -> None:
     """Another week's bets and declines, and another arm's declines, are not this week's."""
     next_week = _EARLY_WEEK + 1
@@ -5379,6 +5472,7 @@ def test_early_rows_stay_out_of_the_retired_tracker(tmp_path: Path) -> None:
 
 
 def test_the_record_shows_closing_value_beside_the_return(tmp_path: Path) -> None:
+    """RE-POINTED 2026-11-09 for backtest/early_arm_2026.py: the closing share names its base."""
     rows = [_early_row("2026_W11_KC@BUF")]
     with _early_client(
         tmp_path, "early_record", rows, summary=_EARLY_SUMMARY
@@ -5389,11 +5483,26 @@ def test_the_record_shows_closing_value_beside_the_return(tmp_path: Path) -> Non
         ("Closing-line value (points)", "+0.75"),
         ("Return (flat, units)", "-0.053"),
         ("Record", "3-2-1"),
-        ("Closing share", "83%"),
+        ("Closing share of settled bets", "83%"),
     ]
 
 
+def test_the_record_row_is_labelled_season_to_date(tmp_path: Path) -> None:
+    """The row sums every early week so far, under a section showing one week's bets."""
+    rows = [_early_row("2026_W11_KC@BUF")]
+    with _early_client(
+        tmp_path, "early_record_label", rows, summary=_EARLY_SUMMARY
+    ) as client:
+        body = client.get(f"/bets?season={_EARLY_SEASON}&week={_EARLY_WEEK}").text
+
+    section = _early_section(body)
+    label = section.index("data-early-record-label>Season to date<")
+    assert label < section.index("data-early-record>")
+    assert section.count("Season to date") == 1
+
+
 def test_a_figure_with_nothing_behind_it_renders_as_two_dashes(tmp_path: Path) -> None:
+    """RE-POINTED 2026-11-09 for backtest/early_arm_2026.py: the closing share names its base."""
     with _early_client(
         tmp_path, "early_none", [], summary=_EARLY_EMPTY_SUMMARY
     ) as client:
@@ -5403,7 +5512,7 @@ def test_a_figure_with_nothing_behind_it_renders_as_two_dashes(tmp_path: Path) -
         ("Closing-line value (points)", "--"),
         ("Return (flat, units)", "--"),
         ("Record", "0-0-0"),
-        ("Closing share", "--"),
+        ("Closing share of settled bets", "--"),
     ]
 
 

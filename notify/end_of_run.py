@@ -14,8 +14,9 @@ ORDER (D-13)
 2. The one bets push for the live bets the run newly appended, or none. From the 2026 week-10
    switch the day-before system decides nothing (MIDSEASON-SWITCH-RECORD.md), so a run whose
    slate is at or after that week says why there is none (:data:`NO_BETS_RETIRED`) and its
-   check-in carries ``day-before=retired``. Then the one push for the live bets the early-week
-   step wrote, or none (:func:`notify.messages.early_bets_message`).
+   check-in carries ``day-before=retired``. Then one early-week push: the live bets the step wrote
+   (:func:`notify.messages.early_bets_message`), or the week it skipped
+   (:func:`notify.messages.early_skipped_message`), or none.
 3. The weekly digest email, on its digest run only (:func:`notify.digest.send_digest_if_due`). An
    email that is not delivered sends one normal-priority ``FAILED: weekly email`` push naming the
    failure kind (SPEC R8), and both count toward :attr:`EndOfRunOutcome.any_undelivered`.
@@ -55,6 +56,7 @@ from notify.events import (
 from notify.messages import (
     bets_message,
     early_bets_message,
+    early_skipped_message,
     email_failed_message,
     failed_messages,
 )
@@ -177,7 +179,7 @@ def notify_end_of_run(
         outcome.deliveries.append(("bets", _raised(error)))
 
     try:
-        early = early_bets_message(report)
+        early = early_bets_message(report) or early_skipped_message(report)
         if early is None:
             print("NOTIFY_EARLY_BETS= none")  # noqa: T201
         else:

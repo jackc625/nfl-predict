@@ -21,7 +21,9 @@ WHAT ONE RUN DOES
    before the cache rebuild, the website push and the notifications, on every run
    that got past the picks (``success``, ``finished_with_skips``, ``degraded``, ``no_games``,
    ``lock_passed``) and never on a dry run. It is a non-fatal side step: it prints ``REFIT=``,
-   records its own outcome and never changes the exit code. New models serve from the next run.
+   records its own outcome and never changes the exit code. New models serve the day-before
+   predictions from the next run; the early-week step (step 7) comes after this one, so on a swap
+   day it already reads the new models.
 5. Pushes the website (Phase 36, D-13) at the end of every run that did not fail, after the ledger
    sync and before the phone pushes, through ``pipeline.site_push``; a run ending ``failed`` or
    ``run_failed`` records "not pushed" instead. Unless ``config/site_push_enabled.json`` reads
@@ -36,7 +38,7 @@ WHAT ONE RUN DOES
    right after step 6 and under the same condition, on the one day each week is due. It is a
    non-fatal side step: it prints ``EARLY_BETS=`` and never changes the exit code. Rows it wrote
    are synced and the web cache rebuilt at once, so they are anchored and on the site before the
-   website push and the phone push.
+   website push and the phone push. A week it skips reaches the phone push by name.
 
 WHY THE FULL HISTORY IS REBUILT, AND WHY THAT CANNOT DENY PREDICTIONS TO TONIGHT'S GAMES
 -----------------------------------------------------------------------------------------
@@ -85,6 +87,7 @@ from notify.report import (
     STATUS_OFFSEASON,
     STATUS_RUN_FAILED,
     STATUS_SUCCESS,
+    EarlySkip,
     RunReport,
 )
 from pipeline import daily_steps
@@ -986,12 +989,21 @@ def _run_early_bets(report: RunReport) -> object:
 EARLY_BETS: Callable[[RunReport], object] = _run_early_bets
 
 
+def _early_skip(result: Any) -> EarlySkip | None:
+    """The week the step skipped and why, or None. Only a skip carries a reason."""
+    reason = getattr(result, "reason", None)
+    if reason is None:
+        return None
+    return EarlySkip(season=result.season, week=result.week, reason=str(reason))
+
+
 def _early_bets_quietly(report: RunReport) -> None:
     """Run the early-week step; a failure prints its class name and NEVER propagates.
 
     Rows it wrote are synced and the web cache rebuilt here, so they are anchored and on the site
-    before the website push and the phone push. Only ``Exception`` is caught: a Ctrl+C, and the
-    test guard's ``pytest.fail``, still stop the process.
+    before the website push and the phone push. A skip goes on *report* for the phone push. Only
+    ``Exception`` is caught: a Ctrl+C, and the test guard's ``pytest.fail``, still stop the
+    process.
     """
     try:
         result = EARLY_BETS(report)
@@ -1002,6 +1014,7 @@ def _early_bets_quietly(report: RunReport) -> None:
         return
     report.early_ran = True
     report.early_rows = list(getattr(result, "appended_rows", ()))
+    report.early_skip = _early_skip(result)
     if report.early_rows:
         _sync_ledger(report=report)
         _rebuild_web_cache(report, contract="WEB_CACHE_AFTER_EARLY=")

@@ -29,7 +29,7 @@ import scripts.daily_lock_pipeline as daily
 from backtest.midseason_switch_2026 import DAY_BEFORE_RETIRED_FROM
 from notify import end_of_run
 from notify.log import read_notifications
-from notify.report import STATUS_RUN_FAILED, RunReport
+from notify.report import STATUS_RUN_FAILED, EarlySkip, RunReport
 from pipeline import daily_steps, live_skip
 from pipeline.daily_steps import DailySlate, slate_lock
 from scripts.capture_early_lines import EarlyLinesOutcome
@@ -2113,6 +2113,40 @@ def test_a_no_games_day_syncs_after_the_early_rows_are_written(
 
     assert order == expected
     assert "WEB_CACHE_AFTER_EARLY= rebuilt" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        pytest.param(
+            SimpleNamespace(reason="no_board", season=2026, week=11, appended_rows=()),
+            EarlySkip(2026, 11, "no_board"),
+            id="skipped",
+        ),
+        pytest.param(
+            SimpleNamespace(reason=None, season=None, week=None, appended_rows=()),
+            None,
+            id="not-due",
+        ),
+        pytest.param(
+            SimpleNamespace(reason=None, season=2026, week=11, appended_rows=()),
+            None,
+            id="decided",
+        ),
+    ],
+)
+def test_a_skipped_week_is_carried_on_the_report(
+    monkeypatch, tmp_path, result, expected
+):
+    """Only a skip names a reason, so it is the one outcome the report carries for the push."""
+    _no_games_env(monkeypatch, tmp_path)
+    seen = _seen_reports(monkeypatch)
+    monkeypatch.setattr(daily, "EARLY_BETS", lambda _report: result)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    (report,) = seen
+    assert report.early_skip == expected
 
 
 def test_a_dry_run_makes_no_early_decision(monkeypatch, tmp_path):

@@ -48,6 +48,7 @@ from api.season_metrics import (
 )
 from api.services import DataService
 from utils import get_logger
+from utils.date_utils import ET
 
 logger = get_logger(__name__)
 
@@ -624,28 +625,61 @@ def _early_book_name(eligibility_label: str | None) -> str:
     return _EARLY_BOOK_NAMES.get(key, key)
 
 
+def _first_kickoff_has_passed(
+    service: DataService, season: int, week: int, now: datetime
+) -> bool:
+    """Whether the week's earliest stored kickoff is at or before *now*. A timestamp comparison.
+
+    Read from the week's prediction rows, earliest first: ``predictions.game_date`` is the one
+    kickoff the cache holds, stored as a naive Eastern wall clock. A week with no prediction row
+    has no kickoff to read, so the page makes no claim about it.
+    """
+    games = service.get_predictions(season=season, week=week)
+    kickoff = games[0]["game_date"] if games else None
+    return isinstance(kickoff, datetime) and kickoff.replace(tzinfo=ET) <= now
+
+
 def _early_arm_context(
-    service: DataService, season: int | None, week: int | None
+    service: DataService,
+    season: int | None,
+    week: int | None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """The early-week section's template values, read from the cache for a week the arm decides.
 
     Keyed on the NFL week, like the retirement above. An unknown week is not open, and a week
     before the arm reads nothing: with season and week both None the getters carry no week filter.
+
+    ``early_no_decision`` is true once the week's first game has kicked off with no early row at
+    all: the Tuesday run skipped the week, and a missed day is never back-filled.
+
+    Args:
+        service: The request's data service.
+        season: The resolved season, or None.
+        week: The resolved week, or None.
+        now: The instant to judge the kickoff at; the current UTC time when omitted.
     """
     if season is None or week is None or (season, week) < EARLY_ARM_FROM:
         return {
             "early_arm_open": False,
             "early_bets": [],
             "early_declined": 0,
+            "early_no_decision": False,
             "early_summary": None,
         }
+    bets = [
+        {**bet, "book_name": _early_book_name(bet["eligibility_label"])}
+        for bet in service.get_bet_list(season, week, arm=ARM_EARLY) or []
+    ]
+    declined = len(service.get_suppressed_bets(season, week, arm=ARM_EARLY))
+    instant = now if now is not None else datetime.now(tz=UTC)
     return {
         "early_arm_open": True,
-        "early_bets": [
-            {**bet, "book_name": _early_book_name(bet["eligibility_label"])}
-            for bet in service.get_bet_list(season, week, arm=ARM_EARLY) or []
-        ],
-        "early_declined": len(service.get_suppressed_bets(season, week, arm=ARM_EARLY)),
+        "early_bets": bets,
+        "early_declined": declined,
+        "early_no_decision": not bets
+        and not declined
+        and _first_kickoff_has_passed(service, season, week, instant),
         "early_summary": service.get_early_arm_summary(),
     }
 
