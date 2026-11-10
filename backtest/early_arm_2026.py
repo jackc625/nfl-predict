@@ -19,15 +19,22 @@ built, and this record adds no new test, family or binding readout for 2026.
 THE OWNER RULING, 2026-11-09 (OPTION B). The design's rule, the same-source slope plus 0.5 points
 of slippage, placed 0 bets on 2,625 replayed game-bets, so the owner chose to loosen it. Early bets
 are priced with Study 1b's CLOSE slopes (O/U 0.13624, ATS 0.03688) at the real best regulated-book
-quote, with no slippage. On the 2020-2024 replay at a flat -110, that rule placed 62 O/U bets on
-1,310 games (12.4 a season) with a flat return of +21.7%, and the line moved our way by 0.89 points.
-It placed 0 ATS bets.
+quote, with no slippage. The replay behind that choice is NOT the rule as built: it priced one line
+at a flat -110, not the best book's real line and price. With the CLOSE slopes on 2020-2024 games,
+that replay placed 62 O/U bets on 1,310 games (12.4 a season) with a flat return of +21.7%, and the
+line moved our way by 0.89 points. It placed 0 ATS bets.
 
 THOSE FIGURES ARE NOT EVIDENCE OF PROFIT. They are IN-SAMPLE: the slopes were measured on the same
 2020-2024 games the replay then bet. And they MAY INCLUDE A SOURCE EFFECT: the close comes from a
 different data source than the early line, and a consistent difference between two sources can
 look like a line moving toward the model. The same-source O/U slope is only 0.0475. The owner
 accepted this knowingly: paper only, and live same-book closing lines test it.
+
+OWNER RULING 2026-11-09, after the whole-branch review: the rule stays as built. Measured on the
+real week 9 and week 10 boards it places 7 bets (4 spreads, 3 totals), about 3-4 a week. None of
+the 7 clears the floor at the consensus line at flat -110; each exists because one book offered a
+better line or price. The replay figures (62 O/U bets, 0 ATS, +21.7%) were measured on one line at
+-110 and do not cover this rule. No replay covers it. Paper only.
 
 WHAT ``fill-v2`` MEANS. A row stamped ``fill-v2`` was priced at a real quote: the line and the
 American price that one named regulated book (``REGULATED_BOOKS``) was offering when the board was
@@ -42,9 +49,10 @@ within that distance of each other or the game has no market, because with two q
 telling which is wrong. This is a data-integrity rule, added 2026-11-09 by the controller under
 the plan's review focus 1 (a stale or outlying quote becoming the best price). On the four
 recorded boards of 2026-11-05 to 2026-11-08, regulated books only, 99% of quotes sat within 1.0
-point of their game's median. The top of the tail was FanDuel's NE@DET at -1.5 against about +1.5
-on three straight days, which would have been priced as a large fake edge into an append-only
-ledger.
+point of their game's median. The widest gap was FanDuel on NE@DET, at +1.5 against -1.5 and -1.0
+on the ledger's scale (home favoured is positive), a game this arm would not price: it is in week
+10, before the arm starts, and it is neutral-site. The rule exists so that a wrong number from one
+book cannot become the best price in an append-only ledger.
 
 THE CHOSEN BOOK IS ``eligibility_label``. Each early row stores the book it was priced at in that
 ledger column, as ``book:<key>`` (``BOOK_LABEL_PREFIX``), and so does its decision snapshot. On
