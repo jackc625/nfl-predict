@@ -31,6 +31,10 @@ the ledger still re-checks the real clock against ``publish_by`` immediately bef
 
 THE REHEARSAL runs steps 8-12 with no silver refresh and no ledger write, against the latest board
 of any day, and prints what it would have decided. ``python -m pipeline.early_week --rehearse-week N``.
+Silver weather_features holds only the games whose slate night has run, so the rehearsal computes the
+week's weather as step 6 would and hands it to the gold build in memory; nothing reaches silver. Elo
+is not computed aside: a week is rehearsable once a slate run of that week has written its
+provisional Elo rows (before that, its games have no Elo row and no prediction).
 
 The stores are relative to the repository root, the daily run's working directory, and are
 module-level names so a rehearsal can run from a worktree through temporary junctions.
@@ -87,7 +91,10 @@ from models.artifacts import (
 from models.key_numbers import load_key_number_tables
 from models.v2_trainer import predict_v2
 from pipeline import live_skip
-from pipeline.daily_steps import build_weather_features_through
+from pipeline.daily_steps import (
+    build_weather_features_through,
+    weather_features_through,
+)
 from pipeline.steps import persist_current_season_elo, step_build_team_form
 from refit.generations import in_force_recipe
 from scripts.build_gold_v2 import TARGETS, FeatureMatrixBuilderV2Live
@@ -99,6 +106,7 @@ __all__ = [
     "OUTCOME_NOT_DUE",
     "OUTCOME_SKIPPED",
     "EarlyWeekResult",
+    "GoldBuilderWithWeather",
     "main",
     "rehearse_early_week",
     "run_early_week",
@@ -167,12 +175,44 @@ def _refresh_silver(season: int, week_ids: frozenset[str]) -> None:
     build_weather_features_through(season, week_ids, {})
 
 
-def _build_gold(unplayed_through_lock: datetime) -> dict[str, pd.DataFrame]:
-    """The v2 gold matrices through the week's latest lock. Saves nothing."""
-    return FeatureMatrixBuilderV2Live().generate_feature_matrices(
+class GoldBuilderWithWeather(FeatureMatrixBuilderV2Live):
+    """The v2 gold builder, reading the weather features it is handed instead of silver's."""
+
+    def __init__(self, weather_features: pd.DataFrame) -> None:
+        super().__init__()
+        self._weather_features = weather_features
+
+    def _read_silver_weather_features(self) -> pd.DataFrame:
+        return self._weather_features.copy()
+
+
+def _build_gold(
+    unplayed_through_lock: datetime,
+    *,
+    weather_features: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
+    """The v2 gold matrices through the week's latest lock. Saves nothing.
+
+    Args:
+        unplayed_through_lock: The week's latest lock.
+        weather_features: The weather to build with; None reads silver (the real run, whose
+            refresh has just written it).
+    """
+    builder = (
+        FeatureMatrixBuilderV2Live()
+        if weather_features is None
+        else GoldBuilderWithWeather(weather_features)
+    )
+    return builder.generate_feature_matrices(
         excluded_game_ids=live_skip.excluded_games(),
         unplayed_through_lock=unplayed_through_lock,
     )
+
+
+def _rehearsal_weather(season: int, week_ids: frozenset[str]) -> pd.DataFrame:
+    """The week's weather features as step 6 would write them, computed and not saved."""
+    features, _unknown = weather_features_through(season, week_ids, {})
+    return features
 
 
 def _build_inputs(
@@ -211,7 +251,8 @@ def _now() -> datetime:
 
 
 REFRESH_SILVER: Callable[[int, frozenset[str]], None] = _refresh_silver
-BUILD_GOLD: Callable[[datetime], dict[str, pd.DataFrame]] = _build_gold
+BUILD_GOLD: Callable[..., dict[str, pd.DataFrame]] = _build_gold
+REHEARSAL_WEATHER: Callable[[int, frozenset[str]], pd.DataFrame] = _rehearsal_weather
 BUILD_INPUTS: Callable[[Path, pd.DataFrame, int, pd.Series], EarlyInputs] = (
     _build_inputs
 )
@@ -346,11 +387,17 @@ def _decide_week(
     board: EarlyBoard,
     season: int,
     gold_out_dir: Path,
+    weather_features: pd.DataFrame | None = None,
 ) -> _WeekDecision:
-    """Build the week's gold, leave out passed locks, score the rest and decide. Writes no ledger."""
+    """Build the week's gold, leave out passed locks, score the rest and decide. Writes no ledger.
+
+    *weather_features* is the rehearsal's in-memory weather; None builds from silver.
+    """
     week_locks = _game_locks(week_games)
     gold_dir = write_week_gold(
-        BUILD_GOLD(max(week_locks.values())), week_games, gold_out_dir
+        BUILD_GOLD(max(week_locks.values()), weather_features=weather_features),
+        week_games,
+        gold_out_dir,
     )
 
     decided_at = NOW()
@@ -533,7 +580,8 @@ def rehearse_early_week(week: int) -> None:
     """Build, score and decide *week* of the arm's season, and print it. No ledger write.
 
     Steps 8-12 of the run, against the latest board of any day: no silver refresh, and the gold
-    goes to its own directory.
+    goes to its own directory. The week's weather is computed as step 6 would write it and handed
+    to the gold build in memory (see the module docstring).
 
     Raises:
         RuntimeError: no board has ever been recorded.
@@ -544,8 +592,10 @@ def rehearse_early_week(week: int) -> None:
         msg = f"no board is recorded in {EARLY_LINES_FILE.as_posix()}; nothing to rehearse"
         raise RuntimeError(msg)
     games = load_dataframe("games", layer="silver")
+    week_games = _week_rows(games, season, week)
+    weather = REHEARSAL_WEATHER(season, frozenset(week_games["game_id"].astype(str)))
     week_decision = _decide_week(
-        games, _week_rows(games, season, week), board, season, REHEARSAL_GOLD_ROOT
+        games, week_games, board, season, REHEARSAL_GOLD_ROOT, weather_features=weather
     )
     _print_rehearsal(week_decision.decision)
 

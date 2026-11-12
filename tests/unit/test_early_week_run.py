@@ -114,6 +114,10 @@ class World:
     calls: list[str] = field(default_factory=list)
     refreshed: list[tuple[int, frozenset[str]]] = field(default_factory=list)
     build_locks: list[datetime] = field(default_factory=list)
+    # The weather frame each gold build was handed: None means it reads silver.
+    build_weather: list[pd.DataFrame | None] = field(default_factory=list)
+    # Each in-memory weather computation the rehearsal asked for: (season, week's game ids).
+    rehearsal_weather: list[tuple[int, frozenset[str]]] = field(default_factory=list)
     gold_dirs: list[Path] = field(default_factory=list)
     early_times: list[pd.Series] = field(default_factory=list)
     recorded: list[dict[str, Any]] = field(default_factory=list)
@@ -128,6 +132,12 @@ class World:
         self.lines_path.parent.mkdir(parents=True, exist_ok=True)
         with self.lines_path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(_board_line(captured_at, events)) + "\n")
+
+
+#: What the rehearsal's in-memory weather computation returns in these tests.
+REHEARSAL_WEATHER_FRAME = pd.DataFrame(
+    {"game_id": ["g1", "g2"], "wind_mph": [5.0, 9.0]}
+)
 
 
 def _matrices(game_ids: list[str]) -> dict[str, pd.DataFrame]:
@@ -168,10 +178,19 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
         made.calls.append("refresh")
         made.refreshed.append((season, week_ids))
 
-    def build(unplayed_through_lock: datetime) -> dict[str, pd.DataFrame]:
+    def build(
+        unplayed_through_lock: datetime,
+        *,
+        weather_features: pd.DataFrame | None = None,
+    ) -> dict[str, pd.DataFrame]:
         made.calls.append("build")
         made.build_locks.append(unplayed_through_lock)
+        made.build_weather.append(weather_features)
         return _matrices([*made.games["game_id"].astype(str)])
+
+    def rehearsal_weather(season: int, week_ids: frozenset[str]) -> pd.DataFrame:
+        made.rehearsal_weather.append((season, week_ids))
+        return REHEARSAL_WEATHER_FRAME
 
     def inputs(
         gold_dir: Path, games: pd.DataFrame, season: int, early_times: pd.Series
@@ -212,6 +231,7 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
 
     monkeypatch.setattr(early_week, "REFRESH_SILVER", refresh)
     monkeypatch.setattr(early_week, "BUILD_GOLD", build)
+    monkeypatch.setattr(early_week, "REHEARSAL_WEATHER", rehearsal_weather)
     monkeypatch.setattr(early_week, "BUILD_INPUTS", inputs)
     monkeypatch.setattr(early_week, "SCORE", score)
     monkeypatch.setattr(early_week, "RECORD", record)
@@ -873,6 +893,60 @@ def test_the_rehearsal_shows_a_priced_bet(
     assert "side=home_cover" in ats and "book=fanduel" in ats
     assert "price=-105" in ats and "status=live" in ats
     assert "ev=-" not in ats
+
+
+def test_the_rehearsal_builds_the_week_with_its_weather_computed_in_memory(
+    world: World,
+) -> None:
+    """Fixed 2026-11-11 after the first real rehearsal crashed at the weather gate.
+
+    The rehearsal skips the silver refresh, and silver weather_features holds only games whose
+    slate night has run, so the week's other games reached the gold build with no weather row.
+    The rehearsal now computes the week's weather as the refresh would, in memory, and hands it to
+    the build; nothing is written to silver.
+    """
+    early_week.rehearse_early_week(11)
+
+    assert world.rehearsal_weather == [(2026, frozenset({"g1", "g2"}))]
+    assert len(world.build_weather) == 1
+    assert world.build_weather[0] is REHEARSAL_WEATHER_FRAME
+    assert "refresh" not in world.calls
+
+
+def test_the_run_builds_its_gold_from_silver_weather(world: World) -> None:
+    """The real run refreshes silver first, so its build reads silver and computes nothing aside."""
+    early_week.run_early_week(TUESDAY, board_captured=True)
+
+    assert world.build_weather == [None]
+    assert world.rehearsal_weather == []
+
+
+def test_the_rehearsal_builder_reads_the_weather_it_was_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The v2 builder reads silver weather_features from parquet; the rehearsal's reads its frame."""
+    from scripts import build_features
+
+    reads: list[tuple[Any, ...]] = []
+    silver = pd.DataFrame({"game_id": ["g1"], "wind_mph": [1.0]})
+
+    def load(*args: Any) -> pd.DataFrame:
+        reads.append(args)
+        return silver
+
+    monkeypatch.setattr(build_features, "load_dataframe", load)
+    given = pd.DataFrame({"game_id": ["g1", "g2"], "wind_mph": [5.0, 9.0]})
+
+    assert (
+        early_week.FeatureMatrixBuilderV2Live()._read_silver_weather_features()
+        is silver
+    )
+    assert reads == [("weather_features", "silver", "parquet")]
+
+    read = early_week.GoldBuilderWithWeather(given)._read_silver_weather_features()
+    pd.testing.assert_frame_equal(read, given)
+    assert read is not given
+    assert len(reads) == 1
 
 
 def test_a_rehearsal_with_no_board_is_refused_by_name(world: World) -> None:

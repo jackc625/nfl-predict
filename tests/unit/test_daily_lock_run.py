@@ -611,6 +611,44 @@ def test_a_slate_game_with_no_forecast_is_built_with_weather_unknown(monkeypatch
     }
 
 
+def test_the_weather_features_are_computed_without_a_save(monkeypatch):
+    """``weather_features_through`` returns the frame and saves nothing (the rehearsal's use);
+    ``build_weather_features_through`` saves exactly that frame to silver, as before."""
+    import features.weather as weather_mod
+    from data import storage
+
+    schedule = _schedule()
+    slate_ids = frozenset({"2026_W03_LAC@BUF", "2026_W03_LA@DEN"})
+    weather = pd.DataFrame({"game_id": ["2026_W03_LAC@BUF"]})
+    monkeypatch.setattr(
+        storage,
+        "load_dataframe",
+        lambda name, *_a, **_k: schedule if name == "games" else weather,
+    )
+    saves: list[tuple[pd.DataFrame, dict[str, object]]] = []
+    monkeypatch.setattr(
+        storage, "save_dataframe", lambda frame, **kwargs: saves.append((frame, kwargs))
+    )
+    built = pd.DataFrame({"game_id": sorted(slate_ids)})
+
+    class _Calculator:
+        def build_weather_features(self, *, games_df, weather_df, unobserved_game_ids):
+            return built
+
+    monkeypatch.setattr(weather_mod, "WeatherFeaturesCalculator", _Calculator)
+
+    features, unknown = daily_steps.weather_features_through(2026, slate_ids, {})
+
+    assert features is built
+    assert unknown == {"2026_W03_LA@DEN": "no forecast was captured"}
+    assert saves == []
+
+    assert daily_steps.build_weather_features_through(2026, slate_ids, {}) == unknown
+    assert len(saves) == 1
+    assert saves[0][0] is built
+    assert saves[0][1] == {"table_name": "weather_features", "layer": "silver"}
+
+
 def test_the_slate_weather_capture_collects_failures_on_the_slate(monkeypatch):
     from scripts import ingest_weather
 

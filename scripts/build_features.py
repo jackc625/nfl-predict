@@ -921,6 +921,15 @@ class FeatureMatrixBuilder:
             raise ValueError(msg)
         return tuple(preserved)
 
+    def _read_silver_weather_features(self) -> pd.DataFrame:
+        """Silver ``weather_features``, read from its parquet file: the weather that feeds gold.
+
+        Its own method so the early-week rehearsal (``pipeline.early_week``) can hand the build
+        the week's weather computed in memory, with nothing written to silver. The parquet source
+        is named on purpose; the reason is at the call site in :meth:`load_all_feature_sources`.
+        """
+        return load_dataframe("weather_features", "silver", "parquet")
+
     def load_all_feature_sources(
         self,
         target_season: int | None = None,
@@ -1111,7 +1120,7 @@ class FeatureMatrixBuilder:
             # today (6,499 rows, identical columns, weather_coverage sums equal), so
             # naming the source changes nothing now and closes the way back.
             try:
-                weather_df = load_dataframe("weather_features", "silver", "parquet")
+                weather_df = self._read_silver_weather_features()
                 # WR-10's shape (Plan 33.2-27): a season alone narrows, a week further.
                 if target_season:
                     weather_df = weather_df[weather_df["season"] == target_season]
