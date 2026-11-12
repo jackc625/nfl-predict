@@ -1,0 +1,102 @@
+{# The early-week arm's section on /bets (backtest/early_arm_2026.py). Paper only.
+
+   Pass: early_bets, early_declined, early_no_decision, early_summary, from
+   pages._early_arm_context. Every number is read from the cache as stored: the per-cent figures
+   are the same fraction-to-percent render the ranked list applies (UIAP-01). Four states: the
+   week's bets, a decided week with none, a week whose first game kicked off with no decision
+   made, and a week the Tuesday run has not reached.
+
+   THE SLIP IS THE RANKED LIST'S SLIP, in its grid and its classes, with the book and the price in
+   the column that holds the capture time there. This file adds no utility class of its own: the
+   compiled stylesheet is committed, and the push refuses a sheet out of step with the templates.
+
+   MONOCHROME. Colour on /bets is reserved for the tracker's won and lost marks, so a losing return
+   here stays grey. The record row reads figures population stamped: a figure with nothing behind
+   it is None and renders as two dashes, never as a zero nobody measured. #}
+{% import "components/_broadcast.html" as bc %}
+{% import "components/_bet_pick.html" as bp %}
+{% set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} %}
+{% set _summary = early_summary or {} %}
+{% set _mean_clv = _summary.get("mean_clv") %}
+{% set _flat_return = _summary.get("flat_return") %}
+{% set _closing_share = _summary.get("closing_share") %}
+{% set _wins = _summary.get("wins") %}
+
+{% macro early_figure(label, value) -%}
+<div class="stat-tile flex-1 min-w-[7.5rem]">
+  <p class="label" data-early-figure-label>{{ label }}</p>
+  <p class="stat-tile-value display text-3xl leading-tight tabular-nums whitespace-nowrap text-fg" data-early-figure-value>{{ value }}</p>
+</div>
+{%- endmacro %}
+
+<section data-early-week class="mt-8">
+  {{ bc.section_head("Early-week bets (paper)", ghost=true) }}
+  <p class="text-sm text-muted max-w-2xl mb-4">Placed on the Tuesday before the games, at the best price among DraftKings, FanDuel, BetMGM and BetRivers when the line was read. Paper only.</p>
+
+  {% if early_bets %}
+  <ol class="space-y-2" aria-label="Early-week bets, ranked by expected value">
+    {% for bet in early_bets %}
+    {%- set matchup = bet.game_id.split('_')[-1] -%}
+    {%- set away_team, home_team = matchup.split('@') if '@' in matchup else ("Away", "Home") -%}
+    {%- set away_colors = team_colors(away_team) -%}
+    {%- set home_colors = team_colors(home_team) -%}
+    <li class="bet-slip grid grid-cols-[2.5rem_minmax(0,1fr)] lg:grid-cols-[3rem_12rem_minmax(0,1fr)_5rem_6rem_6rem_12rem] items-center gap-x-4 gap-y-2 py-3 pr-4">
+      <span class="display text-3xl text-dim text-center row-span-4 lg:row-span-1">{{ loop.index }}</span>
+      <div class="flex flex-col gap-1 min-w-0">
+        <div class="flex items-center gap-2">{{ bc.team_block(away_team, away_colors.bg, away_colors.fg) }}<span class="label text-fg truncate">{{ team_nickname(away_team) }}</span></div>
+        <div class="flex items-center gap-2">{{ bc.team_block(home_team, home_colors.bg, home_colors.fg) }}<span class="label text-fg truncate">{{ team_nickname(home_team) }}</span></div>
+      </div>
+      <div class="min-w-0">
+        <a href="/games/{{ bet.game_id }}" class="text-xs text-muted hover:text-accent">{{ matchup.replace('@', ' @ ') }}</a>
+        <span class="label block">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</span>
+        <p class="display text-2xl md:text-3xl lg:text-xl xl:text-3xl leading-none text-accent mt-1 whitespace-nowrap" data-early-pick>{{ bp.pick_label(bet) }}</p>
+      </div>
+      <div class="col-start-2 lg:col-start-auto grid grid-cols-3 gap-3 lg:contents">
+        <div class="lg:text-right">
+          <span class="label block" title="A spread line is the picked team's own line, as a sportsbook quotes it">Line</span>
+          <span class="num text-fg whitespace-nowrap" data-early-line>
+            {%- if bet.line is none -%}--
+            {%- elif bet.target == "ats" -%}{{ bp.side_line(bet, "%+.1f") }}
+            {%- else -%}{{ "%.1f"|format(bet.line) }}
+            {%- endif -%}
+          </span>
+        </div>
+        <div class="lg:text-right">
+          <span class="label block">EV %</span>
+          <span class="num font-bold text-fg whitespace-nowrap" data-early-ev>{{ "%+.2f"|format(bet.per_bet_ev * 100) }}%</span>
+        </div>
+        <div class="lg:text-right">
+          <span class="label block" title="1 unit = 1% of a notional bankroll">Stake (units)</span>
+          <span class="num font-bold text-fg whitespace-nowrap" data-early-stake>{{ "%.2f"|format(bet.stake_units) }}</span>
+        </div>
+      </div>
+      <div class="col-start-2 lg:col-start-auto flex flex-wrap lg:flex-col items-start lg:items-end gap-1.5">
+        <span class="block max-w-full min-w-0 text-xs lg:text-right"><span class="label block">Book</span><span class="num text-fg whitespace-nowrap" data-early-book>{{ bet.book_name or "--" }}</span></span>
+        <span class="block max-w-full min-w-0 text-xs lg:text-right"><span class="label block">Price</span><span class="num text-fg whitespace-nowrap" data-early-price>{{ "--" if bet.selected_odds is none else "%+d"|format(bet.selected_odds|int) }}</span></span>
+        {# Every displayed row wears its honesty label (R8). An early row's verdict_scope selects
+           the never-counted class; its stored validation type is unchanged. #}
+        <span>
+          {%- with provenance=bet.provenance, validation_type=("pre_verdict" if bet.verdict_scope == "pre_verdict" else bet.validation_type) -%}
+            {% include "components/_provenance_badge.html" %}
+          {%- endwith -%}
+        </span>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% elif early_declined %}
+  <p class="text-sm text-muted">No early-week bets this week. {{ early_declined }} bets were checked on Tuesday and none cleared the sportsbook's cut.</p>
+  {% elif early_no_decision %}
+  <p class="text-sm text-muted">No early-week decision was made for this week.</p>
+  {% else %}
+  <p class="text-sm text-muted">Not decided yet. These bets are decided by the Tuesday run.</p>
+  {% endif %}
+
+  <p class="label mt-4" data-early-record-label>Season to date</p>
+  <div class="mt-1 flex flex-wrap gap-2" data-early-record>
+    {{ early_figure("Closing-line value (points)", "--" if _mean_clv is none else "%+.2f"|format(_mean_clv)) }}
+    {{ early_figure("Return (flat, units)", "--" if _flat_return is none else "%+.3f"|format(_flat_return)) }}
+    {{ early_figure("Record", "--" if _wins is none else _wins ~ "-" ~ _summary.get("losses") ~ "-" ~ _summary.get("pushes")) }}
+    {{ early_figure("Closing share of settled bets", "--" if _closing_share is none else "%.0f%%"|format(_closing_share * 100)) }}
+  </div>
+</section>

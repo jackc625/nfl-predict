@@ -75,9 +75,9 @@ def walk_forward_v2(
     predicts the fold's games that have a gold row. With *prediction_rows* (a frame per target,
     each carrying ``game_id``, ``season``, ``week`` and the target's ``V2_INPUTS``) training is
     unchanged, but each fold predicts only its games present in that target's frame, scored from
-    those rows; a fold with none is skipped before fitting. Raises ``ValueError`` if
-    *prediction_rows* lacks a target or a column, if a fold would predict a game it trained on, or
-    if one game is predicted twice.
+    those rows; a fold with none is skipped before fitting, and a target with none in any fold
+    returns an empty frame. Raises ``ValueError`` if *prediction_rows* lacks a target or a column,
+    if a fold would predict a game it trained on, or if one game is predicted twice.
     """
     if prediction_rows is not None:
         for target in V2_TARGETS:
@@ -99,6 +99,21 @@ def walk_forward_v2(
                 target, gold_dir, games, specs, labels, prediction_rows=supplied
             )
     return predictions
+
+
+def _empty_predictions() -> pd.DataFrame:
+    """The seven prediction columns with no rows, for a target no fold could score."""
+    return pd.DataFrame(
+        {
+            "game_id": pd.Series(dtype="object"),
+            "season": pd.Series(dtype="int64"),
+            "week": pd.Series(dtype="int64"),
+            "prediction": pd.Series(dtype="float64"),
+            "actual": pd.Series(dtype="float64"),
+            "fold": pd.Series(dtype="object"),
+            "fold_cutoff_utc": pd.Series(dtype="datetime64[ns, UTC]"),
+        }
+    )
 
 
 def _walk_forward_target(
@@ -144,6 +159,8 @@ def _walk_forward_target(
                 }
             )
         )
+    if not frames:
+        return _empty_predictions()
     frame = pd.concat(frames, ignore_index=True)
     repeated = sorted(frame.loc[frame["game_id"].duplicated(), "game_id"])
     if repeated:

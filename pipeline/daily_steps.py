@@ -330,7 +330,8 @@ def build_weather_features_through(
 
     The body of :func:`build_slate_weather_features`, taking the three slate facts it reads as
     arguments, so the re-fit's data preparation (``refit.data_prep``, D-37) runs the same build
-    a prediction day runs without a :class:`DailySlate`.
+    a prediction day runs without a :class:`DailySlate`. The computation is
+    :func:`weather_features_through`; this adds the one save to silver.
 
     Args:
         season: The slate's season.
@@ -343,9 +344,36 @@ def build_weather_features_through(
         The filled map: ``game_id -> reason`` for each slate game built with its weather
         unknown.
     """
+    from data.storage import save_dataframe
+
+    features_df, unknown = weather_features_through(
+        season, slate_game_ids, weather_failures, weather_unknown=weather_unknown
+    )
+    if len(features_df) > 0:
+        save_dataframe(features_df, table_name="weather_features", layer="silver")
+    return unknown
+
+
+def weather_features_through(
+    season: int,
+    slate_game_ids: frozenset[str],
+    weather_failures: Mapping[str, str],
+    *,
+    weather_unknown: dict[str, str] | None = None,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """The weather features :func:`build_weather_features_through` saves, computed and NOT saved.
+
+    The early-week rehearsal (``pipeline.early_week.rehearse_early_week``) uses it to see the
+    coming week's weather exactly as the real run's silver refresh would write it, with nothing
+    written to silver. Arguments as :func:`build_weather_features_through`.
+
+    Returns:
+        ``(features, unknown)``: the frame silver ``weather_features`` would hold, and the
+        filled weather-unknown map.
+    """
     import pandas as pd
 
-    from data.storage import load_dataframe, save_dataframe
+    from data.storage import load_dataframe
     from features.weather import SILVER_WEATHER_TABLE, WeatherFeaturesCalculator
 
     games_df = load_dataframe("games", layer="silver")
@@ -375,9 +403,7 @@ def build_weather_features_through(
         weather_df=weather_df,
         unobserved_game_ids=unobserved,
     )
-    if len(features_df) > 0:
-        save_dataframe(features_df, table_name="weather_features", layer="silver")
-    return unknown
+    return features_df, unknown
 
 
 # ---------------------------------------------------------------------------

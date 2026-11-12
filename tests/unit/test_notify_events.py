@@ -38,14 +38,25 @@ from api.cache import (
 )
 from api.cache_schema import DAY_BEFORE_RETIRED_FROM
 from api.services import DataService, clear_cache
+from backtest.early_pricing import book_label
 from forward_ledger.closing_schedule import TriggerRegistration
 from forward_ledger.runner import SettleOutcome
+from forward_ledger.schema import ARM_EARLY
 from forward_ledger.sync import BACKUP_REPO_MISSING, SyncOutcome
 from notify import log as notification_log
 from notify.end_of_run import notify_end_of_run
 from notify.events import PRIORITY_NORMAL, PRIORITY_TOP, PushMessage, send_push
 from notify.log import read_notifications
-from notify.messages import RERUN_COMMAND, bets_message, failed_messages
+from notify.messages import (
+    _EARLY_SKIP_NOT_PUSHED,
+    _EARLY_SKIP_WHY,
+    RERUN_COMMAND,
+    bets_message,
+    early_bets_message,
+    early_skipped_message,
+    failed_messages,
+    lock_clock_text,
+)
 from notify.report import (
     STATUS_DEGRADED,
     STATUS_FAILED,
@@ -55,8 +66,10 @@ from notify.report import (
     STATUS_OFFSEASON,
     STATUS_RUN_FAILED,
     STATUS_SUCCESS,
+    EarlySkip,
     RunReport,
 )
+from pipeline import early_week as early_week_module
 from pipeline.daily_steps import slate_lock
 from tests.unit.test_forward_ledger_runner import (  # noqa: F401 -- env, run_log_path: fixtures
     DECIDED_AT,
@@ -710,3 +723,240 @@ def test_a_retired_week_prints_why_there_are_no_bets(
         if line.startswith("NOTIFY_BETS=")
     ]
     assert line == expected
+
+
+# ---------------------------------------------------------------------------
+# The early-week step's push and its failure message (owner ruling 2026-11-09)
+# ---------------------------------------------------------------------------
+
+
+def _early_row(**fields: Any) -> dict[str, Any]:
+    """One row the early step wrote: a live under at FanDuel unless *fields* say otherwise."""
+    values: dict[str, Any] = {
+        "week": 11,
+        "target": "ou",
+        "bet_side": "under",
+        "line": 44.5,
+        "selected_odds": -105.0,
+        "stake_units": 1.4,
+        "per_bet_ev": 0.05,
+        "eligibility_label": book_label("fanduel"),
+        "arm": ARM_EARLY,
+    }
+    values.update(fields)
+    return live_bet(values.pop("game_id", "2026_W11_NE@DET"), **values)
+
+
+def report_with_one_bet() -> RunReport:
+    return _clean(early_ran=True, early_rows=[_early_row()])
+
+
+def test_the_early_push_names_book_line_price_and_stake() -> None:
+    message = early_bets_message(report_with_one_bet())
+
+    assert message is not None
+    assert message.event_class == "bets"
+    assert message.priority == PRIORITY_NORMAL
+    assert message.title == "1 early-week bet: 2026 week 11"
+    assert (
+        message.item_lines[0]
+        == "Totals: NE @ DET under 44.5 -105 at fanduel, 1.40 units"
+    )
+
+
+def test_a_home_cover_names_the_home_team_at_the_line_from_its_side() -> None:
+    """The stored line is positive when the home team is favoured, so DET gives the points."""
+    row = _early_row(target="ats", bet_side="home_cover", line=3.5)
+
+    message = early_bets_message(_clean(early_rows=[row]))
+
+    assert message is not None
+    assert message.item_lines == (
+        "Spreads: NE @ DET DET -3.5 -105 at fanduel, 1.40 units",
+    )
+
+
+def test_an_away_cover_names_the_away_team_at_the_line_from_its_side() -> None:
+    row = _early_row(target="ats", bet_side="away_cover", line=3.5)
+
+    message = early_bets_message(_clean(early_rows=[row]))
+
+    assert message is not None
+    assert message.item_lines == (
+        "Spreads: NE @ DET NE +3.5 -105 at fanduel, 1.40 units",
+    )
+
+
+def test_the_early_push_lists_only_the_live_bets_in_bets_order() -> None:
+    rows = [
+        _early_row(per_bet_ev=0.03),
+        _early_row(
+            game_id="2026_W11_KC@BUF",
+            target="ats",
+            bet_side="away_cover",
+            line=-2.5,
+            per_bet_ev=0.08,
+            selected_odds=120.0,
+            stake_units=0.75,
+            eligibility_label=book_label("draftkings"),
+        ),
+        _early_row(
+            game_id="2026_W11_DAL@PHI",
+            status="suppressed",
+            rejection_reason="ev_below_floor",
+        ),
+    ]
+
+    message = early_bets_message(_clean(early_rows=rows))
+
+    assert message is not None
+    assert message.title == "2 early-week bets: 2026 week 11"
+    assert message.item_lines == (
+        "Spreads: KC @ BUF KC -2.5 +120 at draftkings, 0.75 units",
+        "Totals: NE @ DET under 44.5 -105 at fanduel, 1.40 units",
+    )
+
+
+def test_a_declined_row_sends_no_early_push(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(monkeypatch, _ping_ok)
+    declined = _early_row(status="suppressed", rejection_reason="ev_below_floor")
+    report = _clean(early_ran=True, early_rows=[declined])
+
+    assert early_bets_message(report) is None
+    notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
+
+    assert [request.url.host for request in requests] == ["hc-ping.com"]
+    assert "NOTIFY_EARLY_BETS= none" in capsys.readouterr().out
+
+
+def test_the_early_push_follows_the_failed_and_bets_pushes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(
+        monkeypatch, ntfy_ok(), ntfy_ok(), ntfy_ok("receiptEarly01"), _ping_ok
+    )
+    report = _skips_with_two_new_bets()
+    report.early_rows = [_early_row()]
+
+    outcome = notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
+
+    *pushes, checkin = requests
+    assert [json.loads(request.content)["title"] for request in pushes] == [
+        "FAILED: 1 game not predicted",
+        "2 new bets: 2026 week 7, Sunday",
+        "1 early-week bet: 2026 week 11",
+    ]
+    assert checkin.url.host == "hc-ping.com"
+    assert [step for step, _delivery in outcome.deliveries] == [
+        "failed",
+        "bets",
+        "early_bets",
+    ]
+    assert read_notifications()[2]["event_class"] == "bets"
+    assert "NOTIFY_EARLY_BETS= delivered receiptEarly01" in capsys.readouterr().out
+
+
+def test_a_failed_early_step_sends_one_failed_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(monkeypatch, ntfy_ok(), _ping_ok)
+    report = _clean(early_error="RuntimeError")
+
+    outcome = notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
+
+    push, checkin = requests
+    assert checkin.url.host == "hc-ping.com"
+    body = json.loads(push.content)
+    assert body["title"] == "FAILED: early-week bets"
+    assert body["priority"] == PRIORITY_NORMAL
+    lines = body["message"].splitlines()
+    assert "Error: RuntimeError" in lines
+    assert lines[-1].startswith(
+        f"Next: re-run before {lock_clock_text(report.lock)} today: {RERUN_COMMAND}"
+    )
+    assert [step for step, _delivery in outcome.deliveries] == ["failed"]
+
+
+# ---------------------------------------------------------------------------
+# A skipped week is never silent (owner ruling 2026-11-09, final review)
+# ---------------------------------------------------------------------------
+
+
+def _skipped_week(reason: str) -> RunReport:
+    return _clean(early_ran=True, early_skip=EarlySkip(2026, 11, reason))
+
+
+@pytest.mark.parametrize(
+    ("reason", "why"),
+    [
+        ("earlier_week_unscored", "an earlier game has no score yet"),
+        ("no_board", "no odds board was recorded today"),
+        ("recipe_not_v2", "the installed models are not the v2 recipe"),
+        ("a_reason_added_later", "a_reason_added_later"),
+    ],
+    ids=["earlier_week_unscored", "no_board", "recipe_not_v2", "unknown_reason"],
+)
+def test_a_skipped_week_sends_one_normal_push_saying_why_it_stays_undecided(
+    monkeypatch: pytest.MonkeyPatch, reason: str, why: str
+) -> None:
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(monkeypatch, ntfy_ok(), _ping_ok)
+    report = _skipped_week(reason)
+
+    outcome = notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
+
+    push, checkin = requests
+    assert checkin.url.host == "hc-ping.com"
+    body = json.loads(push.content)
+    assert body["title"] == "Early-week bets skipped: 2026 week 11"
+    assert body["priority"] == PRIORITY_NORMAL
+    (line,) = body["message"].splitlines()
+    assert why in line, f"the push does not say why the week was skipped: {line!r}"
+    assert "stays undecided" in line
+    assert "a missed day is never back-filled" in line
+    assert [step for step, _delivery in outcome.deliveries] == ["early_bets"]
+    assert read_notifications()[0]["event_class"] == "failed"
+
+
+def test_a_week_already_decided_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(monkeypatch, _ping_ok)
+    report = _skipped_week("already_decided")
+
+    assert early_skipped_message(report) is None
+    notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
+
+    assert [request.url.host for request in requests] == ["hc-ping.com"]
+    assert "NOTIFY_EARLY_BETS= none" in capsys.readouterr().out
+
+
+def test_a_day_with_no_week_due_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A not-due day leaves no skip on the report, whatever the step returned."""
+    install_sleep_recorder(monkeypatch)
+    requests = install_transport(monkeypatch, _ping_ok)
+    report = _clean(early_ran=True)
+
+    assert early_skipped_message(report) is None
+    notify_end_of_run(report, secrets=dummy_secrets(), now=report.start)
+
+    assert [request.url.host for request in requests] == ["hc-ping.com"]
+    assert "NOTIFY_EARLY_BETS= none" in capsys.readouterr().out
+
+
+def test_the_skip_reasons_the_push_names_are_the_runs_own() -> None:
+    """``notify`` may not import ``pipeline``, so its copies of the reasons are pinned here."""
+    assert set(_EARLY_SKIP_WHY) == {
+        early_week_module.REASON_EARLIER_WEEK_UNSCORED,
+        early_week_module.REASON_NO_BOARD,
+        early_week_module.REASON_RECIPE_NOT_V2,
+    }
+    assert _EARLY_SKIP_NOT_PUSHED == early_week_module.REASON_ALREADY_DECIDED

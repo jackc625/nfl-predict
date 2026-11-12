@@ -39,8 +39,10 @@ A re-derived decision has no arm -- the arm belongs to the stored row -- so each
 compared with the re-derived row of its ``(game_id, season, week, target)`` from ITS OWN snapshot.
 
 A row with no snapshot (a migrated pre-verdict row) is ``not_replayable``, never a pass; a VERDICT
-row with no snapshot fails. Replay is a CLI (``scripts/replay_ledger.py``); no ``api/`` module may
-import it (D-18).
+row with no snapshot fails. An early-arm row (``backtest/early_arm_2026.py``) is ``not_replayable``
+too: it is priced by that record's own rule, which step 5's selection path does not run, so its
+stored snapshot cannot be compared here. Replay is a CLI (``scripts/replay_ledger.py``); no ``api/``
+module may import it (D-18).
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -81,7 +83,7 @@ from forward_ledger.rescore import (
     reattach_spread_probability,
     rescore_candidates,
 )
-from forward_ledger.schema import LEDGER_ROW_KEY, VERDICT_SCOPE_VERDICT
+from forward_ledger.schema import ARM_EARLY, LEDGER_ROW_KEY, VERDICT_SCOPE_VERDICT
 from forward_ledger.snapshots import (
     DecisionSnapshot,
     SnapshotDigestMismatchError,
@@ -422,6 +424,12 @@ def replay_ledger(
         digest = row["decision_snapshot_digest"]
         if digest is None:
             results[_row_key(row)] = _unreplayable(row)
+        elif row["arm"] == ARM_EARLY:
+            results[_row_key(row)] = ReplayResult(
+                _row_key(row),
+                REPLAY_NOT_REPLAYABLE,
+                reason="an early-arm row is priced by its own rule, which replay does not run",
+            )
         else:
             by_digest.setdefault(digest, []).append(row)
     for digest, group in by_digest.items():

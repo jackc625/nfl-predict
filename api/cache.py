@@ -33,6 +33,7 @@ from api.cache_schema import (
     _CURRENT_SLATE_SEPARATOR,  # noqa: F401
     _REPLAY_CLEAN_HOLDOUT_SEASON,
     _REPLAY_CONTAMINATED_SEASONS,
+    ARM_EARLY,  # noqa: F401
     ARM_LIVE,  # noqa: F401
     ARM_SHADOW,  # noqa: F401
     ARMS,  # noqa: F401
@@ -56,6 +57,8 @@ from api.cache_schema import (
     CURRENT_SLATE_KEY,
     DATA_FORMAT_VERSION,
     DATA_FORMAT_VERSION_KEY,
+    EARLY_ARM_FROM,  # noqa: F401
+    EARLY_ARM_SUMMARY_KEY,
     FORWARD_VERDICT_DECLARED_KEY,
     FORWARD_VERDICT_SEASON_KEY,
     FORWARD_VERDICT_START_WEEK_KEY,
@@ -1953,6 +1956,26 @@ def stamp_forward_verdict_context(
     return stamped
 
 
+def stamp_early_arm_summary(
+    conn: duckdb.DuckDBPyConnection,
+    summary: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    """Stamp the early-week arm's record into ``cache_meta`` as one JSON value.
+
+    Pure persistence: the figures were worked out outside ``api/``
+    (``backtest.early_arm_report``). One ``cache_meta`` value and not a new table, so the cache's
+    layout and data-format version do not move. ``None`` (the caller supplied no record) stamps
+    nothing, and the page shows ``--``.
+    """
+    if summary is None:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+        [EARLY_ARM_SUMMARY_KEY, json.dumps(summary), now],
+    )
+
+
 def stamp_betting_sim_evidence_pair(
     conn: duckdb.DuckDBPyConnection, now: datetime
 ) -> tuple[str, str] | None:
@@ -3121,6 +3144,7 @@ def populate_cache(
     refit_panel_df: pd.DataFrame | None = None,
     refit_aa_status_df: pd.DataFrame | None = None,
     refit_panel_failure: str | None = None,
+    early_arm_summary: dict[str, Any] | None = None,
 ) -> None:
     """Populate the DuckDB web cache from artifacts and backtest outputs.
 
@@ -3213,6 +3237,8 @@ def populate_cache(
         refit_panel_failure: The exception class when the panel could not be computed (WR-D05),
             stamped as ``REFIT_PANEL_FAILED_KEY`` so the Season page says "not available"; the
             rest of the cache is built as usual. ``None`` (the panel was computed) stamps nothing.
+        early_arm_summary: The early-week arm's record for /bets, worked out outside ``api/`` by
+            ``backtest.early_arm_report``. ``None`` stamps nothing and the page shows ``--``.
     """
     tmp_path = db_path.with_suffix(".tmp.duckdb")
     logger.info(
@@ -3443,6 +3469,8 @@ def populate_cache(
             conn, forward_verdict_context, now
         )
         betting_sim_pair = stamp_betting_sim_evidence_pair(conn, now)
+        # The early-week arm's record, shown on /bets from 2026 week 11.
+        stamp_early_arm_summary(conn, early_arm_summary, now)
 
         logger.info(
             "Cache metadata set",

@@ -42,6 +42,7 @@ __all__ = [
     "STATUS_OFFSEASON",
     "STATUS_RUN_FAILED",
     "STATUS_SUCCESS",
+    "EarlySkip",
     "RunReport",
 ]
 
@@ -55,6 +56,21 @@ STATUS_SUCCESS = "success"
 STATUS_FAILED = "failed"
 STATUS_FINISHED_WITH_SKIPS = "finished_with_skips"
 STATUS_DEGRADED = "degraded"
+
+
+@dataclass(frozen=True)
+class EarlySkip:
+    """A week the early-week step looked at and did not decide.
+
+    Attributes:
+        season: The season of the week.
+        week: The NFL week.
+        reason: The step's own name for why (``pipeline.early_week.REASON_*``).
+    """
+
+    season: int
+    week: int
+    reason: str
 
 
 @dataclass
@@ -108,6 +124,13 @@ class RunReport:
         refit_error_location: Which re-fit record could not be read, when that is what
             escaped (``RefitRecordFormatError.location``: a path and a line number, never
             record content), so the push names the record to repair (WR-C05).
+        early_board_captured: True when today's early-lines capture recorded a board.
+        early_ran: True when the early-week step ran and returned, whatever its outcome.
+        early_rows: The rows the early-week step newly wrote to the ledger, exactly as written:
+            live and declined alike (the push keeps the live ones).
+        early_skip: The week the early-week step skipped and why; None when it decided a week or
+            none was due.
+        early_error: The class name of an exception that escaped the early-week step, if any.
     """
 
     run_date_et: date
@@ -143,6 +166,11 @@ class RunReport:
     refit: RefitOutcome | None = None
     refit_error: str | None = None
     refit_error_location: str | None = None
+    early_board_captured: bool = False
+    early_ran: bool = False
+    early_rows: list[dict[str, Any]] = field(default_factory=list)
+    early_skip: EarlySkip | None = None
+    early_error: str | None = None
 
     def record_exception(self, exc: BaseException) -> None:
         """Note the exception that stopped the run: its class, its first line, a Ctrl+C."""

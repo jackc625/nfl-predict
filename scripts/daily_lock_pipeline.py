@@ -21,7 +21,9 @@ WHAT ONE RUN DOES
    before the cache rebuild, the website push and the notifications, on every run
    that got past the picks (``success``, ``finished_with_skips``, ``degraded``, ``no_games``,
    ``lock_passed``) and never on a dry run. It is a non-fatal side step: it prints ``REFIT=``,
-   records its own outcome and never changes the exit code. New models serve from the next run.
+   records its own outcome and never changes the exit code. New models serve the day-before
+   predictions from the next run; the early-week step (step 7) comes after this one, so on a swap
+   day it already reads the new models.
 5. Pushes the website (Phase 36, D-13) at the end of every run that did not fail, after the ledger
    sync and before the phone pushes, through ``pipeline.site_push``; a run ending ``failed`` or
    ``run_failed`` records "not pushed" instead. Unless ``config/site_push_enabled.json`` reads
@@ -31,7 +33,12 @@ WHAT ONE RUN DOES
    refreshed the schedule (``no_games`` days included) and never on a dry run or a lock-passed or
    offseason day. It is a non-fatal side step: it prints ``EARLY_LINES=``, spends a board only
    when the month's decision and closing captures stay covered, and never changes the exit code.
-   Nothing on the decision path reads what it records.
+   Only the early-week step (step 7) reads what it records.
+7. Decides the coming NFL week's early-week bets (owner ruling 2026-11-09, ``pipeline.early_week``)
+   right after step 6 and under the same condition, on the one day each week is due. It is a
+   non-fatal side step: it prints ``EARLY_BETS=`` and never changes the exit code. Rows it wrote
+   are synced and the web cache rebuilt at once, so they are anchored and on the site before the
+   website push and the phone push. A week it skips reaches the phone push by name.
 
 WHY THE FULL HISTORY IS REBUILT, AND WHY THAT CANNOT DENY PREDICTIONS TO TONIGHT'S GAMES
 -----------------------------------------------------------------------------------------
@@ -80,6 +87,7 @@ from notify.report import (
     STATUS_OFFSEASON,
     STATUS_RUN_FAILED,
     STATUS_SUCCESS,
+    EarlySkip,
     RunReport,
 )
 from pipeline import daily_steps
@@ -944,13 +952,72 @@ def _capture_early_lines_quietly(report: RunReport) -> None:
     """Call the early-lines capture; a failure prints its class name and NEVER propagates.
 
     Only ``Exception`` is caught: a Ctrl+C, and the test guard's ``pytest.fail``, still stop the
-    process.
+    process. Whether a board was recorded is noted on *report* for the early-week step.
     """
     try:
-        EARLY_LINES(report)
+        from scripts.capture_early_lines import OUTCOME_CAPTURED
+
+        outcome = EARLY_LINES(report)
     except Exception as exc:  # noqa: BLE001 - the capture never alters the run's result
         print(f"EARLY_LINES= failed {_failure_text(exc)}")
         logger.error("Early lines capture failed", error=_failure_text(exc))
+        return
+    report.early_board_captured = getattr(outcome, "outcome", None) == OUTCOME_CAPTURED
+
+
+# ---------------------------------------------------------------------------
+# The early-week side step (owner ruling 2026-11-09). It runs right after the early-lines capture,
+# on the same days, and reads whether that capture recorded a board from the report. It can never
+# change the run's result: it is called only through _early_bets_quietly.
+# ---------------------------------------------------------------------------
+
+
+def _run_early_bets(report: RunReport) -> object:
+    """Decide the NFL week due today, or skip it by name (``pipeline.early_week``).
+
+    The import is LAZY, like the notifier's, so a broken early-week module can never break this
+    script's import.
+    """
+    from pipeline.early_week import run_early_week
+
+    return run_early_week(
+        report.run_date_et, board_captured=report.early_board_captured
+    )
+
+
+#: Seam: the test suite keeps it inert (tests/conftest.py); a wiring test replaces it itself.
+EARLY_BETS: Callable[[RunReport], object] = _run_early_bets
+
+
+def _early_skip(result: Any) -> EarlySkip | None:
+    """The week the step skipped and why, or None. Only a skip carries a reason."""
+    reason = getattr(result, "reason", None)
+    if reason is None:
+        return None
+    return EarlySkip(season=result.season, week=result.week, reason=str(reason))
+
+
+def _early_bets_quietly(report: RunReport) -> None:
+    """Run the early-week step; a failure prints its class name and NEVER propagates.
+
+    Rows it wrote are synced and the web cache rebuilt here, so they are anchored and on the site
+    before the website push and the phone push. A skip goes on *report* for the phone push. Only
+    ``Exception`` is caught: a Ctrl+C, and the test guard's ``pytest.fail``, still stop the
+    process.
+    """
+    try:
+        result = EARLY_BETS(report)
+    except Exception as exc:  # noqa: BLE001 - the step never alters the run's result
+        report.early_error = _failure_text(exc)
+        print(f"EARLY_BETS= failed {_failure_text(exc)}")
+        logger.error("Early-week bets step failed", error=_failure_text(exc))
+        return
+    report.early_ran = True
+    report.early_rows = list(getattr(result, "appended_rows", ()))
+    report.early_skip = _early_skip(result)
+    if report.early_rows:
+        _sync_ledger(report=report)
+        _rebuild_web_cache(report, contract="WEB_CACHE_AFTER_EARLY=")
 
 
 def _season_window(run_date_et: date) -> str:
@@ -988,7 +1055,8 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
     ``LEDGER_RUN_ID=``), so every ledger event it writes -- the append, the settle pass and the
     end-of-run sync's pushes -- names this run (review finding 8); and a non-dry run syncs the
     ledger once: just before the re-fit side step on a day that reaches it (WR-C04), otherwise at
-    the end, whether the day returned or raised. After the sync, a non-dry run that was
+    the end, whether the day returned or raised -- plus once more right after any rows the
+    early-week step writes. After the sync, a non-dry run that was
     not interrupted sends its notifications (D-13), filled from one :class:`RunReport`; the
     watcher's season window on that report is read once, at the run's start (Plan 35-13).
 
@@ -1080,9 +1148,10 @@ def run_daily(run_date_et: date, *, start: datetime, dry_run: bool) -> int:
                     progress=progress,
                     report=report,
                 )
-                # Every real day that refreshed the schedule, slate or not (step 6).
+                # Every real day that refreshed the schedule, slate or not (steps 6 and 7).
                 if not dry_run and report.status != STATUS_OFFSEASON:
                     _capture_early_lines_quietly(report)
+                    _early_bets_quietly(report)
                 return code
             except BaseException as exc:
                 named = _record_run_failure(run_date_et, progress.get("slate"), exc)

@@ -21,10 +21,11 @@ WHAT ONE CAPTURE DOES
    (observed when the response returns), the credits read before it, and the raw board exactly
    as the API returned it (every book's ``last_update`` and its moneyline, spread and total prices).
 
-NOTHING READS THIS FILE YET. It is never a decision input: the live decision rows stay in
-``data/silver/odds_snapshot.parquet``, written only by the decision and closing captures. A board
-can list games already in progress; whoever reads this file later must keep only the games whose
-``commence_time`` is after ``captured_at_utc``.
+WHO READS THIS FILE. Only the early-week run does (``pipeline.early_week``, through
+``backtest.early_board``), and only to price the early arm. It is never a day-before decision input:
+those rows stay in ``data/silver/odds_snapshot.parquet``, written only by the decision and closing
+captures. A board can list games already in progress; the reader drops every game whose lock had
+passed when the board was read.
 
 The daily lock-time run calls :func:`capture_early_lines_now` once per real run that refreshed the
 schedule (``scripts/daily_lock_pipeline.py``); it can be run by hand too:

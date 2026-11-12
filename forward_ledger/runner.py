@@ -1,6 +1,6 @@
 """The ONE place the daily run talks to the ledger (Phase 34, Plan 34-15).
 
-Three entry points, each called by ``scripts/daily_lock_pipeline.py`` / ``pipeline/daily_steps.py``
+Four entry points, each called by ``scripts/daily_lock_pipeline.py`` / ``pipeline/daily_steps.py``
 once the committed cutover switch (``forward_ledger.cutover``) sends forward rows here:
 
 :func:`record_forward_slate` -- the forward write, replacing ``generate_weekly_bet_list`` on the
@@ -40,6 +40,12 @@ daily run's critical recommend step. In order:
      ``ledger/refit/shadow_holes.jsonl`` (``refit.records``); a hole record that cannot be written
      is logged by class and never fails the call.
 
+:func:`record_early_week` -- the early-week arm's write (``backtest/early_arm_2026.py``): steps 2-6
+and 8 above over a bundle the caller already decided, with no shadow arm. The models must be the v2
+generation's. Every row is stamped ``early``, ``recipe-2026-v2`` and ``fill-v2``, and is stamped
+with no verdict scope at all, so it is ``pre_verdict`` even in a week the verdict counts: this arm
+can never add to the R6 verdict.
+
 :func:`settle_ledger` -- every day the schedule refresh returns a season: grade pending rows from
 the refreshed silver scores, append the corrections owed by the live manifest's
 ``live_revision_graded`` verdicts, and finalize closing columns -- all in ONE ``commit_changes``,
@@ -72,6 +78,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
+from backtest.early_arm_2026 import EARLY_RECIPE, FILL_V2_ID
 from backtest.weekly_bet_list import (
     DecisionBundle,
     build_weekly_decision_bundle,
@@ -93,7 +100,7 @@ from forward_ledger.declarations import (
 )
 from forward_ledger.repro_key import build_repro_key
 from forward_ledger.run_log import read_events, record_event
-from forward_ledger.schema import ARM_SHADOW, VERDICT_SCOPE_VERDICT
+from forward_ledger.schema import ARM_EARLY, ARM_SHADOW, VERDICT_SCOPE_VERDICT
 from forward_ledger.settle import (
     DEFAULT_SILVER_DIR,
     grading_updates,
@@ -130,6 +137,7 @@ from forward_ledger.sync import SyncOutcome, publish_ledger_state
 from refit.generations import (
     GENERATION_ZERO,
     Generation,
+    UnknownGenerationError,
     in_force_generation,
     installed_generations,
 )
@@ -145,6 +153,7 @@ __all__ = [
     "SILVER_ODDS_FILENAME",
     "RecordOutcome",
     "SettleOutcome",
+    "record_early_week",
     "record_forward_slate",
     "settle_ledger",
     "sync_after_run",
@@ -166,7 +175,7 @@ ShadowHole = tuple[tuple[str, int, int, str], str]
 
 @dataclass(frozen=True)
 class RecordOutcome:
-    """What one :func:`record_forward_slate` call did.
+    """What one :func:`record_forward_slate` or :func:`record_early_week` call did.
 
     Attributes:
         decided: Rows the decision produced (live and suppressed).
@@ -628,6 +637,164 @@ def record_forward_slate(
         appended_rows=tuple(written_rows) if result.wrote else (),
         shadow_appended=len(shadow_rows) if result.wrote else 0,
         shadow_holes=holes,
+    )
+
+
+def record_early_week(
+    bundle: DecisionBundle,
+    *,
+    odds: pd.DataFrame,
+    gold_dir: Path,
+    decided_at: datetime,
+    publish_by: datetime | None,
+    meta_extra: Mapping[str, Any],
+    ledger_dir: Path | str = LEDGER_DIR,
+    artifacts_dir: Path = Path("artifacts"),
+    manifest_dir: Path | str | None = None,
+    log: LogCallable | None = None,
+    repo_dir: Path | str | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> RecordOutcome:
+    """Write one week's early decisions to the ledger, first pick standing.
+
+    Args:
+        bundle: The decision the caller made: its rows and exactly the inputs that produced them.
+        odds: The board the decision read (the reproduction key's odds digest).
+        gold_dir: The gold the decision scored (the reproduction key's gold key).
+        decided_at: The decision instant.
+        publish_by: Nothing is written once the clock passes it; None sets no deadline.
+        meta_extra: Stored in the decision snapshot and digested with it.
+        ledger_dir, artifacts_dir: The stores read and written.
+        manifest_dir: The live-manifest directory (``config/upstream_live`` when None).
+        log: ``(event, **fields)``; ``forward_ledger.run_log.record_event`` when None.
+        repo_dir: The repository carrying ``ledger-anchor``; when given, the write is refused
+            unless the store extends the anchored head.
+        clock: The instant source for *publish_by*; ``datetime.now(UTC)`` when None.
+
+    Returns:
+        What was decided, appended, skipped and refused. ``shadow_appended`` and ``shadow_holes``
+        stay empty: this arm has no shadow twin.
+
+    Raises:
+        refit.generations.UnknownGenerationError: the ids that scored *bundle* are not the
+            generation that serves ``recipe-2026-v2``; nothing was written.
+        backtest.weekly_bet_list.PublishDeadlinePassedError: the write was ready after
+            *publish_by*; nothing was written to ``ledger/`` -- no row, snapshot or copy.
+        Everything the stamping and ``commit_changes`` refuse, by name.
+    """
+    emit = log or record_event
+    ledger = Path(ledger_dir)
+    generation = (
+        None
+        if bundle.resolved is None
+        else in_force_generation(bundle.resolved, ledger)
+    )
+    if generation is not None and generation.recipe != EARLY_RECIPE:
+        msg = (
+            f"the early-week arm decides only under {EARLY_RECIPE!r}, but its ids are generation "
+            f"{generation.number}'s, whose recipe is {generation.recipe!r}; nothing was written."
+        )
+        raise UnknownGenerationError(msg)
+    frame: pd.DataFrame = bundle.frame
+    if frame.empty:
+        return RecordOutcome(0, 0, 0, (), False, None, None)
+    if bundle.resolved is None:
+        msg = (
+            "the early decision was made without resolved artifact ids; a ledger row is never "
+            "stamped without them"
+        )
+        raise MissingStampError(msg)
+
+    season = int(frame["season"].iloc[0])
+    repro = build_repro_key(
+        manifest=load_live_manifest(season, manifest_dir=manifest_dir),
+        gold_dir=gold_dir,
+        odds=odds,
+        game_ids=sorted(frame["game_id"].astype(str).unique()),
+        decided_at=decided_at,
+    )
+    entries = read_entries(ledger)
+    stamped_digest = compute_snapshot_digest(bundle, meta_extra=meta_extra)
+    # scope=None is what keeps these rows out of the R6 verdict: the label is arm-blind, so the
+    # committed scope would call a row of a verdict week ``verdict``. The False is true of what
+    # this call writes and is required beside it, because the ledger itself does hold verdict rows.
+    stamped = stamp_ledger_rows(
+        frame,
+        resolved=bundle.resolved,
+        repro=repro,
+        snapshot_digest=stamped_digest,
+        scope=None,
+        ledger_has_verdict_rows=False,
+        recipe_id=EARLY_RECIPE,
+        fill_convention_id=FILL_V2_ID,
+        arm=ARM_EARLY,
+        registered_ids=_registered_ids(generation, ledger),
+    )
+    decided = cast("pd.DataFrame", stamped[list(IMMUTABLE_COLUMNS_V1)])
+    rows = decided.to_dict(orient="records")
+    classification = classify_incoming(entries, rows)
+
+    for key, fields in classification.conflicting:
+        print(  # noqa: T201 -- the daily run's console contract names every refused row
+            f"LEDGER_REFUSED= {_key_text(key)}: first pick stands "
+            f"(differing {', '.join(fields)})"
+        )
+        emit("first_pick_refusal", key=list(key), fields=list(fields))
+
+    if not classification.new:
+        return RecordOutcome(
+            decided=len(rows),
+            appended=0,
+            identical=len(classification.identical),
+            refused=classification.conflicting,
+            wrote=False,
+            head_hash=entries[-1].chain_hash if entries else None,
+            entry_count=len(entries),
+        )
+
+    # The deadline BEFORE any side file, as in record_forward_slate: a late decision leaves nothing.
+    assert_before_publish_deadline(
+        publish_by, clock, ready="the early week's ledger write"
+    )
+    snapshot_digest = write_decision_snapshot(ledger, bundle, meta_extra=meta_extra)
+    if snapshot_digest != stamped_digest:
+        raise SnapshotDigestMismatchError(
+            "meta",
+            f"the rows were stamped with snapshot {stamped_digest} but the snapshot written is "
+            f"{snapshot_digest}; nothing was written to the ledger",
+        )
+    ensure_artifact_copies(ledger, bundle.resolved, Path(artifacts_dir))
+    ensure_recipe_record_copy(ledger, bundle.chain_fit_path)
+
+    result = commit_changes(
+        ledger,
+        new_rows=classification.new,
+        publish_by=publish_by,
+        clock=clock,
+        anchored_head=_anchored_head(repo_dir),
+    )
+    if result.wrote:
+        emit(
+            "append",
+            season=season,
+            week=int(frame["week"].iloc[0]),
+            appended_rows=len(classification.new),
+            shadow_appended_rows=0,
+            identical_rows=len(classification.identical),
+            refused_rows=len(classification.conflicting),
+            snapshot_digest=snapshot_digest,
+            head_hash=result.head_hash,
+            entry_count=result.entry_count,
+        )
+    return RecordOutcome(
+        decided=len(rows),
+        appended=len(classification.new) if result.wrote else 0,
+        identical=len(classification.identical),
+        refused=classification.conflicting,
+        wrote=result.wrote,
+        head_hash=result.head_hash,
+        entry_count=result.entry_count,
+        appended_rows=tuple(classification.new) if result.wrote else (),
     )
 
 

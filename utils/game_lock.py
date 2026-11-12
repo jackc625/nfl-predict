@@ -42,7 +42,8 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from collections.abc import Iterable
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -54,6 +55,7 @@ __all__ = [
     "LOCK_HOUR_ET",
     "LOCK_RULE_EVIDENCE",
     "MissingKickoffError",
+    "early_decision_date",
     "game_lock",
     "is_admissible",
     "lock_frame",
@@ -240,3 +242,45 @@ def is_admissible(information_time: Any, lock: Any) -> bool:
         ``True`` when the information was known at or before the lock.
     """
     return _require_aware(information_time) <= _require_aware(lock)
+
+
+def early_decision_date(prior_kickoffs: Iterable[Any]) -> date:
+    """The ET calendar day after the last of *prior_kickoffs*: when an early week is decided.
+
+    Handed every kickoff of the lower weeks, this is the day after the last game before the
+    week being decided. It is a day and never an hour, so it does not compete with
+    :func:`game_lock`; each game of the week still has its own lock.
+
+    Every kickoff goes through the strict parser BEFORE its ET date is read, because
+    ``kickoff_wall_clock_et`` alone would localize a naive value instead of refusing it.
+
+    Args:
+        prior_kickoffs: The kickoff instants, in any order. Each MUST be timezone-aware.
+
+    Returns:
+        The ET calendar date after the latest kickoff.
+
+    Raises:
+        ValueError: when there are no kickoffs: a week with nothing before it has no such day.
+        MissingKickoffError: when any kickoff is null, NaN or NaT. The last game cannot be
+            named while one game's time is unknown.
+        scripts.ingest_historical_odds.NaiveTimestampError: when any kickoff carries no
+            timezone.
+    """
+    from utils.date_utils import kickoff_wall_clock_et
+
+    kickoffs = list(prior_kickoffs)
+    if not kickoffs:
+        msg = "no kickoffs given: there is no last game to take the day after."
+        raise ValueError(msg)
+    if any(_is_missing(kickoff) for kickoff in kickoffs):
+        msg = (
+            "a kickoff time is missing, so the last game cannot be named. Refusing rather "
+            "than taking the day after the games whose times are known."
+        )
+        raise MissingKickoffError(msg)
+
+    last_et_date = max(
+        kickoff_wall_clock_et(_require_aware(kickoff)).date() for kickoff in kickoffs
+    )
+    return last_et_date + timedelta(days=1)

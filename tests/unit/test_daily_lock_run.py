@@ -29,9 +29,10 @@ import scripts.daily_lock_pipeline as daily
 from backtest.midseason_switch_2026 import DAY_BEFORE_RETIRED_FROM
 from notify import end_of_run
 from notify.log import read_notifications
-from notify.report import STATUS_RUN_FAILED, RunReport
+from notify.report import STATUS_RUN_FAILED, EarlySkip, RunReport
 from pipeline import daily_steps, live_skip
 from pipeline.daily_steps import DailySlate, slate_lock
+from scripts.capture_early_lines import EarlyLinesOutcome
 from tests.unit.test_notify_transport import (
     DUMMY_PING_URL,
     DUMMY_PING_UUID,
@@ -608,6 +609,44 @@ def test_a_slate_game_with_no_forecast_is_built_with_weather_unknown(monkeypatch
     assert slate.weather_unknown == {
         "2026_W03_LA@DEN": "WeatherDataError: Open-Meteo timeout"
     }
+
+
+def test_the_weather_features_are_computed_without_a_save(monkeypatch):
+    """``weather_features_through`` returns the frame and saves nothing (the rehearsal's use);
+    ``build_weather_features_through`` saves exactly that frame to silver, as before."""
+    import features.weather as weather_mod
+    from data import storage
+
+    schedule = _schedule()
+    slate_ids = frozenset({"2026_W03_LAC@BUF", "2026_W03_LA@DEN"})
+    weather = pd.DataFrame({"game_id": ["2026_W03_LAC@BUF"]})
+    monkeypatch.setattr(
+        storage,
+        "load_dataframe",
+        lambda name, *_a, **_k: schedule if name == "games" else weather,
+    )
+    saves: list[tuple[pd.DataFrame, dict[str, object]]] = []
+    monkeypatch.setattr(
+        storage, "save_dataframe", lambda frame, **kwargs: saves.append((frame, kwargs))
+    )
+    built = pd.DataFrame({"game_id": sorted(slate_ids)})
+
+    class _Calculator:
+        def build_weather_features(self, *, games_df, weather_df, unobserved_game_ids):
+            return built
+
+    monkeypatch.setattr(weather_mod, "WeatherFeaturesCalculator", _Calculator)
+
+    features, unknown = daily_steps.weather_features_through(2026, slate_ids, {})
+
+    assert features is built
+    assert unknown == {"2026_W03_LA@DEN": "no forecast was captured"}
+    assert saves == []
+
+    assert daily_steps.build_weather_features_through(2026, slate_ids, {}) == unknown
+    assert len(saves) == 1
+    assert saves[0][0] is built
+    assert saves[0][1] == {"table_name": "weather_features", "layer": "silver"}
 
 
 def test_the_slate_weather_capture_collects_failures_on_the_slate(monkeypatch):
@@ -1984,3 +2023,210 @@ def test_a_raising_notifier_never_masks_the_run(monkeypatch, tmp_path, capsys):
     with pytest.raises(ValueError, match="the run's own failure"):
         daily.run_daily(RUN_DATE, start=_start(), dry_run=False)
     assert "NOTIFY= failed RuntimeError" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# The early-week side step (owner ruling 2026-11-09): after the board capture, never fatal
+# ---------------------------------------------------------------------------
+
+ONE_EARLY_ROW = {"game_id": "2026_W11_NE@DET", "status": "live"}
+
+
+def _early_step_records(monkeypatch, order: list[str], *, rows=()) -> None:
+    """A capture that captured and an early step returning *rows*, both noted in *order*."""
+
+    def _capture(_report):
+        order.append("board")
+        return EarlyLinesOutcome("captured", None, 5, 400)
+
+    def _early(_report):
+        order.append("early")
+        return SimpleNamespace(appended_rows=tuple(rows))
+
+    monkeypatch.setattr(daily, "EARLY_LINES", _capture)
+    monkeypatch.setattr(daily, "EARLY_BETS", _early)
+
+
+def _record_the_early_rebuild(monkeypatch, order: list[str]) -> None:
+    import pipeline.steps as steps_mod
+
+    monkeypatch.setattr(
+        steps_mod, "step_populate_web_cache", lambda: order.append("cache")
+    )
+
+
+def test_the_early_step_runs_after_the_board_capture_on_a_no_games_day(
+    monkeypatch, tmp_path, capsys
+):
+    """With no new row the step syncs and rebuilds nothing, and the report says it ran."""
+    order = _no_games_env(monkeypatch, tmp_path)
+    seen = _seen_reports(monkeypatch)
+    _early_step_records(monkeypatch, order)
+    _record_the_early_rebuild(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert order == ["no_games", "board", "early"]
+    assert "WEB_CACHE_AFTER_EARLY=" not in capsys.readouterr().out
+    (report,) = seen
+    assert report.early_board_captured is True
+    assert report.early_ran is True
+    assert report.early_rows == []
+    assert report.early_error is None
+
+
+def test_a_failed_early_step_never_changes_the_exit_code(monkeypatch, tmp_path, capsys):
+    _no_games_env(monkeypatch, tmp_path)
+    seen = _seen_reports(monkeypatch)
+
+    def _broken(_report):
+        raise RuntimeError("https://api.example/odds?apiKey=secret")
+
+    monkeypatch.setattr(daily, "EARLY_BETS", _broken)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    out = capsys.readouterr().out
+    assert "EARLY_BETS= failed RuntimeError" in out
+    assert "apiKey=secret" not in out
+    (report,) = seen
+    assert report.early_error == "RuntimeError"
+    assert report.early_ran is False
+
+
+def test_new_early_rows_are_synced_and_the_cache_rebuilt(monkeypatch, tmp_path, capsys):
+    """A slate day synced before the re-fit already, so the early rows bring a second sync."""
+    from forward_ledger import runner
+
+    _cut_over(monkeypatch)
+    order: list[str] = []
+    _two_step_slate_env(monkeypatch, tmp_path, export=lambda: None, order=order)
+    monkeypatch.setattr(
+        runner, "settle_ledger", lambda **_k: runner.SettleOutcome(False, 0, 0, 0, 0)
+    )
+    monkeypatch.setattr(
+        runner, "sync_after_run", lambda **_k: order.append("sync") or None
+    )
+    seen = _seen_reports(monkeypatch)
+    _early_step_records(monkeypatch, order, rows=[ONE_EARLY_ROW])
+    _record_the_early_rebuild(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert order == ["recommend", "sync", "board", "early", "sync", "cache"]
+    assert "WEB_CACHE_AFTER_EARLY= rebuilt" in capsys.readouterr().out
+    (report,) = seen
+    assert report.early_rows == [ONE_EARLY_ROW]
+
+
+@pytest.mark.parametrize(
+    ("switch_on", "expected"),
+    [
+        pytest.param(
+            False,
+            ["no_games", "board", "early", "sync", "cache"],
+            id="switch-off-the-one-sync-follows-the-rows",
+        ),
+        pytest.param(
+            True,
+            ["settle", "sync", "no_games", "board", "early", "sync", "cache"],
+            id="switch-on-a-second-sync-follows-the-rows",
+        ),
+    ],
+)
+def test_a_no_games_day_syncs_after_the_early_rows_are_written(
+    monkeypatch, tmp_path, capsys, switch_on, expected
+):
+    """Whatever ran before it, a sync follows the rows, before the cache and the push.
+
+    With the cutover switch on, as in production, the no-games branch has already synced before
+    the re-fit side step, so the early rows bring a second sync there too.
+    """
+    _cut_over(monkeypatch, on=switch_on)
+    order = _no_games_env(monkeypatch, tmp_path)
+    _early_step_records(monkeypatch, order, rows=[ONE_EARLY_ROW])
+    _record_the_early_rebuild(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert order == expected
+    assert "WEB_CACHE_AFTER_EARLY= rebuilt" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        pytest.param(
+            SimpleNamespace(reason="no_board", season=2026, week=11, appended_rows=()),
+            EarlySkip(2026, 11, "no_board"),
+            id="skipped",
+        ),
+        pytest.param(
+            SimpleNamespace(reason=None, season=None, week=None, appended_rows=()),
+            None,
+            id="not-due",
+        ),
+        pytest.param(
+            SimpleNamespace(reason=None, season=2026, week=11, appended_rows=()),
+            None,
+            id="decided",
+        ),
+    ],
+)
+def test_a_skipped_week_is_carried_on_the_report(
+    monkeypatch, tmp_path, result, expected
+):
+    """Only a skip names a reason, so it is the one outcome the report carries for the push."""
+    _no_games_env(monkeypatch, tmp_path)
+    seen = _seen_reports(monkeypatch)
+    monkeypatch.setattr(daily, "EARLY_BETS", lambda _report: result)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    (report,) = seen
+    assert report.early_skip == expected
+
+
+def test_a_dry_run_makes_no_early_decision(monkeypatch, tmp_path):
+    order = _no_games_env(monkeypatch, tmp_path)
+    _early_step_records(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=True) == 0
+
+    assert "early" not in order
+
+
+def test_an_offseason_day_makes_no_early_decision(monkeypatch, tmp_path):
+    order: list[str] = []
+    start = _arrange_offseason(monkeypatch, tmp_path)
+    _early_step_records(monkeypatch, order)
+
+    assert daily.run_daily(RUN_DATE, start=start, dry_run=False) == 0
+
+    assert order == []
+
+
+def test_a_skipped_board_capture_is_passed_on(monkeypatch, tmp_path):
+    """Through the real seam: ``run_early_week`` is told no board was captured today."""
+    from pipeline import early_week
+
+    _no_games_env(monkeypatch, tmp_path)
+    seen = _seen_reports(monkeypatch)
+    calls: list[tuple[date, bool]] = []
+    monkeypatch.setattr(
+        daily,
+        "EARLY_LINES",
+        lambda _report: EarlyLinesOutcome("skipped", "credit_reserve", 0, 3),
+    )
+    monkeypatch.setattr(daily, "EARLY_BETS", daily._run_early_bets)
+    monkeypatch.setattr(
+        early_week,
+        "run_early_week",
+        lambda run_date, *, board_captured: calls.append((run_date, board_captured)),
+    )
+
+    assert daily.run_daily(RUN_DATE, start=_start(), dry_run=False) == 0
+
+    assert calls == [(RUN_DATE, False)]
+    (report,) = seen
+    assert report.early_board_captured is False

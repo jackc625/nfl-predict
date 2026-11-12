@@ -122,6 +122,11 @@ def test_malformed_declaration_is_refused(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_resolve_recipe_and_fill() -> None:
+    """A registered recipe and fill id resolve; anything else is refused by name.
+
+    RE-POINTED 2026-11-09 for backtest/early_arm_2026.py: ``fill-v2`` is now registered, so the
+    unregistered id this refuses is ``fill-v3``.
+    """
     entry = resolve_recipe("recipe-2026-row19-v1")
     assert entry.recipe_id == "recipe-2026-row19-v1"
     with pytest.raises(UnknownRecipeError, match="recipe-unknown"):
@@ -132,8 +137,8 @@ def test_resolve_recipe_and_fill() -> None:
     assert resolve_fill_convention("fill-v1") == "fill-v1"
     with pytest.raises(UnknownFillConventionError):
         resolve_fill_convention(None)
-    with pytest.raises(UnknownFillConventionError, match="fill-v2"):
-        resolve_fill_convention("fill-v2")
+    with pytest.raises(UnknownFillConventionError, match="fill-v3"):
+        resolve_fill_convention("fill-v3")
 
 
 def test_bootstrap_weeks() -> None:

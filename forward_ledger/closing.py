@@ -32,6 +32,13 @@ Among in-window captures that carry the row's market, the first by
 ``fill-v1`` preference, then book name. The decision used the same ordering, so decision-versus-
 close compares the same rule's choice at two times.
 
+An early-arm row (``backtest/early_arm_2026.py``) was priced at one named book, so it closes at
+that book and no other: its ``eligibility_label`` names the book, and only that book's captures may
+be its reading. A close taken from a different book would measure the gap between two books rather
+than the line's movement. When the book has no in-window capture carrying the market, the row is
+``no_closing_market`` even if another book closed; a label naming no book leaves the row
+unfinalized and logged.
+
 FORWARD CLOSING-LINE VALUE (D-09)
 ---------------------------------
 Freeze-vs-close, with NO slippage, so it measures market movement rather than fill quality.
@@ -60,17 +67,20 @@ from typing import Any
 import pandas as pd
 
 from backtest.ats_ev_chain import ATS_SIDES
+from backtest.early_arm_2026 import BOOK_LABEL_PREFIX
 from backtest.ou_divergence import odds_information_time, order_by_book_preference
 from backtest.ou_ev_chain import american_to_implied
 from backtest.selector_strategies import OU_SIDES, is_absent
 from forward_ledger.canonical import ENTRY_KIND_ROW
 from forward_ledger.schema import (
+    ARM_EARLY,
     BET_LIST_CLOSING_COLUMNS,
     CLOSING_NULL_REASONS,
     LEDGER_ROW_KEY,
 )
 from forward_ledger.store import LedgerEntry
 from utils.date_utils import kickoff_wall_clock_et
+from utils.logging_config import get_logger
 
 __all__ = [
     "CLOSING_SKIP_REASONS",
@@ -84,6 +94,8 @@ __all__ = [
     "market_fields_for",
     "select_closing_capture",
 ]
+
+logger = get_logger(__name__)
 
 CLOSING_WINDOW = timedelta(minutes=60)
 
@@ -159,6 +171,8 @@ def select_closing_capture(
     odds_rows: pd.DataFrame,
     target: str,
     bet_side: str | None,
+    *,
+    sportsbook: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """The game's closing reading for one row, or why there is none.
 
@@ -168,11 +182,14 @@ def select_closing_capture(
         odds_rows: Silver odds rows (any games; filtered here), ``created_at`` the capture instant.
         target: ``wp``, ``ats`` or ``ou``.
         bet_side: The row's bet side (selects the WP moneyline).
+        sportsbook: The only book the reading may come from (an early-arm row's own book). None
+            chooses among every book by the ``fill-v1`` ordering.
 
     Returns:
         ``(capture_row, None)`` for the chosen capture; ``(None, "no_closing_market")`` when
-        in-window captures exist but none carries the row's market; ``(None, None)`` when no
-        capture lies in the window at all (the caller names that reason).
+        in-window captures exist but none carries the row's market (from *sportsbook*, when it is
+        given); ``(None, None)`` when no capture lies in the window at all (the caller names that
+        reason).
 
     Raises:
         scripts.ingest_historical_odds.NaiveTimestampError: a naive kickoff or ``created_at``.
@@ -194,6 +211,8 @@ def select_closing_capture(
 
     fields = list(market_fields_for(target, bet_side))
     carrying = window.loc[window.reindex(columns=fields).notna().all(axis=1)]
+    if sportsbook is not None:
+        carrying = carrying.loc[carrying["sportsbook"].astype(str) == sportsbook]
     if carrying.empty:
         return None, REASON_NO_CLOSING_MARKET
     return order_by_book_preference(carrying).iloc[0].to_dict(), None
@@ -308,6 +327,15 @@ def _skip_reason(game_id: str, capture_events: Sequence[Mapping[str, Any]]) -> s
     return reason
 
 
+def _early_row_book(eligibility_label: Any) -> str | None:
+    """The book an early-arm row's label names, or None when it names none."""
+    if not isinstance(eligibility_label, str):
+        return None
+    if not eligibility_label.startswith(BOOK_LABEL_PREFIX):
+        return None
+    return eligibility_label.removeprefix(BOOK_LABEL_PREFIX) or None
+
+
 def finalize_closing(
     entries: Sequence[LedgerEntry],
     games: pd.DataFrame,
@@ -328,7 +356,9 @@ def finalize_closing(
       * no in-window capture -> NULL with the reason of the latest closing-task record naming the
         game (``credit_reserve``, ``credit_header_unreadable``, ``capture_failed``, or
         ``capture_empty`` for a reading that ran and wrote no row for it), else
-        ``capture_missed``.
+        ``capture_missed``;
+      * an early-arm row with a bet side reads only the book its label names, under those same
+        cases. A label naming no book leaves the row unfinalized (no update) and is logged.
 
     Plan 34-15 applies the result through ``commit_changes(closing_updates=...)``, whose one-way
     closing transition refuses any overwrite.
@@ -359,8 +389,19 @@ def finalize_closing(
             updates[key] = _null_closing(REASON_NO_BET_SIDE)
             continue
 
+        sportsbook: str | None = None
+        if immutable["arm"] == ARM_EARLY:
+            sportsbook = _early_row_book(immutable.get("eligibility_label"))
+            if sportsbook is None:
+                logger.error(
+                    "An early-arm row names no book, so its close was not read",
+                    key=list(key),
+                    eligibility_label=immutable.get("eligibility_label"),
+                )
+                continue
+
         capture, reason = select_closing_capture(
-            game_id, kickoff, odds, immutable["target"], bet_side
+            game_id, kickoff, odds, immutable["target"], bet_side, sportsbook=sportsbook
         )
         if capture is not None:
             updates[key] = closing_values_for(immutable, capture, strategies)

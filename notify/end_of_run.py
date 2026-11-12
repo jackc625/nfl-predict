@@ -14,7 +14,9 @@ ORDER (D-13)
 2. The one bets push for the live bets the run newly appended, or none. From the 2026 week-10
    switch the day-before system decides nothing (MIDSEASON-SWITCH-RECORD.md), so a run whose
    slate is at or after that week says why there is none (:data:`NO_BETS_RETIRED`) and its
-   check-in carries ``day-before=retired``.
+   check-in carries ``day-before=retired``. Then one early-week push: the live bets the step wrote
+   (:func:`notify.messages.early_bets_message`), or the week it skipped
+   (:func:`notify.messages.early_skipped_message`), or none.
 3. The weekly digest email, on its digest run only (:func:`notify.digest.send_digest_if_due`). An
    email that is not delivered sends one normal-priority ``FAILED: weekly email`` push naming the
    failure kind (SPEC R8), and both count toward :attr:`EndOfRunOutcome.any_undelivered`.
@@ -51,7 +53,13 @@ from notify.events import (
     send_pause,
     send_push,
 )
-from notify.messages import bets_message, email_failed_message, failed_messages
+from notify.messages import (
+    bets_message,
+    early_bets_message,
+    early_skipped_message,
+    email_failed_message,
+    failed_messages,
+)
 from notify.report import RunReport
 from notify.season_window import SEASON_WINDOW_IN, SEASON_WINDOW_OUT
 from notify.secrets import NotifySecrets
@@ -77,9 +85,9 @@ class EndOfRunOutcome:
     """Every message the end of one run tried to send, in send order.
 
     Attributes:
-        deliveries: ``(step, Delivery)`` pairs; ``step`` is ``failed``, ``bets`` or ``digest``. A
-            step that raised is one failed delivery with no attempt, its failure kind
-            ``raised_<Class>``.
+        deliveries: ``(step, Delivery)`` pairs; ``step`` is ``failed``, ``bets``, ``early_bets``
+            or ``digest``. A step that raised is one failed delivery with no attempt, its failure
+            kind ``raised_<Class>``.
     """
 
     deliveries: list[tuple[str, Delivery]] = field(default_factory=list)
@@ -128,7 +136,7 @@ def notify_end_of_run(
     secrets: NotifySecrets | None = None,
     now: datetime | None = None,
 ) -> EndOfRunOutcome:
-    """Send the failed pushes, the bets push, the digest, then check in. Never raises ``Exception``.
+    """Send the failed pushes, the bets pushes, the digest, then check in. Never raises ``Exception``.
 
     Args:
         report: What the run did.
@@ -169,6 +177,16 @@ def notify_end_of_run(
     except Exception as error:  # noqa: BLE001 - a later step still runs
         print(f"NOTIFY_BETS= failed {type(error).__name__}")  # noqa: T201
         outcome.deliveries.append(("bets", _raised(error)))
+
+    try:
+        early = early_bets_message(report) or early_skipped_message(report)
+        if early is None:
+            print("NOTIFY_EARLY_BETS= none")  # noqa: T201
+        else:
+            _send_one("early_bets", early, context, outcome)
+    except Exception as error:  # noqa: BLE001 - a later step still runs
+        print(f"NOTIFY_EARLY_BETS= failed {type(error).__name__}")  # noqa: T201
+        outcome.deliveries.append(("early_bets", _raised(error)))
 
     try:
         _send_digest(report, context, failed_titles, instant, outcome)

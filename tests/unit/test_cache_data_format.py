@@ -55,10 +55,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Every name Plan 36-01 moved out of api/cache.py into api/cache_schema.py: the 23 the request path
 # imports, their dependents, and the block-mates of the two closed vocabularies they belong to.
+# ARM_EARLY and EARLY_ARM_FROM were added beside ARMS later (backtest/early_arm_2026.py), under the
+# same one-spelling rule.
 MOVED_NAMES: tuple[str, ...] = (
     "ARM_LIVE",
     "ARM_SHADOW",
+    "ARM_EARLY",
     "ARMS",
+    "EARLY_ARM_FROM",
     "BET_STATUS_LIVE",
     "BET_LIST_IMMUTABLE_COLUMNS",
     "BET_LIST_GRADING_COLUMNS",

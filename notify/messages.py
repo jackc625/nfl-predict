@@ -30,6 +30,16 @@ It lists only the rows the run newly APPENDED to the forward ledger with the liv
 status (``RunReport.appended_rows``, exactly as written), in ``/bets`` order, rendered through the
 shared ``components/_bet_pick.html`` macros so the pick reads as it does on ``/bets``.
 
+THE EARLY-WEEK PUSH (owner ruling 2026-11-09)
+---------------------------------------------
+A second message of the ``bets`` class: the live bets the early-week step wrote
+(``RunReport.early_rows``), one line each with the book, line, price and stake to place. The pick
+comes from the same shared macro, so a spread names the team at the line from its side.
+
+A skipped week (``RunReport.early_skip``) is never silent: it sends one normal-priority push, of
+the ``failed`` class because it is less than a clean run, saying why the week stays undecided. A
+week already decided, or a day no week is due, sends nothing.
+
 NO SECRET IN A MESSAGE (D-10)
 -----------------------------
 Error text is one line, with every configured secret value replaced by ``<redacted>`` and every URL
@@ -47,6 +57,7 @@ from operator import itemgetter
 from typing import TYPE_CHECKING, Any
 
 from api.cache import ARM_LIVE, BET_STATUS_LIVE
+from api.cache_schema import BOOK_LABEL_PREFIX
 from notify.events import PRIORITY_NORMAL, PRIORITY_TOP, PushMessage, ascii_text
 from notify.rendering import template_environment
 from notify.report import (
@@ -69,6 +80,8 @@ __all__ = [
     "RERUN_COMMAND",
     "bets_message",
     "closing_failure_message",
+    "early_bets_message",
+    "early_skipped_message",
     "email_failed_message",
     "failed_messages",
     "game_labels",
@@ -106,6 +119,22 @@ _URL = re.compile(r"(https?)://(?:[^\s/?#@]*@)?([^\s/?#:]+)\S*")
 _NOT_AFFECTED = "Games: none (predictions are not affected)"
 
 BETS_PUSH_TEMPLATE = "bets_push.txt.j2"
+# The shared pick macro, rendered for one row at a time by the early-week push.
+_PICK_LABEL_TEMPLATE = (
+    '{% import "components/_bet_pick.html" as bp %}{{ bp.pick_label(bet) }}'
+)
+# The early arm's two bet types, as the early-week push names them.
+_EARLY_BET_TYPES: dict[str, str] = {"ats": "Spreads", "ou": "Totals"}
+# Why the early-week step skipped a week, by its own reason. A reason not listed is shown as it
+# stands, so one added later still reaches the owner. Plain strings, because ``notify`` never
+# imports ``pipeline`` at load time; tests/unit/test_notify_events.py pins the copies.
+_EARLY_SKIP_WHY: dict[str, str] = {
+    "earlier_week_unscored": "an earlier game has no score yet",
+    "no_board": "no odds board was recorded today",
+    "recipe_not_v2": "the installed models are not the v2 recipe",
+}
+# The one skip the owner is not told about: the run that decided the week already pushed it.
+_EARLY_SKIP_NOT_PUSHED = "already_decided"
 # English weekday names by date.weekday(), independent of the machine's locale.
 _WEEKDAYS: tuple[str, ...] = (
     "Monday",
@@ -703,15 +732,39 @@ def _refit_message(
     return message, suffix
 
 
+def _early_bets_failure_message(
+    report: RunReport, secrets: Sequence[str]
+) -> PushMessage | None:
+    """The normal-priority push for an early-week step that raised; None when it did not.
+
+    It names the same-day re-run and says a week left undecided stays so: the step decides a week
+    only on that week's one decision day, so no later run retries it.
+    """
+    if report.early_error is None:
+        return None
+    return PushMessage(
+        event_class="failed",
+        title="FAILED: early-week bets",
+        header_lines=(
+            "The early-week bets step raised before it reported an outcome.",
+            f"Error: {one_line_error(report.early_error, None, secrets)}",
+            f"Next: re-run before {lock_clock_text(report.lock)} today: {RERUN_COMMAND}. A week "
+            "is decided on one day only, so a week missed on its day stays undecided.",
+        ),
+        item_lines=(),
+        priority=PRIORITY_NORMAL,
+    )
+
+
 def failed_messages(
     report: RunReport, *, now: datetime, secret_values: Iterable[str] = ()
 ) -> list[PushMessage]:
     """Every failed push this run owes, top priority first (SPEC R2, D-23).
 
     At most one top-priority message for the daily-run outcome, then one normal-priority message
-    per ledger, closing or website failure in this fixed order: settle raised, closing finalization
-    deferred, closing schedule, anchor push, backup push, sync refused, website push. A clean run
-    gives none.
+    per ledger, closing, website or early-week failure in this fixed order: settle raised, closing
+    finalization deferred, closing schedule, anchor push, backup push, sync refused, website push,
+    early-week bets. A clean run gives none.
 
     Last, the frozen arm's holes and then the re-fit's problems (Phase 37, SPEC R8/R14, D-16):
     each adds no push of its own when the run already sends a failed message -- it is merged into
@@ -728,6 +781,9 @@ def failed_messages(
         messages.append(closing)
     messages.extend(_sync_messages(report, secrets))
     messages.extend(_site_push_messages(report, secrets))
+    early = _early_bets_failure_message(report, secrets)
+    if early is not None:
+        messages.append(early)
     holes = _shadow_hole_message(report, secrets)
     if holes is not None:
         messages = merge_into_first_failed(
@@ -829,5 +885,63 @@ def bets_message(report: RunReport) -> PushMessage | None:
         title=f"{len(live)} {noun}: {season} week {week}, {slate_day}",
         header_lines=(f"{season} week {week}, {slate_day} games",),
         item_lines=item_lines,
+        priority=PRIORITY_NORMAL,
+    )
+
+
+def _early_bet_line(row: dict[str, Any]) -> str:
+    """``Totals: NE @ DET under 44.5 -105 at fanduel, 1.40 units``, from one stored early row.
+
+    The pick is ``/bets``' own macro, so a spread reads ``DET -3.5`` from the picked side. Only a
+    total's side changes case: the macro capitalizes it and this line reads it in lower case.
+    """
+    pick = template_environment().from_string(_PICK_LABEL_TEMPLATE).render(bet=row)
+    if row["target"] == "ou":
+        pick = pick.lower()
+    book = str(row["eligibility_label"]).removeprefix(BOOK_LABEL_PREFIX)
+    return (
+        f"{_EARLY_BET_TYPES[row['target']]}: {game_labels((row['game_id'],))} {pick} "
+        f"{int(row['selected_odds']):+d} at {book}, {row['stake_units']:.2f} units"
+    )
+
+
+def early_bets_message(report: RunReport) -> PushMessage | None:
+    """The one push for the live bets the early-week step wrote, or None when there are none.
+
+    A declined row is on the ledger too (status ``suppressed``) and is left out. The week comes
+    from the rows themselves: it is the coming week, not the day-before slate on the report.
+    """
+    live = [row for row in report.early_rows if row["status"] == BET_STATUS_LIVE]
+    if not live:
+        return None
+    ordered = _bets_page_order(live)
+    season, week = ordered[0]["season"], ordered[0]["week"]
+    return PushMessage(
+        event_class="bets",
+        title=f"{_plural(len(live), 'early-week bet')}: {season} week {week}",
+        header_lines=(),
+        item_lines=tuple(_early_bet_line(row) for row in ordered),
+        priority=PRIORITY_NORMAL,
+    )
+
+
+def early_skipped_message(report: RunReport) -> PushMessage | None:
+    """The one push for a week the early-week step skipped, or None when nothing is owed.
+
+    A skip names its week, so a day no week was due carries none. A week already decided is not
+    pushed: its own run already said so.
+    """
+    skip = report.early_skip
+    if skip is None or skip.reason == _EARLY_SKIP_NOT_PUSHED:
+        return None
+    why = _EARLY_SKIP_WHY.get(skip.reason, skip.reason)
+    return PushMessage(
+        event_class="failed",
+        title=f"Early-week bets skipped: {skip.season} week {skip.week}",
+        header_lines=(
+            f"Skipped: {why}. The week stays undecided, because a missed day is never "
+            "back-filled.",
+        ),
+        item_lines=(),
         priority=PRIORITY_NORMAL,
     )

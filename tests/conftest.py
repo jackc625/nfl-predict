@@ -583,6 +583,9 @@ def _notifications_inert_unless_a_test_turns_them_on(
     The daily run's early-lines capture (owner ruling 2026-11-05) is a no-op here too: it would
     build the real Odds API client from the owner's ``.env`` and spend a paid board; a wiring test
     replaces ``EARLY_LINES`` with its own recorder.
+
+    The daily run's early-week step (owner ruling 2026-11-09) is a no-op here too: it reads silver
+    and can build gold and write the ledger; a wiring test replaces ``EARLY_BETS`` itself.
     """
     import pandas as pd
 
@@ -597,6 +600,7 @@ def _notifications_inert_unless_a_test_turns_them_on(
         daily_lock_pipeline, "REFIT_HOOK", lambda _report, **_kwargs: None
     )
     monkeypatch.setattr(daily_lock_pipeline, "EARLY_LINES", lambda _report: None)
+    monkeypatch.setattr(daily_lock_pipeline, "EARLY_BETS", lambda _report: None)
     monkeypatch.setattr(
         capture_closing_lines, "NOTIFY_CLOSING_FAILURE", lambda *_a, **_k: None
     )

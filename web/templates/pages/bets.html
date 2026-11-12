@@ -193,6 +193,10 @@
             action_text=none, action_url=none %}
       {% include "components/_empty_state.html" %}
     {% endwith %}
+    {# From 2026 week 11 the early-week arm's own bets sit under the retired message. #}
+    {% if early_arm_open %}
+      {% include "components/_early_week_bets.html" %}
+    {% endif %}
   {% elif bets_blocked %}
     {# The hard-block (D31-27), now judged game by game (33.2 review C2 CR-02): games of this week
        have passed their own lock and NONE has a list in the cache -- the failed-insertion state.
